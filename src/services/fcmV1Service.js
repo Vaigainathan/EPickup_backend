@@ -13,23 +13,30 @@ class FCMV1Service {
   }
 
   /**
-   * Initialize the FCM v1 service
+   * Initialize FCM v1 API
    */
-  async initialize() {
+  initialize() {
     try {
-      // Check if Firebase Admin is already initialized
-      if (!admin.apps.length) {
-        const serviceAccountPath = process.env.FCM_SERVICE_ACCOUNT_PATH || './firebase-service-account.json';
-        
-        if (!require('fs').existsSync(serviceAccountPath)) {
-          throw new Error(`FCM Service Account file not found at: ${serviceAccountPath}`);
-        }
-
-        admin.initializeApp({
-          credential: admin.credential.cert(serviceAccountPath),
-          projectId: process.env.FIREBASE_PROJECT_ID
-        });
+      // Use existing Firebase instance if available
+      if (admin.apps.length > 0) {
+        this.messaging = admin.messaging();
+        this.isInitialized = true;
+        console.log('✅ FCM v1 API initialized using existing Firebase instance');
+        return;
       }
+
+      // Fallback: Initialize Firebase if not already done
+      const serviceAccountPath = process.env.FCM_SERVICE_ACCOUNT_PATH || './firebase-service-account.json';
+      
+      if (!require('fs').existsSync(serviceAccountPath)) {
+        console.warn(`⚠️  FCM Service Account file not found at: ${serviceAccountPath}`);
+        return; // Don't throw error, just return
+      }
+
+      admin.initializeApp({
+        credential: admin.credential.cert(serviceAccountPath),
+        projectId: process.env.FIREBASE_PROJECT_ID
+      });
 
       this.messaging = admin.messaging();
       this.isInitialized = true;
@@ -37,7 +44,8 @@ class FCMV1Service {
       console.log('✅ FCM v1 API initialized successfully');
     } catch (error) {
       console.error('❌ Failed to initialize FCM v1 API:', error.message);
-      throw error;
+      // Don't throw error, just log it
+      this.isInitialized = false;
     }
   }
 
@@ -45,7 +53,7 @@ class FCMV1Service {
    * Send notification to a single device
    */
   async sendToDevice(token, notification, data = {}, options = {}) {
-    await this.ensureInitialized();
+    this.ensureInitialized();
 
     const message = {
       token,
@@ -101,7 +109,7 @@ class FCMV1Service {
    * Send notification to multiple devices
    */
   async sendToMultipleDevices(tokens, notification, data = {}, options = {}) {
-    await this.ensureInitialized();
+    this.ensureInitialized();
 
     const message = {
       notification: {
@@ -166,7 +174,7 @@ class FCMV1Service {
    * Send notification to a topic
    */
   async sendToTopic(topic, notification, data = {}, options = {}) {
-    await this.ensureInitialized();
+    this.ensureInitialized();
 
     const message = {
       topic: topic,
@@ -222,7 +230,7 @@ class FCMV1Service {
    * Subscribe tokens to a topic
    */
   async subscribeToTopic(tokens, topic) {
-    await this.ensureInitialized();
+    this.ensureInitialized();
     
     try {
       const response = await this.messaging.subscribeToTopic(tokens, topic);
@@ -238,7 +246,7 @@ class FCMV1Service {
    * Unsubscribe tokens from a topic
    */
   async unsubscribeFromTopic(tokens, topic) {
-    await this.ensureInitialized();
+    this.ensureInitialized();
     
     try {
       const response = await this.messaging.unsubscribeFromTopic(tokens, topic);
@@ -254,7 +262,7 @@ class FCMV1Service {
    * Validate FCM token
    */
   async validateToken(token) {
-    await this.ensureInitialized();
+    this.ensureInitialized();
     
     try {
       // Try to send a test message to validate token
@@ -279,9 +287,14 @@ class FCMV1Service {
   /**
    * Ensure service is initialized
    */
-  async ensureInitialized() {
+  ensureInitialized() {
     if (!this.isInitialized) {
-      await this.initialize();
+      this.initialize();
+    }
+    
+    // If still not initialized after trying, throw a more helpful error
+    if (!this.isInitialized) {
+      throw new Error('FCM service is not available. Check Firebase configuration.');
     }
   }
 
@@ -290,7 +303,7 @@ class FCMV1Service {
    */
   async getHealthStatus() {
     try {
-      await this.ensureInitialized();
+      this.ensureInitialized();
       return {
         status: 'healthy',
         service: 'FCM v1 API',

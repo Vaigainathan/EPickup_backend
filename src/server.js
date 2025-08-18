@@ -37,8 +37,14 @@ const { initializeSocketIO } = require('./services/socket');
 const app = express();
 const PORT = env.getServerPort();
 
-// Initialize services
-initializeFirebase();
+// Initialize Firebase with error handling
+try {
+  initializeFirebase();
+  console.log('✅ Firebase initialization completed');
+} catch (error) {
+  console.log('⚠️  Firebase initialization failed, continuing without Firebase...');
+  console.error('Firebase Error:', error.message);
+}
 
 // Initialize Redis based on configuration
 if (env.isRedisEnabled()) {

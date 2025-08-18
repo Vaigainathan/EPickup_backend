@@ -206,10 +206,12 @@ class NotificationService {
    */
   async initializeFCM() {
     try {
-      await this.fcmV1Service.initialize();
-      console.log('✅ FCM v1 service initialized successfully');
+      // Initialize FCM asynchronously without blocking
+      this.fcmV1Service.initialize();
+      console.log('✅ FCM v1 service initialization started');
     } catch (error) {
       console.error('❌ Failed to initialize FCM v1 service:', error.message);
+      // Don't throw error, continue without FCM
     }
   }
 

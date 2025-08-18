@@ -16,8 +16,13 @@ let messaging = null;
 const initializeFirebase = () => {
   try {
     // Check if Firebase is already initialized
-    if (firebaseApp) {
-      console.log('Firebase already initialized');
+    if (firebaseApp || admin.apps.length > 0) {
+      console.log('✅ Firebase already initialized, using existing instance');
+      firebaseApp = admin.app();
+      db = admin.firestore();
+      auth = admin.auth();
+      storage = admin.storage();
+      messaging = getMessaging(firebaseApp);
       return;
     }
 

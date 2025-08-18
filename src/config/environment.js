@@ -1,0 +1,376 @@
+const path = require('path');
+const fs = require('fs');
+
+/**
+ * Environment Configuration Manager
+ * Centralized configuration for all environment variables with validation
+ */
+class EnvironmentConfig {
+  constructor() {
+    this.config = {};
+    this.loadEnvironment();
+    this.validateConfiguration();
+  }
+
+  /**
+   * Load environment variables from .env file and process.env
+   */
+  loadEnvironment() {
+    // Load .env file if it exists
+    const envPath = path.resolve(process.cwd(), '.env');
+    if (fs.existsSync(envPath)) {
+      require('dotenv').config({ path: envPath });
+    }
+
+    // Server Configuration
+    this.config.server = {
+      port: parseInt(process.env.PORT) || 3000,
+      nodeEnv: process.env.NODE_ENV || 'development',
+      debug: process.env.DEBUG === 'true',
+      mockServices: process.env.MOCK_SERVICES === 'true'
+    };
+
+    // Firebase Configuration
+    this.config.firebase = {
+      projectId: process.env.FIREBASE_PROJECT_ID,
+      privateKeyId: process.env.FIREBASE_PRIVATE_KEY_ID,
+      privateKey: process.env.FIREBASE_PRIVATE_KEY?.replace(/\\n/g, '\n'),
+      clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
+      clientId: process.env.FIREBASE_CLIENT_ID,
+      authUri: process.env.FIREBASE_AUTH_URI,
+      tokenUri: process.env.FIREBASE_TOKEN_URI,
+      authProviderX509CertUrl: process.env.FIREBASE_AUTH_PROVIDER_X509_CERT_URL,
+      clientX509CertUrl: process.env.FIREBASE_CLIENT_X509_CERT_URL,
+      serviceAccountPath: process.env.FCM_SERVICE_ACCOUNT_PATH || './firebase-service-account.json',
+      functionsRegion: process.env.FIREBASE_FUNCTIONS_REGION || 'us-central1',
+      functionsTimeout: parseInt(process.env.FIREBASE_FUNCTIONS_TIMEOUT) || 540
+    };
+
+    // JWT Configuration
+    this.config.jwt = {
+      secret: process.env.JWT_SECRET,
+      expiresIn: process.env.JWT_EXPIRES_IN || '7d'
+    };
+
+    // Payment Gateway Configuration
+    this.config.payment = {
+      phonepe: {
+        merchantId: process.env.PHONEPE_MERCHANT_ID,
+        saltKey: process.env.PHONEPE_SALT_KEY,
+        saltIndex: process.env.PHONEPE_SALT_INDEX,
+        baseUrl: process.env.PHONEPE_BASE_URL,
+        redirectUrl: process.env.PHONEPE_REDIRECT_URL
+      },
+      razorpay: {
+        keyId: process.env.RAZORPAY_KEY_ID,
+        keySecret: process.env.RAZORPAY_KEY_SECRET
+      }
+    };
+
+    // Google Maps Configuration
+    this.config.googleMaps = {
+      apiKey: process.env.GOOGLE_MAPS_API_KEY
+    };
+
+    // Notification Service Configuration
+    this.config.notifications = {
+      pushEnabled: process.env.PUSH_NOTIFICATION_ENABLED === 'true',
+      fcmUseV1Api: process.env.FCM_USE_V1_API === 'true',
+      fcmEnabled: process.env.FCM_ENABLED === 'true',
+      fcmRetryAttempts: parseInt(process.env.FCM_RETRY_ATTEMPTS) || 3,
+      fcmBatchSize: parseInt(process.env.FCM_BATCH_SIZE) || 500,
+      fcmPriority: process.env.FCM_PRIORITY || 'high',
+      fcmMaxTokenAge: parseInt(process.env.FCM_MAX_TOKEN_AGE) || 30,
+      fcmTokenValidationInterval: parseInt(process.env.FCM_TOKEN_VALIDATION_INTERVAL) || 24,
+      fcmEnableTokenRefresh: process.env.FCM_ENABLE_TOKEN_REFRESH === 'true',
+      fcmEnableTopicOptimization: process.env.FCM_ENABLE_TOPIC_OPTIMIZATION === 'true',
+      smsEnableOnlyCritical: process.env.SMS_ENABLE_ONLY_CRITICAL === 'true',
+      enhancedNotificationsEnabled: process.env.ENHANCED_NOTIFICATIONS_ENABLED === 'true',
+      quietHoursEnabled: process.env.QUIET_HOURS_ENABLED === 'true',
+      frequencyLimitsEnabled: process.env.FREQUENCY_LIMITS_ENABLED === 'true',
+      scheduledNotificationsEnabled: process.env.SCHEDULED_NOTIFICATIONS_ENABLED === 'true',
+      maxNotificationsPerDay: parseInt(process.env.MAX_NOTIFICATIONS_PER_DAY) || 50,
+      maxNotificationsPerHour: parseInt(process.env.MAX_NOTIFICATIONS_PER_HOUR) || 10,
+      notificationCooldownMinutes: parseInt(process.env.NOTIFICATION_COOLDOWN_MINUTES) || 5
+    };
+
+    // Redis Configuration
+    this.config.redis = {
+      url: process.env.REDIS_URL,
+      host: process.env.REDIS_HOST,
+      port: parseInt(process.env.REDIS_PORT) || 6379,
+      password: process.env.REDIS_PASSWORD,
+      username: process.env.REDIS_USERNAME || 'default',
+      db: parseInt(process.env.REDIS_DB) || 0,
+      enabled: process.env.REDIS_ENABLED === 'true'
+    };
+
+    // Database Configuration
+    this.config.database = {
+      url: process.env.DATABASE_URL
+    };
+
+    // CORS Configuration
+    this.config.cors = {
+      allowedOrigins: process.env.ALLOWED_ORIGINS?.split(',') || [
+        'http://localhost:3000',
+        'http://localhost:3001',
+        'https://epickup-app.web.app',
+        'https://epickup-app.firebaseapp.com'
+      ]
+    };
+
+    // URL Configuration
+    this.config.urls = {
+      backend: process.env.BACKEND_URL || 'http://localhost:3000',
+      frontend: process.env.FRONTEND_URL || 'https://epickup-app.web.app'
+    };
+
+    // File Upload Configuration
+    this.config.fileUpload = {
+      maxFileSize: parseInt(process.env.MAX_FILE_SIZE) || 10485760,
+      uploadPath: process.env.UPLOAD_PATH || './uploads',
+      thumbnailSize: parseInt(process.env.THUMBNAIL_SIZE) || 300,
+      imageQuality: parseInt(process.env.IMAGE_QUALITY) || 85
+    };
+
+    // Rate Limiting Configuration
+    this.config.rateLimit = {
+      windowMs: parseInt(process.env.RATE_LIMIT_WINDOW_MS) || 900000,
+      maxRequests: parseInt(process.env.RATE_LIMIT_MAX_REQUESTS) || 100
+    };
+
+    // Logging Configuration
+    this.config.logging = {
+      level: process.env.LOG_LEVEL || 'info',
+      filePath: process.env.LOG_FILE_PATH || './logs'
+    };
+
+    // Security Configuration
+    this.config.security = {
+      bcryptSaltRounds: parseInt(process.env.BCRYPT_SALT_ROUNDS) || 12,
+      sessionSecret: process.env.SESSION_SECRET
+    };
+
+    // Monitoring Configuration
+    this.config.monitoring = {
+      sentryDsn: process.env.SENTRY_DSN,
+      newRelicLicenseKey: process.env.NEW_RELIC_LICENSE_KEY
+    };
+
+    // Development Configuration
+    this.config.development = {
+      testPhoneNumbers: process.env.TEST_PHONE_NUMBERS?.split(',') || ['9999999999', '8888888888', '7777777777']
+    };
+  }
+
+  /**
+   * Validate critical configuration values
+   */
+  validateConfiguration() {
+    const errors = [];
+
+    // Firebase validation
+    if (!this.config.firebase.projectId) {
+      errors.push('FIREBASE_PROJECT_ID is required');
+    }
+    if (!this.config.firebase.privateKey) {
+      errors.push('FIREBASE_PRIVATE_KEY is required');
+    }
+    if (!this.config.firebase.clientEmail) {
+      errors.push('FIREBASE_CLIENT_EMAIL is required');
+    }
+
+    // JWT validation
+    if (!this.config.jwt.secret) {
+      errors.push('JWT_SECRET is required');
+    }
+
+    // Google Maps validation
+    if (!this.config.googleMaps.apiKey) {
+      errors.push('GOOGLE_MAPS_API_KEY is required');
+    }
+
+    // Redis validation (optional but recommended)
+    if (this.config.redis.enabled && !this.config.redis.url) {
+      errors.push('REDIS_URL is required when Redis is enabled');
+    }
+
+    if (errors.length > 0) {
+      console.error('❌ Configuration validation failed:');
+      errors.forEach(error => console.error(`   - ${error}`));
+      throw new Error('Invalid configuration. Please check your environment variables.');
+    }
+
+    console.log('✅ Environment configuration validated successfully');
+  }
+
+  /**
+   * Get configuration by category
+   */
+  get(category) {
+    return this.config[category];
+  }
+
+  /**
+   * Get all configuration
+   */
+  getAll() {
+    return this.config;
+  }
+
+  /**
+   * Check if running in development mode
+   */
+  isDevelopment() {
+    return this.config.server.nodeEnv === 'development';
+  }
+
+  /**
+   * Check if running in production mode
+   */
+  isProduction() {
+    return this.config.server.nodeEnv === 'production';
+  }
+
+  /**
+   * Check if debug mode is enabled
+   */
+  isDebugEnabled() {
+    return this.config.server.debug;
+  }
+
+  /**
+   * Check if Redis is enabled
+   */
+  isRedisEnabled() {
+    return this.config.redis.enabled;
+  }
+
+  /**
+   * Check if push notifications are enabled
+   */
+  arePushNotificationsEnabled() {
+    return this.config.notifications.pushEnabled;
+  }
+
+  /**
+   * Check if FCM v1 API is enabled
+   */
+  isFCMV1Enabled() {
+    return this.config.notifications.fcmUseV1Api;
+  }
+
+  /**
+   * Get Firebase service account path
+   */
+  getFirebaseServiceAccountPath() {
+    return this.config.firebase.serviceAccountPath;
+  }
+
+  /**
+   * Get Redis connection URL
+   */
+  getRedisUrl() {
+    return this.config.redis.url;
+  }
+
+  /**
+   * Get Google Maps API key
+   */
+  getGoogleMapsApiKey() {
+    return this.config.googleMaps.apiKey;
+  }
+
+  /**
+   * Get JWT secret
+   */
+  getJWTSecret() {
+    return this.config.jwt.secret;
+  }
+
+  /**
+   * Get server port
+   */
+  getServerPort() {
+    return this.config.server.port;
+  }
+
+  /**
+   * Get allowed origins for CORS
+   */
+  getAllowedOrigins() {
+    return this.config.cors.allowedOrigins;
+  }
+
+  /**
+   * Get file upload configuration
+   */
+  getFileUploadConfig() {
+    return this.config.fileUpload;
+  }
+
+  /**
+   * Get rate limiting configuration
+   */
+  getRateLimitConfig() {
+    return this.config.rateLimit;
+  }
+
+  /**
+   * Get notification configuration
+   */
+  getNotificationConfig() {
+    return this.config.notifications;
+  }
+
+  /**
+   * Get payment configuration
+   */
+  getPaymentConfig() {
+    return this.config.payment;
+  }
+
+  /**
+   * Get security configuration
+   */
+  getSecurityConfig() {
+    return this.config.security;
+  }
+
+  /**
+   * Get monitoring configuration
+   */
+  getMonitoringConfig() {
+    return this.config.monitoring;
+  }
+
+  /**
+   * Get development configuration
+   */
+  getDevelopmentConfig() {
+    return this.config.development;
+  }
+
+  /**
+   * Reload configuration (useful for hot reloading in development)
+   */
+  reload() {
+    this.config = {};
+    this.loadEnvironment();
+    this.validateConfiguration();
+    console.log('🔄 Environment configuration reloaded');
+  }
+
+  /**
+   * Export configuration for external use
+   */
+  export() {
+    return JSON.stringify(this.config, null, 2);
+  }
+}
+
+// Create singleton instance
+const environmentConfig = new EnvironmentConfig();
+
+module.exports = environmentConfig;

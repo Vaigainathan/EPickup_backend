@@ -1,0 +1,287 @@
+// IMPORTANT: Make sure to import `instrument.js` at the top of your file.
+require("../instrument.js");
+
+const express = require('express');
+const cors = require('cors');
+const helmet = require('helmet');
+const morgan = require('morgan');
+const compression = require('compression');
+const rateLimit = require('express-rate-limit');
+const slowDown = require('express-slow-down');
+const Sentry = require("@sentry/node");
+
+// Import configuration
+const { env } = require('./config');
+
+// Import routes
+const authRoutes = require('./routes/auth');
+const customerRoutes = require('./routes/customer');
+const driverRoutes = require('./routes/driver');
+const bookingRoutes = require('./routes/booking');
+const paymentRoutes = require('./routes/payment');
+const trackingRoutes = require('./routes/tracking');
+const notificationRoutes = require('./routes/notification');
+const fileUploadRoutes = require('./routes/fileUpload');
+const supportRoutes = require('./routes/support');
+
+// Import middleware
+const { errorHandler } = require('./middleware/errorHandler');
+const { authMiddleware } = require('./middleware/auth');
+const { validateRequest } = require('./middleware/validation');
+
+// Import services
+const { initializeFirebase } = require('./services/firebase');
+const { initializeRedis } = require('./services/redis');
+const { initializeSocketIO } = require('./services/socket');
+
+const app = express();
+const PORT = env.getServerPort();
+
+// Initialize services
+initializeFirebase();
+
+// Initialize Redis based on configuration
+if (env.isRedisEnabled()) {
+  try {
+    initializeRedis();
+    console.log('✅ Redis initialization started');
+    
+    // Wait a bit for Redis to connect, but don't block server startup
+    setTimeout(async () => {
+      try {
+        const { getRedisClient } = require('./services/redis');
+        const redisClient = getRedisClient();
+        if (redisClient && redisClient.isReady) {
+          console.log('✅ Redis connection established');
+        } else {
+          console.log('⚠️  Redis not ready, continuing without Redis...');
+        }
+      } catch (error) {
+        console.log('⚠️  Redis not available, continuing without Redis...');
+      }
+    }, 2000);
+  } catch (error) {
+    console.log('⚠️  Redis initialization failed, continuing without Redis...');
+  }
+} else {
+  console.log('⚠️  Redis is disabled in configuration');
+}
+
+// Security middleware
+app.use(helmet({
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc: ["'self'"],
+      styleSrc: ["'self'", "'unsafe-inline'"],
+      scriptSrc: ["'self'"],
+      imgSrc: ["'self'", "data:", "https:"],
+    },
+  },
+  crossOriginEmbedderPolicy: false,
+}));
+
+// CORS configuration
+app.use(cors({
+  origin: env.getAllowedOrigins(),
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With']
+}));
+
+// Rate limiting
+const rateLimitConfig = env.getRateLimitConfig();
+const limiter = rateLimit({
+  windowMs: rateLimitConfig.windowMs,
+  max: rateLimitConfig.maxRequests,
+  message: {
+    error: 'Too many requests from this IP, please try again later.',
+    retryAfter: `${Math.floor(rateLimitConfig.windowMs / 60000)} minutes`
+  },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+// Slow down responses for repeated requests
+const speedLimiter = slowDown({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  delayAfter: 50, // allow 50 requests per 15 minutes, then...
+  delayMs: (used, req) => {
+    const delayAfter = req.slowDown.limit;
+    return (used - delayAfter) * 500;
+  }
+});
+
+// Apply rate limiting to all routes
+app.use(limiter);
+app.use(speedLimiter);
+
+// Compression middleware
+app.use(compression());
+
+// Logging middleware
+if (process.env.NODE_ENV === 'development') {
+  app.use(morgan('dev'));
+} else {
+  app.use(morgan('combined'));
+}
+
+// Body parsing middleware
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+
+// Static files (for file uploads)
+app.use('/uploads', express.static('uploads'));
+
+// Health check endpoint
+app.get('/health', (req, res) => {
+  res.status(200).json({
+    status: 'OK',
+    timestamp: new Date().toISOString(),
+    uptime: process.uptime(),
+    environment: process.env.NODE_ENV,
+    version: process.env.npm_package_version || '1.0.0'
+  });
+});
+
+// API documentation endpoint
+app.get('/api-docs', (req, res) => {
+  res.json({
+    message: 'EPickup API Documentation',
+    version: '1.0.0',
+    endpoints: {
+      auth: '/api/auth',
+      customer: '/api/customer',
+      driver: '/api/driver',
+      booking: '/api/bookings',
+      payment: '/api/payments',
+      tracking: '/api/tracking',
+      notification: '/api/notifications',
+      'file-upload': '/api/file-upload',
+      support: '/api/support'
+    },
+    documentation: 'https://github.com/epickup/backend/blob/main/README.md'
+  });
+});
+
+// Sentry request handler - must be before any routes (only if available)
+if (Sentry.Handlers && Sentry.Handlers.requestHandler) {
+  app.use(Sentry.Handlers.requestHandler());
+}
+
+// Health Check Endpoint (No authentication required)
+app.get('/health', (req, res) => {
+  res.status(200).json({
+    status: 'healthy',
+    timestamp: new Date().toISOString(),
+    uptime: process.uptime(),
+    environment: process.env.NODE_ENV || 'development',
+    version: process.env.npm_package_version || '1.0.0',
+    memory: {
+      used: Math.round(process.memoryUsage().heapUsed / 1024 / 1024),
+      total: Math.round(process.memoryUsage().heapTotal / 1024 / 1024),
+      external: Math.round(process.memoryUsage().external / 1024 / 1024)
+    },
+    services: {
+      firebase: true,
+      redis: env.isRedisEnabled(),
+      socket: true
+    }
+  });
+});
+
+// Metrics Endpoint (No authentication required)
+app.get('/metrics', (req, res) => {
+  res.status(200).json({
+    uptime: process.uptime(),
+    memory: process.memoryUsage(),
+    cpu: process.cpuUsage(),
+    activeConnections: req.app.get('activeConnections') || 0,
+    timestamp: new Date().toISOString()
+  });
+});
+
+// API Routes
+app.use('/api/auth', authRoutes);
+app.use('/api/customer', authMiddleware, customerRoutes);
+app.use('/api/driver', authMiddleware, driverRoutes);
+app.use('/api/bookings', authMiddleware, bookingRoutes);
+app.use('/api/payments', authMiddleware, paymentRoutes);
+app.use('/api/tracking', authMiddleware, trackingRoutes);
+app.use('/api/notifications', authMiddleware, notificationRoutes);
+app.use('/api/file-upload', authMiddleware, fileUploadRoutes);
+app.use('/api/support', authMiddleware, supportRoutes);
+
+// 404 handler
+app.use('*', (req, res) => {
+  res.status(404).json({
+    success: false,
+    error: {
+      code: 'NOT_FOUND',
+      message: 'Route not found',
+      details: `The requested route ${req.originalUrl} does not exist`
+    },
+    timestamp: new Date().toISOString()
+  });
+});
+
+// Sentry error handler - must be the first error handling middleware (only if available)
+if (Sentry.Handlers && Sentry.Handlers.errorHandler) {
+  app.use(Sentry.Handlers.errorHandler());
+}
+
+// Error handling middleware
+app.use(errorHandler);
+
+// Initialize Socket.IO after Express app
+const server = require('http').createServer(app);
+
+// Initialize Socket.IO with error handling
+try {
+  initializeSocketIO(server);
+  console.log('✅ Socket.IO service initialized successfully');
+} catch (error) {
+  console.log('⚠️  Socket.IO initialization failed, continuing without real-time features...');
+  console.error('Socket.IO Error:', error.message);
+}
+
+// Start server
+server.listen(PORT, () => {
+  console.log(`🚀 EPickup Backend Server running on port ${PORT}`);
+  console.log(`📱 Environment: ${process.env.NODE_ENV || 'development'}`);
+  console.log(`🔗 Health Check: http://localhost:${PORT}/health`);
+  console.log(`📚 API Docs: http://localhost:${PORT}/api-docs`);
+  
+  if (process.env.NODE_ENV === 'development') {
+    console.log(`🔄 Auto-reload enabled with nodemon`);
+  }
+});
+
+// Graceful shutdown
+process.on('SIGTERM', () => {
+  console.log('SIGTERM received, shutting down gracefully');
+  server.close(() => {
+    console.log('Process terminated');
+    process.exit(0);
+  });
+});
+
+process.on('SIGINT', () => {
+  console.log('SIGINT received, shutting down gracefully');
+  server.close(() => {
+    console.log('Process terminated');
+    process.exit(0);
+  });
+});
+
+// Handle uncaught exceptions
+process.on('uncaughtException', (error) => {
+  console.error('Uncaught Exception:', error);
+  process.exit(1);
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('Unhandled Rejection at:', promise, 'reason:', reason);
+  process.exit(1);
+});
+
+module.exports = app;

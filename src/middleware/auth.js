@@ -1,0 +1,312 @@
+const { verifyIdToken } = require('../services/firebase');
+const { getFirestore } = require('../services/firebase');
+
+/**
+ * Authentication middleware
+ * Verifies Firebase ID token and adds user info to request
+ */
+const authMiddleware = async (req, res, next) => {
+  try {
+    // Get token from Authorization header
+    const authHeader = req.headers.authorization;
+    
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({
+        success: false,
+        error: {
+          code: 'UNAUTHORIZED',
+          message: 'Access token required',
+          details: 'Please provide a valid Bearer token in the Authorization header'
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    // Extract token
+    const token = authHeader.substring(7); // Remove 'Bearer ' prefix
+
+    // Verify Firebase ID token
+    const decodedToken = await verifyIdToken(token);
+    
+    if (!decodedToken) {
+      return res.status(401).json({
+        success: false,
+        error: {
+          code: 'INVALID_TOKEN',
+          message: 'Invalid access token',
+          details: 'The provided token is invalid or has expired'
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    // Get user data from Firestore
+    const db = getFirestore();
+    const userDoc = await db.collection('users').doc(decodedToken.uid).get();
+    
+    if (!userDoc.exists) {
+      return res.status(404).json({
+        success: false,
+        error: {
+          code: 'USER_NOT_FOUND',
+          message: 'User not found',
+          details: 'User account does not exist in the system'
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    const userData = userDoc.data();
+
+    // Check if user is active
+    if (!userData.isActive) {
+      return res.status(403).json({
+        success: false,
+        error: {
+          code: 'USER_INACTIVE',
+          message: 'Account deactivated',
+          details: 'Your account has been deactivated. Please contact support.'
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    // Add user info to request
+    req.user = {
+      uid: decodedToken.uid,
+      phone: decodedToken.phone_number,
+      userType: userData.userType,
+      ...userData
+    };
+
+    // Add token info for potential use
+    req.token = {
+      issuedAt: decodedToken.iat,
+      expiresAt: decodedToken.exp,
+      authTime: decodedToken.auth_time
+    };
+
+    next();
+  } catch (error) {
+    console.error('Authentication error:', error);
+    
+    if (error.code === 'auth/id-token-expired') {
+      return res.status(401).json({
+        success: false,
+        error: {
+          code: 'TOKEN_EXPIRED',
+          message: 'Token expired',
+          details: 'Your access token has expired. Please login again.'
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    if (error.code === 'auth/id-token-revoked') {
+      return res.status(401).json({
+        success: false,
+        error: {
+          code: 'TOKEN_REVOKED',
+          message: 'Token revoked',
+          details: 'Your access token has been revoked. Please login again.'
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    return res.status(500).json({
+      success: false,
+      error: {
+        code: 'AUTH_ERROR',
+        message: 'Authentication failed',
+        details: 'An error occurred during authentication. Please try again.'
+      },
+      timestamp: new Date().toISOString()
+    });
+  }
+};
+
+/**
+ * Role-based authorization middleware
+ * @param {Array<string>} allowedRoles - Array of allowed user types
+ */
+const requireRole = (allowedRoles) => {
+  return (req, res, next) => {
+    if (!req.user) {
+      return res.status(401).json({
+        success: false,
+        error: {
+          code: 'UNAUTHORIZED',
+          message: 'Authentication required',
+          details: 'Please login to access this resource'
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    if (!allowedRoles.includes(req.user.userType)) {
+      return res.status(403).json({
+        success: false,
+        error: {
+          code: 'FORBIDDEN',
+          message: 'Access denied',
+          details: `This resource requires one of the following roles: ${allowedRoles.join(', ')}`
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    next();
+  };
+};
+
+/**
+ * Customer-only middleware
+ */
+const requireCustomer = requireRole(['customer']);
+
+/**
+ * Driver-only middleware
+ */
+const requireDriver = requireRole(['driver']);
+
+/**
+ * Optional authentication middleware
+ * Similar to authMiddleware but doesn't fail if no token is provided
+ */
+const optionalAuth = async (req, res, next) => {
+  try {
+    const authHeader = req.headers.authorization;
+    
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      // No token provided, continue without authentication
+      req.user = null;
+      req.token = null;
+      return next();
+    }
+
+    // Try to authenticate
+    const token = authHeader.substring(7);
+    const decodedToken = await verifyIdToken(token);
+    
+    if (decodedToken) {
+      const db = getFirestore();
+      const userDoc = await db.collection('users').doc(decodedToken.uid).get();
+      
+      if (userDoc.exists) {
+        const userData = userDoc.data();
+        req.user = {
+          uid: decodedToken.uid,
+          phone: decodedToken.phone_number,
+          userType: userData.userType,
+          ...userData
+        };
+        req.token = {
+          issuedAt: decodedToken.iat,
+          expiresAt: decodedToken.exp,
+          authTime: decodedToken.auth_time
+        };
+      }
+    }
+
+    next();
+  } catch (error) {
+    // Authentication failed, but continue without user info
+    console.warn('Optional authentication failed:', error.message);
+    req.user = null;
+    req.token = null;
+    next();
+  }
+};
+
+/**
+ * Check if user owns the resource
+ * @param {string} resourceUserId - User ID of the resource owner
+ */
+const requireOwnership = (req, res, next) => {
+  if (!req.user) {
+    return res.status(401).json({
+      success: false,
+      error: {
+        code: 'UNAUTHORIZED',
+        message: 'Authentication required',
+        details: 'Please login to access this resource'
+      },
+      timestamp: new Date().toISOString()
+    });
+  }
+
+  // Admin users can access any resource
+  if (req.user.userType === 'admin') {
+    return next();
+  }
+
+  // Check if user owns the resource
+  if (req.user.uid !== req.params.userId && req.user.uid !== req.body.userId) {
+    return res.status(403).json({
+      success: false,
+      error: {
+        code: 'FORBIDDEN',
+        message: 'Access denied',
+        details: 'You can only access your own resources'
+      },
+      timestamp: new Date().toISOString()
+    });
+  }
+
+  next();
+};
+
+/**
+ * Rate limiting for specific user actions
+ * @param {number} maxAttempts - Maximum attempts allowed
+ * @param {number} windowMs - Time window in milliseconds
+ */
+const userRateLimit = (maxAttempts = 5, windowMs = 15 * 60 * 1000) => {
+  const attempts = new Map();
+
+  return (req, res, next) => {
+    if (!req.user) {
+      return next();
+    }
+
+    const userId = req.user.uid;
+    const now = Date.now();
+    const userAttempts = attempts.get(userId) || { count: 0, resetTime: now + windowMs };
+
+    // Reset counter if window has passed
+    if (now > userAttempts.resetTime) {
+      userAttempts.count = 0;
+      userAttempts.resetTime = now + windowMs;
+    }
+
+    // Check if user has exceeded limit
+    if (userAttempts.count >= maxAttempts) {
+      return res.status(429).json({
+        success: false,
+        error: {
+          code: 'RATE_LIMIT_EXCEEDED',
+          message: 'Too many attempts',
+          details: `You have exceeded the maximum attempts. Please try again in ${Math.ceil((userAttempts.resetTime - now) / 1000 / 60)} minutes.`
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    // Increment attempt counter
+    userAttempts.count++;
+    attempts.set(userId, userAttempts);
+
+    next();
+  };
+};
+
+module.exports = {
+  authMiddleware,
+  requireRole,
+  requireCustomer,
+  requireDriver,
+  optionalAuth,
+  requireOwnership,
+  userRateLimit
+};

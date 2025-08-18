@@ -14,6 +14,7 @@ lerna-debug.log*
 .env.staging
 .env.production.local
 .env.example
+.env.production.template
 
 # Logs
 logs/

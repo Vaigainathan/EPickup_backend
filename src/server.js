@@ -306,6 +306,70 @@ app.use('/api/notifications', authMiddleware, notificationRoutes);
 app.use('/api/file-upload', authMiddleware, fileUploadRoutes);
 app.use('/api/support', authMiddleware, supportRoutes);
 
+// Test Endpoints (No authentication required) - For Development Only
+if (process.env.NODE_ENV === 'development' || process.env.ENABLE_TEST_ENDPOINTS === 'true') {
+  app.get('/api/test/customer', (req, res) => {
+    res.status(200).json({
+      success: true,
+      message: 'Customer test endpoint - No auth required',
+      data: {
+        customerId: 'test-customer-123',
+        name: 'Test Customer',
+        phone: '+919876543210',
+        userType: 'customer',
+        status: 'active'
+      },
+      timestamp: new Date().toISOString()
+    });
+  });
+
+  app.get('/api/test/driver', (req, res) => {
+    res.status(200).json({
+      success: true,
+      message: 'Driver test endpoint - No auth required',
+      data: {
+        driverId: 'test-driver-456',
+        name: 'Test Driver',
+        phone: '+919876543211',
+        userType: 'driver',
+        status: 'available',
+        vehicle: {
+          type: 'bike',
+          model: 'Honda Activa',
+          number: 'TN-01-AB-1234'
+        }
+      },
+      timestamp: new Date().toISOString()
+    });
+  });
+
+  app.get('/api/test/booking', (req, res) => {
+    res.status(200).json({
+      success: true,
+      message: 'Booking test endpoint - No auth required',
+      data: {
+        bookingId: 'test-booking-789',
+        customerId: 'test-customer-123',
+        driverId: 'test-driver-456',
+        status: 'confirmed',
+        pickup: {
+          address: '123 Main St, Chennai',
+          coordinates: { lat: 13.0827, lng: 80.2707 }
+        },
+        dropoff: {
+          address: '456 Park Ave, Chennai',
+          coordinates: { lat: 13.0827, lng: 80.2707 }
+        },
+        fare: 150,
+        createdAt: new Date().toISOString()
+      },
+      timestamp: new Date().toISOString()
+    });
+  });
+
+  console.log('✅ Test endpoints enabled for development');
+}
+
 // 404 handler
 app.use('*', (req, res) => {
   res.status(404).json({

@@ -53,10 +53,9 @@ npm run deploy:prepare
 ```
 
 ### **Deployment Options**
-- **🚀 Render** (Recommended) - [Quick Deploy Guide](QUICK_DEPLOY.md)
+- **🚀 Render** (Recommended) - [Quick Deploy Guide](DEPLOYMENT_GUIDE.md)
 - **🚂 Railway** - [Full Deployment Guide](DEPLOYMENT_GUIDE.md#railway-deployment)
 - **☁️ DigitalOcean** - [Full Deployment Guide](DEPLOYMENT_GUIDE.md#digitalocean-app-platform)
-- **🔧 Heroku** - [Full Deployment Guide](DEPLOYMENT_GUIDE.md#heroku-alternative)
 
 ### **Post-Deployment Verification**
 ```bash
@@ -66,14 +65,8 @@ npm run verify:deployment
 
 ## 📚 Documentation
 
-- **🚀 [Quick Deploy Guide](QUICK_DEPLOY.md)** - Get deployed in 5 minutes
 - **📖 [Full Deployment Guide](DEPLOYMENT_GUIDE.md)** - Complete deployment instructions
-- **📋 [Deployment Summary](DEPLOYMENT_SUMMARY.md)** - Overview of all options
-- **🔧 [Configuration Guide](CONFIGURATION_README.md)** - Environment setup
-- **🔔 [Notification Service](NOTIFICATION_SERVICE_README.md)** - Push notification setup
-- **💳 [Payment Service](PAYMENT_SERVICE_README.md)** - Payment gateway integration
-- **🗺️ [Real-time Tracking](REAL_TIME_TRACKING_README.md)** - Location services
-- **🚗 [Driver Matching](DRIVER_MATCHING_README.md)** - Driver assignment logic
+- **🔧 [Configuration Guide](DEPLOYMENT_GUIDE.md)** - Environment setup
 
 ## 🏗️ Project Structure
 
@@ -86,8 +79,7 @@ backend/
 │   ├── services/        # Business logic services
 │   └── server.js        # Main server file
 ├── scripts/             # Utility and deployment scripts
-├── uploads/             # File upload storage
-└── tests/               # Test files
+└── .env files          # Environment configuration
 ```
 
 ## 🔧 Available Scripts
@@ -145,7 +137,7 @@ RAZORPAY_KEY_SECRET=your-razorpay-secret
 SENTRY_DSN=your-sentry-dsn
 ```
 
-See [`.env.production.template`](.env.production.template) for complete list.
+See [`.env.production`](.env.production) for complete list.
 
 ## 🔌 API Endpoints
 
@@ -188,16 +180,6 @@ See [`.env.production.template`](.env.production.template) for complete list.
 ### **Run All Tests**
 ```bash
 npm run test:all
-```
-
-### **Test Specific Services**
-```bash
-npm run test:auth              # Authentication tests
-npm run test:booking           # Booking system tests
-npm run test:payment           # Payment service tests
-npm run test:notification      # Notification tests
-npm run test:driver-matching   # Driver matching tests
-npm run test:tracking          # Tracking service tests
 ```
 
 ### **Test Configuration**
@@ -302,8 +284,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## 🎯 **Ready to Deploy?**
 
-1. **Quick Start:** [QUICK_DEPLOY.md](QUICK_DEPLOY.md) - 5-minute deployment
-2. **Full Guide:** [DEPLOYMENT_GUIDE.md](DEPLOYMENT_GUIDE.md) - Complete instructions
-3. **Platform Comparison:** [DEPLOYMENT_SUMMARY.md](DEPLOYMENT_SUMMARY.md) - Choose your platform
+1. **Quick Start:** [DEPLOYMENT_GUIDE.md](DEPLOYMENT_GUIDE.md) - Complete instructions
+2. **Platform Comparison:** [DEPLOYMENT_GUIDE.md](DEPLOYMENT_GUIDE.md) - Choose your platform
 
 **Your EPickup backend is production-ready! 🚀**

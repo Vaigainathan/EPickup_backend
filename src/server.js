@@ -73,6 +73,46 @@ if (env.isRedisEnabled()) {
   console.log('⚠️  Redis is disabled in configuration');
 }
 
+// Initialize Sentry for error tracking (only in production)
+let Sentry = null;
+if (process.env.NODE_ENV === 'production' && process.env.SENTRY_DSN) {
+  try {
+    Sentry = require('@sentry/node');
+    Sentry.init({
+      dsn: process.env.SENTRY_DSN,
+      environment: process.env.NODE_ENV,
+      tracesSampleRate: 0.1, // Reduce sampling rate to reduce noise
+      integrations: [
+        new Sentry.Integrations.Http({ tracing: true }),
+        new Sentry.Integrations.Express({ app }),
+        new Sentry.Integrations.Node({ version: process.version })
+      ],
+      beforeSend(event) {
+        // Filter out 404 errors and health check requests
+        if (event.exception && event.exception.values) {
+          const is404Error = event.exception.values.some(exception => 
+            exception.value && exception.value.includes('404')
+          );
+          if (is404Error) return null;
+        }
+        
+        // Filter out health check and favicon requests
+        if (event.request && event.request.url) {
+          const url = event.request.url;
+          if (url.includes('/health') || url.includes('/favicon.ico') || url === '/') {
+            return null;
+          }
+        }
+        
+        return event;
+      }
+    });
+    console.log('✅ Sentry initialized for error tracking');
+  } catch (error) {
+    console.log('⚠️  Sentry initialization failed, continuing without error tracking');
+  }
+}
+
 // Security middleware
 app.use(helmet({
   contentSecurityPolicy: {
@@ -138,34 +178,83 @@ app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 // Static files (for file uploads)
 app.use('/uploads', express.static('uploads'));
 
-// Health check endpoint
+// Health Check Endpoint (No authentication required)
 app.get('/health', (req, res) => {
   res.status(200).json({
     status: 'OK',
     timestamp: new Date().toISOString(),
     uptime: process.uptime(),
-    environment: process.env.NODE_ENV,
-    version: process.env.npm_package_version || '1.0.0'
+    environment: process.env.NODE_ENV || 'development',
+    version: '1.0.0'
   });
 });
 
-// API documentation endpoint
-app.get('/api-docs', (req, res) => {
-  res.json({
-    message: 'EPickup API Documentation',
+// Root Endpoint (No authentication required)
+app.get('/', (req, res) => {
+  res.status(200).json({
+    message: 'EPickup Backend API',
     version: '1.0.0',
+    status: 'running',
+    timestamp: new Date().toISOString(),
     endpoints: {
+      health: '/health',
+      metrics: '/metrics',
+      apiDocs: '/api-docs',
       auth: '/api/auth',
       customer: '/api/customer',
       driver: '/api/driver',
-      booking: '/api/bookings',
-      payment: '/api/payments',
+      bookings: '/api/bookings',
+      payments: '/api/payments',
       tracking: '/api/tracking',
-      notification: '/api/notifications',
-      'file-upload': '/api/file-upload',
-      support: '/api/support'
-    },
-    documentation: 'https://github.com/epickup/backend/blob/main/README.md'
+      notifications: '/api/notifications'
+    }
+  });
+});
+
+// API Documentation Endpoint (No authentication required)
+app.get('/api-docs', (req, res) => {
+  res.status(200).json({
+    title: 'EPickup Backend API Documentation',
+    version: '1.0.0',
+    description: 'Complete API documentation for EPickup platform',
+    baseUrl: process.env.BACKEND_URL || 'http://localhost:3000',
+    endpoints: {
+      authentication: {
+        'POST /api/auth/register': 'Register new user',
+        'POST /api/auth/login': 'User login',
+        'POST /api/auth/verify-otp': 'Verify OTP',
+        'POST /api/auth/refresh-token': 'Refresh JWT token'
+      },
+      customer: {
+        'GET /api/customer/profile': 'Get customer profile',
+        'PUT /api/customer/profile': 'Update customer profile',
+        'POST /api/customer/address': 'Add delivery address'
+      },
+      driver: {
+        'GET /api/driver/profile': 'Get driver profile',
+        'PUT /api/driver/profile': 'Update driver profile',
+        'POST /api/driver/location': 'Update driver location'
+      },
+      bookings: {
+        'POST /api/bookings': 'Create new booking',
+        'GET /api/bookings': 'Get user bookings',
+        'GET /api/bookings/:id': 'Get booking details',
+        'PUT /api/bookings/:id/status': 'Update booking status'
+      },
+      payments: {
+        'POST /api/payments/initiate': 'Initiate payment',
+        'POST /api/payments/verify': 'Verify payment',
+        'GET /api/payments/history': 'Get payment history'
+      },
+      tracking: {
+        'GET /api/tracking/:bookingId': 'Get real-time tracking',
+        'POST /api/tracking/update': 'Update location'
+      },
+      notifications: {
+        'POST /api/notifications/send': 'Send notification',
+        'GET /api/notifications': 'Get notifications'
+      }
+    }
   });
 });
 

@@ -1,119 +1,102 @@
 const admin = require('firebase-admin');
-const { getMessaging } = require('firebase-admin/messaging');
-const path = require('path');
-const fs = require('fs');
-const { env } = require('../config');
+const env = require('../config/environment');
 
 let firebaseApp = null;
-let db = null;
-let auth = null;
-let storage = null;
-let messaging = null;
 
 /**
  * Initialize Firebase Admin SDK
  */
-const initializeFirebase = () => {
+function initializeFirebase() {
   try {
     // Check if Firebase is already initialized
-    if (firebaseApp || admin.apps.length > 0) {
-      console.log('✅ Firebase already initialized, using existing instance');
+    if (admin.apps.length > 0) {
       firebaseApp = admin.app();
-      db = admin.firestore();
-      auth = admin.auth();
-      storage = admin.storage();
-      messaging = getMessaging(firebaseApp);
-      return;
+      console.log('✅ Firebase Admin SDK already initialized');
+      return firebaseApp;
     }
 
-    // Get Firebase configuration from environment config
-    const firebaseConfig = env.get('firebase');
-    
-    // Check if service account file exists
-    const serviceAccountPath = firebaseConfig.serviceAccountPath;
-    const fullPath = path.resolve(serviceAccountPath);
-    
-    if (!fs.existsSync(fullPath)) {
-      throw new Error(`Firebase service account file not found at: ${fullPath}`);
+    // Use environment variables for service account (Render deployment)
+    if (process.env.FIREBASE_PRIVATE_KEY && process.env.FIREBASE_CLIENT_EMAIL) {
+      const serviceAccount = {
+        type: "service_account",
+        project_id: process.env.FIREBASE_PROJECT_ID,
+        private_key_id: process.env.FIREBASE_PRIVATE_KEY_ID,
+        private_key: process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, '\n'),
+        client_email: process.env.FIREBASE_CLIENT_EMAIL,
+        client_id: process.env.FIREBASE_CLIENT_ID,
+        auth_uri: process.env.FIREBASE_AUTH_URI,
+        token_uri: process.env.FIREBASE_TOKEN_URI,
+        auth_provider_x509_cert_url: process.env.FIREBASE_AUTH_PROVIDER_X509_CERT_URL,
+        client_x509_cert_url: process.env.FIREBASE_CLIENT_X509_CERT_URL
+      };
+
+      firebaseApp = admin.initializeApp({
+        credential: admin.credential.cert(serviceAccount),
+        projectId: process.env.FIREBASE_PROJECT_ID
+      });
+
+      console.log('✅ Firebase Admin SDK initialized with environment variables');
+      return firebaseApp;
     }
 
-    // Read service account file
-    const serviceAccount = JSON.parse(fs.readFileSync(fullPath, 'utf8'));
+    // Fallback to service account file (local development)
+    const serviceAccountPath = process.env.FCM_SERVICE_ACCOUNT_PATH || './firebase-service-account.json';
     
-    // Validate service account
-    if (!serviceAccount.project_id) {
-      throw new Error('Invalid service account: missing project_id');
+    if (require('fs').existsSync(serviceAccountPath)) {
+      firebaseApp = admin.initializeApp({
+        credential: admin.credential.cert(serviceAccountPath),
+        projectId: process.env.FIREBASE_PROJECT_ID
+      });
+
+      console.log('✅ Firebase Admin SDK initialized with service account file');
+      return firebaseApp;
     }
 
-    // Initialize Firebase Admin SDK
-    firebaseApp = admin.initializeApp({
-      credential: admin.credential.cert(serviceAccount),
-      storageBucket: `${serviceAccount.project_id}.appspot.com`,
-      databaseURL: `https://${serviceAccount.project_id}-default-rtdb.firebaseio.com`
-    });
-
-    // Initialize services
-    db = admin.firestore();
-    auth = admin.auth();
-    storage = admin.storage();
-    messaging = getMessaging(firebaseApp);
-
-    console.log('✅ Firebase Admin SDK initialized successfully');
-    console.log(`   Project ID: ${serviceAccount.project_id}`);
-    console.log(`   Functions Region: ${firebaseConfig.functionsRegion}`);
-    console.log(`   Functions Timeout: ${firebaseConfig.functionsTimeout}s`);
-    
-    // Set Firestore settings
-    db.settings({
-      ignoreUndefinedProperties: true,
-      timestampsInSnapshots: true
-    });
+    throw new Error('Firebase service account not found. Please set environment variables or provide service account file.');
 
   } catch (error) {
-    console.error('❌ Error initializing Firebase:', error);
+    console.error('❌ Error initializing Firebase:', error.message);
     throw error;
   }
-};
+}
 
 /**
- * Get Firestore database instance
+ * Get Firebase Admin SDK instance
  */
-const getFirestore = () => {
-  if (!db) {
-    throw new Error('Firebase not initialized. Call initializeFirebase() first.');
+function getFirebaseApp() {
+  if (!firebaseApp) {
+    firebaseApp = initializeFirebase();
   }
-  return db;
-};
+  return firebaseApp;
+}
 
 /**
- * Get Firebase Auth instance
+ * Get Firestore instance
  */
-const getAuth = () => {
-  if (!auth) {
-    throw new Error('Firebase not initialized. Call initializeFirebase() first.');
-  }
-  return auth;
-};
+function getFirestore() {
+  return getFirebaseApp().firestore();
+}
 
 /**
- * Get Firebase Storage instance
+ * Get Auth instance
  */
-const getStorage = () => {
-  if (!storage) {
-    throw new Error('Firebase not initialized. Call initializeFirebase() first.');
-  }
-  return storage;
-};
+function getAuth() {
+  return getFirebaseApp().auth();
+}
 
 /**
- * Get Firebase Messaging instance
+ * Get Storage instance
  */
-const getMessagingInstance = () => {
-  if (!messaging) {
-    throw new Error('Firebase not initialized. Call initializeFirebase() first.');
-  }
-  return messaging;
-};
+function getStorage() {
+  return getFirebaseApp().storage();
+}
+
+/**
+ * Get Messaging instance
+ */
+function getMessaging() {
+  return getFirebaseApp().messaging();
+}
 
 /**
  * Verify Firebase ID token
@@ -122,7 +105,7 @@ const getMessagingInstance = () => {
  */
 const verifyIdToken = async (idToken) => {
   try {
-    const decodedToken = await auth.verifyIdToken(idToken);
+    const decodedToken = await getAuth().verifyIdToken(idToken);
     return decodedToken;
   } catch (error) {
     console.error('Error verifying ID token:', error);
@@ -138,7 +121,7 @@ const verifyIdToken = async (idToken) => {
  */
 const createCustomToken = async (uid, additionalClaims = {}) => {
   try {
-    const customToken = await auth.createCustomToken(uid, additionalClaims);
+    const customToken = await getAuth().createCustomToken(uid, additionalClaims);
     return customToken;
   } catch (error) {
     console.error('Error creating custom token:', error);
@@ -185,7 +168,7 @@ const sendPushNotification = async (token, notification, data = {}) => {
       }
     };
 
-    const response = await messaging.send(message);
+    const response = await getMessaging().send(message);
     console.log('Push notification sent successfully:', response);
     return response;
   } catch (error) {
@@ -232,7 +215,7 @@ const sendMulticastNotification = async (tokens, notification, data = {}) => {
       }
     };
 
-    const response = await messaging.sendMulticast({
+    const response = await getMessaging().sendMulticast({
       tokens,
       ...message
     });
@@ -263,7 +246,7 @@ const subscribeToTopic = async (tokens, topics) => {
     const results = [];
     for (const topic of topicArray) {
       try {
-        const response = await messaging.subscribeToTopic(tokens, topic);
+        const response = await getMessaging().subscribeToTopic(tokens, topic);
         results.push({ topic, success: true, response });
       } catch (error) {
         console.error(`Error subscribing to topic ${topic}:`, error);
@@ -293,7 +276,7 @@ const unsubscribeFromTopic = async (tokens, topics) => {
     const results = [];
     for (const topic of topicArray) {
       try {
-        const response = await messaging.unsubscribeFromTopic(tokens, topic);
+        const response = await getMessaging().unsubscribeFromTopic(tokens, topic);
         results.push({ topic, success: true, response });
       } catch (error) {
         console.error(`Error unsubscribing from topic ${topic}:`, error);
@@ -319,7 +302,7 @@ const unsubscribeFromTopic = async (tokens, topics) => {
  */
 const uploadFile = async (fileBuffer, fileName, contentType, folder = 'uploads') => {
   try {
-    const bucket = storage.bucket();
+    const bucket = getStorage().bucket();
     const filePath = `${folder}/${Date.now()}_${fileName}`;
     const file = bucket.file(filePath);
 
@@ -353,7 +336,7 @@ const uploadFile = async (fileBuffer, fileName, contentType, folder = 'uploads')
  */
 const deleteFile = async (filePath) => {
   try {
-    const bucket = storage.bucket();
+    const bucket = getStorage().bucket();
     const file = bucket.file(filePath);
     
     await file.delete();
@@ -371,7 +354,7 @@ const deleteFile = async (filePath) => {
  */
 const getUserByPhone = async (phoneNumber) => {
   try {
-    const userRecord = await auth.getUserByPhoneNumber(phoneNumber);
+    const userRecord = await getAuth().getUserByPhoneNumber(phoneNumber);
     return userRecord;
   } catch (error) {
     if (error.code === 'auth/user-not-found') {
@@ -389,7 +372,7 @@ const getUserByPhone = async (phoneNumber) => {
  */
 const createUser = async (phoneNumber, userData = {}) => {
   try {
-    const userRecord = await auth.createUser({
+    const userRecord = await getAuth().createUser({
       phoneNumber,
       ...userData
     });
@@ -410,7 +393,7 @@ const createUser = async (phoneNumber, userData = {}) => {
  */
 const updateUser = async (uid, userData) => {
   try {
-    const userRecord = await auth.updateUser(uid, userData);
+    const userRecord = await getAuth().updateUser(uid, userData);
     console.log('User updated successfully:', uid);
     return userRecord;
   } catch (error) {
@@ -426,7 +409,7 @@ const updateUser = async (uid, userData) => {
  */
 const deleteUser = async (uid) => {
   try {
-    await auth.deleteUser(uid);
+    await getAuth().deleteUser(uid);
     console.log('User deleted successfully:', uid);
   } catch (error) {
     console.error('Error deleting user:', error);
@@ -436,10 +419,11 @@ const deleteUser = async (uid) => {
 
 module.exports = {
   initializeFirebase,
+  getFirebaseApp,
   getFirestore,
   getAuth,
   getStorage,
-  getMessagingInstance,
+  getMessaging,
   verifyIdToken,
   createCustomToken,
   sendPushNotification,

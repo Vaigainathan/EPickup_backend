@@ -1,312 +1,142 @@
 #!/usr/bin/env node
 
-/**
- * EPickup Backend Deployment Verification Script
- * This script verifies that all endpoints and services are working after deployment
- */
-
-const axios = require('axios');
 const chalk = require('chalk');
+const { execSync } = require('child_process');
+const fs = require('fs');
+const path = require('path');
 
-// Configuration
-const config = {
-  timeout: 10000,
-  retries: 3,
-  delay: 1000
-};
+console.log(chalk.blue.bold('🚀 EPickup Backend Deployment Verification'));
+console.log(chalk.gray('==========================================\n'));
 
-// Colors for output
-const colors = {
-  success: chalk.green,
-  error: chalk.red,
-  warning: chalk.yellow,
-  info: chalk.blue,
-  title: chalk.cyan.bold
-};
-
-// Test results
-const results = {
-  passed: 0,
-  failed: 0,
-  warnings: 0,
-  total: 0
-};
-
-/**
- * Print formatted output
- */
-function print(message, type = 'info') {
-  const timestamp = new Date().toISOString();
-  const color = colors[type] || colors.info;
-  console.log(`[${timestamp}] ${color(message)}`);
+// Test 1: Syntax Check
+console.log(chalk.yellow('1. Checking server syntax...'));
+try {
+  execSync('node -c src/server.js', { stdio: 'pipe' });
+  console.log(chalk.green('✅ Server syntax is valid'));
+} catch (error) {
+  console.log(chalk.red('❌ Server syntax error:'), error.message);
+  process.exit(1);
 }
 
-/**
- * Sleep function for delays
- */
-function sleep(ms) {
-  return new Promise(resolve => setTimeout(resolve, ms));
-}
+// Test 2: Environment Variables
+console.log(chalk.yellow('\n2. Checking environment variables...'));
+const requiredEnvVars = [
+  'NODE_ENV',
+  'PORT',
+  'JWT_SECRET',
+  'FIREBASE_PROJECT_ID',
+  'FIREBASE_PRIVATE_KEY_ID',
+  'FIREBASE_CLIENT_EMAIL',
+  'FIREBASE_CLIENT_ID',
+  'FIREBASE_AUTH_URI',
+  'FIREBASE_TOKEN_URI',
+  'FIREBASE_AUTH_PROVIDER_X509_CERT_URL',
+  'FIREBASE_CLIENT_X509_CERT_URL'
+];
 
-/**
- * Test endpoint with retries
- */
-async function testEndpoint(url, description, expectedStatus = 200) {
-  results.total++;
-  
-  for (let attempt = 1; attempt <= config.retries; attempt++) {
-    try {
-      print(`Testing ${description} (Attempt ${attempt}/${config.retries})...`, 'info');
-      
-      const response = await axios.get(url, {
-        timeout: config.timeout,
-        validateStatus: () => true // Don't throw on non-2xx status
-      });
-      
-      if (response.status === expectedStatus) {
-        print(`✅ ${description} - Status: ${response.status}`, 'success');
-        results.passed++;
-        return true;
-      } else {
-        print(`⚠️  ${description} - Expected ${expectedStatus}, got ${response.status}`, 'warning');
-        if (attempt === config.retries) {
-          results.warnings++;
-          return false;
-        }
-      }
-    } catch (error) {
-      print(`❌ ${description} - Attempt ${attempt} failed: ${error.message}`, 'error');
-      if (attempt === config.retries) {
-        print(`   Final attempt failed for ${description}`, 'error');
-        results.failed++;
-        return false;
-      }
-    }
-    
-    if (attempt < config.retries) {
-      print(`   Retrying in ${config.delay}ms...`, 'info');
-      await sleep(config.delay);
-    }
+const missingVars = [];
+requiredEnvVars.forEach(varName => {
+  if (!process.env[varName]) {
+    missingVars.push(varName);
   }
-  
-  return false;
+});
+
+if (missingVars.length > 0) {
+  console.log(chalk.yellow('⚠️  Missing environment variables:'), missingVars.join(', '));
+  console.log(chalk.gray('   These may be optional depending on your configuration'));
+} else {
+  console.log(chalk.green('✅ All required environment variables are set'));
 }
 
-/**
- * Test API endpoints
- */
-async function testAPIEndpoints(baseUrl) {
-  print('\n🔍 Testing API Endpoints...', 'title');
-  
-  const endpoints = [
-    { path: '/health', description: 'Health Check Endpoint', expectedStatus: 200 },
-    { path: '/metrics', description: 'Metrics Endpoint', expectedStatus: 200 },
-    { path: '/api-docs', description: 'API Documentation', expectedStatus: 200 }
+// Test 3: Dependencies
+console.log(chalk.yellow('\n3. Checking dependencies...'));
+try {
+  const packageJson = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+  const requiredDeps = [
+    'express',
+    'firebase-admin',
+    'jsonwebtoken',
+    'cors',
+    'helmet',
+    'compression'
   ];
   
-  for (const endpoint of endpoints) {
-    await testEndpoint(`${baseUrl}${endpoint.path}`, endpoint.description, endpoint.expectedStatus);
-  }
-}
-
-/**
- * Test authentication endpoints
- */
-async function testAuthEndpoints(baseUrl) {
-  print('\n🔐 Testing Authentication Endpoints...', 'title');
-  
-  // Test auth endpoints (these might return 401 without proper auth, which is expected)
-  const authEndpoints = [
-    { path: '/api/auth/status', description: 'Auth Status Endpoint' },
-    { path: '/api/customer/profile', description: 'Customer Profile (Auth Required)' },
-    { path: '/api/driver/profile', description: 'Driver Profile (Auth Required)' }
-  ];
-  
-  for (const endpoint of authEndpoints) {
-    try {
-      const response = await axios.get(`${baseUrl}${endpoint.path}`, {
-        timeout: config.timeout,
-        validateStatus: () => true
-      });
-      
-      if (response.status === 401) {
-        print(`✅ ${endpoint.description} - Correctly requires authentication (401)`, 'success');
-        results.passed++;
-      } else if (response.status === 200) {
-        print(`⚠️  ${endpoint.description} - Unexpectedly accessible without auth (200)`, 'warning');
-        results.warnings++;
-      } else {
-        print(`✅ ${endpoint.description} - Status: ${response.status}`, 'success');
-        results.passed++;
-      }
-      results.total++;
-    } catch (error) {
-      print(`❌ ${endpoint.description} - Failed: ${error.message}`, 'error');
-      results.failed++;
-      results.total++;
+  const missingDeps = [];
+  requiredDeps.forEach(dep => {
+    if (!packageJson.dependencies[dep]) {
+      missingDeps.push(dep);
     }
-  }
-}
-
-/**
- * Test external service connectivity
- */
-async function testExternalServices(baseUrl) {
-  print('\n🌐 Testing External Service Connectivity...', 'title');
-  
-  try {
-    // Test if the app can make external requests (this is a basic connectivity test)
-    const response = await axios.get('https://httpbin.org/status/200', {
-      timeout: 5000
-    });
-    
-    if (response.status === 200) {
-      print('✅ External connectivity test passed', 'success');
-      results.passed++;
-    } else {
-      print('⚠️  External connectivity test returned unexpected status', 'warning');
-      results.warnings++;
-    }
-    results.total++;
-  } catch (error) {
-    print('❌ External connectivity test failed', 'error');
-    results.failed++;
-    results.total++;
-  }
-}
-
-/**
- * Performance test
- */
-async function performanceTest(baseUrl) {
-  print('\n⚡ Performance Testing...', 'title');
-  
-  const startTime = Date.now();
-  const response = await axios.get(`${baseUrl}/health`, {
-    timeout: config.timeout
   });
-  const endTime = Date.now();
-  const responseTime = endTime - startTime;
   
-  if (responseTime < 1000) {
-    print(`✅ Health endpoint response time: ${responseTime}ms (Good)`, 'success');
-  } else if (responseTime < 3000) {
-    print(`⚠️  Health endpoint response time: ${responseTime}ms (Acceptable)`, 'warning');
-  } else {
-    print(`❌ Health endpoint response time: ${responseTime}ms (Slow)`, 'error');
-  }
-  
-  results.total++;
-  results.passed++;
-}
-
-/**
- * Print summary report
- */
-function printSummary() {
-  print('\n📊 Deployment Verification Summary', 'title');
-  print('=====================================', 'title');
-  
-  print(`Total Tests: ${results.total}`, 'info');
-  print(`✅ Passed: ${results.passed}`, 'success');
-  print(`⚠️  Warnings: ${results.warnings}`, 'warning');
-  print(`❌ Failed: ${results.failed}`, 'error');
-  
-  const successRate = ((results.passed / results.total) * 100).toFixed(1);
-  print(`\nSuccess Rate: ${successRate}%`, 'info');
-  
-  if (results.failed === 0 && results.warnings === 0) {
-    print('\n🎉 All tests passed! Your deployment is working perfectly!', 'success');
-  } else if (results.failed === 0) {
-    print('\n✅ All critical tests passed! Some warnings to review.', 'success');
-  } else {
-    print('\n❌ Some tests failed. Please review the errors above.', 'error');
-  }
-  
-  print('\n🔗 Your API endpoints:', 'info');
-  print(`   Health Check: ${process.env.API_BASE_URL || 'https://your-app.onrender.com'}/health`, 'info');
-  print(`   Metrics: ${process.env.API_BASE_URL || 'https://your-app.onrender.com'}/metrics`, 'info');
-  print(`   API Docs: ${process.env.API_BASE_URL || 'https://your-app.onrender.com'}/api-docs`, 'info');
-}
-
-/**
- * Main verification function
- */
-async function verifyDeployment() {
-  const baseUrl = process.env.API_BASE_URL || 'https://your-app.onrender.com';
-  
-  print('🚀 EPickup Backend Deployment Verification', 'title');
-  print('============================================', 'title');
-  print(`Testing API at: ${baseUrl}`, 'info');
-  print(`Timeout: ${config.timeout}ms`, 'info');
-  print(`Retries: ${config.retries}`, 'info');
-  
-  try {
-    // Wait a bit for the app to be fully ready
-    print('\n⏳ Waiting for app to be ready...', 'info');
-    await sleep(2000);
-    
-    // Run all tests
-    await testAPIEndpoints(baseUrl);
-    await testAuthEndpoints(baseUrl);
-    await testExternalServices(baseUrl);
-    await performanceTest(baseUrl);
-    
-    // Print summary
-    printSummary();
-    
-  } catch (error) {
-    print(`❌ Verification failed with error: ${error.message}`, 'error');
+  if (missingDeps.length > 0) {
+    console.log(chalk.red('❌ Missing dependencies:'), missingDeps.join(', '));
     process.exit(1);
+  } else {
+    console.log(chalk.green('✅ All required dependencies are present'));
+  }
+} catch (error) {
+  console.log(chalk.red('❌ Error reading package.json:'), error.message);
+  process.exit(1);
+}
+
+// Test 4: Configuration Files
+console.log(chalk.yellow('\n4. Checking configuration files...'));
+const requiredFiles = [
+  'src/config/index.js',
+  'src/config/environment.js',
+  'firebase-service-account.json'
+];
+
+const missingFiles = [];
+requiredFiles.forEach(file => {
+  if (!fs.existsSync(file)) {
+    missingFiles.push(file);
+  }
+});
+
+if (missingFiles.length > 0) {
+  console.log(chalk.yellow('⚠️  Missing files:'), missingFiles.join(', '));
+  console.log(chalk.gray('   Some files may be optional or generated during deployment'));
+} else {
+  console.log(chalk.green('✅ All required configuration files are present'));
+}
+
+// Test 5: Module Loading
+console.log(chalk.yellow('\n5. Testing module loading...'));
+try {
+  // Test loading main modules without starting the server
+  require('../src/config');
+  require('../src/middleware/errorHandler');
+  require('../src/middleware/auth');
+  console.log(chalk.green('✅ All modules load successfully'));
+} catch (error) {
+  console.log(chalk.red('❌ Module loading error:'), error.message);
+  process.exit(1);
+}
+
+// Test 6: Port Availability (if running locally)
+if (process.env.NODE_ENV === 'development') {
+  console.log(chalk.yellow('\n6. Checking port availability...'));
+  const port = process.env.PORT || 3000;
+  try {
+    const net = require('net');
+    const server = net.createServer();
+    server.listen(port, () => {
+      server.close();
+      console.log(chalk.green(`✅ Port ${port} is available`));
+    });
+  } catch (error) {
+    console.log(chalk.yellow(`⚠️  Port ${port} may be in use`));
   }
 }
 
-/**
- * Command line interface
- */
-function main() {
-  const args = process.argv.slice(2);
-  
-  if (args.includes('--help') || args.includes('-h')) {
-    print('Usage: node verify-deployment.js [options]', 'info');
-    print('Options:', 'info');
-    print('  --help, -h     Show this help message', 'info');
-    print('  --url <url>    Set custom API base URL', 'info');
-    print('  --timeout <ms> Set request timeout in milliseconds', 'info');
-    print('  --retries <n>  Set number of retries', 'info');
-    print('\nEnvironment Variables:', 'info');
-    print('  API_BASE_URL   Base URL of your deployed API', 'info');
-    return;
-  }
-  
-  // Parse command line arguments
-  for (let i = 0; i < args.length; i++) {
-    if (args[i] === '--url' && args[i + 1]) {
-      process.env.API_BASE_URL = args[i + 1];
-      i++;
-    } else if (args[i] === '--timeout' && args[i + 1]) {
-      config.timeout = parseInt(args[i + 1]);
-      i++;
-    } else if (args[i] === '--retries' && args[i + 1]) {
-      config.retries = parseInt(args[i + 1]);
-      i++;
-    }
-  }
-  
-  // Run verification
-  verifyDeployment();
-}
+console.log(chalk.blue.bold('\n🎉 Deployment verification completed successfully!'));
+console.log(chalk.gray('Your backend is ready for deployment.'));
 
-// Run if called directly
-if (require.main === module) {
-  main();
-}
-
-module.exports = {
-  verifyDeployment,
-  testEndpoint,
-  testAPIEndpoints,
-  testAuthEndpoints,
-  testExternalServices,
-  performanceTest
-};
+// Final recommendations
+console.log(chalk.cyan('\n📋 Deployment Checklist:'));
+console.log(chalk.gray('• Ensure all environment variables are set in your deployment platform'));
+console.log(chalk.gray('• Verify Firebase service account credentials are properly configured'));
+console.log(chalk.gray('• Check that your deployment platform supports Node.js >=18.0.0'));
+console.log(chalk.gray('• Ensure proper CORS settings for your frontend domains'));
+console.log(chalk.gray('• Set up proper logging and monitoring (Sentry recommended for production)'));

@@ -8,8 +8,6 @@ const morgan = require('morgan');
 const compression = require('compression');
 const rateLimit = require('express-rate-limit');
 const slowDown = require('express-slow-down');
-const Sentry = require("@sentry/node");
-
 // Import configuration
 const { env } = require('./config');
 
@@ -74,45 +72,8 @@ if (env.isRedisEnabled()) {
   console.log('⚠️  Redis is disabled in configuration');
 }
 
-// Initialize Sentry for error tracking (only in production)
-let Sentry = null;
-if (process.env.NODE_ENV === 'production' && process.env.SENTRY_DSN) {
-  try {
-    Sentry = require('@sentry/node');
-    Sentry.init({
-      dsn: process.env.SENTRY_DSN,
-      environment: process.env.NODE_ENV,
-      tracesSampleRate: 0.1, // Reduce sampling rate to reduce noise
-      integrations: [
-        new Sentry.Integrations.Http({ tracing: true }),
-        new Sentry.Integrations.Express({ app }),
-        new Sentry.Integrations.Node({ version: process.version })
-      ],
-      beforeSend(event) {
-        // Filter out 404 errors and health check requests
-        if (event.exception && event.exception.values) {
-          const is404Error = event.exception.values.some(exception => 
-            exception.value && exception.value.includes('404')
-          );
-          if (is404Error) return null;
-        }
-        
-        // Filter out health check and favicon requests
-        if (event.request && event.request.url) {
-          const url = event.request.url;
-          if (url.includes('/health') || url.includes('/favicon.ico') || url === '/') {
-            return null;
-          }
-        }
-        
-        return event;
-      }
-    });
-    console.log('✅ Sentry initialized for error tracking');
-  } catch (error) {
-    console.log('⚠️  Sentry initialization failed, continuing without error tracking');
-  }
-}
+// Sentry is initialized in instrument.js
+const Sentry = require('../instrument.js');
 
 // Security middleware
 app.use(helmet({
@@ -260,7 +221,7 @@ app.get('/api-docs', (req, res) => {
 });
 
 // Sentry request handler - must be before any routes (only if available)
-if (Sentry.Handlers && Sentry.Handlers.requestHandler) {
+if (Sentry && Sentry.Handlers && Sentry.Handlers.requestHandler) {
   app.use(Sentry.Handlers.requestHandler());
 }
 
@@ -386,7 +347,7 @@ app.use('*', (req, res) => {
 });
 
 // Sentry error handler - must be the first error handling middleware (only if available)
-if (Sentry.Handlers && Sentry.Handlers.errorHandler) {
+if (Sentry && Sentry.Handlers && Sentry.Handlers.errorHandler) {
   app.use(Sentry.Handlers.errorHandler());
 }
 

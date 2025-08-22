@@ -2,10 +2,9 @@ const express = require('express');
 const { Client } = require('@googlemaps/google-maps-services-js');
 const { validateRequest } = require('../middleware/validation');
 const { asyncHandler } = require('../middleware/errorHandler');
-const { getEnvironmentConfig } = require('../config/environment');
+const environmentConfig = require('../config/environment');
 
 const router = express.Router();
-const config = getEnvironmentConfig();
 
 // Initialize Google Maps client
 const googleMapsClient = new Client({});
@@ -35,7 +34,7 @@ router.get('/places/autocomplete',
       const response = await googleMapsClient.placeAutocomplete({
         params: {
           input: input.trim(),
-          key: config.GOOGLE_MAPS.API_KEY,
+          key: environmentConfig.getGoogleMapsApiKey(),
           sessiontoken: sessionToken,
           types: types || 'geocode',
           components: components,
@@ -111,7 +110,7 @@ router.get('/places/details',
       const response = await googleMapsClient.placeDetails({
         params: {
           place_id: placeId,
-          key: config.GOOGLE_MAPS.API_KEY,
+          key: environmentConfig.getGoogleMapsApiKey(),
           fields: fields || 'formatted_address,geometry,name,place_id,types',
           language: language || 'en',
           region: region || 'IN'
@@ -202,7 +201,7 @@ router.get('/directions',
       const params = {
         origin,
         destination,
-        key: config.GOOGLE_MAPS.API_KEY,
+        key: environmentConfig.getGoogleMapsApiKey(),
         mode,
         alternatives: alternatives === 'true',
         avoid: avoid ? avoid.split('|') : [],
@@ -310,7 +309,7 @@ router.get('/geocode',
     try {
       const params = {
         address,
-        key: config.GOOGLE_MAPS.API_KEY,
+        key: environmentConfig.getGoogleMapsApiKey(),
         language,
         region
       };
@@ -391,7 +390,7 @@ router.get('/reverse-geocode',
     try {
       const params = {
         latlng,
-        key: config.GOOGLE_MAPS.API_KEY,
+        key: environmentConfig.getGoogleMapsApiKey(),
         language
       };
 
@@ -481,7 +480,7 @@ router.get('/nearby-places',
     try {
       const params = {
         location,
-        key: config.GOOGLE_MAPS.API_KEY,
+        key: environmentConfig.getGoogleMapsApiKey(),
         radius: parseInt(radius),
         language
       };
@@ -605,7 +604,7 @@ router.get('/distance-matrix',
       const params = {
         origins: origins.split('|'),
         destinations: destinations.split('|'),
-        key: config.GOOGLE_MAPS.API_KEY,
+        key: environmentConfig.getGoogleMapsApiKey(),
         mode,
         units,
         language
@@ -705,7 +704,7 @@ router.get('/elevation',
 
     try {
       const params = {
-        key: config.GOOGLE_MAPS.API_KEY
+        key: environmentConfig.getGoogleMapsApiKey()
       };
 
       if (locations) {

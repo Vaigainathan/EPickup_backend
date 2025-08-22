@@ -23,6 +23,7 @@ class WebSocketEventHandler {
       try {
         const { getRedisClient } = require('./redis');
         this.redis = getRedisClient();
+        console.log('✅ Redis connected for WebSocket handler');
       } catch (redisError) {
         console.log('⚠️  Redis not available for WebSocket handler, continuing without Redis...');
         this.redis = null;
@@ -33,6 +34,7 @@ class WebSocketEventHandler {
         const RealTimeService = require('./realTimeService');
         this.realTimeService = new RealTimeService();
         await this.realTimeService.initialize();
+        console.log('✅ RealTimeService initialized for WebSocket handler');
       } catch (realTimeError) {
         console.log('⚠️  RealTimeService not available for WebSocket handler, continuing without it...');
         this.realTimeService = null;
@@ -41,6 +43,7 @@ class WebSocketEventHandler {
       console.log('✅ WebSocket event handler initialized successfully');
     } catch (error) {
       console.error('❌ Failed to initialize WebSocket event handler:', error);
+      throw error;
     }
   }
 

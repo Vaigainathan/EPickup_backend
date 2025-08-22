@@ -23,6 +23,7 @@ const trackingRoutes = require('./routes/tracking');
 const notificationRoutes = require('./routes/notification');
 const fileUploadRoutes = require('./routes/fileUpload');
 const supportRoutes = require('./routes/support');
+const googleMapsRoutes = require('./routes/googleMaps');
 
 // Import middleware
 const { errorHandler } = require('./middleware/errorHandler');
@@ -305,6 +306,7 @@ app.use('/api/tracking', authMiddleware, trackingRoutes);
 app.use('/api/notifications', authMiddleware, notificationRoutes);
 app.use('/api/file-upload', authMiddleware, fileUploadRoutes);
 app.use('/api/support', authMiddleware, supportRoutes);
+app.use('/api/google-maps', googleMapsRoutes); // No auth required for Google Maps API
 
 // Test Endpoints (No authentication required) - For Development Only
 if (process.env.NODE_ENV === 'development' || process.env.ENABLE_TEST_ENDPOINTS === 'true') {

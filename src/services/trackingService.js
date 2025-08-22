@@ -834,14 +834,15 @@ class TrackingService extends EventEmitter {
    * @returns {number} ETA in minutes
    */
   calculateETA(distance, vehicleType) {
+    // Only 2-wheeler speeds supported
     const speeds = {
       '2_wheeler': 25,    // km/h
-      '4_wheeler': 20,    // km/h
       'motorcycle': 25,   // km/h
+      'scooter': 20,      // km/h
       'electric': 20      // km/h
     };
     
-    const speed = speeds[vehicleType] || 20;
+    const speed = speeds[vehicleType] || 25; // default to 2-wheeler speed
     const timeInHours = distance / speed;
     const timeInMinutes = Math.round(timeInHours * 60);
     const bufferTime = Math.round(timeInMinutes * 0.2); // 20% buffer

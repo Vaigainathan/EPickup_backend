@@ -49,8 +49,8 @@ router.post('/', [
     .isFloat({ min: 0.1, max: 50 })
     .withMessage('Package weight must be between 0.1 and 50 kg'),
   body('vehicle.type')
-    .isIn(['2_wheeler', '4_wheeler'])
-    .withMessage('Vehicle type must be either 2_wheeler or 4_wheeler'),
+    .isIn(['2_wheeler'])
+    .withMessage('Vehicle type must be 2_wheeler'),
   body('paymentMethod')
     .isIn(['cash', 'online', 'wallet'])
     .withMessage('Payment method must be cash, online, or wallet'),
@@ -631,8 +631,8 @@ router.get('/:id/available-drivers', [
     .withMessage('Radius must be between 1 and 50 km'),
   query('vehicleType')
     .optional()
-    .isIn(['2_wheeler', '4_wheeler'])
-    .withMessage('Vehicle type must be either 2_wheeler or 4_wheeler')
+    .isIn(['2_wheeler'])
+    .withMessage('Vehicle type must be 2_wheeler')
 ], async (req, res) => {
   try {
     const errors = validationResult(req);

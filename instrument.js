@@ -2,7 +2,7 @@ const Sentry = require("@sentry/node");
 
 // Initialize Sentry with your DSN
 Sentry.init({
-  dsn: process.env.SENTRY_DSN || "https://6553805e218f39976614bdda02c24d1d@o4509858834939904.ingest.us.sentry.io/4509858848178176",
+  dsn: process.env.SENTRY_DSN,
   
   // Environment configuration
   environment: process.env.NODE_ENV || 'development',

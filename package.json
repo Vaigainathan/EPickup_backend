@@ -15,6 +15,7 @@
     "migrate": "node src/database/migrate.js",
     "seed": "node src/database/seed.js",
     "validate:config": "node scripts/validate-config.js",
+    "validate:security": "node scripts/validate-security.js",
     "test:all": "node scripts/test-all-services.js",
     "create-indexes": "node scripts/create-firestore-indexes.js",
     "setup:backend": "npm run validate:config && npm run migrate && npm run test:all",

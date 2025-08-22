@@ -207,60 +207,62 @@ class BookingService {
    * Calculate dynamic pricing based on distance, weight, and other factors
    * @param {number} distance - Distance in kilometers
    * @param {number} weight - Package weight in kg
-   * @param {string} vehicleType - Vehicle type (2_wheeler, 4_wheeler)
+   * @param {string} vehicleType - Vehicle type (2_wheeler only)
    * @returns {Object} Pricing breakdown
    */
   async calculatePricing(distance, weight, vehicleType) {
     try {
-      // Get current rates from database
-      const ratesDoc = await this.db.collection('deliveryRates').doc('default_rates').get();
-      const rates = ratesDoc.exists ? ratesDoc.data() : this.getDefaultRates();
-
-      // Base fare
-      let baseFare = rates.baseFare;
-
-      // Distance charge
-      let distanceCharge = 0;
-      if (distance <= rates.distanceSurcharge.threshold) {
-        distanceCharge = distance * rates.baseRate;
-      } else {
-        distanceCharge = (rates.distanceSurcharge.threshold * rates.baseRate) +
-          ((distance - rates.distanceSurcharge.threshold) * rates.distanceSurcharge.rate);
+      // Only support 2-wheeler vehicles
+      if (vehicleType !== '2_wheeler') {
+        throw new Error('Only 2-wheeler vehicles are supported');
       }
 
-      // Vehicle type multiplier
-      const vehicleMultiplier = rates.vehicleRates[vehicleType] || 1;
-      distanceCharge *= vehicleMultiplier;
-
-      // Weight surcharge
-      let weightSurcharge = 0;
-      if (weight > rates.weightSurcharge.threshold) {
-        const extraWeight = weight - rates.weightSurcharge.threshold;
-        const intervals = Math.ceil(extraWeight / rates.weightSurcharge.interval);
-        weightSurcharge = intervals * rates.weightSurcharge.rate;
+      const rates = await this.getDefaultRates();
+      
+      // Base calculation
+      const baseFare = rates.baseFare;
+      const perKmRate = rates.baseRate;
+      const distanceCharge = distance * perKmRate;
+      
+      // Vehicle type multiplier - only 2-wheeler supported
+      const vehicleMultiplier = 1; // 2-wheeler has no multiplier
+      
+      // Weight multiplier
+      let weightMultiplier = 1;
+      if (weight > 10) {
+        weightMultiplier = 1.2; // 20% extra for heavy packages
+      } else if (weight > 5) {
+        weightMultiplier = 1.1; // 10% extra for medium packages
       }
-
-      // Time-based surge pricing
-      const surgeMultiplier = this.calculateSurgePricing(rates.timeSurcharge);
-
-      // Calculate subtotal
-      const subtotal = (baseFare + distanceCharge + weightSurcharge) * surgeMultiplier;
-
-      // Tax calculation (GST)
-      const tax = subtotal * 0.18; // 18% GST
-
-      // Total amount
-      const totalAmount = subtotal + tax;
-
+      
+      // Calculate total
+      const subtotal = (baseFare + distanceCharge) * vehicleMultiplier * weightMultiplier;
+      
+      // Apply surge pricing if applicable
+      const surgeMultiplier = this.calculateSurgePricing(new Date());
+      const totalWithSurge = subtotal * surgeMultiplier;
+      
+      // Round to nearest rupee
+      const finalTotal = Math.round(totalWithSurge);
+      
       return {
         baseFare,
-        distanceCharge: Math.round(distanceCharge * 100) / 100,
-        weightSurcharge: Math.round(weightSurcharge * 100) / 100,
-        surgeMultiplier: Math.round(surgeMultiplier * 100) / 100,
-        tax: Math.round(tax * 100) / 100,
-        totalAmount: Math.round(totalAmount * 100) / 100
+        distanceCharge,
+        vehicleMultiplier,
+        weightMultiplier,
+        surgeMultiplier,
+        subtotal,
+        total: finalTotal,
+        currency: 'INR',
+        breakdown: {
+          baseFare,
+          distanceCharge,
+          vehicleCharge: 0, // No additional charge for 2-wheeler
+          weightCharge: subtotal - (baseFare + distanceCharge),
+          surgeCharge: totalWithSurge - subtotal,
+          total: finalTotal
+        }
       };
-
     } catch (error) {
       console.error('Error calculating pricing:', error);
       throw error;
@@ -294,35 +296,38 @@ class BookingService {
    * @returns {Object} Default rates
    */
   getDefaultRates() {
-    return {
-      baseRate: 15,
+    // Default rates for 2-wheeler only
+    const defaultRates = {
       baseFare: 30,
+      baseRate: 12, // per km
       vehicleRates: {
-        '2_wheeler': 1.0,
-        '4_wheeler': 1.5
+        '2_wheeler': 1 // no multiplier for 2-wheeler
       },
       weightSurcharge: {
-        threshold: 3,
-        rate: 5,
-        interval: 2
+        threshold: 5, // kg
+        rate: 5 // per kg above threshold
       },
       distanceSurcharge: {
-        threshold: 10,
-        rate: 2
+        threshold: 10, // km
+        rate: 15 // per km above threshold
       },
       timeSurcharge: {
         peakHours: {
           start: '08:00',
           end: '10:00',
-          rate: 1.2
+          multiplier: 1.2
         },
-        lateNight: {
+        nightHours: {
           start: '22:00',
           end: '06:00',
-          rate: 1.5
+          multiplier: 1.3
         }
-      }
+      },
+      currency: 'INR',
+      lastUpdated: new Date().toISOString()
     };
+
+    return defaultRates;
   }
 
   /**

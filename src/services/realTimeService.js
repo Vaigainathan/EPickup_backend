@@ -22,6 +22,7 @@ class RealTimeService {
       try {
         const { getSocketIO } = require('./socket');
         this.io = getSocketIO();
+        console.log('✅ Socket.IO connected for real-time service');
       } catch (socketError) {
         console.log('⚠️  Socket.IO not available for real-time service, continuing without it...');
         this.io = null;
@@ -31,6 +32,7 @@ class RealTimeService {
       try {
         const { getRedisClient } = require('./redis');
         this.redis = getRedisClient();
+        console.log('✅ Redis connected for real-time service');
       } catch (redisError) {
         console.log('⚠️  Redis not available for real-time service, continuing without it...');
         this.redis = null;
@@ -41,6 +43,7 @@ class RealTimeService {
       console.log('✅ Real-time service initialized successfully');
     } catch (error) {
       console.error('❌ Failed to initialize real-time service:', error);
+      throw error;
     }
   }
 

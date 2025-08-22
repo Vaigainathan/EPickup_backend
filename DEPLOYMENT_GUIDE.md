@@ -139,7 +139,7 @@ cd backend
 git init
 git add .
 git commit -m "Initial commit for deployment"
-```
+
 
 2. **Create a `.gitignore` file:**
 ```bash
@@ -575,6 +575,4 @@ export const API_BASE_URL = __DEV__
 - **DigitalOcean Docs:** [docs.digitalocean.com](https://docs.digitalocean.com)
 - **Node.js Best Practices:** [github.com/goldbergyoni/nodebestpractices](https://github.com/goldbergyoni/nodebestpractices)
 
----
 
-**Ready to deploy? Start with Render and let's get your EPickup backend live! 🚀**

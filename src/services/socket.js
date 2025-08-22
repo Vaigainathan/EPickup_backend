@@ -8,7 +8,7 @@ let eventHandler = null;
 /**
  * Initialize Socket.IO service
  */
-const initializeSocketIO = (server) => {
+const initializeSocketIO = async (server) => {
   try {
     io = new Server(server, {
       cors: {
@@ -30,6 +30,7 @@ const initializeSocketIO = (server) => {
 
     // Initialize event handler
     eventHandler = new WebSocketEventHandler();
+    await eventHandler.initialize();
 
     // Authentication middleware
     io.use(async (socket, next) => {

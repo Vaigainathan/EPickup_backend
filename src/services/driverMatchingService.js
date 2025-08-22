@@ -650,28 +650,20 @@ class DriverMatchingService {
    * @returns {number} ETA in minutes
    */
   calculateETA(distance, vehicleType) {
-    try {
-      // Base speeds (km/h)
-      const speeds = {
-        '2_wheeler': 25,
-        '4_wheeler': 20,
-        'motorcycle': 25,
-        'electric': 20
-      };
-
-      const speed = speeds[vehicleType] || 20;
-      const timeInHours = distance / speed;
-      const timeInMinutes = Math.round(timeInHours * 60);
-
-      // Add buffer time for traffic and stops
-      const bufferTime = Math.round(timeInMinutes * 0.2); // 20% buffer
-
-      return timeInMinutes + bufferTime;
-      
-    } catch (error) {
-      console.error('Error calculating ETA:', error);
-      return 30; // Default 30 minutes
-    }
+    // Only 2-wheeler speeds supported
+    const speeds = {
+      '2_wheeler': 25,    // km/h
+      'motorcycle': 25,   // km/h
+      'scooter': 20,      // km/h
+      'electric': 20      // km/h
+    };
+    
+    const speed = speeds[vehicleType] || 25; // default to 2-wheeler speed
+    const timeInHours = distance / speed;
+    const timeInMinutes = Math.round(timeInHours * 60);
+    const bufferTime = Math.round(timeInMinutes * 0.2); // 20% buffer
+    
+    return timeInMinutes + bufferTime;
   }
 
   /**

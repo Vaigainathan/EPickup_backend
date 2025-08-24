@@ -5,6 +5,155 @@ const { requireRole } = require('../middleware/auth');
 const { body, validationResult } = require('express-validator');
 
 /**
+ * @route   GET /api/payments/methods
+ * @desc    Get available payment methods for booking
+ * @access  Private (Customer)
+ */
+router.get('/methods', [
+  requireRole(['customer']),
+  body('amount').isFloat({ min: 1 }).withMessage('Valid amount is required')
+], async (req, res) => {
+  try {
+    const { amount } = req.query;
+    const { uid } = req.user;
+
+    if (!amount) {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'MISSING_AMOUNT',
+          message: 'Amount is required'
+        }
+      });
+    }
+
+    const result = await paymentService.getPaymentMethodsForBooking(uid, parseFloat(amount));
+
+    if (result.success) {
+      res.status(200).json(result);
+    } else {
+      res.status(400).json(result);
+    }
+
+  } catch (error) {
+    console.error('Get payment methods error:', error);
+    res.status(500).json({
+      success: false,
+      error: {
+        code: 'INTERNAL_SERVER_ERROR',
+        message: 'Failed to get payment methods'
+      }
+    });
+  }
+});
+
+/**
+ * @route   POST /api/payments/process
+ * @desc    Process payment for booking
+ * @access  Private (Customer)
+ */
+router.post('/process', [
+  requireRole(['customer']),
+  body('bookingId').notEmpty().withMessage('Booking ID is required'),
+  body('amount').isFloat({ min: 1 }).withMessage('Valid amount is required'),
+  body('paymentMethod').isIn(['cash', 'upi']).withMessage('Valid payment method is required'),
+  body('customerPhone').optional().isMobilePhone('en-IN').withMessage('Valid phone number is required'),
+  body('customerEmail').optional().isEmail().withMessage('Valid email is required'),
+  body('customerName').optional().notEmpty().withMessage('Customer name is required'),
+  body('redirectUrl').optional().isURL().withMessage('Valid redirect URL is required')
+], async (req, res) => {
+  try {
+    // Check validation errors
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'VALIDATION_ERROR',
+          message: 'Validation failed',
+          details: errors.array().map(err => ({
+            field: err.path,
+            message: err.msg
+          }))
+        }
+      });
+    }
+
+    const paymentData = {
+      ...req.body,
+      customerId: req.user.uid
+    };
+
+    const result = await paymentService.processPayment(paymentData);
+
+    if (result.success) {
+      res.status(200).json(result);
+    } else {
+      res.status(400).json(result);
+    }
+
+  } catch (error) {
+    console.error('Payment processing error:', error);
+    res.status(500).json({
+      success: false,
+      error: {
+        code: 'INTERNAL_SERVER_ERROR',
+        message: 'Failed to process payment'
+      }
+    });
+  }
+});
+
+/**
+ * @route   POST /api/payments/cash/complete
+ * @desc    Complete cash payment (Driver only)
+ * @access  Private (Driver)
+ */
+router.post('/cash/complete', [
+  requireRole(['driver']),
+  body('paymentId').notEmpty().withMessage('Payment ID is required')
+], async (req, res) => {
+  try {
+    // Check validation errors
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'VALIDATION_ERROR',
+          message: 'Validation failed',
+          details: errors.array().map(err => ({
+            field: err.path,
+            message: err.msg
+          }))
+        }
+      });
+    }
+
+    const { paymentId } = req.body;
+    const { uid } = req.user;
+
+    const result = await paymentService.completeCashPayment(paymentId, uid);
+
+    if (result.success) {
+      res.status(200).json(result);
+    } else {
+      res.status(400).json(result);
+    }
+
+  } catch (error) {
+    console.error('Cash payment completion error:', error);
+    res.status(500).json({
+      success: false,
+      error: {
+        code: 'INTERNAL_SERVER_ERROR',
+        message: 'Failed to complete cash payment'
+      }
+    });
+  }
+});
+
+/**
  * @route   POST /api/payments/phonepe/initiate
  * @desc    Initialize PhonePe payment
  * @access  Private (Customer)
@@ -37,10 +186,11 @@ router.post('/phonepe/initiate', [
 
     const paymentData = {
       ...req.body,
-      customerId: req.user.uid
+      customerId: req.user.uid,
+      paymentMethod: 'upi'
     };
 
-    const result = await paymentService.initiatePhonePePayment(paymentData);
+    const result = await paymentService.processUPIPayment(paymentData);
 
     if (result.success) {
       res.status(200).json(result);
@@ -116,41 +266,25 @@ router.post('/phonepe/callback', async (req, res) => {
   try {
     const webhookData = req.body;
     
-    // Log webhook data for debugging
-    console.log('PhonePe webhook received:', webhookData);
+    // Verify webhook signature
+    const isValidSignature = paymentService.verifyWebhookSignature(webhookData);
+    if (!isValidSignature) {
+      console.error('Invalid webhook signature');
+      return res.status(400).json({ success: false });
+    }
 
+    // Process webhook
     const result = await paymentService.processPhonePeWebhook(webhookData);
-
+    
     if (result.success) {
       res.status(200).json({ success: true });
     } else {
       console.error('Webhook processing failed:', result.error);
-      res.status(400).json({ success: false });
+      res.status(500).json({ success: false });
     }
 
   } catch (error) {
     console.error('Webhook processing error:', error);
-    res.status(500).json({ success: false });
-  }
-});
-
-/**
- * @route   POST /api/payments/phonepe/refund-callback
- * @desc    PhonePe refund callback webhook
- * @access  Public (PhonePe webhook)
- */
-router.post('/phonepe/refund-callback', async (req, res) => {
-  try {
-    const webhookData = req.body;
-    
-    console.log('PhonePe refund webhook received:', webhookData);
-
-    // Process refund webhook
-    // This would typically update refund status
-    res.status(200).json({ success: true });
-
-  } catch (error) {
-    console.error('Refund webhook processing error:', error);
     res.status(500).json({ success: false });
   }
 });
@@ -220,143 +354,6 @@ router.post('/refund', [
 });
 
 /**
- * @route   GET /api/payments/wallet/balance
- * @desc    Get customer wallet balance
- * @access  Private (Customer)
- */
-router.get('/wallet/balance', [
-  requireRole(['customer'])
-], async (req, res) => {
-  try {
-    const result = await paymentService.getWalletBalance(req.user.uid);
-
-    if (result.success) {
-      res.status(200).json(result);
-    } else {
-      res.status(400).json(result);
-    }
-
-  } catch (error) {
-    console.error('Get wallet balance error:', error);
-    res.status(500).json({
-      success: false,
-      error: {
-        code: 'INTERNAL_SERVER_ERROR',
-        message: 'Failed to get wallet balance'
-      }
-    });
-  }
-});
-
-/**
- * @route   GET /api/payments/wallet/transactions
- * @desc    Get customer wallet transaction history
- * @access  Private (Customer)
- */
-router.get('/wallet/transactions', [
-  requireRole(['customer'])
-], async (req, res) => {
-  try {
-    const filters = {
-      type: req.query.type,
-      startDate: req.query.startDate ? new Date(req.query.startDate) : null,
-      endDate: req.query.endDate ? new Date(req.query.endDate) : null,
-      limit: req.query.limit ? parseInt(req.query.limit) : 50
-    };
-
-    const result = await paymentService.getWalletTransactions(req.user.uid, filters);
-
-    if (result.success) {
-      res.status(200).json(result);
-    } else {
-      res.status(400).json(result);
-    }
-
-  } catch (error) {
-    console.error('Get wallet transactions error:', error);
-    res.status(500).json({
-      success: false,
-      error: {
-        code: 'INTERNAL_SERVER_ERROR',
-        message: 'Failed to get wallet transactions'
-      }
-    });
-  }
-});
-
-/**
- * @route   POST /api/payments/wallet/add-money
- * @desc    Add money to customer wallet
- * @access  Private (Customer)
- */
-router.post('/wallet/add-money', [
-  requireRole(['customer']),
-  body('amount').isFloat({ min: 1 }).withMessage('Valid amount is required'),
-  body('paymentMethod').isIn(['phonepe', 'razorpay', 'stripe']).withMessage('Valid payment method is required')
-], async (req, res) => {
-  try {
-    // Check validation errors
-    const errors = validationResult(req);
-    if (!errors.isEmpty()) {
-      return res.status(400).json({
-        success: false,
-        error: {
-          code: 'VALIDATION_ERROR',
-          message: 'Validation failed',
-          details: errors.array().map(err => ({
-            field: err.path,
-            message: err.msg
-          }))
-        }
-      });
-    }
-
-    const { amount, paymentMethod } = req.body;
-
-    // Initialize payment for wallet top-up
-    const paymentData = {
-      bookingId: `WALLET_TOPUP_${Date.now()}`,
-      customerId: req.user.uid,
-      amount: amount,
-      customerPhone: req.user.phone,
-      customerEmail: req.user.email,
-      customerName: req.user.name,
-      redirectUrl: `${process.env.FRONTEND_URL}/wallet/success`
-    };
-
-    let result;
-    if (paymentMethod === 'phonepe') {
-      result = await paymentService.initiatePhonePePayment(paymentData);
-    } else {
-      // Handle other payment methods
-      result = {
-        success: false,
-        error: {
-          code: 'PAYMENT_METHOD_NOT_SUPPORTED',
-          message: 'Payment method not yet supported'
-        }
-      };
-    }
-
-    if (result.success) {
-      res.status(200).json(result);
-    } else {
-      res.status(400).json(result);
-    }
-
-  } catch (error) {
-    console.error('Add money to wallet error:', error);
-    res.status(500).json({
-      success: false,
-      error: {
-        code: 'INTERNAL_SERVER_ERROR',
-        message: 'Failed to add money to wallet'
-      }
-    });
-  }
-});
-
-/**
  * @route   GET /api/payments/transactions
  * @desc    Get payment transaction history
  * @access  Private (Customer, Admin)
@@ -365,54 +362,33 @@ router.get('/transactions', [
   requireRole(['customer', 'admin'])
 ], async (req, res) => {
   try {
-    const { getFirestore } = require('../services/firebase');
-    const db = getFirestore();
+    const { uid, userType } = req.user;
+    const { limit = 20, offset = 0, status, paymentMethod } = req.query;
 
-    let query = db.collection('payments');
+    let filters = { limit: parseInt(limit), offset: parseInt(offset) };
+    if (status) filters.status = status;
+    if (paymentMethod) filters.paymentMethod = paymentMethod;
 
-    // Apply filters based on user role
-    if (req.user.role === 'customer') {
-      query = query.where('customerId', '==', req.user.uid);
+    // For customers, only show their transactions
+    if (userType === 'customer') {
+      filters.customerId = uid;
     }
 
-    if (req.query.status) {
-      query = query.where('status', '==', req.query.status);
+    const result = await paymentService.getPaymentHistory(filters);
+
+    if (result.success) {
+      res.status(200).json(result);
+    } else {
+      res.status(400).json(result);
     }
-
-    if (req.query.startDate) {
-      query = query.where('createdAt', '>=', new Date(req.query.startDate));
-    }
-
-    if (req.query.endDate) {
-      query = query.where('createdAt', '<=', new Date(req.query.endDate));
-    }
-
-    const limit = req.query.limit ? parseInt(req.query.limit) : 50;
-    const snapshot = await query.orderBy('createdAt', 'desc').limit(limit).get();
-
-    const transactions = [];
-    snapshot.forEach(doc => {
-      transactions.push({
-        id: doc.id,
-        ...doc.data()
-      });
-    });
-
-    res.status(200).json({
-      success: true,
-      data: {
-        transactions,
-        total: transactions.length
-      }
-    });
 
   } catch (error) {
-    console.error('Get transactions error:', error);
+    console.error('Get payment history error:', error);
     res.status(500).json({
       success: false,
       error: {
         code: 'INTERNAL_SERVER_ERROR',
-        message: 'Failed to get transactions'
+        message: 'Failed to get payment history'
       }
     });
   }

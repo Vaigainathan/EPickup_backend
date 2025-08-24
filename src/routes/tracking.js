@@ -651,4 +651,249 @@ router.get('/health', async (req, res) => {
   }
 });
 
+/**
+ * @route   GET /api/tracking/:bookingId
+ * @desc    Get real-time tracking data for a booking (compatible with frontend)
+ * @access  Private (Customer, Driver)
+ */
+router.get('/:bookingId', [
+  requireRole(['driver', 'customer'])
+], async (req, res) => {
+  try {
+    const { bookingId } = req.params;
+    const { uid, userType } = req.user;
+
+    // Get booking details
+    const bookingService = require('../services/bookingService');
+    const bookingResult = await bookingService.getBookingDetails(bookingId);
+    
+    if (!bookingResult.success) {
+      return res.status(404).json({
+        success: false,
+        error: {
+          code: 'BOOKING_NOT_FOUND',
+          message: 'Booking not found',
+          details: 'Booking with this ID does not exist'
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    const { booking, driver } = bookingResult.data;
+
+    // Check access permissions
+    if (userType !== 'admin' && 
+        booking.customerId !== uid && 
+        booking.driverId !== uid) {
+      return res.status(403).json({
+        success: false,
+        error: {
+          code: 'ACCESS_DENIED',
+          message: 'Access denied',
+          details: 'You can only access your own bookings'
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    // Get driver location if driver is assigned
+    let driverLocation = null;
+    if (booking.driverId) {
+      const db = require('../services/firebase').getFirestore();
+      const locationDoc = await db.collection('driverLocations').doc(booking.driverId).get();
+      if (locationDoc.exists) {
+        const locationData = locationDoc.data();
+        driverLocation = {
+          latitude: locationData.latitude,
+          longitude: locationData.longitude,
+          timestamp: locationData.lastUpdated?.toMillis() || Date.now()
+        };
+      }
+    }
+
+    // Format response to match frontend expectations
+    const trackingData = {
+      bookingId: booking.id,
+      status: booking.status,
+      driver: booking.driverId ? {
+        id: booking.driverId,
+        name: driver?.name || 'Driver',
+        phone: driver?.phone || '',
+        vehicleNumber: driver?.vehicleDetails?.number || '',
+        rating: driver?.rating || 0,
+        profileImage: driver?.profilePicture || null,
+        currentLocation: driverLocation,
+        estimatedArrival: driverLocation ? 15 : null // Mock ETA calculation
+      } : null,
+      currentLocation: driverLocation,
+      route: {
+        distance: `${booking.distance?.total || 0} km`,
+        duration: bookingService.calculateEstimatedTime(booking.distance?.total || 0),
+        polyline: '', // Would be calculated from Google Maps API
+        coordinates: [
+          booking.pickup.coordinates,
+          booking.dropoff.coordinates
+        ]
+      },
+      estimatedPickupTime: booking.timing?.estimatedPickupTime,
+      estimatedDeliveryTime: booking.timing?.estimatedDeliveryTime,
+      lastUpdate: booking.updatedAt?.toISOString() || new Date().toISOString()
+    };
+
+    res.status(200).json({
+      success: true,
+      message: 'Tracking data retrieved successfully',
+      data: trackingData,
+      timestamp: new Date().toISOString()
+    });
+
+  } catch (error) {
+    console.error('Error getting tracking data:', error);
+    res.status(500).json({
+      success: false,
+      error: {
+        code: 'TRACKING_DATA_ERROR',
+        message: 'Failed to get tracking data',
+        details: error.message
+      },
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+/**
+ * @route   POST /api/tracking/:bookingId/update-location
+ * @desc    Update driver location for a booking (compatible with frontend)
+ * @access  Private (Driver only)
+ */
+router.post('/:bookingId/update-location', [
+  requireRole(['driver']),
+  body('latitude')
+    .isFloat({ min: -90, max: 90 })
+    .withMessage('Valid latitude required'),
+  body('longitude')
+    .isFloat({ min: -180, max: 180 })
+    .withMessage('Valid longitude required'),
+  body('accuracy')
+    .optional()
+    .isFloat({ min: 0 })
+    .withMessage('Accuracy must be positive'),
+  body('speed')
+    .optional()
+    .isFloat({ min: 0 })
+    .withMessage('Speed must be positive'),
+  body('heading')
+    .optional()
+    .isFloat({ min: 0, max: 360 })
+    .withMessage('Heading must be between 0 and 360')
+], async (req, res) => {
+  try {
+    // Check validation errors
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'VALIDATION_ERROR',
+          message: 'Validation failed',
+          details: errors.array()
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    const { bookingId } = req.params;
+    const { uid } = req.user;
+    const locationData = req.body;
+
+    // Get booking details to verify driver ownership
+    const bookingService = require('../services/bookingService');
+    const bookingResult = await bookingService.getBookingDetails(bookingId);
+    
+    if (!bookingResult.success) {
+      return res.status(404).json({
+        success: false,
+        error: {
+          code: 'BOOKING_NOT_FOUND',
+          message: 'Booking not found',
+          details: 'Booking with this ID does not exist'
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    const { booking } = bookingResult.data;
+
+    // Verify driver owns this booking
+    if (booking.driverId !== uid) {
+      return res.status(403).json({
+        success: false,
+        error: {
+          code: 'ACCESS_DENIED',
+          message: 'Access denied',
+          details: 'You can only update location for your own bookings'
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    // Update driver location in Firestore
+    const db = require('../services/firebase').getFirestore();
+    await db.collection('driverLocations').doc(uid).set({
+      latitude: locationData.latitude,
+      longitude: locationData.longitude,
+      accuracy: locationData.accuracy || null,
+      speed: locationData.speed || null,
+      heading: locationData.heading || null,
+      bookingId: bookingId,
+      lastUpdated: new Date(),
+      updatedAt: new Date()
+    }, { merge: true });
+
+    // Emit real-time update via Socket.IO if available
+    try {
+      const { sendToUser } = require('../services/socket');
+      if (sendToUser) {
+        sendToUser(booking.customerId, 'driver_location_update', {
+          bookingId: bookingId,
+          driverId: uid,
+          location: {
+            latitude: locationData.latitude,
+            longitude: locationData.longitude,
+            timestamp: Date.now()
+          }
+        });
+      }
+    } catch (socketError) {
+      console.log('Socket.IO not available for real-time updates');
+    }
+
+    res.status(200).json({
+      success: true,
+      message: 'Driver location updated successfully',
+      data: {
+        bookingId: bookingId,
+        location: {
+          latitude: locationData.latitude,
+          longitude: locationData.longitude,
+          timestamp: Date.now()
+        }
+      },
+      timestamp: new Date().toISOString()
+    });
+
+  } catch (error) {
+    console.error('Error updating driver location:', error);
+    res.status(500).json({
+      success: false,
+      error: {
+        code: 'LOCATION_UPDATE_ERROR',
+        message: 'Failed to update driver location',
+        details: error.message
+      },
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
 module.exports = router;

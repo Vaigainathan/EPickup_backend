@@ -221,9 +221,11 @@ const optionalAuth = async (req, res, next) => {
 
 /**
  * Check if user owns the resource
- * @param {string} resourceUserId - User ID of the resource owner
+ * @param {string} resourceIdField - Field name containing the resource ID
+ * @param {string} resourceCollection - Collection name for the resource
  */
-const requireOwnership = (req, res, next) => {
+const requireOwnership = (resourceIdField = 'id', resourceCollection = 'users') => {
+  return async (req, res, next) => {
   if (!req.user) {
     return res.status(401).json({
       success: false,
@@ -236,25 +238,72 @@ const requireOwnership = (req, res, next) => {
     });
   }
 
-  // Admin users can access any resource
-  if (req.user.userType === 'admin') {
-    return next();
-  }
+    // Admin users can access any resource
+    if (req.user.userType === 'admin') {
+      return next();
+    }
 
-  // Check if user owns the resource
-  if (req.user.uid !== req.params.userId && req.user.uid !== req.body.userId) {
-    return res.status(403).json({
-      success: false,
-      error: {
-        code: 'FORBIDDEN',
-        message: 'Access denied',
-        details: 'You can only access your own resources'
-      },
-      timestamp: new Date().toISOString()
-    });
-  }
+    try {
+      const resourceId = req.params[resourceIdField] || req.body[resourceIdField];
+      if (!resourceId) {
+        return res.status(400).json({
+          success: false,
+          error: {
+            code: 'MISSING_RESOURCE_ID',
+            message: 'Resource ID is required',
+            details: `Resource ID field '${resourceIdField}' is missing`
+          },
+          timestamp: new Date().toISOString()
+        });
+      }
 
-  next();
+      // Get the resource from database to check ownership
+      const { getFirestore } = require('../services/firebase');
+      const db = getFirestore();
+      const resourceDoc = await db.collection(resourceCollection).doc(resourceId).get();
+
+      if (!resourceDoc.exists) {
+        return res.status(404).json({
+          success: false,
+          error: {
+            code: 'RESOURCE_NOT_FOUND',
+            message: 'Resource not found',
+            details: 'The specified resource does not exist'
+          },
+          timestamp: new Date().toISOString()
+        });
+      }
+
+      const resourceData = resourceDoc.data();
+      const resourceOwnerId = resourceData.customerId || resourceData.userId || resourceData.uid;
+
+      // Check if user owns the resource
+      if (req.user.uid !== resourceOwnerId) {
+        return res.status(403).json({
+          success: false,
+          error: {
+            code: 'FORBIDDEN',
+            message: 'Access denied',
+            details: 'You can only access your own resources'
+          },
+          timestamp: new Date().toISOString()
+        });
+      }
+
+      next();
+    } catch (error) {
+      console.error('Error checking resource ownership:', error);
+      return res.status(500).json({
+        success: false,
+        error: {
+          code: 'INTERNAL_SERVER_ERROR',
+          message: 'Failed to verify resource ownership',
+          details: 'An error occurred while checking resource permissions'
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+  };
 };
 
 /**

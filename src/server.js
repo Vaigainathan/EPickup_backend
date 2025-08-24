@@ -22,6 +22,10 @@ const notificationRoutes = require('./routes/notification');
 const fileUploadRoutes = require('./routes/fileUpload');
 const supportRoutes = require('./routes/support');
 const googleMapsRoutes = require('./routes/googleMaps');
+const realtimeRoutes = require('./routes/realtime');
+const fcmTokenRoutes = require('./routes/fcmTokens');
+const emergencyRoutes = require('./routes/emergency');
+const serviceAreaRoutes = require('./routes/serviceArea');
 
 // Import middleware
 const { errorHandler } = require('./middleware/errorHandler');
@@ -32,6 +36,8 @@ const { validateRequest } = require('./middleware/validation');
 const { initializeFirebase } = require('./services/firebase');
 const { initializeRedis } = require('./services/redis');
 const { initializeSocketIO } = require('./services/socket');
+const socketService = require('./services/socketService');
+const notificationService = require('./services/notificationService');
 
 const app = express();
 const PORT = env.getServerPort();
@@ -48,29 +54,23 @@ try {
 // Initialize Redis based on configuration
 if (env.isRedisEnabled()) {
   try {
-    initializeRedis();
-    console.log('✅ Redis initialization started');
-    
-    // Wait a bit for Redis to connect, but don't block server startup
-    setTimeout(async () => {
-      try {
-        const { getRedisClient } = require('./services/redis');
-        const redisClient = getRedisClient();
-        if (redisClient && redisClient.isReady) {
-          console.log('✅ Redis connection established');
-        } else {
-          console.log('⚠️  Redis not ready, continuing without Redis...');
-        }
-      } catch (error) {
-        console.log('⚠️  Redis not available, continuing without Redis...');
-      }
-    }, 2000);
+    initializeRedis().then(() => {
+      console.log('✅ Redis initialization completed');
+    }).catch((error) => {
+      console.log('⚠️  Redis initialization failed, continuing without Redis...');
+      console.error('Redis Error:', error.message);
+    });
   } catch (error) {
     console.log('⚠️  Redis initialization failed, continuing without Redis...');
+    console.error('Redis Error:', error.message);
   }
 } else {
   console.log('⚠️  Redis is disabled in configuration');
 }
+
+// Initialize WebSocket service
+const server = require('http').createServer(app);
+socketService.initialize(server);
 
 // Sentry is initialized in instrument.js
 const Sentry = require('../instrument.js');
@@ -268,6 +268,10 @@ app.use('/api/notifications', authMiddleware, notificationRoutes);
 app.use('/api/file-upload', authMiddleware, fileUploadRoutes);
 app.use('/api/support', authMiddleware, supportRoutes);
 app.use('/api/google-maps', googleMapsRoutes); // No auth required for Google Maps API
+app.use('/api/realtime', authMiddleware, realtimeRoutes);
+app.use('/api/fcm-tokens', authMiddleware, fcmTokenRoutes);
+app.use('/api/emergency', authMiddleware, emergencyRoutes);
+app.use('/api/service-area', serviceAreaRoutes); // No auth required for service area validation
 
 // Test Endpoints (No authentication required) - For Development Only
 if (process.env.NODE_ENV === 'development' || process.env.ENABLE_TEST_ENDPOINTS === 'true') {
@@ -354,9 +358,6 @@ if (Sentry && Sentry.Handlers && Sentry.Handlers.errorHandler) {
 // Error handling middleware
 app.use(errorHandler);
 
-// Initialize Socket.IO after Express app
-const server = require('http').createServer(app);
-
 // Initialize Socket.IO with error handling
 try {
   initializeSocketIO(server);
@@ -367,16 +368,28 @@ try {
 }
 
 // Start server
-server.listen(PORT, () => {
-  console.log(`🚀 EPickup Backend Server running on port ${PORT}`);
-  console.log(`📱 Environment: ${process.env.NODE_ENV || 'development'}`);
-  console.log(`🔗 Health Check: http://localhost:${PORT}/health`);
-  console.log(`📚 API Docs: http://localhost:${PORT}/api-docs`);
-  
-  if (process.env.NODE_ENV === 'development') {
-    console.log(`🔄 Auto-reload enabled with nodemon`);
-  }
-});
+try {
+  server.listen(PORT, () => {
+    console.log(`🚀 EPickup Backend Server running on port ${PORT}`);
+    console.log(`📱 Environment: ${process.env.NODE_ENV || 'development'}`);
+    console.log(`🔗 Health Check: http://localhost:${PORT}/health`);
+    console.log(`📚 API Docs: http://localhost:${PORT}/api-docs`);
+    
+    if (process.env.NODE_ENV === 'development') {
+      console.log(`🔄 Auto-reload enabled with nodemon`);
+    }
+  });
+
+  server.on('error', (error) => {
+    console.error('❌ Server error:', error);
+    if (error.code === 'EADDRINUSE') {
+      console.error(`Port ${PORT} is already in use. Please use a different port.`);
+    }
+  });
+} catch (error) {
+  console.error('❌ Failed to start server:', error);
+  process.exit(1);
+}
 
 // Graceful shutdown
 process.on('SIGTERM', () => {

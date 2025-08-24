@@ -10,6 +10,90 @@ const router = express.Router();
 const googleMapsClient = new Client({});
 
 /**
+ * @route GET /api/google-maps/places
+ * @desc Search places (compatible with frontend GooglePlacesAutocomplete)
+ * @access Public
+ */
+router.get('/places', 
+  validateRequest,
+  asyncHandler(async (req, res) => {
+    const { 
+      input, 
+      sessionToken, 
+      types = 'geocode', 
+      components = 'country:in', 
+      radius = 50000, 
+      location = '12.9716,77.5946', 
+      strictbounds = false 
+    } = req.query;
+
+    if (!input || input.trim().length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Input parameter is required',
+        error: {
+          code: 'MISSING_INPUT',
+          message: 'Input parameter is required for place search'
+        }
+      });
+    }
+
+    try {
+      const response = await googleMapsClient.placeAutocomplete({
+        params: {
+          input: input.trim(),
+          key: environmentConfig.getGoogleMapsApiKey(),
+          sessiontoken: sessionToken,
+          types: types,
+          components: components,
+          radius: parseInt(radius),
+          location: location,
+          strictbounds: strictbounds === 'true'
+        }
+      });
+
+      if (response.data.status === 'OK') {
+        const predictions = response.data.predictions.map(prediction => ({
+          place_id: prediction.place_id,
+          description: prediction.description,
+          structured_formatting: prediction.structured_formatting,
+          types: prediction.types,
+          matched_substrings: prediction.matched_substrings
+        }));
+
+        res.json({
+          success: true,
+          data: {
+            predictions,
+            status: response.data.status
+          },
+          message: 'Place search results retrieved successfully'
+        });
+      } else {
+        res.status(400).json({
+          success: false,
+          message: 'Failed to get place search results',
+          error: {
+            code: response.data.status,
+            message: response.data.error_message || 'Google Maps API error'
+          }
+        });
+      }
+    } catch (error) {
+      console.error('Google Maps Place Search Error:', error);
+      res.status(500).json({
+        success: false,
+        message: 'Failed to get place search results',
+        error: {
+          code: 'INTERNAL_ERROR',
+          message: 'Internal server error'
+        }
+      });
+    }
+  })
+);
+
+/**
  * @route GET /api/google-maps/places/autocomplete
  * @desc Get place autocomplete suggestions
  * @access Public

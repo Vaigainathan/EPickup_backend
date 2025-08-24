@@ -1,5 +1,6 @@
 const { getFirestore } = require('./firebase');
 const axios = require('axios');
+const serviceAreaValidation = require('./serviceAreaValidation');
 
 /**
  * Booking Service for EPickup delivery platform
@@ -36,6 +37,12 @@ class BookingService {
       const validation = this.validateBookingData(bookingData);
       if (!validation.isValid) {
         throw new Error(validation.errors.join(', '));
+      }
+
+      // Validate service area for booking locations
+      const serviceAreaValidation = await this.validateServiceArea(bookingData);
+      if (!serviceAreaValidation.isValid) {
+        throw new Error(serviceAreaValidation.message);
       }
 
       // Calculate distance and pricing
@@ -79,16 +86,16 @@ class BookingService {
           required: vehicle.required || false
         },
         
-        pricing: {
-          baseFare: pricing.baseFare,
-          distanceCharge: pricing.distanceCharge,
-          weightSurcharge: pricing.weightSurcharge,
-          surgeMultiplier: pricing.surgeMultiplier,
-          tax: pricing.tax,
-          totalAmount: pricing.totalAmount,
-          currency: 'INR',
-          paymentMethod
+        fare: {
+          base: pricing.baseFare,
+          distance: pricing.distanceCharge,
+          time: pricing.timeCharge || 0,
+          total: pricing.totalAmount,
+          currency: 'INR'
         },
+        
+        paymentMethod,
+        paymentStatus: 'pending',
         
         timing: {
           createdAt: new Date(),
@@ -154,6 +161,52 @@ class BookingService {
   }
 
   /**
+   * Create a booking from reorder data
+   * @param {Object} reorderData - Reorder information
+   * @returns {Object} Created booking
+   */
+  async createBookingFromReorder(reorderData) {
+    try {
+      const {
+        customerId,
+        originalOrderId,
+        pickup,
+        dropoff,
+        package: packageInfo,
+        vehicle,
+        paymentMethod,
+        estimatedPickupTime,
+        estimatedDeliveryTime
+      } = reorderData;
+
+      // Validate reorder data
+      if (!originalOrderId) {
+        throw new Error('Original order ID is required for reorder');
+      }
+
+      // Create booking data
+      const bookingData = {
+        customerId,
+        pickup,
+        dropoff,
+        package: packageInfo,
+        vehicle,
+        paymentMethod,
+        estimatedPickupTime,
+        estimatedDeliveryTime,
+        reorderedFrom: originalOrderId
+      };
+
+      // Use existing createBooking method
+      return await this.createBooking(bookingData);
+
+    } catch (error) {
+      console.error('Error creating booking from reorder:', error);
+      throw error;
+    }
+  }
+
+  /**
    * Calculate distance between two points using Google Maps API
    * @param {Object} origin - Origin coordinates
    * @param {Object} destination - Destination coordinates
@@ -201,6 +254,26 @@ class BookingService {
     
     const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
     return R * c;
+  }
+
+  /**
+   * Calculate estimated delivery time based on distance
+   * @param {number} distance - Distance in kilometers
+   * @returns {string} Estimated time in human-readable format
+   */
+  calculateEstimatedTime(distance) {
+    // Average speed: 20 km/h for 2-wheeler in city traffic
+    const averageSpeed = 20; // km/h
+    const timeInHours = distance / averageSpeed;
+    const timeInMinutes = Math.round(timeInHours * 60);
+    
+    if (timeInMinutes < 60) {
+      return `${timeInMinutes} min`;
+    } else {
+      const hours = Math.floor(timeInMinutes / 60);
+      const minutes = timeInMinutes % 60;
+      return `${hours}h ${minutes}min`;
+    }
   }
 
   /**
@@ -685,19 +758,23 @@ class BookingService {
   }
 
   /**
-   * Get customer's booking history
+   * Get customer bookings with enhanced data for order history
    * @param {string} customerId - Customer ID
    * @param {Object} filters - Filter options
-   * @returns {Object} Booking history
+   * @returns {Object} Enhanced booking history
    */
-  async getCustomerBookings(customerId, filters = {}) {
+  async getCustomerBookingsEnhanced(customerId, filters = {}) {
     try {
       let query = this.db.collection('bookings')
         .where('customerId', '==', customerId);
 
       // Apply filters
       if (filters.status) {
-        query = query.where('status', '==', filters.status);
+        if (Array.isArray(filters.status)) {
+          query = query.where('status', 'in', filters.status);
+        } else {
+          query = query.where('status', '==', filters.status);
+        }
       }
 
       if (filters.startDate) {
@@ -723,12 +800,103 @@ class BookingService {
       const snapshot = await query.get();
       const bookings = [];
 
-      snapshot.forEach(doc => {
-        bookings.push({
+      // Process each booking and enrich with additional data
+      for (const doc of snapshot.docs) {
+        const bookingData = doc.data();
+        
+        // Format booking for frontend consumption
+        const formattedBooking = {
           id: doc.id,
-          ...doc.data()
-        });
-      });
+          bookingId: bookingData.id || doc.id,
+          status: bookingData.status,
+          date: bookingData.timing?.createdAt?.toDate?.() || bookingData.createdAt?.toDate?.() || new Date(),
+          
+          // Pickup information
+          pickup: {
+            name: bookingData.pickup?.name || '',
+            phone: bookingData.pickup?.phone || '',
+            address: bookingData.pickup?.address || '',
+            coordinates: bookingData.pickup?.coordinates || null,
+            instructions: bookingData.pickup?.instructions || ''
+          },
+          
+          // Dropoff information
+          dropoff: {
+            name: bookingData.dropoff?.name || '',
+            phone: bookingData.dropoff?.phone || '',
+            address: bookingData.dropoff?.address || '',
+            coordinates: bookingData.dropoff?.coordinates || null,
+            instructions: bookingData.dropoff?.instructions || ''
+          },
+          
+          // Vehicle information
+          vehicleType: bookingData.vehicle?.type || '2_wheeler',
+          
+          // Package information
+          package: {
+            weight: bookingData.package?.weight || 0,
+            description: bookingData.package?.description || '',
+            dimensions: bookingData.package?.dimensions || null,
+            isFragile: bookingData.package?.isFragile || false,
+            requiresSpecialHandling: bookingData.package?.requiresSpecialHandling || false
+          },
+          
+          // Fare information
+          price: `₹${bookingData.fare?.total || 0}`,
+          fare: {
+            base: bookingData.fare?.base || 0,
+            distance: bookingData.fare?.distance || 0,
+            time: bookingData.fare?.time || 0,
+            total: bookingData.fare?.total || 0,
+            currency: bookingData.fare?.currency || 'INR'
+          },
+          
+          // Distance information
+          distance: bookingData.distance?.total || 0,
+          
+          // Payment information
+          paymentMethod: bookingData.paymentMethod || 'cash',
+          paymentStatus: bookingData.paymentStatus || 'pending',
+          
+          // Timing information
+          estimatedPickupTime: bookingData.timing?.estimatedPickupTime,
+          estimatedDeliveryTime: bookingData.timing?.estimatedDeliveryTime,
+          actualPickupTime: bookingData.timing?.actualPickupTime,
+          actualDeliveryTime: bookingData.timing?.actualDeliveryTime,
+          
+          // Driver information
+          driver: null,
+          
+          // Rating information
+          rating: bookingData.rating || null,
+          
+          // Reorder information
+          canReorder: bookingData.status === 'delivered',
+          reorderedFrom: bookingData.reorderedFrom || null
+        };
+
+        // Fetch driver information if available and requested
+        if (filters.includeDriver !== false && bookingData.driverId) {
+          try {
+            const driverDoc = await this.db.collection('users').doc(bookingData.driverId).get();
+            if (driverDoc.exists) {
+              const driverData = driverDoc.data();
+              formattedBooking.driver = {
+                id: bookingData.driverId,
+                name: driverData.profile?.name || driverData.personalInfo?.name || 'Driver',
+                phone: driverData.phoneNumber || '',
+                rating: driverData.driver?.rating || 0,
+                vehicleNumber: driverData.driver?.vehicleInfo?.vehicleNumber || '',
+                profileImage: driverData.profile?.profilePicture || null
+              };
+            }
+          } catch (driverError) {
+            console.warn('Failed to fetch driver info for booking:', doc.id, driverError.message);
+          }
+        }
+
+        bookings.push(formattedBooking);
+      }
 
       return {
         success: true,
@@ -736,12 +904,13 @@ class BookingService {
         data: {
           bookings,
           total: bookings.length,
+          hasMore: bookings.length === (filters.limit || 20),
           filters
         }
       };
 
     } catch (error) {
-      console.error('Error getting customer bookings:', error);
+      console.error('Error getting enhanced customer bookings:', error);
       throw error;
     }
   }
@@ -806,6 +975,31 @@ class BookingService {
       console.error('Error getting driver trips:', error);
       throw error;
     }
+  }
+
+  /**
+   * Validate service area for booking locations
+   * @param {Object} bookingData - Booking data
+   * @returns {Object} Validation result
+   */
+  async validateServiceArea(bookingData) {
+    try {
+      return serviceAreaValidation.validateBookingLocations(bookingData);
+    } catch (error) {
+      console.error('Error validating service area:', error);
+      return {
+        isValid: false,
+        message: 'Failed to validate service area'
+      };
+    }
+  }
+
+  /**
+   * Get service area information
+   * @returns {Object} Service area information
+   */
+  getServiceAreaInfo() {
+    return serviceAreaValidation.getServiceAreaInfo();
   }
 }
 

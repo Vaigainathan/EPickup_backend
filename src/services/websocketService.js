@@ -134,6 +134,21 @@ class WebSocketService {
         this.handlePresenceUpdate(socket, data);
       });
 
+      // Handle booking status updates
+      socket.on('update_booking_status', (data) => {
+        this.handleBookingStatusUpdate(socket, data);
+      });
+
+      // Handle driver assignments
+      socket.on('assign_driver', (data) => {
+        this.handleDriverAssignment(socket, data);
+      });
+
+      // Handle ETA updates
+      socket.on('update_eta', (data) => {
+        this.handleETAUpdate(socket, data);
+      });
+
       // Handle error
       socket.on('error', (error) => {
         console.error(`WebSocket error for user ${userId}:`, error);
@@ -465,6 +480,311 @@ class WebSocketService {
 
     } catch (error) {
       console.error('Error handling presence update:', error);
+    }
+  }
+
+  /**
+   * Handle booking status update
+   * @param {Socket} socket - Socket instance
+   * @param {Object} data - Status update data
+   */
+  handleBookingStatusUpdate(socket, data) {
+    try {
+      const { bookingId, status, driverInfo, estimatedTime } = data;
+      const { userId, userType } = socket;
+
+      if (!bookingId || !status) {
+        socket.emit('error', {
+          code: 'INVALID_STATUS_DATA',
+          message: 'Booking ID and status are required'
+        });
+        return;
+      }
+
+      console.log(`📊 Booking status update: ${bookingId} -> ${status}`);
+
+      // Get booking details to find participants
+      this.getBookingParticipants(bookingId).then(participants => {
+        const statusUpdateData = {
+          bookingId,
+          status,
+          driverInfo,
+          estimatedTime,
+          timestamp: new Date().toISOString(),
+          updatedBy: userId
+        };
+
+        // Broadcast to all booking participants
+        participants.forEach(participantId => {
+          this.io.to(`user:${participantId}`).emit('booking_status_updated', statusUpdateData);
+        });
+
+        // Also broadcast to trip room
+        this.io.to(`trip:${bookingId}`).emit('booking_status_updated', statusUpdateData);
+
+        // Send specific notifications based on status
+        this.handleStatusSpecificNotifications(bookingId, status, driverInfo, participants);
+
+        // Confirm status update
+        socket.emit('status_update_confirmed', {
+          success: true,
+          message: 'Status update sent successfully',
+          data: {
+            bookingId,
+            status,
+            timestamp: new Date().toISOString()
+          }
+        });
+      }).catch(error => {
+        console.error('Error getting booking participants:', error);
+        socket.emit('error', {
+          code: 'STATUS_UPDATE_ERROR',
+          message: 'Failed to process status update'
+        });
+      });
+
+    } catch (error) {
+      console.error('Error handling booking status update:', error);
+      socket.emit('error', {
+        code: 'STATUS_UPDATE_ERROR',
+        message: 'Failed to process status update'
+      });
+    }
+  }
+
+  /**
+   * Handle driver assignment notification
+   * @param {Socket} socket - Socket instance
+   * @param {Object} data - Driver assignment data
+   */
+  handleDriverAssignment(socket, data) {
+    try {
+      const { bookingId, driverInfo, estimatedArrival } = data;
+      const { userId } = socket;
+
+      if (!bookingId || !driverInfo) {
+        socket.emit('error', {
+          code: 'INVALID_ASSIGNMENT_DATA',
+          message: 'Booking ID and driver info are required'
+        });
+        return;
+      }
+
+      console.log(`🚗 Driver assigned to booking: ${bookingId}`);
+
+      const assignmentData = {
+        bookingId,
+        driver: {
+          id: driverInfo.id,
+          name: driverInfo.name,
+          phone: driverInfo.phone,
+          vehicleNumber: driverInfo.vehicleNumber,
+          rating: driverInfo.rating,
+          currentLocation: driverInfo.currentLocation,
+          estimatedArrival
+        },
+        timestamp: new Date().toISOString()
+      };
+
+      // Get booking participants
+      this.getBookingParticipants(bookingId).then(participants => {
+        // Notify customer about driver assignment
+        participants.forEach(participantId => {
+          this.io.to(`user:${participantId}`).emit('driver_assigned', assignmentData);
+        });
+
+        // Notify driver about new assignment
+        this.io.to(`user:${driverInfo.id}`).emit('new_booking_assigned', {
+          bookingId,
+          customerInfo: participants.find(p => p !== driverInfo.id),
+          timestamp: new Date().toISOString()
+        });
+
+        // Broadcast to trip room
+        this.io.to(`trip:${bookingId}`).emit('driver_assigned', assignmentData);
+      });
+
+      // Confirm assignment
+      socket.emit('assignment_confirmed', {
+        success: true,
+        message: 'Driver assignment notification sent',
+        data: {
+          bookingId,
+          timestamp: new Date().toISOString()
+        }
+      });
+
+    } catch (error) {
+      console.error('Error handling driver assignment:', error);
+      socket.emit('error', {
+        code: 'ASSIGNMENT_ERROR',
+        message: 'Failed to process driver assignment'
+      });
+    }
+  }
+
+  /**
+   * Handle ETA update
+   * @param {Socket} socket - Socket instance
+   * @param {Object} data - ETA update data
+   */
+  handleETAUpdate(socket, data) {
+    try {
+      const { bookingId, etaType, estimatedTime, currentLocation } = data;
+      const { userId } = socket;
+
+      if (!bookingId || !etaType || !estimatedTime) {
+        socket.emit('error', {
+          code: 'INVALID_ETA_DATA',
+          message: 'Booking ID, ETA type, and estimated time are required'
+        });
+        return;
+      }
+
+      console.log(`⏰ ETA update for booking ${bookingId}: ${etaType} -> ${estimatedTime}`);
+
+      const etaData = {
+        bookingId,
+        etaType, // 'pickup' | 'delivery'
+        estimatedTime,
+        currentLocation,
+        timestamp: new Date().toISOString(),
+        updatedBy: userId
+      };
+
+      // Get booking participants
+      this.getBookingParticipants(bookingId).then(participants => {
+        // Notify all participants
+        participants.forEach(participantId => {
+          this.io.to(`user:${participantId}`).emit('eta_updated', etaData);
+        });
+
+        // Broadcast to trip room
+        this.io.to(`trip:${bookingId}`).emit('eta_updated', etaData);
+      });
+
+      // Confirm ETA update
+      socket.emit('eta_update_confirmed', {
+        success: true,
+        message: 'ETA update sent successfully',
+        data: {
+          bookingId,
+          etaType,
+          timestamp: new Date().toISOString()
+        }
+      });
+
+    } catch (error) {
+      console.error('Error handling ETA update:', error);
+      socket.emit('error', {
+        code: 'ETA_UPDATE_ERROR',
+        message: 'Failed to process ETA update'
+      });
+    }
+  }
+
+  /**
+   * Get booking participants (customer and driver)
+   * @param {string} bookingId - Booking ID
+   * @returns {Promise<Array>} Array of participant user IDs
+   */
+  async getBookingParticipants(bookingId) {
+    try {
+      const { getFirestore } = require('./firebase');
+      const db = getFirestore();
+      
+      const bookingDoc = await db.collection('bookings').doc(bookingId).get();
+      if (!bookingDoc.exists) {
+        return [];
+      }
+
+      const bookingData = bookingDoc.data();
+      const participants = [bookingData.customerId];
+
+      if (bookingData.driverId) {
+        participants.push(bookingData.driverId);
+      }
+
+      return participants;
+    } catch (error) {
+      console.error('Error getting booking participants:', error);
+      return [];
+    }
+  }
+
+  /**
+   * Handle status-specific notifications
+   * @param {string} bookingId - Booking ID
+   * @param {string} status - New status
+   * @param {Object} driverInfo - Driver information
+   * @param {Array} participants - Booking participants
+   */
+  handleStatusSpecificNotifications(bookingId, status, driverInfo, participants) {
+    try {
+      const notificationData = {
+        bookingId,
+        status,
+        timestamp: new Date().toISOString()
+      };
+
+      switch (status) {
+        case 'driver_assigned':
+          // Notify customer about driver assignment
+          participants.forEach(participantId => {
+            if (participantId !== driverInfo?.id) {
+              this.io.to(`user:${participantId}`).emit('driver_assigned_notification', {
+                ...notificationData,
+                driver: driverInfo
+              });
+            }
+          });
+          break;
+
+        case 'driver_enroute':
+          // Notify customer that driver is on the way
+          participants.forEach(participantId => {
+            if (participantId !== driverInfo?.id) {
+              this.io.to(`user:${participantId}`).emit('driver_enroute_notification', notificationData);
+            }
+          });
+          break;
+
+        case 'driver_arrived':
+          // Notify customer that driver has arrived
+          participants.forEach(participantId => {
+            if (participantId !== driverInfo?.id) {
+              this.io.to(`user:${participantId}`).emit('driver_arrived_notification', notificationData);
+            }
+          });
+          break;
+
+        case 'picked_up':
+          // Notify customer that package has been picked up
+          participants.forEach(participantId => {
+            if (participantId !== driverInfo?.id) {
+              this.io.to(`user:${participantId}`).emit('package_picked_up_notification', notificationData);
+            }
+          });
+          break;
+
+        case 'delivered':
+          // Notify customer that package has been delivered
+          participants.forEach(participantId => {
+            if (participantId !== driverInfo?.id) {
+              this.io.to(`user:${participantId}`).emit('package_delivered_notification', notificationData);
+            }
+          });
+          break;
+
+        case 'cancelled':
+          // Notify all participants about cancellation
+          participants.forEach(participantId => {
+            this.io.to(`user:${participantId}`).emit('booking_cancelled_notification', notificationData);
+          });
+          break;
+      }
+    } catch (error) {
+      console.error('Error handling status-specific notifications:', error);
     }
   }
 

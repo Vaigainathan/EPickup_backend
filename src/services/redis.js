@@ -25,16 +25,18 @@ const initializeRedis = async () => {
       password: redisConfig.password,
       database: redisConfig.db,
       socket: {
-        connectTimeout: 10000,
-        lazyConnect: true,
+        connectTimeout: 15000,
+        lazyConnect: false,
         reconnectStrategy: (retries) => {
-          if (retries > 10) {
+          if (retries > 5) {
             console.error('Redis max reconnection attempts reached');
             return false;
           }
-          return Math.min(retries * 100, 3000);
+          return Math.min(retries * 200, 2000);
         }
-      }
+      },
+      retryDelayOnFailover: 100,
+      maxRetriesPerRequest: 3
     });
 
     // Handle Redis events

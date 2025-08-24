@@ -4,6 +4,7 @@ const bookingService = require('../services/bookingService');
 const { requireRole, requireCustomer, requireDriver } = require('../middleware/auth');
 const { userRateLimit } = require('../middleware/auth');
 const { getFirestore } = require('../services/firebase');
+const { requireOwnership } = require('../middleware/auth');
 
 const router = express.Router();
 
@@ -100,6 +101,298 @@ router.post('/', [
       error: {
         code: 'BOOKING_CREATION_ERROR',
         message: 'Failed to create booking',
+        details: error.message
+      },
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+/**
+ * @route   POST /api/bookings/confirm
+ * @desc    Confirm booking with final details (review booking screen)
+ * @access  Private (Customer only)
+ */
+router.post('/confirm', [
+  requireCustomer,
+  userRateLimit(3, 5 * 60 * 1000), // 3 attempts per 5 minutes
+  body('bookingId')
+    .isString()
+    .withMessage('Booking ID is required'),
+  body('pickup.name')
+    .optional()
+    .isLength({ min: 2, max: 50 })
+    .withMessage('Pickup name must be between 2 and 50 characters'),
+  body('pickup.phone')
+    .optional()
+    .isMobilePhone('en-IN')
+    .withMessage('Please provide a valid Indian phone number for pickup'),
+  body('pickup.address')
+    .optional()
+    .isLength({ min: 10, max: 200 })
+    .withMessage('Pickup address must be between 10 and 200 characters'),
+  body('pickup.coordinates.latitude')
+    .optional()
+    .isFloat({ min: -90, max: 90 })
+    .withMessage('Pickup latitude must be between -90 and 90'),
+  body('pickup.coordinates.longitude')
+    .optional()
+    .isFloat({ min: -180, max: 180 })
+    .withMessage('Pickup longitude must be between -180 and 180'),
+  body('dropoff.name')
+    .optional()
+    .isLength({ min: 2, max: 50 })
+    .withMessage('Dropoff name must be between 2 and 50 characters'),
+  body('dropoff.phone')
+    .optional()
+    .isMobilePhone('en-IN')
+    .withMessage('Please provide a valid Indian phone number for dropoff'),
+  body('dropoff.address')
+    .optional()
+    .isLength({ min: 10, max: 200 })
+    .withMessage('Dropoff address must be between 10 and 200 characters'),
+  body('dropoff.coordinates.latitude')
+    .optional()
+    .isFloat({ min: -90, max: 90 })
+    .withMessage('Dropoff latitude must be between -90 and 90'),
+  body('dropoff.coordinates.longitude')
+    .optional()
+    .isFloat({ min: -180, max: 180 })
+    .withMessage('Dropoff longitude must be between -180 and 180'),
+  body('package.weight')
+    .optional()
+    .isFloat({ min: 0.1, max: 50 })
+    .withMessage('Package weight must be between 0.1 and 50 kg'),
+  body('paymentMethod')
+    .isIn(['cash', 'online', 'wallet'])
+    .withMessage('Payment method must be cash, online, or wallet'),
+  body('estimatedPickupTime')
+    .optional()
+    .isISO8601()
+    .withMessage('Estimated pickup time must be a valid ISO 8601 date'),
+  body('estimatedDeliveryTime')
+    .optional()
+    .isISO8601()
+    .withMessage('Estimated delivery time must be a valid ISO 8601 date')
+], async (req, res) => {
+  try {
+    // Check validation errors
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'VALIDATION_ERROR',
+          message: 'Validation failed',
+          details: errors.array()
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    const { bookingId, ...updateData } = req.body;
+    const { uid } = req.user;
+
+    // Get existing booking
+    const existingBooking = await bookingService.getBookingDetails(bookingId);
+    if (!existingBooking.success) {
+      return res.status(404).json({
+        success: false,
+        error: {
+          code: 'BOOKING_NOT_FOUND',
+          message: 'Booking not found',
+          details: 'The specified booking does not exist'
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    const { booking } = existingBooking.data;
+
+    // Check if user owns this booking
+    if (booking.customerId !== uid) {
+      return res.status(403).json({
+        success: false,
+        error: {
+          code: 'ACCESS_DENIED',
+          message: 'Access denied',
+          details: 'You can only confirm your own bookings'
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    // Check if booking can be confirmed
+    if (booking.status !== 'pending') {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'INVALID_STATUS',
+          message: 'Invalid booking status',
+          details: 'Booking cannot be confirmed in its current status'
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    // Update booking with final details
+    const updatedBookingData = {
+      ...booking,
+      ...updateData,
+      status: 'confirmed',
+      confirmedAt: new Date(),
+      updatedAt: new Date()
+    };
+
+    // Recalculate fare if weight or locations changed
+    if (updateData.package?.weight || updateData.pickup?.coordinates || updateData.dropoff?.coordinates) {
+      const pickupCoords = updateData.pickup?.coordinates || booking.pickup.coordinates;
+      const dropoffCoords = updateData.dropoff?.coordinates || booking.dropoff.coordinates;
+      const weight = updateData.package?.weight || booking.package.weight;
+
+      const distance = await bookingService.calculateDistance(pickupCoords, dropoffCoords);
+      const pricing = await bookingService.calculatePricing(distance, weight, booking.vehicle.type);
+
+      updatedBookingData.fare = {
+        base: pricing.baseFare,
+        distance: pricing.distanceCharge,
+        time: pricing.timeCharge || 0,
+        total: pricing.totalAmount,
+        currency: 'INR'
+      };
+    }
+
+    // Update booking in database
+    const db = getFirestore();
+    await db.collection('bookings').doc(bookingId).update(updatedBookingData);
+
+    // Get updated booking details
+    const result = await bookingService.getBookingDetails(bookingId);
+
+    // Send confirmation notification
+    try {
+      const notificationService = require('../services/notificationService');
+      await notificationService.sendNotificationToUser(uid, 'booking_confirmed', {
+        bookingId,
+        booking: result.data.booking
+      });
+    } catch (notificationError) {
+      console.error('Failed to send confirmation notification:', notificationError);
+    }
+
+    res.status(200).json({
+      success: true,
+      message: 'Booking confirmed successfully',
+      data: result.data,
+      timestamp: new Date().toISOString()
+    });
+
+  } catch (error) {
+    console.error('Error confirming booking:', error);
+    res.status(500).json({
+      success: false,
+      error: {
+        code: 'BOOKING_CONFIRMATION_ERROR',
+        message: 'Failed to confirm booking',
+        details: error.message
+      },
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+/**
+ * @route   POST /api/bookings/preview
+ * @desc    Preview booking with calculated fare (before confirmation)
+ * @access  Private (Customer only)
+ */
+router.post('/preview', [
+  requireCustomer,
+  body('pickup.coordinates.latitude')
+    .isFloat({ min: -90, max: 90 })
+    .withMessage('Pickup latitude must be between -90 and 90'),
+  body('pickup.coordinates.longitude')
+    .isFloat({ min: -180, max: 180 })
+    .withMessage('Pickup longitude must be between -180 and 180'),
+  body('dropoff.coordinates.latitude')
+    .isFloat({ min: -90, max: 90 })
+    .withMessage('Dropoff latitude must be between -90 and 90'),
+  body('dropoff.coordinates.longitude')
+    .isFloat({ min: -180, max: 180 })
+    .withMessage('Dropoff longitude must be between -180 and 180'),
+  body('package.weight')
+    .isFloat({ min: 0.1, max: 50 })
+    .withMessage('Package weight must be between 0.1 and 50 kg'),
+  body('vehicle.type')
+    .isIn(['2_wheeler'])
+    .withMessage('Vehicle type must be 2_wheeler')
+], async (req, res) => {
+  try {
+    // Check validation errors
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'VALIDATION_ERROR',
+          message: 'Validation failed',
+          details: errors.array()
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    const { pickup, dropoff, package: packageInfo, vehicle } = req.body;
+
+    // Calculate distance and pricing
+    const distance = await bookingService.calculateDistance(pickup.coordinates, dropoff.coordinates);
+    const pricing = await bookingService.calculatePricing(distance, packageInfo.weight, vehicle.type);
+    const estimatedTime = bookingService.calculateEstimatedTime(distance);
+
+    // Format response to match frontend expectations
+    const chargeCalculation = {
+      distance: distance,
+      baseRate: pricing.ratePerKm,
+      totalCharge: pricing.totalAmount,
+      currency: 'INR',
+      estimatedTime: estimatedTime,
+      breakdown: {
+        distanceCharge: pricing.distanceCharge,
+        baseFare: pricing.baseFare,
+        timeCharge: pricing.timeCharge || 0,
+        total: pricing.totalAmount
+      }
+    };
+
+    // Create preview booking data
+    const previewBooking = {
+      id: `PREVIEW_${Date.now()}`,
+      pickup,
+      dropoff,
+      package: packageInfo,
+      vehicle,
+      fare: chargeCalculation,
+      estimatedPickupTime: new Date(Date.now() + 10 * 60 * 1000).toISOString(),
+      estimatedDeliveryTime: new Date(Date.now() + 30 * 60 * 1000).toISOString()
+    };
+
+    res.status(200).json({
+      success: true,
+      message: 'Booking preview generated successfully',
+      data: {
+        booking: previewBooking,
+        chargeCalculation
+      },
+      timestamp: new Date().toISOString()
+    });
+
+  } catch (error) {
+    console.error('Error generating booking preview:', error);
+    res.status(500).json({
+      success: false,
+      error: {
+        code: 'BOOKING_PREVIEW_ERROR',
+        message: 'Failed to generate booking preview',
         details: error.message
       },
       timestamp: new Date().toISOString()
@@ -943,6 +1236,328 @@ router.get('/driver/:driverId', [
       error: {
         code: 'DRIVER_TRIPS_ERROR',
         message: 'Failed to retrieve driver trips',
+        details: error.message
+      },
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+/**
+ * @route   POST /api/bookings/calculate-fare
+ * @desc    Calculate fare for a booking without creating it
+ * @access  Private (Customer only)
+ */
+router.post('/calculate-fare', [
+  requireCustomer,
+  body('pickup.coordinates.latitude')
+    .isFloat({ min: -90, max: 90 })
+    .withMessage('Pickup latitude must be between -90 and 90'),
+  body('pickup.coordinates.longitude')
+    .isFloat({ min: -180, max: 180 })
+    .withMessage('Pickup longitude must be between -180 and 180'),
+  body('dropoff.coordinates.latitude')
+    .isFloat({ min: -90, max: 90 })
+    .withMessage('Dropoff latitude must be between -90 and 90'),
+  body('dropoff.coordinates.longitude')
+    .isFloat({ min: -180, max: 180 })
+    .withMessage('Dropoff longitude must be between -180 and 180'),
+  body('package.weight')
+    .isFloat({ min: 0.1, max: 50 })
+    .withMessage('Package weight must be between 0.1 and 50 kg'),
+  body('vehicle.type')
+    .isIn(['2_wheeler'])
+    .withMessage('Vehicle type must be 2_wheeler')
+], async (req, res) => {
+  try {
+    // Check validation errors
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'VALIDATION_ERROR',
+          message: 'Validation failed',
+          details: errors.array()
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    const { pickup, dropoff, package: packageInfo, vehicle } = req.body;
+
+    // Calculate distance and pricing
+    const distance = await bookingService.calculateDistance(pickup.coordinates, dropoff.coordinates);
+    const pricing = await bookingService.calculatePricing(distance, packageInfo.weight, vehicle.type);
+
+    // Format response to match frontend expectations
+    const chargeCalculation = {
+      distance: distance,
+      baseRate: pricing.ratePerKm,
+      totalCharge: pricing.totalAmount,
+      currency: 'INR',
+      estimatedTime: bookingService.calculateEstimatedTime(distance),
+      breakdown: {
+        distanceCharge: pricing.distanceCharge,
+        baseFare: pricing.baseFare,
+        total: pricing.totalAmount
+      }
+    };
+
+    res.status(200).json({
+      success: true,
+      message: 'Fare calculated successfully',
+      data: chargeCalculation,
+      timestamp: new Date().toISOString()
+    });
+
+  } catch (error) {
+    console.error('Error calculating fare:', error);
+    res.status(500).json({
+      success: false,
+      error: {
+        code: 'FARE_CALCULATION_ERROR',
+        message: 'Failed to calculate fare',
+        details: error.message
+      },
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+/**
+ * @route   POST /api/bookings/:id/search-drivers
+ * @desc    Search for available drivers for a booking
+ * @access  Private (Customer only)
+ */
+router.post('/:id/search-drivers', [
+  requireCustomer,
+  requireOwnership('id', 'bookings'),
+  userRateLimit(5, 2 * 60 * 1000), // 5 attempts per 2 minutes
+], async (req, res) => {
+  try {
+    const { id: bookingId } = req.params;
+    const { uid } = req.user;
+    const { searchRadius = 5, vehicleType = '2_wheeler' } = req.body;
+
+    // Get booking details
+    const bookingResult = await bookingService.getBookingDetails(bookingId);
+    if (!bookingResult.success) {
+      return res.status(404).json({
+        success: false,
+        error: {
+          code: 'BOOKING_NOT_FOUND',
+          message: 'Booking not found',
+          details: 'The specified booking does not exist'
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    const { booking } = bookingResult.data;
+
+    // Check if booking is in correct status for driver search
+    if (booking.status !== 'confirmed') {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'INVALID_BOOKING_STATUS',
+          message: 'Invalid booking status for driver search',
+          details: 'Booking must be confirmed before searching for drivers'
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    // Import driver matching service
+    const DriverMatchingService = require('../services/driverMatchingService');
+    const driverMatchingService = new DriverMatchingService();
+
+    // Search for available drivers
+    const searchResult = await driverMatchingService.findAndMatchDriver(booking, {
+      searchRadius,
+      vehicleType,
+      maxWeight: booking.package?.weight || 10,
+      priority: 'balanced'
+    });
+
+    if (!searchResult.success) {
+      return res.status(404).json({
+        success: false,
+        error: {
+          code: 'NO_DRIVERS_AVAILABLE',
+          message: 'No drivers available',
+          details: searchResult.error?.details || 'No drivers found in the area'
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    // Format driver data for frontend
+    const formattedDrivers = searchResult.data.driver ? [{
+      id: searchResult.data.driver.driverId,
+      name: searchResult.data.driver.name,
+      phone: searchResult.data.driver.phone,
+      vehicleNumber: searchResult.data.driver.vehicleInfo?.vehicleNumber || 'N/A',
+      rating: searchResult.data.driver.driver?.rating || 0,
+      totalTrips: searchResult.data.driver.driver?.totalTrips || 0,
+      currentLocation: searchResult.data.driver.currentLocation,
+      estimatedArrival: searchResult.data.driver.estimatedArrival,
+      distance: searchResult.data.driver.distance,
+      vehicleType: searchResult.data.driver.vehicleType,
+      isAssigned: true
+    }] : [];
+
+    // Add alternative drivers
+    if (searchResult.data.alternatives) {
+      searchResult.data.alternatives.forEach(driver => {
+        formattedDrivers.push({
+          id: driver.driverId,
+          name: driver.name,
+          phone: driver.phone,
+          vehicleNumber: driver.vehicleInfo?.vehicleNumber || 'N/A',
+          rating: driver.driver?.rating || 0,
+          totalTrips: driver.driver?.totalTrips || 0,
+          currentLocation: driver.currentLocation,
+          estimatedArrival: driver.estimatedArrival,
+          distance: driver.distance,
+          vehicleType: driver.vehicleType,
+          isAssigned: false
+        });
+      });
+    }
+
+    // Update booking status to searching
+    const db = getFirestore();
+    await db.collection('bookings').doc(bookingId).update({
+      status: 'searching',
+      'timing.searchStartedAt': new Date(),
+      updatedAt: new Date()
+    });
+
+    // Send real-time notification to customer
+    try {
+      const { getSocketIO } = require('../services/socket');
+      const io = getSocketIO();
+      io.to(`user:${uid}`).emit('driver_search_started', {
+        bookingId,
+        drivers: formattedDrivers,
+        searchRadius,
+        totalDriversFound: searchResult.data.totalDriversFound,
+        timestamp: new Date().toISOString()
+      });
+    } catch (socketError) {
+      console.error('Failed to send driver search notification:', socketError);
+    }
+
+    res.status(200).json({
+      success: true,
+      message: 'Driver search initiated successfully',
+      data: {
+        bookingId,
+        drivers: formattedDrivers,
+        searchRadius,
+        totalDriversFound: searchResult.data.totalDriversFound,
+        estimatedSearchTime: '30-60 seconds',
+        status: 'searching'
+      },
+      timestamp: new Date().toISOString()
+    });
+
+  } catch (error) {
+    console.error('Error searching for drivers:', error);
+    res.status(500).json({
+      success: false,
+      error: {
+        code: 'DRIVER_SEARCH_ERROR',
+        message: 'Failed to search for drivers',
+        details: error.message
+      },
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+/**
+ * @route   POST /api/bookings/:id/cancel-search
+ * @desc    Cancel driver search for a booking
+ * @access  Private (Customer only)
+ */
+router.post('/:id/cancel-search', [
+  requireCustomer,
+  requireOwnership('id', 'bookings'),
+  userRateLimit(3, 60 * 1000), // 3 attempts per minute
+], async (req, res) => {
+  try {
+    const { id: bookingId } = req.params;
+    const { uid } = req.user;
+
+    // Get booking details
+    const bookingResult = await bookingService.getBookingDetails(bookingId);
+    if (!bookingResult.success) {
+      return res.status(404).json({
+        success: false,
+        error: {
+          code: 'BOOKING_NOT_FOUND',
+          message: 'Booking not found',
+          details: 'The specified booking does not exist'
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    const { booking } = bookingResult.data;
+
+    // Check if booking is in searching status
+    if (booking.status !== 'searching') {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'INVALID_BOOKING_STATUS',
+          message: 'Invalid booking status for canceling search',
+          details: 'Booking must be in searching status to cancel driver search'
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    // Update booking status back to confirmed
+    const db = getFirestore();
+    await db.collection('bookings').doc(bookingId).update({
+      status: 'confirmed',
+      'timing.searchCancelledAt': new Date(),
+      updatedAt: new Date()
+    });
+
+    // Send real-time notification to customer
+    try {
+      const { getSocketIO } = require('../services/socket');
+      const io = getSocketIO();
+      io.to(`user:${uid}`).emit('driver_search_cancelled', {
+        bookingId,
+        timestamp: new Date().toISOString()
+      });
+    } catch (socketError) {
+      console.error('Failed to send search cancellation notification:', socketError);
+    }
+
+    res.status(200).json({
+      success: true,
+      message: 'Driver search cancelled successfully',
+      data: {
+        bookingId,
+        status: 'confirmed'
+      },
+      timestamp: new Date().toISOString()
+    });
+
+  } catch (error) {
+    console.error('Error cancelling driver search:', error);
+    res.status(500).json({
+      success: false,
+      error: {
+        code: 'SEARCH_CANCELLATION_ERROR',
+        message: 'Failed to cancel driver search',
         details: error.message
       },
       timestamp: new Date().toISOString()

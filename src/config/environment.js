@@ -94,6 +94,33 @@ class EnvironmentConfig {
       notificationCooldownMinutes: parseInt(process.env.NOTIFICATION_COOLDOWN_MINUTES) || 5
     };
 
+    // Email Configuration
+    this.config.email = {
+      service: process.env.EMAIL_SERVICE || 'gmail',
+      user: process.env.EMAIL_USER,
+      password: process.env.EMAIL_PASSWORD,
+      fromAddress: process.env.EMAIL_FROM_ADDRESS || 'noreply@epickup.com',
+      frontendUrl: process.env.FRONTEND_URL || 'https://epickup.com'
+    };
+
+    // File Storage Configuration
+    this.config.storage = {
+      bucket: process.env.STORAGE_BUCKET,
+      region: process.env.STORAGE_REGION,
+      maxFileSize: parseInt(process.env.MAX_FILE_SIZE) || 5242880, // 5MB
+      allowedTypes: process.env.ALLOWED_FILE_TYPES?.split(',') || ['image/jpeg', 'image/png', 'image/webp']
+    };
+
+    // Security Configuration
+    this.config.security = {
+      bcryptSaltRounds: parseInt(process.env.BCRYPT_SALT_ROUNDS) || 12,
+      sessionSecret: process.env.SESSION_SECRET,
+      passwordMinLength: parseInt(process.env.PASSWORD_MIN_LENGTH) || 8,
+      maxLoginAttempts: parseInt(process.env.MAX_LOGIN_ATTEMPTS) || 5,
+      lockoutDuration: parseInt(process.env.LOCKOUT_DURATION) || 15, // minutes
+      sessionExpiryHours: parseInt(process.env.SESSION_EXPIRY_HOURS) || 168 // 7 days
+    };
+
     // Redis Configuration
     this.config.redis = {
       url: process.env.REDIS_URL,
@@ -161,6 +188,25 @@ class EnvironmentConfig {
     // Development Configuration
     this.config.development = {
       testPhoneNumbers: process.env.TEST_PHONE_NUMBERS?.split(',') || ['9999999999', '8888888888', '7777777777']
+    };
+
+    // Service Area Configuration
+    this.config.serviceArea = {
+      CENTER: {
+        LATITUDE: 12.4950,
+        LONGITUDE: 78.5678,
+        NAME: 'Tirupattur Town'
+      },
+      RADIUS: {
+        MIN_METERS: 23000, // 23 km
+        MAX_METERS: 27000, // 27 km
+        DEFAULT_METERS: 25000 // 25 km
+      },
+      VALIDATION: {
+        ENABLED: true,
+        STRICT_MODE: true, // Reject bookings outside range
+        WARNING_THRESHOLD: 26000 // Warn when approaching boundary
+      }
     };
   }
 
@@ -350,6 +396,41 @@ class EnvironmentConfig {
    */
   getDevelopmentConfig() {
     return this.config.development;
+  }
+
+  /**
+   * Get service area configuration
+   */
+  getServiceAreaConfig() {
+    return this.config.serviceArea;
+  }
+
+  /**
+   * Get service area center
+   */
+  getServiceAreaCenter() {
+    return this.config.serviceArea.CENTER;
+  }
+
+  /**
+   * Get service area radius
+   */
+  getServiceAreaRadius() {
+    return this.config.serviceArea.RADIUS;
+  }
+
+  /**
+   * Check if service area validation is enabled
+   */
+  isServiceAreaValidationEnabled() {
+    return this.config.serviceArea.VALIDATION.ENABLED;
+  }
+
+  /**
+   * Check if service area strict mode is enabled
+   */
+  isServiceAreaStrictMode() {
+    return this.config.serviceArea.VALIDATION.STRICT_MODE;
   }
 
   /**

@@ -1,10 +1,8 @@
 const express = require('express');
 const router = express.Router();
-const NotificationService = require('../services/notificationService');
+const notificationService = require('../services/notificationService');
 const { requireRole, requireOwnership } = require('../middleware/auth');
 const { body, validationResult } = require('express-validator');
-
-const notificationService = new NotificationService();
 
 /**
  * @route   POST /api/notifications/send

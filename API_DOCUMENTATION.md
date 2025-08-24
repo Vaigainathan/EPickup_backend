@@ -1,490 +1,883 @@
-# EPickup Backend API Documentation
+# EPickup API Documentation
 
-## Overview
-
-This document provides comprehensive documentation for the EPickup backend API, including authentication, Google Maps integration, real-time features, and secure storage management.
-
-## Base URL
-
-- **Development**: `http://localhost:3000`
-- **Staging**: `https://staging-api.epickup.com`
-- **Production**: `https://api.epickup.com`
+## Table of Contents
+1. [Authentication](#authentication)
+2. [Customer APIs](#customer-apis)
+3. [Driver APIs](#driver-apis)
+4. [Booking APIs](#booking-apis)
+5. [Payment APIs](#payment-apis)
+6. [Tracking APIs](#tracking-apis)
+7. [File Upload APIs](#file-upload-apis)
+8. [Notification APIs](#notification-apis)
+9. [Support APIs](#support-apis)
+10. [Real-time APIs](#real-time-apis)
 
 ## Authentication
 
-All authenticated endpoints require a valid JWT token in the Authorization header:
-
-```
-Authorization: Bearer <access_token>
-```
-
-### Authentication Flow
-
-1. **Send OTP**: `POST /api/auth/send-verification-code`
-2. **Verify OTP**: `POST /api/auth/verify-otp`
-3. **Refresh Token**: `POST /api/auth/refresh`
-
-## Google Maps API Integration
-
-### Places Autocomplete
-
-**Endpoint**: `GET /api/google-maps/places/autocomplete`
-
-**Description**: Get place autocomplete suggestions
-
-**Parameters**:
-- `input` (required): Search query
-- `sessionToken` (optional): Session token for billing
-- `types` (optional): Place types filter
-- `components` (optional): Component filtering
-- `radius` (optional): Search radius in meters
-- `location` (optional): Bias search to location
-- `strictbounds` (optional): Strict bounds filtering
-
-**Example Request**:
-```bash
-GET /api/google-maps/places/autocomplete?input=bangalore&types=geocode&radius=50000
+### Send OTP
+```http
+POST /api/auth/send-otp
 ```
 
-**Example Response**:
+**Request Body:**
+```json
+{
+  "phoneNumber": "+919876543210",
+  "isSignup": false,
+  "recaptchaToken": "optional_recaptcha_token"
+}
+```
+
+**Response:**
 ```json
 {
   "success": true,
+  "message": "OTP sent successfully",
   "data": {
-    "predictions": [
-      {
-        "placeId": "ChIJbU60yXAWrjsR4E9-UejD3_g",
-        "description": "Bangalore, Karnataka, India",
-        "structuredFormatting": {
-          "mainText": "Bangalore",
-          "secondaryText": "Karnataka, India"
+    "phoneNumber": "+919876543210",
+    "isSignup": false,
+    "expiresIn": 600
+  }
+}
+```
+
+### Verify OTP
+```http
+POST /api/auth/verify-otp
+```
+
+**Request Body:**
+```json
+{
+  "phoneNumber": "+919876543210",
+  "otp": "123456",
+  "isSignup": false,
+  "userType": "driver",
+  "name": "John Doe"
+}
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "message": "Login successful",
+  "data": {
+    "user": {
+      "id": "user_id",
+      "name": "John Doe",
+      "phone": "+919876543210",
+      "userType": "driver",
+      "isVerified": true
+    },
+    "accessToken": "firebase_custom_token",
+    "refreshToken": null,
+    "expiresIn": 3600,
+    "isNewUser": false
+  }
+}
+```
+
+## Driver APIs
+
+### Get Driver Profile
+```http
+GET /api/driver/profile
+Authorization: Bearer <token>
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "message": "Profile retrieved successfully",
+  "data": {
+    "profile": {
+      "id": "driver_id",
+      "name": "John Doe",
+      "email": "john@example.com",
+      "phone": "+919876543210",
+      "profilePicture": "https://example.com/photo.jpg",
+      "driver": {
+        "vehicleDetails": {
+          "type": "motorcycle",
+          "model": "Honda Activa",
+          "number": "KA01AB1234",
+          "color": "Black"
         },
-        "types": ["locality", "political"]
+        "verificationStatus": "approved",
+        "isOnline": true,
+        "isAvailable": true,
+        "rating": 4.5,
+        "totalTrips": 150,
+        "earnings": {
+          "total": 25000,
+          "thisMonth": 5000,
+          "thisWeek": 1200
+        }
+      }
+    }
+  }
+}
+```
+
+### Update Driver Profile
+```http
+PUT /api/driver/profile
+Authorization: Bearer <token>
+```
+
+**Request Body:**
+```json
+{
+  "name": "John Doe",
+  "email": "john@example.com",
+  "profilePicture": "https://example.com/photo.jpg"
+}
+```
+
+### Upload Driver Document
+```http
+POST /api/driver/documents
+Authorization: Bearer <token>
+```
+
+**Request Body:**
+```json
+{
+  "documentType": "drivingLicense",
+  "documentUrl": "https://example.com/document.jpg",
+  "documentNumber": "DL1234567890123"
+}
+```
+
+### Get Document Status
+```http
+GET /api/driver/documents/status
+Authorization: Bearer <token>
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "message": "Document status retrieved successfully",
+  "data": {
+    "verificationStatus": "pending_verification",
+    "documentStatus": {
+      "total": 5,
+      "uploaded": 5,
+      "verified": 3,
+      "rejected": 1,
+      "pending": 1
+    },
+    "documents": [
+      {
+        "type": "drivingLicense",
+        "name": "Driving License",
+        "status": "verified",
+        "url": "https://example.com/dl.jpg",
+        "number": "DL1234567890123",
+        "uploadedAt": "2024-01-15T10:30:00Z",
+        "verifiedAt": "2024-01-16T14:20:00Z",
+        "verifiedBy": "admin_user_id"
       }
     ],
-    "status": "OK"
+    "isComplete": true,
+    "isVerified": false,
+    "canStartWorking": false
+  }
+}
+```
+
+### Request Document Verification
+```http
+POST /api/driver/documents/request-verification
+Authorization: Bearer <token>
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "message": "Document verification requested successfully",
+  "data": {
+    "verificationStatus": "pending_verification",
+    "verificationRequestId": "request_id",
+    "requestedAt": "2024-01-15T10:30:00Z",
+    "estimatedReviewTime": "24-48 hours"
+  }
+}
+```
+
+### Get Verification History
+```http
+GET /api/driver/documents/verification-history?limit=10&offset=0
+Authorization: Bearer <token>
+```
+
+### Driver Wallet Management
+
+#### Get Wallet Balance
+```http
+GET /api/driver/wallet?limit=20&offset=0
+Authorization: Bearer <token>
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "message": "Wallet information retrieved successfully",
+  "data": {
+    "wallet": {
+      "balance": 2500.50,
+      "currency": "INR"
+    },
+    "transactions": [
+      {
+        "id": "transaction_id",
+        "driverId": "driver_id",
+        "type": "credit",
+        "amount": 500,
+        "previousBalance": 2000.50,
+        "newBalance": 2500.50,
+        "paymentMethod": "upi",
+        "status": "completed",
+        "createdAt": "2024-01-15T10:30:00Z"
+      }
+    ],
+    "pagination": {
+      "limit": 20,
+      "offset": 0,
+      "total": 15
+    }
+  }
+}
+```
+
+#### Add Money to Wallet
+```http
+POST /api/driver/wallet/add-money
+Authorization: Bearer <token>
+```
+
+**Request Body:**
+```json
+{
+  "amount": 500,
+  "paymentMethod": "upi",
+  "upiId": "john@upi"
+}
+```
+
+#### Withdraw from Wallet
+```http
+POST /api/driver/wallet/withdraw
+Authorization: Bearer <token>
+```
+
+**Request Body:**
+```json
+{
+  "amount": 1000,
+  "bankDetails": {
+    "accountNumber": "1234567890",
+    "ifscCode": "SBIN0001234",
+    "accountHolderName": "John Doe"
+  }
+}
+```
+
+### Driver Availability Management
+
+#### Set Availability Slots
+```http
+PUT /api/driver/availability/slots
+Authorization: Bearer <token>
+```
+
+**Request Body:**
+```json
+{
+  "workingHours": {
+    "startTime": "09:00",
+    "endTime": "18:00"
   },
-  "message": "Place autocomplete results retrieved successfully"
+  "workingDays": ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday"],
+  "availabilitySlots": [
+    {
+      "day": "monday",
+      "slots": [
+        {
+          "startTime": "09:00",
+          "endTime": "12:00",
+          "isAvailable": true
+        },
+        {
+          "startTime": "14:00",
+          "endTime": "18:00",
+          "isAvailable": true
+        }
+      ]
+    }
+  ],
+  "maxBookingsPerDay": 10,
+  "preferredAreas": [
+    {
+      "name": "Koramangala",
+      "coordinates": {
+        "latitude": 12.9349,
+        "longitude": 77.6056
+      },
+      "radius": 5
+    }
+  ]
 }
 ```
 
-### Place Details
-
-**Endpoint**: `GET /api/google-maps/places/details`
-
-**Description**: Get detailed place information
-
-**Parameters**:
-- `placeId` (required): Google Place ID
-- `fields` (optional): Fields to return
-- `language` (optional): Language code
-- `region` (optional): Region code
-
-**Example Request**:
-```bash
-GET /api/google-maps/places/details?placeId=ChIJbU60yXAWrjsR4E9-UejD3_g&fields=formatted_address,geometry,name
+#### Get Availability Slots
+```http
+GET /api/driver/availability/slots
+Authorization: Bearer <token>
 ```
 
-### Directions
-
-**Endpoint**: `GET /api/google-maps/directions`
-
-**Description**: Get directions between two points
-
-**Parameters**:
-- `origin` (required): Origin coordinates or address
-- `destination` (required): Destination coordinates or address
-- `mode` (optional): Travel mode (driving, walking, bicycling, transit)
-- `alternatives` (optional): Return alternative routes
-- `avoid` (optional): Avoid specific features
-- `units` (optional): Units (metric, imperial)
-- `traffic_model` (optional): Traffic model
-- `departure_time` (optional): Departure time
-- `waypoints` (optional): Waypoints for route optimization
-
-**Example Request**:
-```bash
-GET /api/google-maps/directions?origin=12.9716,77.5946&destination=13.0827,80.2707&mode=driving
+#### Toggle Slot Availability
+```http
+POST /api/driver/availability/toggle-slot
+Authorization: Bearer <token>
 ```
 
-### Geocoding
-
-**Endpoint**: `GET /api/google-maps/geocode`
-
-**Description**: Convert address to coordinates
-
-**Parameters**:
-- `address` (required): Address to geocode
-- `components` (optional): Component filtering
-- `bounds` (optional): Bounds for biasing
-- `language` (optional): Language code
-- `region` (optional): Region code
-
-**Example Request**:
-```bash
-GET /api/google-maps/geocode?address=Bangalore,Karnataka,India
+**Request Body:**
+```json
+{
+  "day": "monday",
+  "startTime": "09:00",
+  "endTime": "12:00",
+  "isAvailable": false
+}
 ```
 
-### Reverse Geocoding
+### Driver Earnings
 
-**Endpoint**: `GET /api/google-maps/reverse-geocode`
-
-**Description**: Convert coordinates to address
-
-**Parameters**:
-- `latlng` (required): Latitude,longitude
-- `resultType` (optional): Result type filtering
-- `locationType` (optional): Location type filtering
-- `language` (optional): Language code
-
-**Example Request**:
-```bash
-GET /api/google-maps/reverse-geocode?latlng=12.9716,77.5946
+#### Get Earnings
+```http
+GET /api/driver/earnings?period=month&startDate=2024-01-01&endDate=2024-01-31
+Authorization: Bearer <token>
 ```
 
-### Nearby Places
-
-**Endpoint**: `GET /api/google-maps/nearby-places`
-
-**Description**: Get places near a location
-
-**Parameters**:
-- `location` (required): Latitude,longitude
-- `radius` (optional): Search radius in meters
-- `type` (optional): Place type
-- `keyword` (optional): Keyword search
-- `minPrice` (optional): Minimum price level
-- `maxPrice` (optional): Maximum price level
-- `openNow` (optional): Only open places
-- `rankBy` (optional): Ranking method
-- `pageToken` (optional): Next page token
-
-**Example Request**:
-```bash
-GET /api/google-maps/nearby-places?location=12.9716,77.5946&radius=1500&type=restaurant
-```
-
-### Distance Matrix
-
-**Endpoint**: `GET /api/google-maps/distance-matrix`
-
-**Description**: Calculate distances between multiple origins and destinations
-
-**Parameters**:
-- `origins` (required): Origin coordinates (pipe-separated)
-- `destinations` (required): Destination coordinates (pipe-separated)
-- `mode` (optional): Travel mode
-- `avoid` (optional): Avoid features
-- `units` (optional): Units
-- `traffic_model` (optional): Traffic model
-- `departure_time` (optional): Departure time
-
-**Example Request**:
-```bash
-GET /api/google-maps/distance-matrix?origins=12.9716,77.5946&destinations=13.0827,80.2707&mode=driving
-```
-
-### Elevation
-
-**Endpoint**: `GET /api/google-maps/elevation`
-
-**Description**: Get elevation data for coordinates
-
-**Parameters**:
-- `locations` (optional): Coordinates (pipe-separated)
-- `path` (optional): Path coordinates
-- `samples` (optional): Number of samples for path
-
-**Example Request**:
-```bash
-GET /api/google-maps/elevation?locations=12.9716,77.5946
-```
-
-## Real-time Communication (Socket.IO)
-
-### Connection
-
-Connect to the Socket.IO server:
-
-```javascript
-import { io } from 'socket.io-client';
-
-const socket = io('http://localhost:3000', {
-  auth: {
-    token: 'your-jwt-token'
+**Response:**
+```json
+{
+  "success": true,
+  "message": "Earnings retrieved successfully",
+  "data": {
+    "summary": {
+      "total": 25000,
+      "thisMonth": 5000,
+      "thisWeek": 1200
+    },
+    "period": "month",
+    "totalEarnings": 5000,
+    "payments": [
+      {
+        "id": "payment_id",
+        "bookingId": "booking_id",
+        "amount": 150,
+        "completedAt": "2024-01-15T10:30:00Z"
+      }
+    ],
+    "paymentCount": 25
   }
-});
-```
-
-### Authentication
-
-**Event**: `authenticate`
-
-**Data**:
-```json
-{
-  "token": "your-jwt-token"
 }
 ```
 
-### Tracking Subscription
+### Driver Trips
 
-**Event**: `subscribe_tracking`
+#### Get Trip History
+```http
+GET /api/driver/trips?status=completed&limit=20&offset=0
+Authorization: Bearer <token>
+```
 
-**Data**:
+### Driver Status Management
+
+#### Update Driver Status
+```http
+PUT /api/driver/status
+Authorization: Bearer <token>
+```
+
+**Request Body:**
 ```json
 {
-  "tripId": "booking-id",
-  "userId": "user-id",
-  "userType": "customer"
+  "isOnline": true,
+  "isAvailable": true,
+  "workingHours": {
+    "startTime": "09:00",
+    "endTime": "18:00"
+  },
+  "workingDays": ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday"]
 }
 ```
 
-### Location Updates
+#### Update Driver Location
+```http
+POST /api/driver/location
+Authorization: Bearer <token>
+```
 
-**Event**: `location_update`
-
-**Data**:
+**Request Body:**
 ```json
 {
-  "tripId": "booking-id",
+  "latitude": 12.9349,
+  "longitude": 77.6056,
+  "accuracy": 10
+}
+```
+
+### Available Bookings
+
+#### Get Available Bookings
+```http
+GET /api/driver/bookings?limit=20&offset=0&radius=5
+Authorization: Bearer <token>
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "message": "Available bookings retrieved successfully",
+  "data": {
+    "bookings": [
+      {
+        "id": "booking_id",
+        "customerId": "customer_id",
+        "pickup": {
+          "name": "John Doe",
+          "phone": "+919876543210",
+          "address": "123 Main St, Koramangala",
+          "coordinates": {
+            "latitude": 12.9349,
+            "longitude": 77.6056
+          }
+        },
+        "dropoff": {
+          "name": "Jane Smith",
+          "phone": "+919876543211",
+          "address": "456 Oak St, Indiranagar",
+          "coordinates": {
+            "latitude": 12.9789,
+            "longitude": 77.5917
+          }
+        },
+        "package": {
+          "weight": 2.5,
+          "description": "Documents"
+        },
+        "fare": {
+          "total": 150,
+          "currency": "INR"
+        },
+        "distanceFromDriver": 1.2
+      }
+    ],
+    "pagination": {
+      "limit": 20,
+      "offset": 0,
+      "total": 5
+    },
+    "driverLocation": {
+      "latitude": 12.9349,
+      "longitude": 77.6056
+    },
+    "searchRadius": 5
+  }
+}
+```
+
+#### Accept Booking
+```http
+POST /api/driver/bookings/:id/accept
+Authorization: Bearer <token>
+```
+
+#### Reject Booking
+```http
+POST /api/driver/bookings/:id/reject
+Authorization: Bearer <token>
+```
+
+**Request Body:**
+```json
+{
+  "reason": "Too far from current location"
+}
+```
+
+#### Update Booking Status
+```http
+PUT /api/driver/bookings/:id/status
+Authorization: Bearer <token>
+```
+
+**Request Body:**
+```json
+{
+  "status": "driver_arrived",
   "location": {
-    "latitude": 12.9716,
-    "longitude": 77.5946,
-    "accuracy": 10,
-    "timestamp": 1640995200000
-  }
+    "latitude": 12.9349,
+    "longitude": 77.6056,
+    "accuracy": 10
+  },
+  "notes": "Arrived at pickup location"
 }
 ```
 
-### Chat Messages
+### Photo Verification
 
-**Event**: `chat_message`
+#### Upload Photo Verification
+```http
+POST /api/driver/bookings/:id/photo-verification
+Authorization: Bearer <token>
+```
 
-**Data**:
+**Request Body:**
 ```json
 {
-  "tripId": "booking-id",
-  "message": "Hello driver!",
-  "senderId": "user-id",
-  "senderType": "customer"
+  "photoType": "pickup",
+  "photoUrl": "https://example.com/photo.jpg",
+  "photoMetadata": {
+    "fileSize": 1024000,
+    "dimensions": {
+      "width": 1920,
+      "height": 1080
+    }
+  },
+  "location": {
+    "latitude": 12.9349,
+    "longitude": 77.6056,
+    "accuracy": 10
+  },
+  "notes": "Package picked up successfully"
 }
 ```
 
-### Trip Status Updates
+#### Get Photo Verifications
+```http
+GET /api/driver/bookings/:id/photo-verifications
+Authorization: Bearer <token>
+```
 
-**Event**: `trip_status_update`
+#### Update Photo Verification
+```http
+PUT /api/driver/bookings/:id/photo-verifications/:photoId
+Authorization: Bearer <token>
+```
 
-**Data**:
+**Request Body:**
 ```json
 {
-  "tripId": "booking-id",
-  "status": "driver_arriving",
-  "additionalData": {
-    "estimatedArrival": 5
+  "photoUrl": "https://example.com/new-photo.jpg",
+  "notes": "Updated photo with better lighting"
+}
+```
+
+### Real-time Tracking
+
+#### Start Trip Tracking
+```http
+POST /api/driver/tracking/start
+Authorization: Bearer <token>
+```
+
+**Request Body:**
+```json
+{
+  "bookingId": "booking_id",
+  "initialLocation": {
+    "latitude": 12.9349,
+    "longitude": 77.6056,
+    "accuracy": 10
   }
 }
 ```
 
-## Secure Storage Integration
+#### Update Trip Tracking
+```http
+POST /api/driver/tracking/update
+Authorization: Bearer <token>
+```
 
-### Frontend Secure Storage
+**Request Body:**
+```json
+{
+  "bookingId": "booking_id",
+  "location": {
+    "latitude": 12.9349,
+    "longitude": 77.6056,
+    "accuracy": 10
+  },
+  "status": "in_transit",
+  "speed": 25.5,
+  "heading": 180
+}
+```
 
-The frontend uses Expo SecureStore for sensitive data:
+#### Stop Trip Tracking
+```http
+POST /api/driver/tracking/stop
+Authorization: Bearer <token>
+```
 
-```typescript
-import { secureStorage } from '@/services/secureStorage';
-
-// Store authentication tokens
-await secureStorage.setAuthTokens({
-  accessToken: 'token',
-  refreshToken: 'refresh-token',
-  expiresAt: Date.now() + 3600000
-});
-
-// Get authentication tokens
-const tokens = await secureStorage.getAuthTokens();
-
-// Store user profile
-await secureStorage.setUserProfile({
-  id: 'user-id',
-  name: 'John Doe',
-  email: 'john@example.com'
-});
-
-// Store saved addresses
-await secureStorage.setSavedAddresses([
-  {
-    id: '1',
-    name: 'Home',
-    address: '123 Main St',
-    type: 'home',
-    isDefault: true
+**Request Body:**
+```json
+{
+  "bookingId": "booking_id",
+  "finalLocation": {
+    "latitude": 12.9789,
+    "longitude": 77.5917,
+    "accuracy": 10
   }
-]);
+}
 ```
 
-### Backend Environment Variables
+## Error Responses
 
-The backend securely manages API keys through environment variables:
-
-```env
-# Google Maps API Key
-GOOGLE_MAPS_API_KEY=your-google-maps-api-key
-
-# Firebase Configuration
-FIREBASE_API_KEY=your-firebase-api-key
-FIREBASE_AUTH_DOMAIN=your-project.firebaseapp.com
-FIREBASE_PROJECT_ID=your-project-id
-FIREBASE_STORAGE_BUCKET=your-project.appspot.com
-FIREBASE_MESSAGING_SENDER_ID=123456789
-FIREBASE_APP_ID=1:123456789:web:abcdef123456
-
-# JWT Configuration
-JWT_SECRET=your-jwt-secret-key
-JWT_EXPIRES_IN=1h
-JWT_REFRESH_EXPIRES_IN=7d
-
-# Redis Configuration
-REDIS_URL=redis://localhost:6379
-
-# Payment Configuration
-PHONEPE_MERCHANT_ID=your-phonepe-merchant-id
-PHONEPE_MERCHANT_KEY=your-phonepe-merchant-key
-PHONEPE_ENVIRONMENT=UAT
-```
-
-## Error Handling
-
-### Standard Error Response Format
+All API endpoints return consistent error responses:
 
 ```json
 {
   "success": false,
-  "message": "Error description",
   "error": {
     "code": "ERROR_CODE",
-    "message": "Detailed error message",
-    "details": {}
+    "message": "Human readable error message",
+    "details": "Additional error details or validation errors"
   },
-  "timestamp": "2024-01-01T00:00:00.000Z"
+  "timestamp": "2024-01-15T10:30:00Z"
 }
 ```
 
 ### Common Error Codes
 
-- `MISSING_INPUT`: Required input parameter missing
-- `INVALID_TOKEN`: Invalid or expired authentication token
-- `RATE_LIMIT_EXCEEDED`: Too many requests
-- `GOOGLE_MAPS_ERROR`: Google Maps API error
-- `INTERNAL_ERROR`: Internal server error
-- `VALIDATION_ERROR`: Input validation failed
+- `UNAUTHORIZED` - Missing or invalid authentication token
+- `FORBIDDEN` - Insufficient permissions
+- `VALIDATION_ERROR` - Request validation failed
+- `USER_NOT_FOUND` - User does not exist
+- `BOOKING_NOT_FOUND` - Booking does not exist
+- `INSUFFICIENT_BALANCE` - Wallet balance insufficient
+- `DOCUMENT_NOT_FOUND` - Document does not exist
+- `PHOTO_VERIFICATION_NOT_FOUND` - Photo verification does not exist
+- `TRIP_TRACKING_NOT_FOUND` - Trip tracking does not exist
+- `ACCESS_DENIED` - User cannot access this resource
+- `BOOKING_NOT_AVAILABLE` - Booking is no longer available
+- `DRIVER_NOT_AVAILABLE` - Driver is not available
+- `INVALID_STATUS_FOR_PHOTO` - Cannot upload photo in current booking status
+- `VERIFICATION_ALREADY_REQUESTED` - Verification already requested
+- `INCOMPLETE_DOCUMENTS` - Not all required documents uploaded
+- `PHOTO_NOT_REJECTED` - Can only update rejected photos
+- `TRIP_NOT_ACTIVE` - Trip tracking is not active
 
 ## Rate Limiting
 
-- **General API**: 100 requests per minute per IP
-- **Authentication**: 5 requests per minute per IP
-- **Google Maps API**: 1000 requests per day per API key
+- Authentication endpoints: 5 requests per minute
+- General API endpoints: 100 requests per minute
+- File upload endpoints: 10 requests per minute
+- Real-time tracking endpoints: 60 requests per minute
 
-## Health Check
+## WebSocket Events
 
-**Endpoint**: `GET /health`
+### Driver Events
 
-**Description**: Check server health and service status
+#### Connect
+```javascript
+socket.emit('driver:connect', {
+  driverId: 'driver_id',
+  token: 'firebase_custom_token'
+});
+```
 
-**Example Response**:
+#### Location Update
+```javascript
+socket.emit('driver:location_update', {
+  driverId: 'driver_id',
+  location: {
+    latitude: 12.9349,
+    longitude: 77.6056,
+    accuracy: 10,
+    speed: 25.5,
+    heading: 180
+  }
+});
+```
+
+#### Status Update
+```javascript
+socket.emit('driver:status_update', {
+  driverId: 'driver_id',
+  status: 'online',
+  isAvailable: true
+});
+```
+
+#### Join Booking Room
+```javascript
+socket.emit('driver:join_booking', {
+  driverId: 'driver_id',
+  bookingId: 'booking_id'
+});
+```
+
+#### Leave Booking Room
+```javascript
+socket.emit('driver:leave_booking', {
+  driverId: 'driver_id',
+  bookingId: 'booking_id'
+});
+```
+
+### Driver Event Listeners
+
+#### Booking Assignment
+```javascript
+socket.on('driver:booking_assigned', (data) => {
+  console.log('New booking assigned:', data);
+});
+```
+
+#### Booking Update
+```javascript
+socket.on('driver:booking_updated', (data) => {
+  console.log('Booking updated:', data);
+});
+```
+
+#### Customer Message
+```javascript
+socket.on('driver:customer_message', (data) => {
+  console.log('Message from customer:', data);
+});
+```
+
+#### Emergency Alert
+```javascript
+socket.on('driver:emergency_alert', (data) => {
+  console.log('Emergency alert:', data);
+});
+```
+
+## Testing
+
+### Test Environment
+
+- Base URL: `https://api.epickup.test`
+- Test phone numbers: `+919876543210` to `+919876543219`
+- Test OTP: `123456`
+
+### Test Data
+
+#### Test Driver
 ```json
 {
-  "status": "healthy",
-  "timestamp": "2024-01-01T00:00:00.000Z",
-  "uptime": 3600,
-  "environment": "development",
-  "version": "1.0.0",
-  "memory": {
-    "used": 128,
-    "total": 512,
-    "external": 64
-  },
-  "services": {
-    "firebase": true,
-    "redis": true,
-    "socket": true
-  }
+  "phone": "+919876543210",
+  "name": "Test Driver",
+  "userType": "driver",
+  "verificationStatus": "approved"
 }
 ```
 
-## API Documentation
-
-**Endpoint**: `GET /api-docs`
-
-**Description**: Get complete API documentation
-
-## Testing Endpoints
-
-Available in development mode only:
-
-- `GET /api/test/customer`: Test customer endpoint
-- `GET /api/test/driver`: Test driver endpoint
-- `GET /api/test/booking`: Test booking endpoint
-
-## Security Best Practices
-
-1. **API Keys**: Never expose API keys in frontend code
-2. **Authentication**: Use JWT tokens with proper expiration
-3. **HTTPS**: Always use HTTPS in production
-4. **Rate Limiting**: Implement rate limiting to prevent abuse
-5. **Input Validation**: Validate all input parameters
-6. **Error Handling**: Don't expose sensitive information in errors
-7. **Secure Storage**: Use Expo SecureStore for sensitive data
-8. **Environment Variables**: Store secrets in environment variables
-
-## Integration Examples
-
-### Frontend Integration
-
-```typescript
-// Google Maps API
-import { googleMapsApi } from '@/services/googleMapsApi';
-
-// Search places
-const places = await googleMapsApi.searchPlaces('bangalore');
-
-// Get directions
-const route = await googleMapsApi.calculateRoute(
-  { latitude: 12.9716, longitude: 77.5946 },
-  { latitude: 13.0827, longitude: 80.2707 }
-);
-
-// Secure storage
-import { secureStorage } from '@/services/secureStorage';
-await secureStorage.setAuthTokens(tokens);
-
-// Real-time communication
-import { websocketService } from '@/services/websocketService';
-await websocketService.connect();
-await websocketService.subscribeToBooking('booking-id');
+#### Test Booking
+```json
+{
+  "id": "test_booking_id",
+  "customerId": "test_customer_id",
+  "pickup": {
+    "name": "Test Customer",
+    "phone": "+919876543211",
+    "address": "Test Pickup Address",
+    "coordinates": {
+      "latitude": 12.9349,
+      "longitude": 77.6056
+    }
+  },
+  "dropoff": {
+    "name": "Test Recipient",
+    "phone": "+919876543212",
+    "address": "Test Dropoff Address",
+    "coordinates": {
+      "latitude": 12.9789,
+      "longitude": 77.5917
+    }
+  },
+  "status": "pending"
+}
 ```
 
-### Backend Integration
+## SDK Integration
+
+### React Native Example
 
 ```javascript
-// Google Maps API routes
-const googleMapsRoutes = require('./routes/googleMaps');
-app.use('/api/google-maps', googleMapsRoutes);
+import { EPickupDriverSDK } from '@epickup/driver-sdk';
 
-// Socket.IO integration
-const { initializeSocketIO } = require('./services/socket');
-initializeSocketIO(server);
+const driverSDK = new EPickupDriverSDK({
+  baseURL: 'https://api.epickup.com',
+  apiKey: 'your_api_key'
+});
 
-// Environment configuration
-const { getEnvironmentConfig } = require('./config/environment');
-const config = getEnvironmentConfig();
+// Initialize with Firebase token
+await driverSDK.initialize(firebaseCustomToken);
+
+// Get available bookings
+const bookings = await driverSDK.getAvailableBookings({
+  limit: 20,
+  radius: 5
+});
+
+// Accept booking
+await driverSDK.acceptBooking(bookingId);
+
+// Start tracking
+await driverSDK.startTripTracking(bookingId, initialLocation);
+
+// Update location
+await driverSDK.updateTripLocation(bookingId, location);
+
+// Upload photo
+await driverSDK.uploadPhotoVerification(bookingId, {
+  photoType: 'pickup',
+  photoUrl: 'https://example.com/photo.jpg'
+});
 ```
 
-## Support
+### WebSocket Integration
 
-For API support and questions:
+```javascript
+import { EPickupDriverWebSocket } from '@epickup/driver-websocket';
 
-- **Email**: api-support@epickup.com
-- **Documentation**: https://docs.epickup.com/api
-- **Status Page**: https://status.epickup.com
+const ws = new EPickupDriverWebSocket({
+  url: 'wss://api.epickup.com',
+  driverId: 'driver_id',
+  token: 'firebase_custom_token'
+});
+
+ws.on('booking_assigned', (booking) => {
+  console.log('New booking:', booking);
+});
+
+ws.on('customer_message', (message) => {
+  console.log('Customer message:', message);
+});
+
+ws.on('emergency_alert', (alert) => {
+  console.log('Emergency alert:', alert);
+});
+
+// Send location update
+ws.sendLocation({
+  latitude: 12.9349,
+  longitude: 77.6056,
+  accuracy: 10
+});
+```

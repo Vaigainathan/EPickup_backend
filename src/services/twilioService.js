@@ -1,172 +1,145 @@
 const twilio = require('twilio');
-const { getFirestore } = require('./firebase');
-const { getRedisClient } = require('./redis');
+const { env } = require('../config');
+const redis = require('./redis');
 
-/**
- * Twilio Verify Service for EPickup
- * Handles SMS OTP verification with fallback channels
- */
 class TwilioService {
   constructor() {
     this.client = null;
     this.verifyServiceSid = null;
-    this.db = null;
-    this.redis = null;
-    this.initialize();
+    this.isInitialized = false;
+    this.redisClient = null;
   }
 
   /**
-   * Initialize Redis client
+   * Initialize Twilio service
    */
-  async initializeRedis() {
+  async initialize() {
     try {
-      this.redis = getRedisClient();
-      return true;
+      // Check if Twilio credentials are available
+      const accountSid = process.env.TWILIO_ACCOUNT_SID;
+      const authToken = process.env.TWILIO_AUTH_TOKEN;
+      const verifyServiceSid = process.env.TWILIO_VERIFY_SERVICE_SID;
+
+      if (!accountSid || !authToken || !verifyServiceSid) {
+        console.warn('⚠️ Twilio credentials not configured, using mock service');
+        this.isInitialized = true;
+        return;
+      }
+
+      // Initialize Twilio client
+      this.client = twilio(accountSid, authToken);
+      this.verifyServiceSid = verifyServiceSid;
+
+      // Initialize Redis for session storage
+      await this.initializeRedis();
+
+      this.isInitialized = true;
+      console.log('✅ Twilio service initialized successfully');
     } catch (error) {
-      console.warn('⚠️  Redis not available for Twilio service:', error.message);
-      this.redis = null;
-      return false;
+      console.error('❌ Failed to initialize Twilio service:', error);
+      // Fallback to mock service
+      this.isInitialized = true;
     }
   }
 
   /**
-   * Initialize Twilio client
+   * Initialize Redis connection
    */
-  initialize() {
+  async initializeRedis() {
     try {
-      const accountSid = process.env.TWILIO_ACCOUNT_SID;
-      const authToken = process.env.TWILIO_AUTH_TOKEN;
-      this.verifyServiceSid = process.env.TWILIO_VERIFY_SERVICE_SID;
-
-      // Try to initialize Firestore (optional)
-      try {
-        this.db = getFirestore();
-        console.log('✅ Firestore initialized for Twilio service');
-      } catch (firestoreError) {
-        console.warn('⚠️  Firestore not available for Twilio service:', firestoreError.message);
-        this.db = null;
+      if (env.isRedisEnabled()) {
+        this.redisClient = redis;
+        console.log('✅ Redis connected for Twilio session storage');
+      } else {
+        console.warn('⚠️ Redis not enabled, using in-memory storage');
       }
-
-      if (!accountSid || !authToken || !this.verifyServiceSid) {
-        console.warn('Twilio credentials not configured. Using mock service.');
-        this.client = null;
-        return;
-      }
-
-      this.client = twilio(accountSid, authToken);
-      console.log('✅ Twilio service initialized successfully');
     } catch (error) {
-      console.error('❌ Failed to initialize Twilio service:', error);
-      this.client = null;
+      console.warn('⚠️ Redis connection failed, using in-memory storage:', error.message);
     }
   }
 
   /**
    * Send OTP to phone number
-   * @param {string} phoneNumber - Phone number with country code
-   * @param {Object} options - Additional options
-   * @returns {Promise<Object>} Send result
    */
   async sendOTP(phoneNumber, options = {}) {
     try {
       // Validate phone number
-      const validatedPhone = this.validatePhoneNumber(phoneNumber);
-      if (!validatedPhone) {
-        throw new Error('INVALID_PHONE_NUMBER');
+      if (!this.validatePhoneNumber(phoneNumber)) {
+        throw new Error('Invalid phone number format');
       }
 
       // Check rate limiting
-      const rateLimitKey = `otp_rate_limit:${validatedPhone}`;
-      const rateLimitResult = await this.checkRateLimit(rateLimitKey);
-      if (!rateLimitResult.allowed) {
-        throw new Error('RATE_LIMIT_EXCEEDED');
+      const rateLimitKey = `twilio_rate_limit:${phoneNumber}`;
+      const isRateLimited = await this.checkRateLimit(rateLimitKey, 5, 300); // 5 attempts per 5 minutes
+      if (isRateLimited) {
+        throw new Error('Rate limit exceeded. Please try again later.');
       }
 
-      // Check if using mock service
-      if (!this.client || process.env.NODE_ENV === 'development') {
-        return this.sendMockOTP(validatedPhone, options);
+      // Format phone number
+      const formattedPhone = this.formatPhoneNumber(phoneNumber);
+
+      if (!this.client || !this.verifyServiceSid) {
+        // Use mock service
+        return await this.sendMockOTP(phoneNumber, options);
       }
 
       // Send OTP via Twilio
       const verification = await this.client.verify.v2
         .services(this.verifyServiceSid)
         .verifications.create({
-          to: validatedPhone,
+          to: formattedPhone,
           channel: options.channel || 'sms',
-          locale: options.locale || 'en',
-          codeLength: options.codeLength || 6,
           ...options
         });
 
       // Store verification session
-      await this.storeVerificationSession(validatedPhone, verification.sid, options);
+      await this.storeVerificationSession(phoneNumber, verification.sid, options);
 
-      console.log(`✅ OTP sent successfully to ${validatedPhone}`);
-      
+      console.log(`✅ OTP sent to ${formattedPhone} via ${verification.channel}`);
+
       return {
         success: true,
-        verificationSid: verification.sid,
+        sid: verification.sid,
         status: verification.status,
-        to: validatedPhone,
         channel: verification.channel,
-        sentAt: new Date()
+        to: verification.to,
+        expiresIn: '10 minutes'
       };
 
     } catch (error) {
       console.error('❌ Failed to send OTP:', error);
-      
-      // Handle specific Twilio errors
-      if (error.code) {
-        switch (error.code) {
-          case 60200:
-            throw new Error('INVALID_PHONE_NUMBER');
-          case 60202:
-            throw new Error('RATE_LIMIT_EXCEEDED');
-          case 60203:
-            throw new Error('SERVICE_UNAVAILABLE');
-          case 60204:
-            throw new Error('INVALID_VERIFICATION_CODE');
-          case 60205:
-            throw new Error('VERIFICATION_EXPIRED');
-          default:
-            throw new Error('SMS_SEND_FAILED');
-        }
-      }
-
       throw error;
     }
   }
 
   /**
    * Verify OTP code
-   * @param {string} phoneNumber - Phone number with country code
-   * @param {string} code - OTP code to verify
-   * @param {string} verificationSid - Verification session ID
-   * @returns {Promise<Object>} Verification result
    */
   async verifyOTP(phoneNumber, code, verificationSid = null) {
     try {
       // Validate phone number
-      const validatedPhone = this.validatePhoneNumber(phoneNumber);
-      if (!validatedPhone) {
-        throw new Error('INVALID_PHONE_NUMBER');
+      if (!this.validatePhoneNumber(phoneNumber)) {
+        throw new Error('Invalid phone number format');
       }
 
-      // Validate OTP code format
-      if (!code || !/^\d{6}$/.test(code)) {
-        throw new Error('INVALID_OTP_FORMAT');
+      // Validate OTP code
+      if (!code || code.length !== 6 || !/^\d{6}$/.test(code)) {
+        throw new Error('Invalid OTP code format');
       }
 
-      // Check if using mock service
-      if (!this.client || process.env.NODE_ENV === 'development') {
-        return this.verifyMockOTP(validatedPhone, code);
+      // Format phone number
+      const formattedPhone = this.formatPhoneNumber(phoneNumber);
+
+      if (!this.client || !this.verifyServiceSid) {
+        // Use mock service
+        return await this.verifyMockOTP(phoneNumber, code);
       }
 
-      // Get verification session if not provided
+      // Get verification SID from session if not provided
       if (!verificationSid) {
-        const session = await this.getVerificationSession(validatedPhone);
+        const session = await this.getVerificationSession(phoneNumber);
         if (!session) {
-          throw new Error('NO_ACTIVE_SESSION');
+          throw new Error('No active verification session found');
         }
         verificationSid = session.verificationSid;
       }
@@ -175,79 +148,83 @@ class TwilioService {
       const verificationCheck = await this.client.verify.v2
         .services(this.verifyServiceSid)
         .verificationChecks.create({
-          to: validatedPhone,
+          to: formattedPhone,
           code: code,
           verificationSid: verificationSid
         });
 
-      // Check verification result
-      if (verificationCheck.status === 'approved') {
-        // Clear verification session
-        await this.clearVerificationSession(validatedPhone);
-        
-        console.log(`✅ OTP verified successfully for ${validatedPhone}`);
-        
-        return {
-          success: true,
-          status: verificationCheck.status,
-          to: validatedPhone,
-          verifiedAt: new Date()
-        };
-      } else {
-        throw new Error('INVALID_OTP');
-      }
+      console.log(`✅ OTP verification result for ${formattedPhone}: ${verificationCheck.status}`);
+
+      // Clear verification session
+      await this.clearVerificationSession(phoneNumber);
+
+      return {
+        success: verificationCheck.status === 'approved',
+        status: verificationCheck.status,
+        sid: verificationCheck.sid,
+        to: verificationCheck.to,
+        valid: verificationCheck.valid
+      };
 
     } catch (error) {
       console.error('❌ Failed to verify OTP:', error);
-      
-      // Handle specific Twilio errors
-      if (error.code) {
-        switch (error.code) {
-          case 60200:
-            throw new Error('INVALID_PHONE_NUMBER');
-          case 60202:
-            throw new Error('RATE_LIMIT_EXCEEDED');
-          case 60203:
-            throw new Error('SERVICE_UNAVAILABLE');
-          case 60204:
-            throw new Error('INVALID_VERIFICATION_CODE');
-          case 60205:
-            throw new Error('VERIFICATION_EXPIRED');
-          default:
-            throw new Error('VERIFICATION_FAILED');
-        }
-      }
-
       throw error;
     }
   }
 
   /**
-   * Resend OTP to phone number
-   * @param {string} phoneNumber - Phone number with country code
-   * @param {Object} options - Additional options
-   * @returns {Promise<Object>} Resend result
+   * Resend OTP
    */
   async resendOTP(phoneNumber, options = {}) {
     try {
-      // Check if there's an active session
+      // Validate phone number
+      if (!this.validatePhoneNumber(phoneNumber)) {
+        throw new Error('Invalid phone number format');
+      }
+
+      // Check rate limiting
+      const rateLimitKey = `twilio_resend_rate_limit:${phoneNumber}`;
+      const isRateLimited = await this.checkRateLimit(rateLimitKey, 3, 300); // 3 resends per 5 minutes
+      if (isRateLimited) {
+        throw new Error('Resend rate limit exceeded. Please try again later.');
+      }
+
+      // Format phone number
+      const formattedPhone = this.formatPhoneNumber(phoneNumber);
+
+      if (!this.client || !this.verifyServiceSid) {
+        // Use mock service
+        return await this.sendMockOTP(phoneNumber, { ...options, isResend: true });
+      }
+
+      // Get existing verification session
       const session = await this.getVerificationSession(phoneNumber);
       if (!session) {
-        throw new Error('NO_ACTIVE_SESSION');
+        throw new Error('No active verification session found');
       }
 
-      // Check resend rate limiting
-      const resendKey = `otp_resend:${phoneNumber}`;
-      const resendResult = await this.checkRateLimit(resendKey, 3, 300); // 3 resends per 5 minutes
-      if (!resendResult.allowed) {
-        throw new Error('RESEND_RATE_LIMIT_EXCEEDED');
-      }
+      // Resend OTP via Twilio
+      const verification = await this.client.verify.v2
+        .services(this.verifyServiceSid)
+        .verifications.create({
+          to: formattedPhone,
+          channel: options.channel || 'sms',
+          ...options
+        });
 
-      // Send new OTP
-      return await this.sendOTP(phoneNumber, {
-        ...options,
-        channel: session.channel || 'sms'
-      });
+      // Update verification session
+      await this.storeVerificationSession(phoneNumber, verification.sid, options);
+
+      console.log(`✅ OTP resent to ${formattedPhone} via ${verification.channel}`);
+
+      return {
+        success: true,
+        sid: verification.sid,
+        status: verification.status,
+        channel: verification.channel,
+        to: verification.to,
+        expiresIn: '10 minutes'
+      };
 
     } catch (error) {
       console.error('❌ Failed to resend OTP:', error);
@@ -257,219 +234,204 @@ class TwilioService {
 
   /**
    * Validate phone number format
-   * @param {string} phoneNumber - Phone number to validate
-   * @returns {string|null} Validated phone number or null
    */
   validatePhoneNumber(phoneNumber) {
-    if (!phoneNumber) return null;
+    if (!phoneNumber) return false;
 
-    // Remove all non-digit characters except +
-    let cleaned = phoneNumber.replace(/[^\d+]/g, '');
-
-    // Ensure it starts with +
-    if (!cleaned.startsWith('+')) {
-      // Add +91 for Indian numbers if no country code
-      if (cleaned.length === 10 && /^[6-9]\d{9}$/.test(cleaned)) {
-        cleaned = `+91${cleaned}`;
-      } else {
-        return null;
-      }
-    }
-
-    // Validate format
-    const phoneRegex = /^\+[1-9]\d{1,14}$/;
-    return phoneRegex.test(cleaned) ? cleaned : null;
+    // Remove any existing +91 prefix to avoid duplication
+    let cleanPhone = phoneNumber.replace(/^\+91/, '');
+    
+    // Remove spaces and special characters
+    cleanPhone = cleanPhone.replace(/\s+/g, '').replace(/[^\d]/g, '');
+    
+    // Check if it's a valid Indian mobile number (10 digits starting with 6-9)
+    const phoneRegex = /^[6-9]\d{9}$/;
+    return phoneRegex.test(cleanPhone);
   }
 
   /**
-   * Check rate limiting for OTP requests
-   * @param {string} key - Redis key for rate limiting
-   * @param {number} maxAttempts - Maximum attempts allowed
-   * @param {number} windowSeconds - Time window in seconds
-   * @returns {Promise<Object>} Rate limit result
+   * Format phone number for Twilio
    */
-  async checkRateLimit(key, maxAttempts = 5, windowSeconds = 300) {
+  formatPhoneNumber(phoneNumber) {
+    // Remove any existing +91 prefix
+    let cleanPhone = phoneNumber.replace(/^\+91/, '');
+    
+    // Remove spaces and special characters
+    cleanPhone = cleanPhone.replace(/\s+/g, '').replace(/[^\d]/g, '');
+    
+    // Add +91 prefix
+    return `+91${cleanPhone}`;
+  }
+
+  /**
+   * Check rate limiting
+   */
+  async checkRateLimit(key, maxAttempts, windowSeconds) {
     try {
-      if (!this.redis) {
-        return { allowed: true, remaining: maxAttempts };
+      if (!this.redisClient) {
+        // In-memory rate limiting (not recommended for production)
+        return false;
       }
 
-      const current = await this.redis.get(key);
+      const current = await this.redisClient.get(key);
       const attempts = current ? parseInt(current) : 0;
 
       if (attempts >= maxAttempts) {
-        return { allowed: false, remaining: 0 };
+        return true; // Rate limited
       }
 
-      // Increment counter
-      await this.redis.incr(key);
-      
-      // Set expiration if this is the first attempt
-      if (attempts === 0) {
-        await this.redis.expire(key, windowSeconds);
-      }
+      // Increment attempts
+      await this.redisClient.set(key, attempts + 1, windowSeconds);
+      return false; // Not rate limited
 
-      return { allowed: true, remaining: maxAttempts - attempts - 1 };
     } catch (error) {
-      console.error('Rate limit check failed:', error);
-      return { allowed: true, remaining: maxAttempts };
+      console.warn('Rate limiting check failed:', error.message);
+      return false; // Allow request if rate limiting fails
     }
   }
 
   /**
-   * Store verification session in database
-   * @param {string} phoneNumber - Phone number
-   * @param {string} verificationSid - Verification session ID
-   * @param {Object} options - Session options
+   * Store verification session
    */
   async storeVerificationSession(phoneNumber, verificationSid, options = {}) {
     try {
-      if (!this.db) {
-        console.warn('⚠️  Firestore not available, skipping session storage');
-        return;
-      }
-
       const sessionData = {
-        phoneNumber,
         verificationSid,
-        channel: options.channel || 'sms',
-        createdAt: new Date(),
-        expiresAt: new Date(Date.now() + 10 * 60 * 1000), // 10 minutes
-        attempts: 0,
-        maxAttempts: 3,
-        ...options
+        phoneNumber,
+        options,
+        createdAt: new Date().toISOString(),
+        expiresAt: new Date(Date.now() + 10 * 60 * 1000).toISOString() // 10 minutes
       };
 
-      await this.db.collection('otpSessions').doc(phoneNumber).set(sessionData);
+      const key = `twilio_session:${phoneNumber}`;
+      
+      if (this.redisClient) {
+        await this.redisClient.set(key, JSON.stringify(sessionData), 600); // 10 minutes
+      } else {
+        // In-memory storage (not recommended for production)
+        this.sessions = this.sessions || {};
+        this.sessions[key] = sessionData;
+      }
+
     } catch (error) {
-      console.error('Failed to store verification session:', error);
+      console.warn('Failed to store verification session:', error.message);
     }
   }
 
   /**
-   * Get verification session from database
-   * @param {string} phoneNumber - Phone number
-   * @returns {Promise<Object|null>} Session data
+   * Get verification session
    */
   async getVerificationSession(phoneNumber) {
     try {
-      if (!this.db) {
-        console.warn('⚠️  Firestore not available, returning null for session');
-        return null;
-      }
-
-      const sessionDoc = await this.db.collection('otpSessions').doc(phoneNumber).get();
+      const key = `twilio_session:${phoneNumber}`;
       
-      if (!sessionDoc.exists) {
-        return null;
+      if (this.redisClient) {
+        const sessionData = await this.redisClient.get(key);
+        return sessionData ? JSON.parse(sessionData) : null;
+      } else {
+        // In-memory storage
+        this.sessions = this.sessions || {};
+        const sessionData = this.sessions[key];
+        
+        if (sessionData && new Date(sessionData.expiresAt) > new Date()) {
+          return sessionData;
+        } else {
+          delete this.sessions[key];
+          return null;
+        }
       }
 
-      const sessionData = sessionDoc.data();
-
-      // Check if session has expired
-      if (new Date() > sessionData.expiresAt.toDate()) {
-        await this.clearVerificationSession(phoneNumber);
-        return null;
-      }
-
-      return sessionData;
     } catch (error) {
-      console.error('Failed to get verification session:', error);
+      console.warn('Failed to get verification session:', error.message);
       return null;
     }
   }
 
   /**
    * Clear verification session
-   * @param {string} phoneNumber - Phone number
    */
   async clearVerificationSession(phoneNumber) {
     try {
-      if (!this.db) {
-        console.warn('⚠️  Firestore not available, skipping session cleanup');
-        return;
+      const key = `twilio_session:${phoneNumber}`;
+      
+      if (this.redisClient) {
+        await this.redisClient.del(key);
+      } else {
+        // In-memory storage
+        this.sessions = this.sessions || {};
+        delete this.sessions[key];
       }
 
-      await this.db.collection('otpSessions').doc(phoneNumber).delete();
     } catch (error) {
-      console.error('Failed to clear verification session:', error);
+      console.warn('Failed to clear verification session:', error.message);
     }
   }
 
   /**
-   * Send mock OTP for development/testing
-   * @param {string} phoneNumber - Phone number
-   * @param {Object} options - Options
-   * @returns {Promise<Object>} Mock result
+   * Mock OTP sending for development
    */
   async sendMockOTP(phoneNumber, options = {}) {
-    console.log(`🔧 Mock Service: Sending OTP to ${phoneNumber}`);
+    console.log(`🔐 Mock OTP sent to ${phoneNumber}`);
     
     // Store mock session
-    await this.storeVerificationSession(phoneNumber, 'mock_verification_sid', options);
-    
+    const mockSid = `mock_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    await this.storeVerificationSession(phoneNumber, mockSid, options);
+
     return {
       success: true,
-      verificationSid: 'mock_verification_sid',
+      sid: mockSid,
       status: 'pending',
+      channel: options.channel || 'sms',
       to: phoneNumber,
-      channel: 'sms',
-      sentAt: new Date(),
-      mock: true
+      expiresIn: '10 minutes'
     };
   }
 
   /**
-   * Verify mock OTP for development/testing
-   * @param {string} phoneNumber - Phone number
-   * @param {string} code - OTP code
-   * @returns {Promise<Object>} Mock verification result
+   * Mock OTP verification for development
    */
   async verifyMockOTP(phoneNumber, code) {
-    console.log(`🔧 Mock Service: Verifying OTP ${code} for ${phoneNumber}`);
+    console.log(`🔐 Mock OTP verification for ${phoneNumber}: ${code}`);
     
-    // Mock verification - accept '123456' or any 6-digit code in development
-    if (code === '123456' || process.env.NODE_ENV === 'development') {
-      await this.clearVerificationSession(phoneNumber);
-      
-      return {
-        success: true,
-        status: 'approved',
-        to: phoneNumber,
-        verifiedAt: new Date(),
-        mock: true
-      };
-    } else {
-      throw new Error('INVALID_OTP');
-    }
+    // Mock verification logic
+    const isValidCode = code === '123456' || code === '000000';
+    
+    // Clear session
+    await this.clearVerificationSession(phoneNumber);
+
+    return {
+      success: isValidCode,
+      status: isValidCode ? 'approved' : 'denied',
+      sid: `mock_${Date.now()}`,
+      to: phoneNumber,
+      valid: isValidCode
+    };
   }
 
   /**
    * Get service health status
-   * @returns {Promise<Object>} Health status
    */
   async getHealthStatus() {
     try {
-      const isConfigured = !!(this.client && this.verifyServiceSid);
-      const redisAvailable = !!(this.redis);
-      
       return {
-        service: 'twilio',
-        status: isConfigured ? 'healthy' : 'unconfigured',
-        configured: isConfigured,
-        redisAvailable,
-        timestamp: new Date()
+        isInitialized: this.isInitialized,
+        hasCredentials: !!(process.env.TWILIO_ACCOUNT_SID && process.env.TWILIO_AUTH_TOKEN && process.env.TWILIO_VERIFY_SERVICE_SID),
+        hasRedis: !!this.redisClient,
+        timestamp: new Date().toISOString()
       };
     } catch (error) {
       return {
-        service: 'twilio',
-        status: 'error',
+        isInitialized: false,
+        hasCredentials: false,
+        hasRedis: false,
         error: error.message,
-        timestamp: new Date()
+        timestamp: new Date().toISOString()
       };
     }
   }
 }
 
-// Export singleton instance
-module.exports = new TwilioService();
+// Create singleton instance
+const twilioService = new TwilioService();
+
+module.exports = twilioService;

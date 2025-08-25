@@ -69,7 +69,19 @@ class EnvironmentConfig {
 
     // Google Maps Configuration
     this.config.googleMaps = {
-      apiKey: process.env.GOOGLE_MAPS_API_KEY
+      apiKey: process.env.GOOGLE_MAPS_API_KEY || 'AIzaSyB0FixONN1x9MYHksCMW_TvJlBeuwcF3xg',
+      baseUrl: 'https://maps.googleapis.com/maps/api',
+      defaultRadius: 50000, // 50km
+      defaultLanguage: 'en',
+      defaultRegion: 'in',
+      // Backend specific restrictions
+      restrictions: {
+        allowedApis: ['places', 'geocoding', 'directions', 'distancematrix', 'maps-sdk-android', 'maps-sdk-ios'],
+        rateLimits: {
+          requestsPerMinute: 100,
+          requestsPerDay: 10000,
+        },
+      },
     };
 
     // reCAPTCHA Configuration

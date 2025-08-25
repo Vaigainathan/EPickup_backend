@@ -69,7 +69,7 @@ class EnvironmentConfig {
 
     // Google Maps Configuration
     this.config.googleMaps = {
-      apiKey: process.env.GOOGLE_MAPS_API_KEY || 'AIzaSyB0FixONN1x9MYHksCMW_TvJlBeuwcF3xg',
+      apiKey: process.env.GOOGLE_MAPS_API_KEY || '',
       baseUrl: 'https://maps.googleapis.com/maps/api',
       defaultRadius: 50000, // 50km
       defaultLanguage: 'en',
@@ -501,6 +501,20 @@ class EnvironmentConfig {
    */
   getFirebaseConfig() {
     return this.config.firebase;
+  }
+
+  /**
+   * Get Google Maps configuration
+   */
+  getGoogleMapsConfig() {
+    return this.config.googleMaps;
+  }
+
+  /**
+   * Get Google Maps API key
+   */
+  getGoogleMapsApiKey() {
+    return this.config.googleMaps.apiKey;
   }
 
   /**

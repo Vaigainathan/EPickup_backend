@@ -1,13 +1,20 @@
-const admin = require('firebase-admin');
 const sharp = require('sharp');
 const multer = require('multer');
 const path = require('path');
 const crypto = require('crypto');
 const { v4: uuidv4 } = require('uuid');
+const { getFirebaseApp, getFirestore, getStorage } = require('./firebase');
 
 class FileUploadService {
   constructor() {
-    // Initialize Firebase instances lazily
+    // Check if Firebase is available
+    try {
+      this.firebaseApp = getFirebaseApp();
+      this.isAvailable = !!this.firebaseApp;
+    } catch (error) {
+      console.warn('⚠️ Firebase not available for FileUploadService:', error.message);
+      this.isAvailable = false;
+    }
     
     // Supported file types and their configurations
     this.supportedTypes = {
@@ -67,14 +74,23 @@ class FileUploadService {
   }
 
   get db() {
-    return admin.firestore();
+    if (!this.isAvailable) {
+      throw new Error('Firebase is not available. Firestore operations are not available.');
+    }
+    return getFirestore();
   }
 
   get storage() {
-    return admin.storage();
+    if (!this.isAvailable) {
+      throw new Error('Firebase is not available. Storage operations are not available.');
+    }
+    return getStorage();
   }
 
   get bucket() {
+    if (!this.isAvailable) {
+      throw new Error('Firebase is not available. Storage bucket operations are not available.');
+    }
     return this.storage.bucket();
   }
 
@@ -904,3 +920,4 @@ class FileUploadService {
 }
 
 module.exports = FileUploadService;
+    

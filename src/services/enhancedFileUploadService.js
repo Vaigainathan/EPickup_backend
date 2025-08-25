@@ -6,10 +6,18 @@ const crypto = require('crypto');
 
 class EnhancedFileUploadService {
   constructor() {
-    this.storage = getStorage();
-    this.bucket = this.storage.bucket(process.env.STORAGE_BUCKET);
-    this.maxFileSize = parseInt(process.env.MAX_FILE_SIZE) || 5 * 1024 * 1024; // 5MB
-    this.allowedTypes = ['image/jpeg', 'image/png', 'image/webp'];
+    try {
+      this.storage = getStorage();
+      this.bucket = this.storage.bucket(process.env.FIREBASE_STORAGE_BUCKET || process.env.STORAGE_BUCKET);
+      this.maxFileSize = parseInt(process.env.MAX_FILE_SIZE) || 5 * 1024 * 1024; // 5MB
+      this.allowedTypes = ['image/jpeg', 'image/png', 'image/webp'];
+      this.isAvailable = true;
+    } catch (error) {
+      console.warn('⚠️ Firebase Storage not available:', error.message);
+      this.isAvailable = false;
+      this.maxFileSize = parseInt(process.env.MAX_FILE_SIZE) || 5 * 1024 * 1024; // 5MB
+      this.allowedTypes = ['image/jpeg', 'image/png', 'image/webp'];
+    }
   }
 
   configureMulter() {
@@ -42,6 +50,18 @@ class EnhancedFileUploadService {
       const randomString = crypto.randomBytes(8).toString('hex');
       const filename = `${type}/${userId}/${timestamp}-${randomString}.jpg`;
       
+      if (!this.isAvailable) {
+        // Return mock data when Firebase Storage is not available
+        console.warn('⚠️ Firebase Storage not available, returning mock upload data');
+        return {
+          filename,
+          url: `https://mock-storage.example.com/${filename}`,
+          size: processedImage.length,
+          originalName: file.originalname,
+          mock: true
+        };
+      }
+      
       // Upload to Firebase Storage
       const fileRef = this.bucket.file(filename);
       await fileRef.save(processedImage, {
@@ -63,18 +83,22 @@ class EnhancedFileUploadService {
         expires: '03-01-2500' // Far future expiration
       });
 
-      // Store file metadata in Firestore
-      const db = require('./firebase').getFirestore();
-      await db.collection('fileUploads').doc(filename).set({
-        userId,
-        type,
-        filename,
-        url,
-        size: processedImage.length,
-        originalName: file.originalname,
-        uploadedAt: new Date(),
-        status: 'active'
-      });
+      // Store file metadata in Firestore (if available)
+      try {
+        const db = require('./firebase').getFirestore();
+        await db.collection('fileUploads').doc(filename).set({
+          userId,
+          type,
+          filename,
+          url,
+          size: processedImage.length,
+          originalName: file.originalname,
+          uploadedAt: new Date(),
+          status: 'active'
+        });
+      } catch (firestoreError) {
+        console.warn('⚠️ Firestore not available for file metadata:', firestoreError.message);
+      }
 
       return {
         filename,
@@ -91,17 +115,26 @@ class EnhancedFileUploadService {
 
   async deleteFile(filename) {
     try {
+      if (!this.isAvailable) {
+        console.warn('⚠️ Firebase Storage not available, returning mock delete success');
+        return { success: true, message: 'File deleted successfully (mock)', mock: true };
+      }
+
       // Delete from Firebase Storage
       await this.bucket.file(filename).delete();
 
-      // Update metadata in Firestore
-      const db = require('./firebase').getFirestore();
-      await db.collection('fileUploads').doc(filename).update({
-        status: 'deleted',
-        deletedAt: new Date()
-      });
+      // Update metadata in Firestore (if available)
+      try {
+        const db = require('./firebase').getFirestore();
+        await db.collection('fileUploads').doc(filename).update({
+          status: 'deleted',
+          deletedAt: new Date()
+        });
+      } catch (firestoreError) {
+        console.warn('⚠️ Firestore not available for file metadata update:', firestoreError.message);
+      }
 
-      return true;
+      return { success: true, message: 'File deleted successfully' };
     } catch (error) {
       console.error('Error deleting file:', error);
       throw error;

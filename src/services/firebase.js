@@ -49,7 +49,8 @@ function initializeFirebase() {
 
         firebaseApp = admin.initializeApp({
           credential: admin.credential.cert(serviceAccount),
-          projectId: process.env.FIREBASE_PROJECT_ID
+          projectId: process.env.FIREBASE_PROJECT_ID,
+          storageBucket: process.env.FIREBASE_STORAGE_BUCKET || `${process.env.FIREBASE_PROJECT_ID}.appspot.com`
         });
 
         console.log('✅ Firebase Admin SDK initialized with environment variables');
@@ -66,7 +67,8 @@ function initializeFirebase() {
     if (require('fs').existsSync(serviceAccountPath)) {
       firebaseApp = admin.initializeApp({
         credential: admin.credential.cert(serviceAccountPath),
-        projectId: process.env.FIREBASE_PROJECT_ID
+        projectId: process.env.FIREBASE_PROJECT_ID,
+        storageBucket: process.env.FIREBASE_STORAGE_BUCKET || `${process.env.FIREBASE_PROJECT_ID}.appspot.com`
       });
 
       console.log('✅ Firebase Admin SDK initialized with service account file');
@@ -108,7 +110,11 @@ function getFirestore() {
  * Get Storage instance (for file uploads)
  */
 function getStorage() {
-  return getFirebaseApp().storage();
+  const app = getFirebaseApp();
+  if (!app) {
+    throw new Error('Firebase is not initialized. Storage operations are not available.');
+  }
+  return app.storage();
 }
 
 

@@ -1,9 +1,9 @@
-const { verifyIdToken } = require('../services/firebase');
+const jwt = require('jsonwebtoken');
 const { getFirestore } = require('../services/firebase');
 
 /**
  * Authentication middleware
- * Verifies Firebase ID token and adds user info to request
+ * Verifies JWT token and adds user info to request
  */
 const authMiddleware = async (req, res, next) => {
   try {
@@ -25,8 +25,9 @@ const authMiddleware = async (req, res, next) => {
     // Extract token
     const token = authHeader.substring(7); // Remove 'Bearer ' prefix
 
-    // Verify Firebase ID token
-    const decodedToken = await verifyIdToken(token);
+    // Verify JWT token
+    const secret = process.env.JWT_SECRET || 'your-secret-key';
+    const decodedToken = jwt.verify(token, secret);
     
     if (!decodedToken) {
       return res.status(401).json({
@@ -73,8 +74,8 @@ const authMiddleware = async (req, res, next) => {
 
     // Add user info to request
     req.user = {
-      uid: decodedToken.uid,
-      phone: decodedToken.phone_number,
+      uid: decodedToken.userId,
+      phone: decodedToken.phoneNumber,
       userType: userData.userType,
       ...userData
     };
@@ -90,7 +91,7 @@ const authMiddleware = async (req, res, next) => {
   } catch (error) {
     console.error('Authentication error:', error);
     
-    if (error.code === 'auth/id-token-expired') {
+    if (error.name === 'TokenExpiredError') {
       return res.status(401).json({
         success: false,
         error: {

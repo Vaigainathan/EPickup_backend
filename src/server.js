@@ -26,6 +26,7 @@ const realtimeRoutes = require('./routes/realtime');
 const fcmTokenRoutes = require('./routes/fcmTokens');
 const emergencyRoutes = require('./routes/emergency');
 const serviceAreaRoutes = require('./routes/serviceArea');
+const healthRoutes = require('./routes/health');
 
 // Import middleware
 const { errorHandler } = require('./middleware/errorHandler');
@@ -272,6 +273,9 @@ app.use('/api/realtime', authMiddleware, realtimeRoutes);
 app.use('/api/fcm-tokens', authMiddleware, fcmTokenRoutes);
 app.use('/api/emergency', authMiddleware, emergencyRoutes);
 app.use('/api/service-area', serviceAreaRoutes); // No auth required for service area validation
+
+// Health check routes (for keepalive script) - No auth required
+app.use('/health', healthRoutes);
 
 // Test Endpoints (No authentication required) - For Development Only
 if (process.env.NODE_ENV === 'development' || process.env.ENABLE_TEST_ENDPOINTS === 'true') {

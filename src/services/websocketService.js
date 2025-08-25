@@ -1,6 +1,5 @@
 const { Server } = require('socket.io');
 const jwt = require('jsonwebtoken');
-const { verifyIdToken } = require('./firebase');
 
 /**
  * WebSocket Service for EPickup real-time communication
@@ -39,15 +38,16 @@ class WebSocketService {
         // Remove 'Bearer ' prefix if present
         const cleanToken = token.replace('Bearer ', '');
         
-        // Verify Firebase ID token
-        const decodedToken = await verifyIdToken(cleanToken);
+        // Verify JWT token
+        const secret = process.env.JWT_SECRET || 'your-secret-key';
+        const decodedToken = jwt.verify(cleanToken, secret);
         
         if (!decodedToken) {
           return next(new Error('Invalid authentication token'));
         }
 
         // Add user info to socket
-        socket.userId = decodedToken.uid;
+        socket.userId = decodedToken.userId;
         socket.userType = decodedToken.userType || 'customer';
         
         next();

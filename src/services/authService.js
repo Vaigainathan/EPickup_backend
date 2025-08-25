@@ -1,4 +1,5 @@
-const { getFirestore, getAuth, createUser, getUserByPhone, createCustomToken, verifyIdToken } = require('./firebase');
+const { getFirestore } = require('./firebase');
+const twilioService = require('./twilioService');
 const crypto = require('crypto');
 
 /**
@@ -8,20 +9,20 @@ const crypto = require('crypto');
 class AuthService {
   constructor() {
     this.db = getFirestore();
-    this.auth = getAuth();
   }
 
   /**
-   * Generate OTP for phone number
+   * Generate OTP for phone number using Twilio Verify
    * @param {string} phoneNumber - Phone number to send OTP to
    * @param {boolean} isSignup - Whether this is for signup or login
-   * @param {string} recaptchaToken - reCAPTCHA token for verification
+   * @param {Object} options - Additional options for OTP
    * @returns {Promise<Object>} OTP session data
    */
-  async generateOTP(phoneNumber, isSignup = false, recaptchaToken = null) {
+  async generateOTP(phoneNumber, isSignup = false, options = {}) {
     try {
-      // Check if user already exists
-      const existingUser = await getUserByPhone(phoneNumber);
+      // Check if user already exists in Firestore
+      const userQuery = await this.db.collection('users').where('phone', '==', phoneNumber).limit(1).get();
+      const existingUser = userQuery.empty ? null : userQuery.docs[0].data();
       
       if (isSignup && existingUser) {
         throw new Error('USER_EXISTS');
@@ -31,37 +32,27 @@ class AuthService {
         throw new Error('USER_NOT_FOUND');
       }
 
-      // Generate OTP (in production, this would be sent via SMS)
-      const otp = this.generateRandomOTP();
-      
-      // Store OTP session
-      const sessionData = {
-        phoneNumber,
-        otp: this.hashOTP(otp), // Store hashed OTP
-        isSignup,
-        recaptchaToken,
-        createdAt: new Date(),
-        expiresAt: new Date(Date.now() + 10 * 60 * 1000), // 10 minutes
-        status: 'pending',
-        resendCount: 0,
-        attempts: 0,
-        maxAttempts: 3
-      };
+      // Send OTP via Twilio Verify
+      const result = await twilioService.sendOTP(phoneNumber, {
+        ...options,
+        metadata: {
+          isSignup,
+          ...options.metadata
+        }
+      });
 
-      await this.db.collection('otpSessions').doc(phoneNumber).set(sessionData);
-
-      // In production, send OTP via SMS here
-      if (process.env.NODE_ENV === 'development') {
-        console.log(`🔐 Development OTP for ${phoneNumber}: ${otp}`);
+      if (!result.success) {
+        throw new Error(result.error?.code || 'OTP_SEND_FAILED');
       }
 
       return {
         success: true,
-        sessionId: phoneNumber,
+        sessionId: result.verificationSid,
         expiresIn: '10 minutes',
         resendCount: 0,
         maxResends: 3,
-        debugOTP: process.env.NODE_ENV === 'development' ? otp : undefined
+        channel: result.channel,
+        to: result.to
       };
 
     } catch (error) {
@@ -71,76 +62,31 @@ class AuthService {
   }
 
   /**
-   * Verify OTP and authenticate user
+   * Verify OTP and authenticate user using Twilio Verify
    * @param {string} phoneNumber - Phone number
    * @param {string} otp - OTP to verify
-   * @param {string} firebaseIdToken - Firebase ID token (optional)
+   * @param {string} verificationSid - Verification session ID (optional)
    * @param {Object} userData - User data for new signups
    * @returns {Promise<Object>} Authentication result
    */
-  async verifyOTP(phoneNumber, otp, firebaseIdToken = null, userData = {}) {
+  async verifyOTP(phoneNumber, otp, verificationSid = null, userData = {}) {
     try {
-      // Get OTP session
-      const sessionRef = this.db.collection('otpSessions').doc(phoneNumber);
-      const sessionDoc = await sessionRef.get();
+      // Verify OTP via Twilio
+      const result = await twilioService.verifyOTP(phoneNumber, otp, verificationSid);
 
-      if (!sessionDoc.exists) {
-        throw new Error('NO_ACTIVE_SESSION');
-      }
-
-      const sessionData = sessionDoc.data();
-
-      // Check if session has expired
-      if (new Date() > sessionData.expiresAt.toDate()) {
-        await sessionRef.delete();
-        throw new Error('SESSION_EXPIRED');
-      }
-
-      // Check attempt limit
-      if (sessionData.attempts >= sessionData.maxAttempts) {
-        await sessionRef.delete();
-        throw new Error('MAX_ATTEMPTS_EXCEEDED');
-      }
-
-      // Update attempt count
-      await sessionRef.update({
-        attempts: sessionData.attempts + 1
-      });
-
-      // Verify OTP
-      let isValidOTP = false;
-      
-      if (process.env.NODE_ENV === 'development' && otp === '123456') {
-        isValidOTP = true;
-      } else if (firebaseIdToken) {
-        try {
-          const decodedToken = await verifyIdToken(firebaseIdToken);
-          if (decodedToken.phone_number === phoneNumber) {
-            isValidOTP = true;
-          }
-        } catch (error) {
-          console.error('Firebase token verification failed:', error);
-        }
-      } else {
-        // Verify against stored hashed OTP
-        isValidOTP = this.verifyHashedOTP(otp, sessionData.otp);
-      }
-
-      if (!isValidOTP) {
+      if (!result.success) {
         throw new Error('INVALID_OTP');
       }
 
       // Get or create user
       const { user, isNewUser } = await this.getOrCreateUser(phoneNumber, userData);
 
-      // Create custom token
-      const customToken = await createCustomToken(user.id, {
+      // Generate JWT token for session management
+      const token = this.generateJWTToken({
+        userId: user.id,
         userType: user.userType,
         phone: user.phone
       });
-
-      // Clean up OTP session
-      await sessionRef.delete();
 
       return {
         success: true,
@@ -151,7 +97,7 @@ class AuthService {
           userType: user.userType,
           isVerified: user.isVerified
         },
-        token: customToken,
+        token: token,
         isNewUser
       };
 
@@ -162,58 +108,26 @@ class AuthService {
   }
 
   /**
-   * Resend OTP to phone number
+   * Resend OTP to phone number using Twilio Verify
    * @param {string} phoneNumber - Phone number
-   * @param {string} recaptchaToken - reCAPTCHA token
+   * @param {Object} options - Additional options for resend
    * @returns {Promise<Object>} Resend result
    */
-  async resendOTP(phoneNumber, recaptchaToken = null) {
+  async resendOTP(phoneNumber, options = {}) {
     try {
-      // Get existing session
-      const sessionRef = this.db.collection('otpSessions').doc(phoneNumber);
-      const sessionDoc = await sessionRef.get();
+      // Resend OTP via Twilio
+      const result = await twilioService.resendOTP(phoneNumber, options);
 
-      if (!sessionDoc.exists) {
-        throw new Error('NO_ACTIVE_SESSION');
-      }
-
-      const sessionData = sessionDoc.data();
-
-      // Check if session has expired
-      if (new Date() > sessionData.expiresAt.toDate()) {
-        await sessionRef.delete();
-        throw new Error('SESSION_EXPIRED');
-      }
-
-      // Check resend limit
-      if (sessionData.resendCount >= 3) {
-        throw new Error('RESEND_LIMIT_EXCEEDED');
-      }
-
-      // Generate new OTP
-      const newOTP = this.generateRandomOTP();
-
-      // Update session
-      await sessionRef.update({
-        otp: this.hashOTP(newOTP),
-        recaptchaToken,
-        updatedAt: new Date(),
-        expiresAt: new Date(Date.now() + 10 * 60 * 1000),
-        resendCount: sessionData.resendCount + 1
-      });
-
-      // In production, send new OTP via SMS here
-      if (process.env.NODE_ENV === 'development') {
-        console.log(`🔐 Development OTP (resend) for ${phoneNumber}: ${newOTP}`);
+      if (!result.success) {
+        throw new Error(result.error?.code || 'OTP_RESEND_FAILED');
       }
 
       return {
         success: true,
-        sessionId: phoneNumber,
+        sessionId: result.verificationSid,
         expiresIn: '10 minutes',
-        resendCount: sessionData.resendCount + 1,
-        maxResends: 3,
-        debugOTP: process.env.NODE_ENV === 'development' ? newOTP : undefined
+        channel: result.channel,
+        to: result.to
       };
 
     } catch (error) {
@@ -230,32 +144,15 @@ class AuthService {
    */
   async getOrCreateUser(phoneNumber, userData = {}) {
     try {
-      const existingUser = await getUserByPhone(phoneNumber);
+      // Check if user exists in Firestore
+      const userQuery = await this.db.collection('users').where('phone', '==', phoneNumber).limit(1).get();
+      const existingUser = userQuery.empty ? null : userQuery.docs[0].data();
       let user;
       let isNewUser = false;
 
       if (existingUser) {
-        // User exists, get from Firestore
-        const userDoc = await this.db.collection('users').doc(existingUser.uid).get();
-        
-        if (userDoc.exists) {
-          user = userDoc.data();
-          user.id = existingUser.uid;
-        } else {
-          // User exists in Auth but not in Firestore, create Firestore document
-          user = {
-            id: existingUser.uid,
-            phone: phoneNumber,
-            name: existingUser.displayName || 'User',
-            userType: 'customer',
-            isVerified: true,
-            isActive: true,
-            createdAt: new Date(),
-            updatedAt: new Date()
-          };
-          
-          await this.db.collection('users').doc(existingUser.uid).set(user);
-        }
+        // User exists, return existing user data
+        user = existingUser;
       } else {
         // Create new user
         if (!userData.name) {
@@ -264,24 +161,12 @@ class AuthService {
 
         const userType = userData.userType || 'customer';
 
-        // Create user in Firebase Auth
-        let userRecord;
-        try {
-          userRecord = await createUser(phoneNumber, {
-            displayName: userData.name,
-            phoneNumber: phoneNumber
-          });
-        } catch (error) {
-          if (error.code === 'auth/phone-number-already-exists') {
-            userRecord = await getUserByPhone(phoneNumber);
-          } else {
-            throw error;
-          }
-        }
+        // Create user ID (using phone number hash or timestamp)
+        const userId = `user_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
 
         // Create user document in Firestore
         const newUserData = {
-          id: userRecord.uid,
+          id: userId,
           phone: phoneNumber,
           name: userData.name,
           userType: userType,
@@ -340,7 +225,7 @@ class AuthService {
           };
         }
 
-        await this.db.collection('users').doc(userRecord.uid).set(newUserData);
+        await this.db.collection('users').doc(userId).set(newUserData);
         user = newUserData;
         isNewUser = true;
       }
@@ -459,6 +344,35 @@ class AuthService {
    */
   verifyHashedOTP(otp, hashedOTP) {
     return this.hashOTP(otp) === hashedOTP;
+  }
+
+  /**
+   * Generate JWT token for user session
+   * @param {Object} payload - Token payload
+   * @returns {string} JWT token
+   */
+  generateJWTToken(payload) {
+    const jwt = require('jsonwebtoken');
+    const secret = process.env.JWT_SECRET || 'your-secret-key';
+    const expiresIn = process.env.JWT_EXPIRES_IN || '7d';
+
+    return jwt.sign(payload, secret, { expiresIn });
+  }
+
+  /**
+   * Verify JWT token
+   * @param {string} token - JWT token to verify
+   * @returns {Object} Decoded token payload
+   */
+  verifyJWTToken(token) {
+    const jwt = require('jsonwebtoken');
+    const secret = process.env.JWT_SECRET || 'your-secret-key';
+
+    try {
+      return jwt.verify(token, secret);
+    } catch (error) {
+      throw new Error('INVALID_TOKEN');
+    }
   }
 
   /**

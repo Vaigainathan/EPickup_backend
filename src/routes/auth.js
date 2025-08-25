@@ -12,7 +12,7 @@ const router = express.Router();
 
 /**
  * @route   POST /api/auth/send-otp
- * @desc    Send OTP to phone number for authentication
+ * @desc    Send OTP to phone number for authentication using Twilio Verify
  * @access  Public
  */
 router.post('/send-otp', [
@@ -23,10 +23,10 @@ router.post('/send-otp', [
     .optional()
     .isBoolean()
     .withMessage('isSignup must be a boolean'),
-  body('recaptchaToken')
+  body('options')
     .optional()
-    .isString()
-    .withMessage('reCAPTCHA token must be a string')
+    .isObject()
+    .withMessage('options must be an object')
 ], async (req, res) => {
   try {
     // Check validation errors
@@ -43,56 +43,10 @@ router.post('/send-otp', [
       });
     }
 
-    const { phoneNumber, isSignup = false, recaptchaToken } = req.body;
+    const { phoneNumber, isSignup = false, options = {} } = req.body;
 
-    // Check if user already exists
-    const existingUser = await getUserByPhone(phoneNumber);
-    
-    if (isSignup && existingUser) {
-      return res.status(409).json({
-        success: false,
-        error: {
-          code: 'USER_EXISTS',
-          message: 'User already exists',
-          details: 'A user with this phone number is already registered. Please login instead.'
-        },
-        timestamp: new Date().toISOString()
-      });
-    }
-
-    if (!isSignup && !existingUser) {
-      return res.status(404).json({
-        success: false,
-        error: {
-          code: 'USER_NOT_FOUND',
-          message: 'User not found',
-          details: 'No user found with this phone number. Please sign up first.'
-        },
-        timestamp: new Date().toISOString()
-      });
-    }
-
-    // Store OTP session in Firestore
-    const db = getFirestore();
-    const sessionRef = db.collection('otpSessions').doc(phoneNumber);
-    
-    const sessionData = {
-      phoneNumber,
-      isSignup,
-      recaptchaToken,
-      createdAt: new Date(),
-      expiresAt: new Date(Date.now() + 10 * 60 * 1000), // 10 minutes
-      status: 'pending',
-      resendCount: 0,
-      attempts: 0,
-      maxAttempts: 3
-    };
-
-    await sessionRef.set(sessionData);
-
-    // In production, this would trigger Firebase Phone Auth
-    // For now, we'll simulate OTP generation
-    const mockOTP = process.env.NODE_ENV === 'development' ? '123456' : null;
+    // Send OTP via Twilio Verify
+    const result = await authService.generateOTP(phoneNumber, isSignup, options);
 
     res.status(200).json({
       success: true,
@@ -125,7 +79,7 @@ router.post('/send-otp', [
 
 /**
  * @route   POST /api/auth/verify-otp
- * @desc    Verify OTP and authenticate user
+ * @desc    Verify OTP and authenticate user using Twilio Verify
  * @access  Public
  */
 router.post('/verify-otp', [
@@ -136,10 +90,10 @@ router.post('/verify-otp', [
     .isLength({ min: 6, max: 6 })
     .isNumeric()
     .withMessage('OTP must be exactly 6 digits'),
-  body('firebaseIdToken')
+  body('verificationSid')
     .optional()
     .isString()
-    .withMessage('Firebase ID token must be a string'),
+    .withMessage('Verification session ID must be a string'),
   body('name')
     .optional()
     .isLength({ min: 2, max: 50 })
@@ -164,240 +118,21 @@ router.post('/verify-otp', [
       });
     }
 
-    const { phoneNumber, otp, firebaseIdToken, name, userType = 'customer' } = req.body;
+    const { phoneNumber, otp, verificationSid, name, userType = 'customer' } = req.body;
 
-    // Verify OTP session
-    const db = getFirestore();
-    const sessionRef = db.collection('otpSessions').doc(phoneNumber);
-    const sessionDoc = await sessionRef.get();
-
-    if (!sessionDoc.exists) {
-      return res.status(400).json({
-        success: false,
-        error: {
-          code: 'NO_ACTIVE_SESSION',
-          message: 'No active OTP session',
-          details: 'Please request a new OTP first.'
-        },
-        timestamp: new Date().toISOString()
-      });
-    }
-
-    const sessionData = sessionDoc.data();
-
-    // Check if session has expired
-    if (new Date() > sessionData.expiresAt.toDate()) {
-      await sessionRef.delete();
-      return res.status(400).json({
-        success: false,
-        error: {
-          code: 'SESSION_EXPIRED',
-          message: 'OTP session expired',
-          details: 'Your OTP session has expired. Please request a new OTP.'
-        },
-        timestamp: new Date().toISOString()
-      });
-    }
-
-    // Check attempt limit
-    if (sessionData.attempts >= sessionData.maxAttempts) {
-      await sessionRef.delete();
-      return res.status(429).json({
-        success: false,
-        error: {
-          code: 'MAX_ATTEMPTS_EXCEEDED',
-          message: 'Maximum attempts exceeded',
-          details: 'You have exceeded the maximum verification attempts. Please request a new OTP.'
-        },
-        timestamp: new Date().toISOString()
-      });
-    }
-
-    // Update attempt count
-    await sessionRef.update({
-      attempts: sessionData.attempts + 1
-    });
-
-    // Verify OTP (in production, this would verify against Firebase)
-    let isValidOTP = false;
-    
-    if (process.env.NODE_ENV === 'development' && otp === '123456') {
-      isValidOTP = true;
-    } else if (firebaseIdToken) {
-      try {
-        // Verify Firebase ID token
-        const decodedToken = await verifyIdToken(firebaseIdToken);
-        if (decodedToken.phone_number === phoneNumber) {
-          isValidOTP = true;
-        }
-      } catch (error) {
-        console.error('Firebase token verification failed:', error);
-      }
-    }
-
-    if (!isValidOTP) {
-      return res.status(400).json({
-        success: false,
-        error: {
-          code: 'INVALID_OTP',
-          message: 'Invalid OTP',
-          details: 'The OTP you entered is incorrect. Please try again.'
-        },
-        timestamp: new Date().toISOString()
-      });
-    }
-
-    // Check if user exists
-    const existingUser = await getUserByPhone(phoneNumber);
-    let user;
-    let isNewUser = false;
-
-    if (existingUser) {
-      // User exists, get user data from Firestore
-      const userDoc = await db.collection('users').doc(existingUser.uid).get();
-      
-      if (userDoc.exists) {
-        user = userDoc.data();
-        user.id = existingUser.uid;
-      } else {
-        // User exists in Auth but not in Firestore, create Firestore document
-        user = {
-          id: existingUser.uid,
-          phone: phoneNumber,
-          name: existingUser.displayName || 'User',
-          userType: 'customer', // Default type
-          isVerified: true,
-          isActive: true,
-          createdAt: new Date(),
-          updatedAt: new Date()
-        };
-        
-        await db.collection('users').doc(existingUser.uid).set(user);
-      }
-    } else {
-      // Create new user
-      if (!name) {
-        return res.status(400).json({
-          success: false,
-          error: {
-            code: 'NAME_REQUIRED',
-            message: 'Name required for new users',
-            details: 'Please provide a name for new user registration'
-          },
-          timestamp: new Date().toISOString()
-        });
-      }
-
-      // Create user in Firebase Auth (if not already created by Phone Auth)
-      let userRecord;
-      try {
-        userRecord = await createUser(phoneNumber, {
-          displayName: name,
-          phoneNumber: phoneNumber
-        });
-      } catch (error) {
-        if (error.code === 'auth/phone-number-already-exists') {
-          // User was created by Phone Auth, get the existing user
-          userRecord = await getUserByPhone(phoneNumber);
-        } else {
-          throw error;
-        }
-      }
-
-      // Create user document in Firestore
-      const userData = {
-        id: userRecord.uid,
-        phone: phoneNumber,
-        name: name,
-        userType: userType,
-        isVerified: true,
-        isActive: true,
-        createdAt: new Date(),
-        updatedAt: new Date()
-      };
-
-      // Add user type specific data
-      if (userType === 'customer') {
-        userData.customer = {
-          wallet: {
-            balance: 0,
-            currency: 'INR'
-          },
-          savedAddresses: [],
-          preferences: {
-            vehicleType: '2_wheeler',
-            maxWeight: 10,
-            paymentMethod: 'cash'
-          }
-        };
-      } else if (userType === 'driver') {
-        userData.driver = {
-          vehicleDetails: {
-            type: 'motorcycle',
-            model: '',
-            number: '',
-            color: ''
-          },
-          documents: {
-            drivingLicense: null,
-            profilePhoto: null,
-            aadhaarCard: null,
-            bikeInsurance: null,
-            rcBook: null
-          },
-          verificationStatus: 'pending',
-          isOnline: false,
-          rating: 0,
-          totalTrips: 0,
-          earnings: {
-            total: 0,
-            thisMonth: 0,
-            thisWeek: 0
-          },
-          availability: {
-            workingHours: {
-              start: '09:00',
-              end: '18:00'
-            },
-            workingDays: ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'],
-            isAvailable: false
-          }
-        };
-      }
-
-      await db.collection('users').doc(userRecord.uid).set(userData);
-      user = userData;
-      isNewUser = true;
-    }
-
-    // Create custom token for client
-    const customToken = await createCustomToken(user.id, {
-      userType: user.userType,
-      phone: user.phone
-    });
-
-    // Clean up OTP session
-    try {
-      await sessionRef.delete();
-    } catch (error) {
-      console.warn('Failed to cleanup OTP session:', error);
-    }
+    // Verify OTP via Twilio and authenticate user
+    const userData = name ? { name, userType } : {};
+    const result = await authService.verifyOTP(phoneNumber, otp, verificationSid, userData);
 
     res.status(200).json({
       success: true,
-      message: isNewUser ? 'User registered successfully' : 'Login successful',
+      message: result.isNewUser ? 'User registered successfully' : 'Login successful',
       data: {
-        user: {
-          id: user.id,
-          name: user.name,
-          phone: user.phone,
-          userType: user.userType,
-          isVerified: user.isVerified
-        },
-        accessToken: customToken,  // ✅ Match frontend expectation
-        refreshToken: null,        // ✅ Add refresh token placeholder
-        expiresIn: 3600,          // ✅ Add expiration time (1 hour)
-        isNewUser
+        user: result.user,
+        accessToken: result.token,
+        refreshToken: null,
+        expiresIn: 3600,
+        isNewUser: result.isNewUser
       },
       timestamp: new Date().toISOString()
     });
@@ -418,17 +153,17 @@ router.post('/verify-otp', [
 
 /**
  * @route   POST /api/auth/resend-otp
- * @desc    Resend OTP to phone number
+ * @desc    Resend OTP to phone number using Twilio Verify
  * @access  Public
  */
 router.post('/resend-otp', [
   body('phoneNumber')
     .isMobilePhone('en-IN')
     .withMessage('Please provide a valid Indian phone number'),
-  body('recaptchaToken')
+  body('options')
     .optional()
-    .isString()
-    .withMessage('reCAPTCHA token must be a string')
+    .isObject()
+    .withMessage('options must be an object')
 ], async (req, res) => {
   try {
     // Check validation errors
@@ -445,75 +180,19 @@ router.post('/resend-otp', [
       });
     }
 
-    const { phoneNumber, recaptchaToken } = req.body;
+    const { phoneNumber, options = {} } = req.body;
 
-    // Check if there's an existing session
-    const db = getFirestore();
-    const sessionRef = db.collection('otpSessions').doc(phoneNumber);
-    const sessionDoc = await sessionRef.get();
-
-    if (!sessionDoc.exists) {
-      return res.status(400).json({
-        success: false,
-        error: {
-          code: 'NO_ACTIVE_SESSION',
-          message: 'No active OTP session',
-          details: 'Please request a new OTP first.'
-        },
-        timestamp: new Date().toISOString()
-      });
-    }
-
-    const sessionData = sessionDoc.data();
-
-    // Check if session has expired
-    if (new Date() > sessionData.expiresAt.toDate()) {
-      await sessionRef.delete();
-      return res.status(400).json({
-        success: false,
-        error: {
-          code: 'SESSION_EXPIRED',
-          message: 'OTP session expired',
-          details: 'Your OTP session has expired. Please request a new OTP.'
-        },
-        timestamp: new Date().toISOString()
-      });
-    }
-
-    // Check resend limit (max 3 resends per session)
-    if (sessionData.resendCount >= 3) {
-      return res.status(429).json({
-        success: false,
-        error: {
-          code: 'RESEND_LIMIT_EXCEEDED',
-          message: 'Resend limit exceeded',
-          details: 'You have exceeded the maximum number of resend attempts. Please request a new OTP.'
-        },
-        timestamp: new Date().toISOString()
-      });
-    }
-
-    // Update session with new recaptcha token and extend expiry
-    await sessionRef.update({
-      recaptchaToken,
-      updatedAt: new Date(),
-      expiresAt: new Date(Date.now() + 10 * 60 * 1000), // 10 minutes
-      resendCount: (sessionData.resendCount || 0) + 1
-    });
-
-    // In production, this would trigger Firebase Phone Auth resend
-    const mockOTP = process.env.NODE_ENV === 'development' ? '123456' : null;
+    // Resend OTP via Twilio
+    const result = await authService.resendOTP(phoneNumber, options);
 
     res.status(200).json({
       success: true,
       message: 'OTP resent successfully',
       data: {
-        phoneNumber,
-        sessionId: phoneNumber,
-        expiresIn: '10 minutes',
-        resendCount: (sessionData.resendCount || 0) + 1,
-        maxResends: 3,
-        ...(mockOTP && { debugOTP: mockOTP }) // Only include in development
+        sessionId: result.sessionId,
+        expiresIn: result.expiresIn,
+        channel: result.channel,
+        to: result.to
       },
       timestamp: new Date().toISOString()
     });
@@ -541,17 +220,19 @@ router.post('/refresh-token', requireRole(['customer', 'driver']), async (req, r
   try {
     const { uid, userType } = req.user;
 
-    // Create new custom token
-    const customToken = await createCustomToken(uid, {
-      userType,
-      phone: req.user.phone
+    // Generate new JWT token
+    const authService = require('../services/authService');
+    const newToken = authService.generateJWTToken({
+      userId: uid,
+      phoneNumber: req.user.phone,
+      role: userType
     });
 
     res.status(200).json({
       success: true,
       message: 'Token refreshed successfully',
       data: {
-        token: customToken
+        token: newToken
       },
       timestamp: new Date().toISOString()
     });

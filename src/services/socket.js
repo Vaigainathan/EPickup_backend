@@ -1,5 +1,5 @@
 const { Server } = require('socket.io');
-const { verifyIdToken } = require('./firebase');
+const jwt = require('jsonwebtoken');
 const WebSocketEventHandler = require('./websocketEventHandler');
 
 let io = null;
@@ -42,11 +42,12 @@ const initializeSocketIO = async (server) => {
           return next(new Error('Authentication token required'));
         }
 
-        // Verify Firebase token
-        const decodedToken = await verifyIdToken(token);
+        // Verify JWT token
+        const secret = process.env.JWT_SECRET || 'your-secret-key';
+        const decodedToken = jwt.verify(token, secret);
         
         // Add user info to socket
-        socket.userId = decodedToken.uid;
+        socket.userId = decodedToken.userId;
         socket.userType = decodedToken.userType || 'customer';
         socket.userRole = decodedToken.role || 'customer';
         socket.userRooms = new Set();

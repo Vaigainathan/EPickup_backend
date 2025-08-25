@@ -2,11 +2,165 @@ const express = require('express');
 const { Client } = require('@googlemaps/google-maps-services-js');
 const { asyncHandler } = require('../middleware/errorHandler');
 const environmentConfig = require('../config/environment');
+const rateLimit = require('express-rate-limit');
+const recaptchaEnterpriseService = require('../services/recaptchaEnterpriseService');
 
 const router = express.Router();
 
 // Initialize Google Maps client
 const googleMapsClient = new Client({});
+
+// Rate limiting for Google Maps APIs
+const googleMapsLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 100, // limit each IP to 100 requests per windowMs
+  message: {
+    success: false,
+    message: 'Too many requests',
+    error: { code: 'RATE_LIMIT_EXCEEDED' }
+  },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+// Apply rate limiting to all Google Maps routes
+router.use(googleMapsLimiter);
+
+// Quota monitoring
+const quotaMonitor = {
+  requests: new Map(),
+  quotas: {
+    geocoding: { daily: 2500, monthly: 100000 },
+    places: { daily: 1000, monthly: 100000 },
+    directions: { daily: 2500, monthly: 100000 },
+    distanceMatrix: { daily: 100, monthly: 100000 },
+    nearbyPlaces: { daily: 5000, monthly: 100000 }
+  },
+  
+  trackRequest(apiName) {
+    const now = Date.now();
+    const today = new Date(now).toISOString().split('T')[0];
+    const key = `${apiName}-${today}`;
+    
+    const currentCount = this.requests.get(key) || 0;
+    this.requests.set(key, currentCount + 1);
+    
+    // Check if approaching quota
+    const quota = this.quotas[apiName];
+    if (quota && currentCount + 1 > quota.daily * 0.8) {
+      console.warn(`⚠️ Approaching daily quota for ${apiName}: ${currentCount + 1}/${quota.daily}`);
+    }
+  },
+  
+  getUsage(apiName) {
+    const today = new Date().toISOString().split('T')[0];
+    const key = `${apiName}-${today}`;
+    return this.requests.get(key) || 0;
+  }
+};
+
+// Helper function to check API key and provide detailed error information
+function validateApiKey() {
+  const apiKey = environmentConfig.getGoogleMapsApiKey();
+  if (!apiKey) {
+    throw new Error('GOOGLE_MAPS_API_KEY is not configured');
+  }
+  if (!apiKey.startsWith('AIzaSy')) {
+    throw new Error('Invalid Google Maps API key format');
+  }
+  return apiKey;
+}
+
+// Helper function to validate reCAPTCHA tokens using Enterprise service
+async function validateRecaptchaToken(token, action = 'submit') {
+  try {
+    if (!environmentConfig.isRecaptchaEnabled()) {
+      console.log('reCAPTCHA validation disabled, skipping');
+      return true; // Skip validation if disabled
+    }
+
+    if (!token) {
+      console.warn('No reCAPTCHA token provided');
+      return false;
+    }
+
+    // Use reCAPTCHA Enterprise service for validation
+    const isValid = await recaptchaEnterpriseService.validateToken(token, action);
+    console.log(`reCAPTCHA validation result for action '${action}': ${isValid}`);
+    return isValid;
+  } catch (error) {
+    console.error('reCAPTCHA validation error:', error);
+    return false;
+  }
+}
+
+// Helper function to handle Google Maps API errors with detailed information
+function handleGoogleMapsError(error, operation) {
+  console.error(`Google Maps ${operation} Error:`, {
+    message: error.message,
+    status: error.response?.status,
+    data: error.response?.data,
+    config: {
+      url: error.config?.url,
+      method: error.config?.method,
+      params: error.config?.params
+    }
+  });
+
+  // Check for specific API errors
+  if (error.response?.data?.error_message) {
+    const errorMessage = error.response.data.error_message;
+    if (errorMessage.includes('API key not valid')) {
+      return {
+        success: false,
+        message: 'Google Maps API key is invalid or expired',
+        error: {
+          code: 'INVALID_API_KEY',
+          message: 'Please check your Google Maps API key configuration'
+        }
+      };
+    }
+    if (errorMessage.includes('API not enabled')) {
+      return {
+        success: false,
+        message: `Google Maps API not enabled for ${operation}`,
+        error: {
+          code: 'API_NOT_ENABLED',
+          message: `Please enable the required Google Maps API in Google Cloud Console: ${operation}`
+        }
+      };
+    }
+    if (errorMessage.includes('quota exceeded')) {
+      return {
+        success: false,
+        message: 'Google Maps API quota exceeded',
+        error: {
+          code: 'QUOTA_EXCEEDED',
+          message: 'API usage limit reached. Please check your billing and quotas.'
+        }
+      };
+    }
+    if (errorMessage.includes('ZERO_RESULTS')) {
+      return {
+        success: false,
+        message: 'No results found for the given query',
+        error: {
+          code: 'ZERO_RESULTS',
+          message: 'No matching locations found. Please try a different search term.'
+        }
+      };
+    }
+  }
+
+  return {
+    success: false,
+    message: `Failed to perform ${operation}`,
+    error: {
+      code: 'GOOGLE_MAPS_ERROR',
+      message: error.response?.data?.error_message || error.message || 'Unknown Google Maps API error'
+    }
+  };
+}
 
 /**
  * @route GET /api/google-maps/places
@@ -37,10 +191,23 @@ router.get('/places',
     }
 
     try {
+      const apiKey = validateApiKey();
+      
+      // Track quota usage
+      quotaMonitor.trackRequest('places');
+      
+      console.log(`🔍 Place Search Request:`, {
+        input: input.trim(),
+        types,
+        components,
+        radius: parseInt(radius),
+        location
+      });
+
       const response = await googleMapsClient.placeAutocomplete({
         params: {
           input: input.trim(),
-          key: environmentConfig.getGoogleMapsApiKey(),
+          key: apiKey,
           sessiontoken: sessionToken,
           types: types,
           components: components,
@@ -49,6 +216,8 @@ router.get('/places',
           strictbounds: strictbounds === 'true'
         }
       });
+
+      console.log(`✅ Place Search Response Status:`, response.data.status);
 
       if (response.data.status === 'OK') {
         const predictions = response.data.predictions.map(prediction => ({
@@ -63,30 +232,27 @@ router.get('/places',
           success: true,
           data: {
             predictions,
-            status: response.data.status
+            status: response.data.status,
+            count: predictions.length
           },
           message: 'Place search results retrieved successfully'
         });
       } else {
-        res.status(400).json({
+        const errorResponse = {
           success: false,
           message: 'Failed to get place search results',
           error: {
             code: response.data.status,
             message: response.data.error_message || 'Google Maps API error'
           }
-        });
+        };
+
+        console.error(`❌ Place Search Failed:`, errorResponse);
+        res.status(400).json(errorResponse);
       }
     } catch (error) {
-      console.error('Google Maps Place Search Error:', error);
-      res.status(500).json({
-        success: false,
-        message: 'Failed to get place search results',
-        error: {
-          code: 'INTERNAL_ERROR',
-          message: 'Internal server error'
-        }
-      });
+      const errorResponse = handleGoogleMapsError(error, 'Place Search');
+      res.status(400).json(errorResponse); // Return 400 instead of 500
     }
   })
 );
@@ -98,7 +264,16 @@ router.get('/places',
  */
 router.get('/places/autocomplete', 
   asyncHandler(async (req, res) => {
-    const { input, sessionToken, types, components, radius, location, strictbounds } = req.query;
+    const { 
+      input, 
+      sessionToken, 
+      types = 'geocode', 
+      components = 'country:in', 
+      radius = 50000, 
+      location = '12.9716,77.5946', 
+      strictbounds = false,
+      recaptchaToken 
+    } = req.query;
 
     if (!input || input.trim().length === 0) {
       return res.status(400).json({
@@ -111,11 +286,46 @@ router.get('/places/autocomplete',
       });
     }
 
+    // Validate reCAPTCHA token if provided
+    if (recaptchaToken) {
+      try {
+        const recaptchaValid = await validateRecaptchaToken(recaptchaToken);
+        if (!recaptchaValid) {
+          return res.status(400).json({
+            success: false,
+            message: 'Invalid reCAPTCHA token',
+            error: {
+              code: 'INVALID_RECAPTCHA',
+              message: 'reCAPTCHA validation failed'
+            }
+          });
+        }
+      } catch (error) {
+        console.error('reCAPTCHA validation error:', error);
+        return res.status(500).json({
+          success: false,
+          message: 'reCAPTCHA validation error',
+          error: {
+            code: 'RECAPTCHA_ERROR',
+            message: 'Failed to validate reCAPTCHA token'
+          }
+        });
+      }
+    }
+
     try {
+      const apiKey = validateApiKey();
+      
+      console.log(`🔍 Autocomplete Request:`, {
+        input: input.trim(),
+        types: types || 'geocode',
+        components
+      });
+
       const response = await googleMapsClient.placeAutocomplete({
         params: {
           input: input.trim(),
-          key: environmentConfig.getGoogleMapsApiKey(),
+          key: apiKey,
           sessiontoken: sessionToken,
           types: types || 'geocode',
           components: components,
@@ -124,6 +334,8 @@ router.get('/places/autocomplete',
           strictbounds: strictbounds === 'true'
         }
       });
+
+      console.log(`✅ Autocomplete Response Status:`, response.data.status);
 
       if (response.data.status === 'OK') {
         const predictions = response.data.predictions.map(prediction => ({
@@ -138,30 +350,27 @@ router.get('/places/autocomplete',
           success: true,
           data: {
             predictions,
-            status: response.data.status
+            status: response.data.status,
+            count: predictions.length
           },
           message: 'Place autocomplete results retrieved successfully'
         });
       } else {
-        res.status(400).json({
+        const errorResponse = {
           success: false,
           message: 'Failed to get autocomplete results',
           error: {
             code: response.data.status,
             message: response.data.error_message || 'Google Maps API error'
           }
-        });
+        };
+
+        console.error(`❌ Autocomplete Failed:`, errorResponse);
+        res.status(400).json(errorResponse);
       }
     } catch (error) {
-      console.error('Google Maps Autocomplete Error:', error);
-      res.status(500).json({
-        success: false,
-        message: 'Failed to get autocomplete results',
-        error: {
-          code: 'INTERNAL_ERROR',
-          message: 'Internal server error'
-        }
-      });
+      const errorResponse = handleGoogleMapsError(error, 'Autocomplete');
+      res.status(500).json(errorResponse);
     }
   })
 );
@@ -187,15 +396,24 @@ router.get('/places/details',
     }
 
     try {
+      const apiKey = validateApiKey();
+      
+      console.log(`🔍 Place Details Request:`, {
+        placeId,
+        fields: fields || 'formatted_address,geometry,name,place_id,types'
+      });
+
       const response = await googleMapsClient.placeDetails({
         params: {
           place_id: placeId,
-          key: environmentConfig.getGoogleMapsApiKey(),
+          key: apiKey,
           fields: fields || 'formatted_address,geometry,name,place_id,types',
           language: language || 'en',
           region: region || 'IN'
         }
       });
+
+      console.log(`✅ Place Details Response Status:`, response.data.status);
 
       if (response.data.status === 'OK') {
         const place = response.data.result;
@@ -220,25 +438,21 @@ router.get('/places/details',
           message: 'Place details retrieved successfully'
         });
       } else {
-        res.status(400).json({
+        const errorResponse = {
           success: false,
           message: 'Failed to get place details',
           error: {
             code: response.data.status,
             message: response.data.error_message || 'Google Maps API error'
           }
-        });
+        };
+
+        console.error(`❌ Place Details Failed:`, errorResponse);
+        res.status(400).json(errorResponse);
       }
     } catch (error) {
-      console.error('Google Maps Place Details Error:', error);
-      res.status(500).json({
-        success: false,
-        message: 'Failed to get place details',
-        error: {
-          code: 'INTERNAL_ERROR',
-          message: 'Internal server error'
-        }
-      });
+      const errorResponse = handleGoogleMapsError(error, 'Place Details');
+      res.status(500).json(errorResponse);
     }
   })
 );
@@ -277,10 +491,22 @@ router.get('/directions',
     }
 
     try {
+      const apiKey = validateApiKey();
+      
+      // Track quota usage
+      quotaMonitor.trackRequest('directions');
+      
+      console.log(`🗺️ Directions Request:`, {
+        origin,
+        destination,
+        mode,
+        alternatives: alternatives === 'true'
+      });
+
       const params = {
         origin,
         destination,
-        key: environmentConfig.getGoogleMapsApiKey(),
+        key: apiKey,
         mode,
         alternatives: alternatives === 'true',
         avoid: avoid ? avoid.split('|') : [],
@@ -303,6 +529,8 @@ router.get('/directions',
       }
 
       const response = await googleMapsClient.directions({ params });
+
+      console.log(`✅ Directions Response Status:`, response.data.status);
 
       if (response.data.status === 'OK') {
         const routes = response.data.routes.map(route => ({
@@ -341,25 +569,22 @@ router.get('/directions',
           message: 'Directions retrieved successfully'
         });
       } else {
-        res.status(400).json({
+        const errorResponse = {
           success: false,
           message: 'Failed to get directions',
           error: {
             code: response.data.status,
             message: response.data.error_message || 'Google Maps API error'
           }
-        });
+        };
+
+        console.error(`❌ Directions Failed:`, errorResponse);
+        res.status(400).json(errorResponse);
       }
     } catch (error) {
-      console.error('Google Maps Directions Error:', error);
-      res.status(500).json({
-        success: false,
-        message: 'Failed to get directions',
-        error: {
-          code: 'INTERNAL_ERROR',
-          message: 'Internal server error'
-        }
-      });
+      console.error('Directions API error:', error);
+      const errorResponse = handleGoogleMapsError(error, 'Directions');
+      res.status(500).json(errorResponse); // Return 500 for server errors
     }
   })
 );
@@ -385,9 +610,18 @@ router.get('/geocode',
     }
 
     try {
+      const apiKey = validateApiKey();
+      
+      console.log(`🌍 Geocoding Request:`, {
+        address,
+        components,
+        language,
+        region
+      });
+
       const params = {
         address,
-        key: environmentConfig.getGoogleMapsApiKey(),
+        key: apiKey,
         language,
         region
       };
@@ -401,6 +635,8 @@ router.get('/geocode',
       }
 
       const response = await googleMapsClient.geocode({ params });
+
+      console.log(`✅ Geocoding Response Status:`, response.data.status);
 
       if (response.data.status === 'OK') {
         const results = response.data.results.map(result => ({
@@ -416,30 +652,27 @@ router.get('/geocode',
           success: true,
           data: {
             results,
-            status: response.data.status
+            status: response.data.status,
+            count: results.length
           },
           message: 'Geocoding completed successfully'
         });
       } else {
-        res.status(400).json({
+        const errorResponse = {
           success: false,
           message: 'Failed to geocode address',
           error: {
             code: response.data.status,
             message: response.data.error_message || 'Google Maps API error'
           }
-        });
+        };
+
+        console.error(`❌ Geocoding Failed:`, errorResponse);
+        res.status(400).json(errorResponse);
       }
     } catch (error) {
-      console.error('Google Maps Geocoding Error:', error);
-      res.status(500).json({
-        success: false,
-        message: 'Failed to geocode address',
-        error: {
-          code: 'INTERNAL_ERROR',
-          message: 'Internal server error'
-        }
-      });
+      const errorResponse = handleGoogleMapsError(error, 'Geocoding');
+      res.status(500).json(errorResponse);
     }
   })
 );
@@ -465,9 +698,18 @@ router.get('/reverse-geocode',
     }
 
     try {
+      const apiKey = validateApiKey();
+      
+      console.log(`🌍 Reverse Geocoding Request:`, {
+        latlng,
+        resultType,
+        locationType,
+        language
+      });
+
       const params = {
         latlng,
-        key: environmentConfig.getGoogleMapsApiKey(),
+        key: apiKey,
         language
       };
 
@@ -480,6 +722,8 @@ router.get('/reverse-geocode',
       }
 
       const response = await googleMapsClient.reverseGeocode({ params });
+
+      console.log(`✅ Reverse Geocoding Response Status:`, response.data.status);
 
       if (response.data.status === 'OK') {
         const results = response.data.results.map(result => ({
@@ -494,30 +738,27 @@ router.get('/reverse-geocode',
           success: true,
           data: {
             results,
-            status: response.data.status
+            status: response.data.status,
+            count: results.length
           },
           message: 'Reverse geocoding completed successfully'
         });
       } else {
-        res.status(400).json({
+        const errorResponse = {
           success: false,
           message: 'Failed to reverse geocode coordinates',
           error: {
             code: response.data.status,
             message: response.data.error_message || 'Google Maps API error'
           }
-        });
+        };
+
+        console.error(`❌ Reverse Geocoding Failed:`, errorResponse);
+        res.status(400).json(errorResponse);
       }
     } catch (error) {
-      console.error('Google Maps Reverse Geocoding Error:', error);
-      res.status(500).json({
-        success: false,
-        message: 'Failed to reverse geocode coordinates',
-        error: {
-          code: 'INTERNAL_ERROR',
-          message: 'Internal server error'
-        }
-      });
+      const errorResponse = handleGoogleMapsError(error, 'Reverse Geocoding');
+      res.status(500).json(errorResponse);
     }
   })
 );
@@ -554,9 +795,19 @@ router.get('/nearby-places',
     }
 
     try {
+      const apiKey = validateApiKey();
+      
+      console.log(`📍 Nearby Places Request:`, {
+        location,
+        radius: parseInt(radius),
+        type,
+        keyword,
+        openNow: openNow === 'true'
+      });
+
       const params = {
         location,
-        key: environmentConfig.getGoogleMapsApiKey(),
+        key: apiKey,
         radius: parseInt(radius),
         language
       };
@@ -592,6 +843,8 @@ router.get('/nearby-places',
 
       const response = await googleMapsClient.placesNearby({ params });
 
+      console.log(`✅ Nearby Places Response Status:`, response.data.status);
+
       if (response.data.status === 'OK') {
         const places = response.data.results.map(place => ({
           placeId: place.place_id,
@@ -615,30 +868,27 @@ router.get('/nearby-places',
             places,
             status: response.data.status,
             nextPageToken: response.data.next_page_token,
-            htmlAttributions: response.data.html_attributions
+            htmlAttributions: response.data.html_attributions,
+            count: places.length
           },
           message: 'Nearby places retrieved successfully'
         });
       } else {
-        res.status(400).json({
+        const errorResponse = {
           success: false,
           message: 'Failed to get nearby places',
           error: {
             code: response.data.status,
             message: response.data.error_message || 'Google Maps API error'
           }
-        });
+        };
+
+        console.error(`❌ Nearby Places Failed:`, errorResponse);
+        res.status(400).json(errorResponse);
       }
     } catch (error) {
-      console.error('Google Maps Nearby Places Error:', error);
-      res.status(500).json({
-        success: false,
-        message: 'Failed to get nearby places',
-        error: {
-          code: 'INTERNAL_ERROR',
-          message: 'Internal server error'
-        }
-      });
+      const errorResponse = handleGoogleMapsError(error, 'Nearby Places');
+      res.status(500).json(errorResponse);
     }
   })
 );
@@ -676,10 +926,19 @@ router.get('/distance-matrix',
     }
 
     try {
+      const apiKey = validateApiKey();
+      
+      console.log(`📏 Distance Matrix Request:`, {
+        origins: origins.split('|'),
+        destinations: destinations.split('|'),
+        mode,
+        units
+      });
+
       const params = {
         origins: origins.split('|'),
         destinations: destinations.split('|'),
-        key: environmentConfig.getGoogleMapsApiKey(),
+        key: apiKey,
         mode,
         units,
         language
@@ -711,6 +970,8 @@ router.get('/distance-matrix',
 
       const response = await googleMapsClient.distancematrix({ params });
 
+      console.log(`✅ Distance Matrix Response Status:`, response.data.status);
+
       if (response.data.status === 'OK') {
         const rows = response.data.rows.map(row => ({
           elements: row.elements.map(element => ({
@@ -733,25 +994,21 @@ router.get('/distance-matrix',
           message: 'Distance matrix calculated successfully'
         });
       } else {
-        res.status(400).json({
+        const errorResponse = {
           success: false,
           message: 'Failed to calculate distance matrix',
           error: {
             code: response.data.status,
             message: response.data.error_message || 'Google Maps API error'
           }
-        });
+        };
+
+        console.error(`❌ Distance Matrix Failed:`, errorResponse);
+        res.status(400).json(errorResponse);
       }
     } catch (error) {
-      console.error('Google Maps Distance Matrix Error:', error);
-      res.status(500).json({
-        success: false,
-        message: 'Failed to calculate distance matrix',
-        error: {
-          code: 'INTERNAL_ERROR',
-          message: 'Internal server error'
-        }
-      });
+      const errorResponse = handleGoogleMapsError(error, 'Distance Matrix');
+      res.status(500).json(errorResponse);
     }
   })
 );
@@ -777,8 +1034,16 @@ router.get('/elevation',
     }
 
     try {
+      const apiKey = validateApiKey();
+      
+      console.log(`🏔️ Elevation Request:`, {
+        locations,
+        path,
+        samples
+      });
+
       const params = {
-        key: environmentConfig.getGoogleMapsApiKey()
+        key: apiKey
       };
 
       if (locations) {
@@ -794,6 +1059,8 @@ router.get('/elevation',
 
       const response = await googleMapsClient.elevation({ params });
 
+      console.log(`✅ Elevation Response Status:`, response.data.status);
+
       if (response.data.status === 'OK') {
         const results = response.data.results.map(result => ({
           location: result.location,
@@ -805,30 +1072,27 @@ router.get('/elevation',
           success: true,
           data: {
             results,
-            status: response.data.status
+            status: response.data.status,
+            count: results.length
           },
           message: 'Elevation data retrieved successfully'
         });
       } else {
-        res.status(400).json({
+        const errorResponse = {
           success: false,
           message: 'Failed to get elevation data',
           error: {
             code: response.data.status,
             message: response.data.error_message || 'Google Maps API error'
           }
-        });
+        };
+
+        console.error(`❌ Elevation Failed:`, errorResponse);
+        res.status(400).json(errorResponse);
       }
     } catch (error) {
-      console.error('Google Maps Elevation Error:', error);
-      res.status(500).json({
-        success: false,
-        message: 'Failed to get elevation data',
-        error: {
-          code: 'INTERNAL_ERROR',
-          message: 'Internal server error'
-        }
-      });
+      const errorResponse = handleGoogleMapsError(error, 'Elevation');
+      res.status(500).json(errorResponse);
     }
   })
 );

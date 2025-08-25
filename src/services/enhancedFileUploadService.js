@@ -252,3 +252,36 @@ class EnhancedFileUploadService {
 }
 
 module.exports = new EnhancedFileUploadService();
+
+    // Check if file is actually an image
+    try {
+      const metadata = await sharp(file.buffer).metadata();
+      if (!metadata.width || !metadata.height) {
+        errors.push('File must be a valid image');
+      }
+    } catch (error) {
+      errors.push('File must be a valid image');
+    }
+
+    return {
+      isValid: errors.length === 0,
+      errors
+    };
+  }
+
+  async generateThumbnail(file, size = 150) {
+    try {
+      const thumbnail = await sharp(file.buffer)
+        .resize(size, size, { fit: 'cover' })
+        .jpeg({ quality: 70 })
+        .toBuffer();
+
+      return thumbnail;
+    } catch (error) {
+      console.error('Error generating thumbnail:', error);
+      throw error;
+    }
+  }
+}
+
+module.exports = new EnhancedFileUploadService();

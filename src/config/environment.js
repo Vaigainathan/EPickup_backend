@@ -72,6 +72,15 @@ class EnvironmentConfig {
       apiKey: process.env.GOOGLE_MAPS_API_KEY
     };
 
+    // reCAPTCHA Configuration
+    this.config.recaptcha = {
+      siteKey: process.env.RECAPTCHA_SITE_KEY,
+      secretKey: process.env.RECAPTCHA_SECRET_KEY,
+      enterpriseSiteKey: process.env.RECAPTCHA_ENTERPRISE_SITE_KEY,
+      enterpriseSecretKey: process.env.RECAPTCHA_ENTERPRISE_SECRET_KEY,
+      enabled: process.env.RECAPTCHA_ENABLED === 'true'
+    };
+
     // Notification Service Configuration
     this.config.notifications = {
       pushEnabled: process.env.PUSH_NOTIFICATION_ENABLED === 'true',
@@ -329,6 +338,20 @@ class EnvironmentConfig {
   }
 
   /**
+   * Get reCAPTCHA secret key
+   */
+  getRecaptchaSecret() {
+    return this.config.recaptcha.secretKey;
+  }
+
+  /**
+   * Check if reCAPTCHA is enabled
+   */
+  isRecaptchaEnabled() {
+    return this.config.recaptcha.enabled;
+  }
+
+  /**
    * Get JWT secret
    */
   getJWTSecret() {
@@ -417,6 +440,55 @@ class EnvironmentConfig {
    */
   getServiceAreaRadius() {
     return this.config.serviceArea.RADIUS;
+  }
+
+  /**
+   * Get reCAPTCHA configuration
+   */
+  getRecaptchaConfig() {
+    return this.config.recaptcha;
+  }
+
+  /**
+   * Get reCAPTCHA site key
+   */
+  getRecaptchaSiteKey() {
+    return this.config.recaptcha.siteKey;
+  }
+
+  /**
+   * Get reCAPTCHA secret key
+   */
+  getRecaptchaSecretKey() {
+    return this.config.recaptcha.secretKey;
+  }
+
+  /**
+   * Get reCAPTCHA Enterprise site key
+   */
+  getRecaptchaEnterpriseSiteKey() {
+    return this.config.recaptcha.enterpriseSiteKey;
+  }
+
+  /**
+   * Get reCAPTCHA Enterprise secret key
+   */
+  getRecaptchaEnterpriseSecretKey() {
+    return this.config.recaptcha.enterpriseSecretKey;
+  }
+
+  /**
+   * Check if reCAPTCHA is enabled
+   */
+  isRecaptchaEnabled() {
+    return this.config.recaptcha.enabled;
+  }
+
+  /**
+   * Get Firebase configuration
+   */
+  getFirebaseConfig() {
+    return this.config.firebase;
   }
 
   /**

@@ -27,6 +27,8 @@ const fcmTokenRoutes = require('./routes/fcmTokens');
 const emergencyRoutes = require('./routes/emergency');
 const serviceAreaRoutes = require('./routes/serviceArea');
 const healthRoutes = require('./routes/health');
+const walletRoutes = require('./routes/wallet');
+const fareCalculationRoutes = require('./routes/fareCalculation');
 
 // Import middleware
 const { errorHandler } = require('./middleware/errorHandler');
@@ -280,6 +282,8 @@ app.use('/api/realtime', authMiddleware, realtimeRoutes);
 app.use('/api/fcm-tokens', authMiddleware, fcmTokenRoutes);
 app.use('/api/emergency', authMiddleware, emergencyRoutes);
 app.use('/api/service-area', serviceAreaRoutes); // No auth required for service area validation
+app.use('/api/wallet', walletRoutes);
+app.use('/api/fare', fareCalculationRoutes);
 
 // Health check routes (for keepalive script) - No auth required
 app.use('/health', healthRoutes);

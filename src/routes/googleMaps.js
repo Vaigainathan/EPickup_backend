@@ -143,15 +143,17 @@ function validateAndSanitizeParams(params, requiredFields = []) {
     if (!params[field]) {
       throw new Error(`Missing required parameter: ${field}`);
     }
-    sanitized[field] = params[field].trim();
+    sanitized[field] = typeof params[field] === 'string' ? params[field].trim() : params[field];
   }
   
   // Sanitize optional fields
   Object.keys(params).forEach(key => {
-    if (params[key] && typeof params[key] === 'string') {
-      sanitized[key] = params[key].trim();
-    } else if (params[key] !== undefined) {
-      sanitized[key] = params[key];
+    if (params[key] !== undefined && params[key] !== null) {
+      if (typeof params[key] === 'string') {
+        sanitized[key] = params[key].trim();
+      } else {
+        sanitized[key] = params[key];
+      }
     }
   });
   

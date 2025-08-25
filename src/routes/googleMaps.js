@@ -21,6 +21,8 @@ const googleMapsLimiter = rateLimit({
   },
   standardHeaders: true,
   legacyHeaders: false,
+  // Trust proxy for proper IP detection behind reverse proxy
+  trustProxy: true,
 });
 
 // Apply rate limiting to all Google Maps routes

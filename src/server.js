@@ -43,6 +43,9 @@ const notificationService = require('./services/notificationService');
 const app = express();
 const PORT = env.getServerPort();
 
+// Trust proxy configuration for rate limiting behind reverse proxy
+app.set('trust proxy', 1);
+
 // Initialize Firebase with error handling
 try {
   initializeFirebase();
@@ -108,6 +111,8 @@ const limiter = rateLimit({
   },
   standardHeaders: true,
   legacyHeaders: false,
+  // Trust proxy for proper IP detection behind reverse proxy
+  trustProxy: true,
 });
 
 // Slow down responses for repeated requests
@@ -117,7 +122,9 @@ const speedLimiter = slowDown({
   delayMs: (used, req) => {
     const delayAfter = req.slowDown.limit;
     return (used - delayAfter) * 500;
-  }
+  },
+  // Trust proxy for proper IP detection behind reverse proxy
+  trustProxy: true,
 });
 
 // Apply rate limiting to all routes

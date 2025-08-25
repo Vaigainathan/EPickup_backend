@@ -3,25 +3,71 @@ const { validationResult } = require('express-validator');
 /**
  * Generic request validation middleware
  */
-const validateRequest = (req, res, next) => {
-  const errors = validationResult(req);
-  if (!errors.isEmpty()) {
-    return res.status(400).json({
-      success: false,
-      error: {
-        code: 'VALIDATION_ERROR',
-        message: 'Request validation failed',
-        details: errors.array().map(err => ({
-          field: err.path,
-          message: err.msg,
-          value: err.value,
-          location: err.location
-        })),
-        timestamp: new Date().toISOString()
+const validateRequest = (schema) => {
+  return (req, res, next) => {
+    // Simple validation based on schema
+    const errors = [];
+    
+    if (schema.body) {
+      for (const [field, rules] of Object.entries(schema.body)) {
+        const value = req.body[field];
+        
+        if (rules.required && (value === undefined || value === null || value === '')) {
+          errors.push({
+            field,
+            message: `${field} is required`,
+            value
+          });
+        } else if (value !== undefined && value !== null) {
+          if (rules.type && typeof value !== rules.type) {
+            errors.push({
+              field,
+              message: `${field} must be of type ${rules.type}`,
+              value
+            });
+          }
+          
+          if (rules.minLength && value.length < rules.minLength) {
+            errors.push({
+              field,
+              message: `${field} must be at least ${rules.minLength} characters long`,
+              value
+            });
+          }
+          
+          if (rules.maxLength && value.length > rules.maxLength) {
+            errors.push({
+              field,
+              message: `${field} must be no more than ${rules.maxLength} characters long`,
+              value
+            });
+          }
+          
+          if (rules.enum && !rules.enum.includes(value)) {
+            errors.push({
+              field,
+              message: `${field} must be one of: ${rules.enum.join(', ')}`,
+              value
+            });
+          }
+        }
       }
-    });
-  }
-  next();
+    }
+    
+    if (errors.length > 0) {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'VALIDATION_ERROR',
+          message: 'Request validation failed',
+          details: errors,
+          timestamp: new Date().toISOString()
+        }
+      });
+    }
+    
+    next();
+  };
 };
 
 /**

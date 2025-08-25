@@ -1,6 +1,5 @@
 const express = require('express');
 const { Client } = require('@googlemaps/google-maps-services-js');
-const { validateRequest } = require('../middleware/validation');
 const { asyncHandler } = require('../middleware/errorHandler');
 const environmentConfig = require('../config/environment');
 
@@ -15,7 +14,6 @@ const googleMapsClient = new Client({});
  * @access Public
  */
 router.get('/places', 
-  validateRequest,
   asyncHandler(async (req, res) => {
     const { 
       input, 
@@ -99,7 +97,6 @@ router.get('/places',
  * @access Public
  */
 router.get('/places/autocomplete', 
-  validateRequest,
   asyncHandler(async (req, res) => {
     const { input, sessionToken, types, components, radius, location, strictbounds } = req.query;
 
@@ -175,7 +172,6 @@ router.get('/places/autocomplete',
  * @access Public
  */
 router.get('/places/details',
-  validateRequest,
   asyncHandler(async (req, res) => {
     const { placeId, fields, language, region } = req.query;
 
@@ -253,7 +249,6 @@ router.get('/places/details',
  * @access Public
  */
 router.get('/directions',
-  validateRequest,
   asyncHandler(async (req, res) => {
     const { 
       origin, 
@@ -375,7 +370,6 @@ router.get('/directions',
  * @access Public
  */
 router.get('/geocode',
-  validateRequest,
   asyncHandler(async (req, res) => {
     const { address, components, bounds, language = 'en', region = 'IN' } = req.query;
 
@@ -456,7 +450,6 @@ router.get('/geocode',
  * @access Public
  */
 router.get('/reverse-geocode',
-  validateRequest,
   asyncHandler(async (req, res) => {
     const { latlng, resultType, locationType, language = 'en' } = req.query;
 
@@ -535,7 +528,6 @@ router.get('/reverse-geocode',
  * @access Public
  */
 router.get('/nearby-places',
-  validateRequest,
   asyncHandler(async (req, res) => {
     const { 
       location, 
@@ -657,7 +649,6 @@ router.get('/nearby-places',
  * @access Public
  */
 router.get('/distance-matrix',
-  validateRequest,
   asyncHandler(async (req, res) => {
     const { 
       origins, 
@@ -771,7 +762,6 @@ router.get('/distance-matrix',
  * @access Public
  */
 router.get('/elevation',
-  validateRequest,
   asyncHandler(async (req, res) => {
     const { locations, path, samples } = req.query;
 

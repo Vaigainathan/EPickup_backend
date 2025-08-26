@@ -561,6 +561,16 @@ router.get('/twilio-status', async (req, res) => {
     const twilioHealth = await twilioService.getHealthStatus();
     const twilioConfig = env.getTwilioConfig();
     
+    // Debug environment variables
+    const debugEnv = {
+      TWILIO_ENABLED: process.env.TWILIO_ENABLED,
+      TWILIO_MOCK_MODE: process.env.TWILIO_MOCK_MODE,
+      TWILIO_ACCOUNT_SID: process.env.TWILIO_ACCOUNT_SID ? 'SET' : 'NOT SET',
+      TWILIO_AUTH_TOKEN: process.env.TWILIO_AUTH_TOKEN ? 'SET' : 'NOT SET',
+      TWILIO_VERIFY_SERVICE_SID: process.env.TWILIO_VERIFY_SERVICE_SID ? 'SET' : 'NOT SET',
+      NODE_ENV: process.env.NODE_ENV
+    };
+    
     res.json({
       success: true,
       message: 'Twilio status retrieved successfully',
@@ -573,6 +583,7 @@ router.get('/twilio-status', async (req, res) => {
           hasVerifyServiceSid: !!twilioConfig.verifyServiceSid,
           mockMode: twilioConfig.mockMode
         },
+        debug: debugEnv,
         timestamp: new Date().toISOString()
       }
     });

@@ -9,13 +9,24 @@ const { asyncHandler } = require('../middleware/errorHandler');
  * @access Public
  */
 router.get('/info', asyncHandler(async (req, res) => {
-  const serviceAreaInfo = serviceAreaValidation.getServiceAreaInfo();
-  
-  res.json({
-    success: true,
-    message: 'Service area information retrieved successfully',
-    data: serviceAreaInfo
-  });
+  console.log('📍 Service area info requested');
+  try {
+    const serviceAreaInfo = serviceAreaValidation.getServiceAreaInfo();
+    console.log('✅ Service area info retrieved:', serviceAreaInfo);
+    
+    res.json({
+      success: true,
+      message: 'Service area information retrieved successfully',
+      data: serviceAreaInfo
+    });
+  } catch (error) {
+    console.error('❌ Service area info error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to get service area information',
+      error: error.message
+    });
+  }
 }));
 
 /**

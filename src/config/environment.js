@@ -503,6 +503,11 @@ class EnvironmentConfig {
    * Check if Twilio is enabled
    */
   isTwilioEnabled() {
+    // Force enable in production if credentials are available
+    if (this.isProduction() && this.config.twilio.accountSid && this.config.twilio.authToken && this.config.twilio.verifyServiceSid) {
+      console.log('🚀 Production environment detected - forcing Twilio enabled');
+      return true;
+    }
     return this.config.twilio.enabled && !this.config.twilio.mockMode;
   }
 

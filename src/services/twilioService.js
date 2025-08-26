@@ -17,16 +17,40 @@ class TwilioService {
       // Get Twilio configuration from environment
       const twilioConfig = env.getTwilioConfig();
       
+      // Also check direct environment variables as fallback
+      const directAccountSid = process.env.TWILIO_ACCOUNT_SID;
+      const directAuthToken = process.env.TWILIO_AUTH_TOKEN;
+      const directVerifyServiceSid = process.env.TWILIO_VERIFY_SERVICE_SID;
+      const directEnabled = process.env.TWILIO_ENABLED === 'true';
+      const directMockMode = process.env.TWILIO_MOCK_MODE === 'true';
+      
       console.log('🔧 Twilio Config:', {
         enabled: env.isTwilioEnabled(),
+        directEnabled: directEnabled,
         hasAccountSid: !!twilioConfig.accountSid,
         hasAuthToken: !!twilioConfig.authToken,
         hasVerifyServiceSid: !!twilioConfig.verifyServiceSid,
-        mockMode: twilioConfig.mockMode
+        mockMode: twilioConfig.mockMode,
+        directMockMode: directMockMode
+      });
+      
+      // Use direct environment variables if config is not working
+      const finalAccountSid = twilioConfig.accountSid || directAccountSid;
+      const finalAuthToken = twilioConfig.authToken || directAuthToken;
+      const finalVerifyServiceSid = twilioConfig.verifyServiceSid || directVerifyServiceSid;
+      const finalEnabled = env.isTwilioEnabled() || directEnabled;
+      const finalMockMode = twilioConfig.mockMode || directMockMode;
+      
+      console.log('🔧 Final Twilio Config:', {
+        enabled: finalEnabled,
+        hasAccountSid: !!finalAccountSid,
+        hasAuthToken: !!finalAuthToken,
+        hasVerifyServiceSid: !!finalVerifyServiceSid,
+        mockMode: finalMockMode
       });
       
       // Check if Twilio is enabled and credentials are available
-      if (!env.isTwilioEnabled() || !twilioConfig.accountSid || !twilioConfig.authToken || !twilioConfig.verifyServiceSid) {
+      if (!finalEnabled || !finalAccountSid || !finalAuthToken || !finalVerifyServiceSid) {
         console.warn('⚠️ Twilio not enabled or credentials not configured, using mock service');
         this.mockMode = true;
         this.isInitialized = true;
@@ -34,12 +58,13 @@ class TwilioService {
       }
 
       // Initialize Twilio client
-      this.client = twilio(twilioConfig.accountSid, twilioConfig.authToken);
-      this.verifyServiceSid = twilioConfig.verifyServiceSid;
+      this.client = twilio(finalAccountSid, finalAuthToken);
+      this.verifyServiceSid = finalVerifyServiceSid;
+      this.mockMode = finalMockMode;
 
       // Test Twilio connection
       try {
-        const account = await this.client.api.accounts(twilioConfig.accountSid).fetch();
+        const account = await this.client.api.accounts(finalAccountSid).fetch();
         console.log('✅ Twilio account verified:', account.friendlyName);
       } catch (testError) {
         console.error('❌ Twilio account verification failed:', testError.message);

@@ -38,6 +38,7 @@ class TwilioService {
       console.error('❌ Failed to initialize Twilio service:', error);
       // Fallback to mock service
       this.isInitialized = true;
+      console.log('🔄 Falling back to mock Twilio service');
     }
   }
 
@@ -370,7 +371,7 @@ class TwilioService {
    * Mock OTP sending for development
    */
   async sendMockOTP(phoneNumber, options = {}) {
-    console.log(`🔐 Mock OTP sent to ${phoneNumber}`);
+    console.log(`🔐 Mock OTP sent to ${phoneNumber} (Mock Mode)`);
     
     // Store mock session
     const mockSid = `mock_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
@@ -390,10 +391,10 @@ class TwilioService {
    * Mock OTP verification for development
    */
   async verifyMockOTP(phoneNumber, code) {
-    console.log(`🔐 Mock OTP verification for ${phoneNumber}: ${code}`);
+    console.log(`🔐 Mock OTP verification for ${phoneNumber}: ${code} (Mock Mode)`);
     
-    // Mock verification logic
-    const isValidCode = code === '123456' || code === '000000';
+    // Mock verification logic - accept common test codes
+    const isValidCode = code === '123456' || code === '000000' || code === '111111' || code === '222222';
     
     // Clear session
     await this.clearVerificationSession(phoneNumber);

@@ -5,6 +5,7 @@ const authService = require('../services/authService');
 const jwtService = require('../services/jwtService');
 const { validateRequest } = require('../middleware/validation');
 const { rateLimit } = require('../middleware/rateLimit');
+const { env } = require('../config');
 
 // Rate limiting configuration
 const authRateLimit = rateLimit({
@@ -543,6 +544,47 @@ router.get('/health', async (req, res) => {
       message: 'Authentication service health check failed',
       error: {
         code: 'HEALTH_CHECK_ERROR',
+        message: error.message
+      },
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+/**
+ * @route GET /api/auth/twilio-status
+ * @desc Check Twilio service status and configuration
+ * @access Public
+ */
+router.get('/twilio-status', async (req, res) => {
+  try {
+    const twilioHealth = await twilioService.getHealthStatus();
+    const twilioConfig = env.getTwilioConfig();
+    
+    res.json({
+      success: true,
+      message: 'Twilio status retrieved successfully',
+      data: {
+        health: twilioHealth,
+        config: {
+          enabled: env.isTwilioEnabled(),
+          hasAccountSid: !!twilioConfig.accountSid,
+          hasAuthToken: !!twilioConfig.authToken,
+          hasVerifyServiceSid: !!twilioConfig.verifyServiceSid,
+          mockMode: twilioConfig.mockMode
+        },
+        timestamp: new Date().toISOString()
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ Twilio status check error:', error);
+
+    res.status(500).json({
+      success: false,
+      message: 'Failed to check Twilio status',
+      error: {
+        code: 'TWILIO_STATUS_ERROR',
         message: error.message
       },
       timestamp: new Date().toISOString()

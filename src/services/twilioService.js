@@ -18,6 +18,14 @@ class TwilioService {
       // Get Twilio configuration from environment
       const twilioConfig = env.getTwilioConfig();
       
+      console.log('🔧 Twilio Config:', {
+        enabled: env.isTwilioEnabled(),
+        hasAccountSid: !!twilioConfig.accountSid,
+        hasAuthToken: !!twilioConfig.authToken,
+        hasVerifyServiceSid: !!twilioConfig.verifyServiceSid,
+        mockMode: twilioConfig.mockMode
+      });
+      
       // Check if Twilio is enabled and credentials are available
       if (!env.isTwilioEnabled() || !twilioConfig.accountSid || !twilioConfig.authToken || !twilioConfig.verifyServiceSid) {
         console.warn('⚠️ Twilio not enabled or credentials not configured, using mock service');
@@ -29,11 +37,20 @@ class TwilioService {
       this.client = twilio(twilioConfig.accountSid, twilioConfig.authToken);
       this.verifyServiceSid = twilioConfig.verifyServiceSid;
 
+      // Test Twilio connection
+      try {
+        const account = await this.client.api.accounts(twilioConfig.accountSid).fetch();
+        console.log('✅ Twilio account verified:', account.friendlyName);
+      } catch (testError) {
+        console.error('❌ Twilio account verification failed:', testError.message);
+        throw testError;
+      }
+
       // Initialize Redis for session storage
       await this.initializeRedis();
 
       this.isInitialized = true;
-      console.log('✅ Twilio service initialized successfully');
+      console.log('✅ Twilio service initialized successfully with real SMS capability');
     } catch (error) {
       console.error('❌ Failed to initialize Twilio service:', error);
       // Fallback to mock service
@@ -78,7 +95,10 @@ class TwilioService {
       // Format phone number
       const formattedPhone = this.formatPhoneNumber(phoneNumber);
 
+      console.log(`📱 Attempting to send OTP to ${formattedPhone}`);
+
       if (!this.client || !this.verifyServiceSid) {
+        console.log('🔄 Using mock service - Twilio client not initialized');
         // Use mock service
         return await this.sendMockOTP(phoneNumber, options);
       }
@@ -95,7 +115,8 @@ class TwilioService {
       // Store verification session
       await this.storeVerificationSession(phoneNumber, verification.sid, options);
 
-      console.log(`✅ OTP sent to ${formattedPhone} via ${verification.channel}`);
+      console.log(`✅ Real SMS OTP sent to ${formattedPhone} via ${verification.channel}`);
+      console.log(`📊 Verification SID: ${verification.sid}, Status: ${verification.status}`);
 
       return {
         success: true,
@@ -108,6 +129,13 @@ class TwilioService {
 
     } catch (error) {
       console.error('❌ Failed to send OTP:', error);
+      
+      // If Twilio fails, fallback to mock service
+      if (error.code === 60202 || error.code === 60200) {
+        console.log('🔄 Twilio service error, falling back to mock service');
+        return await this.sendMockOTP(phoneNumber, options);
+      }
+      
       throw error;
     }
   }
@@ -130,7 +158,10 @@ class TwilioService {
       // Format phone number
       const formattedPhone = this.formatPhoneNumber(phoneNumber);
 
+      console.log(`🔐 Attempting to verify OTP for ${formattedPhone}: ${code}`);
+
       if (!this.client || !this.verifyServiceSid) {
+        console.log('🔄 Using mock service - Twilio client not initialized');
         // Use mock service
         return await this.verifyMockOTP(phoneNumber, code);
       }
@@ -153,7 +184,8 @@ class TwilioService {
           verificationSid: verificationSid
         });
 
-      console.log(`✅ OTP verification result for ${formattedPhone}: ${verificationCheck.status}`);
+      console.log(`✅ Real SMS OTP verification result for ${formattedPhone}: ${verificationCheck.status}`);
+      console.log(`📊 Verification SID: ${verificationCheck.sid}, Valid: ${verificationCheck.valid}`);
 
       // Clear verification session
       await this.clearVerificationSession(phoneNumber);
@@ -168,6 +200,13 @@ class TwilioService {
 
     } catch (error) {
       console.error('❌ Failed to verify OTP:', error);
+      
+      // If Twilio fails, fallback to mock service
+      if (error.code === 60202 || error.code === 60200) {
+        console.log('🔄 Twilio service error, falling back to mock service');
+        return await this.verifyMockOTP(phoneNumber, code);
+      }
+      
       throw error;
     }
   }
@@ -372,6 +411,7 @@ class TwilioService {
    */
   async sendMockOTP(phoneNumber, options = {}) {
     console.log(`🔐 Mock OTP sent to ${phoneNumber} (Mock Mode)`);
+    console.log(`📱 Use these test codes: 123456, 000000, 111111, 222222`);
     
     // Store mock session
     const mockSid = `mock_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;

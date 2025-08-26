@@ -84,6 +84,16 @@ class EnvironmentConfig {
       },
     };
 
+    // Twilio Configuration
+    this.config.twilio = {
+      accountSid: process.env.TWILIO_ACCOUNT_SID,
+      authToken: process.env.TWILIO_AUTH_TOKEN,
+      verifyServiceSid: process.env.TWILIO_VERIFY_SERVICE_SID,
+      phoneNumber: process.env.TWILIO_PHONE_NUMBER,
+      enabled: process.env.TWILIO_ENABLED === 'true',
+      mockMode: process.env.TWILIO_MOCK_MODE === 'true'
+    };
+
     // reCAPTCHA Configuration
     this.config.recaptcha = {
       siteKey: process.env.RECAPTCHA_SITE_KEY,
@@ -480,6 +490,20 @@ class EnvironmentConfig {
    */
   getRecaptchaEnterpriseSecretKey() {
     return this.config.recaptcha.enterpriseSecretKey;
+  }
+
+  /**
+   * Get Twilio configuration
+   */
+  getTwilioConfig() {
+    return this.config.twilio;
+  }
+
+  /**
+   * Check if Twilio is enabled
+   */
+  isTwilioEnabled() {
+    return this.config.twilio.enabled && !this.config.twilio.mockMode;
   }
 
   /**

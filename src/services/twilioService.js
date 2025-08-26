@@ -15,20 +15,19 @@ class TwilioService {
    */
   async initialize() {
     try {
-      // Check if Twilio credentials are available
-      const accountSid = process.env.TWILIO_ACCOUNT_SID;
-      const authToken = process.env.TWILIO_AUTH_TOKEN;
-      const verifyServiceSid = process.env.TWILIO_VERIFY_SERVICE_SID;
-
-      if (!accountSid || !authToken || !verifyServiceSid) {
-        console.warn('⚠️ Twilio credentials not configured, using mock service');
+      // Get Twilio configuration from environment
+      const twilioConfig = env.getTwilioConfig();
+      
+      // Check if Twilio is enabled and credentials are available
+      if (!env.isTwilioEnabled() || !twilioConfig.accountSid || !twilioConfig.authToken || !twilioConfig.verifyServiceSid) {
+        console.warn('⚠️ Twilio not enabled or credentials not configured, using mock service');
         this.isInitialized = true;
         return;
       }
 
       // Initialize Twilio client
-      this.client = twilio(accountSid, authToken);
-      this.verifyServiceSid = verifyServiceSid;
+      this.client = twilio(twilioConfig.accountSid, twilioConfig.authToken);
+      this.verifyServiceSid = twilioConfig.verifyServiceSid;
 
       // Initialize Redis for session storage
       await this.initializeRedis();

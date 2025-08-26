@@ -1,7 +1,6 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    
     // ========================================
     // HELPER FUNCTIONS
     // ========================================
@@ -16,21 +15,31 @@ service cloud.firestore {
       return isAuthenticated() && 
              exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
              get(/databases/$(database)/documents/users/$(request.auth.uid)).data.userType == 'admin' &&
-             isUserActive();
+             get(/databases/$(database)/documents/users/$(request.auth.uid)).data.isActive == true;
     }
     
     // Check if user is driver
     function isDriver() {
       return isAuthenticated() && 
              exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
-             get(/databases/$(database)/documents/users/$(request.auth.uid)).data.userType == 'driver';
+             get(/databases/$(database)/documents/users/$(request.auth.uid)).data.userType == 'driver' &&
+             get(/databases/$(database)/documents/users/$(request.auth.uid)).data.isActive == true;
     }
     
     // Check if user is customer
     function isCustomer() {
       return isAuthenticated() && 
              exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
-             get(/databases/$(database)/documents/users/$(request.auth.uid)).data.userType == 'customer';
+             get(/databases/$(database)/documents/users/$(request.auth.uid)).data.userType == 'customer' &&
+             get(/databases/$(database)/documents/users/$(request.auth.uid)).data.isActive == true;
+    }
+    
+    // Check if user is support
+    function isSupport() {
+      return isAuthenticated() && 
+             exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+             get(/databases/$(database)/documents/users/$(request.auth.uid)).data.userType == 'support' &&
+             get(/databases/$(database)/documents/users/$(request.auth.uid)).data.isActive == true;
     }
     
     // Check if user owns the document
@@ -38,11 +47,16 @@ service cloud.firestore {
       return isAuthenticated() && request.auth.uid == userId;
     }
     
-    // Check if user is active (used in admin functions)
+    // Check if user is active
     function isUserActive() {
       return isAuthenticated() && 
              exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
              get(/databases/$(database)/documents/users/$(request.auth.uid)).data.isActive == true;
+    }
+    
+    // Check if user type is valid
+    function isValidUserType(userType) {
+      return userType in ['customer', 'driver', 'admin', 'support'];
     }
     
     // ========================================
@@ -52,44 +66,79 @@ service cloud.firestore {
       // Users can read/write their own data
       allow read, write: if isOwner(userId);
       
-      // Admins can read all users
-      allow read: if isAdmin();
+      // Admins can read/write all users
+      allow read, write: if isAdmin();
       
-      // Admins can update user status
-      allow update: if isAdmin() && 
-                   (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['isActive', 'userType', 'updatedAt']));
+      // Support can read all users but limited write
+      allow read: if isSupport();
+      allow update: if isSupport() && 
+                   (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['support', 'updatedAt']));
+      
+      // Prevent duplicate phone numbers
+      allow create: if 
+        isAuthenticated() && 
+        request.auth.uid == userId &&
+        // Validate required fields
+        resource.data.phone is string &&
+        resource.data.phone.size() >= 10 &&
+        resource.data.name is string &&
+        resource.data.name.size() > 0 &&
+        isValidUserType(resource.data.userType) &&
+        resource.data.isVerified is bool &&
+        resource.data.isActive is bool &&
+        resource.data.createdAt is timestamp &&
+        resource.data.updatedAt is timestamp;
+      
+      // Allow updates but prevent phone number changes
+      allow update: if 
+        isOwner(userId) &&
+        // Prevent phone number changes
+        resource.data.phone == request.resource.data.phone &&
+        // Validate required fields
+        request.resource.data.phone is string &&
+        request.resource.data.phone.size() >= 10 &&
+        request.resource.data.name is string &&
+        request.resource.data.name.size() > 0 &&
+        isValidUserType(request.resource.data.userType) &&
+        request.resource.data.isVerified is bool &&
+        request.resource.data.isActive is bool &&
+        request.resource.data.updatedAt is timestamp;
     }
     
     // ========================================
-    // CUSTOMERS COLLECTION
+    // CUSTOMERS COLLECTION (for customer-specific data)
     // ========================================
     match /customers/{customerId} {
       // Customers can read/write their own data
-      allow read, write: if isOwner(customerId);
+      allow read, write: if isCustomer() && request.auth.uid == customerId;
       
-      // Admins can read all customers
-      allow read: if isAdmin();
+      // Admins can read/write all customer data
+      allow read, write: if isAdmin();
+      
+      // Support can read customer data
+      allow read: if isSupport();
       
       // Drivers can read customer data for bookings they're assigned to
       allow read: if isDriver() && 
-                 exists(/databases/$(database)/documents/bookings) &&
-                 getAfter(/databases/$(database)/documents/bookings).data.driverId == request.auth.uid;
+                  resource.data.customerId != null;
     }
     
     // ========================================
-    // DRIVERS COLLECTION
+    // DRIVERS COLLECTION (for driver-specific data)
     // ========================================
     match /drivers/{driverId} {
       // Drivers can read/write their own data
-      allow read, write: if isOwner(driverId);
+      allow read, write: if isDriver() && request.auth.uid == driverId;
       
-      // Admins can read all drivers
-      allow read: if isAdmin();
+      // Admins can read/write all driver data
+      allow read, write: if isAdmin();
+      
+      // Support can read driver data
+      allow read: if isSupport();
       
       // Customers can read driver data for bookings they've made
       allow read: if isCustomer() && 
-                 exists(/databases/$(database)/documents/bookings) &&
-                 getAfter(/databases/$(database)/documents/bookings).data.customerId == request.auth.uid;
+                  resource.data.driverId != null;
     }
     
     // ========================================
@@ -107,6 +156,9 @@ service cloud.firestore {
       // Admins can read/write all bookings
       allow read, write: if isAdmin();
       
+      // Support can read all bookings
+      allow read: if isSupport();
+      
       // Create booking - customer can create booking for themselves
       allow create: if isCustomer() && 
                    request.resource.data.customerId == request.auth.uid;
@@ -118,19 +170,22 @@ service cloud.firestore {
     match /orders/{orderId} {
       // Customers can read their own orders
       allow read: if isCustomer() && 
-                 resource.data.customerId == request.auth.uid;
+                  resource.data.customerId == request.auth.uid;
       
       // Drivers can read orders assigned to them
       allow read: if isDriver() && 
-                 resource.data.driverId == request.auth.uid;
+                  resource.data.driverId == request.auth.uid;
       
       // Admins can read/write all orders
       allow read, write: if isAdmin();
       
+      // Support can read all orders
+      allow read: if isSupport();
+      
       // Drivers can update order status
       allow update: if isDriver() && 
-                   resource.data.driverId == request.auth.uid &&
-                   request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'tracking', 'updatedAt']);
+                    resource.data.driverId == request.auth.uid &&
+                    request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'tracking', 'updatedAt']);
     }
     
     // ========================================
@@ -139,12 +194,19 @@ service cloud.firestore {
     match /payments/{paymentId} {
       // Customers can read their own payments
       allow read: if isCustomer() && 
-                 resource.data.customerId == request.auth.uid;
+                  resource.data.customerId == request.auth.uid;
+      
+      // Drivers can read their own payments
+      allow read: if isDriver() && 
+                  resource.data.driverId == request.auth.uid;
       
       // Admins can read/write all payments
       allow read, write: if isAdmin();
       
-      // Create payment - customer can create payment for themselves
+      // Support can read all payments
+      allow read: if isSupport();
+      
+      // Create payment - customers can create payment for themselves
       allow create: if isCustomer() && 
                    request.resource.data.customerId == request.auth.uid;
     }
@@ -155,19 +217,22 @@ service cloud.firestore {
     match /notifications/{notificationId} {
       // Users can read their own notifications
       allow read: if isAuthenticated() && 
-                 resource.data.userId == request.auth.uid;
+                  resource.data.userId == request.auth.uid;
       
       // Users can update their own notifications (mark as read)
       allow update: if isAuthenticated() && 
-                   resource.data.userId == request.auth.uid &&
-                   request.resource.data.diff(resource.data).affectedKeys().hasOnly(['isRead', 'readAt']);
+                    resource.data.userId == request.auth.uid &&
+                    request.resource.data.diff(resource.data).affectedKeys().hasOnly(['isRead', 'readAt']);
       
       // Admins can read/write all notifications
       allow read, write: if isAdmin();
       
+      // Support can read all notifications
+      allow read: if isSupport();
+      
       // Create notification - system can create for any user
       allow create: if isAdmin() || 
-                   (isAuthenticated() && request.resource.data.userId == request.auth.uid);
+                    (isAuthenticated() && request.resource.data.userId == request.auth.uid);
     }
     
     // ========================================
@@ -177,20 +242,26 @@ service cloud.firestore {
     // Driver Wallets
     match /driverWallets/{driverId} {
       // Drivers can read/write their own wallet
-      allow read, write: if isOwner(driverId);
+      allow read, write: if isDriver() && request.auth.uid == driverId;
       
       // Admins can read/write all wallets
       allow read, write: if isAdmin();
+      
+      // Support can read wallet data
+      allow read: if isSupport();
     }
     
     // Commission Transactions
     match /commissionTransactions/{transactionId} {
       // Drivers can read their own commission transactions
       allow read: if isDriver() && 
-                 resource.data.driverId == request.auth.uid;
+                  resource.data.driverId == request.auth.uid;
       
       // Admins can read/write all commission transactions
       allow read, write: if isAdmin();
+      
+      // Support can read commission transactions
+      allow read: if isSupport();
       
       // Create commission transaction - system only
       allow create: if isAdmin();
@@ -200,14 +271,17 @@ service cloud.firestore {
     match /rechargeTransactions/{transactionId} {
       // Drivers can read their own recharge transactions
       allow read: if isDriver() && 
-                 resource.data.driverId == request.auth.uid;
+                  resource.data.driverId == request.auth.uid;
       
       // Admins can read/write all recharge transactions
       allow read, write: if isAdmin();
       
+      // Support can read recharge transactions
+      allow read: if isSupport();
+      
       // Create recharge transaction - drivers can create for themselves
       allow create: if isDriver() && 
-                   request.resource.data.driverId == request.auth.uid;
+                    request.resource.data.driverId == request.auth.uid;
     }
     
     // ========================================
@@ -232,12 +306,36 @@ service cloud.firestore {
       allow read, write: if isCustomer() && 
                         resource.data.customerId == request.auth.uid;
       
+      // Drivers can read/write their own tickets
+      allow read, write: if isDriver() && 
+                        resource.data.driverId == request.auth.uid;
+      
       // Admins can read/write all tickets
       allow read, write: if isAdmin();
       
-      // Create ticket - customers can create for themselves
-      allow create: if isCustomer() && 
-                   request.resource.data.customerId == request.auth.uid;
+      // Support can read/write all tickets
+      allow read, write: if isSupport();
+      
+      // Create ticket - users can create for themselves
+      allow create: if (isCustomer() && request.resource.data.customerId == request.auth.uid) ||
+                      (isDriver() && request.resource.data.driverId == request.auth.uid);
+    }
+    
+    // ========================================
+    // AUTH ATTEMPTS COLLECTION (for logging)
+    // ========================================
+    match /auth_attempts/{attemptId} {
+      allow read, write: if isAdmin();
+      allow read: if isSupport();
+      allow create: if isAuthenticated();
+    }
+    
+    // ========================================
+    // SERVICE AREA COLLECTION
+    // ========================================
+    match /service_area/{docId} {
+      allow read: if isAuthenticated();
+      allow write: if isAdmin();
     }
     
     // ========================================

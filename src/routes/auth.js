@@ -152,36 +152,146 @@ router.post('/verify-otp',
         });
       }
 
-      // Get or create user
-      let user = await authService.getUserByPhone(phoneNumber);
-      let isNewUser = false;
+      // Check if this is a signup attempt and user already exists
+      const userExists = await authService.userExists(phoneNumber);
+      
+      if (userExists && name) {
+        // User exists but trying to signup with name - this is a duplicate signup attempt
+        console.log(`❌ Duplicate signup attempt for existing user: ${phoneNumber}`);
+        
+        // Log failed signup attempt
+        await authService.logAuthAttempt({
+          phoneNumber,
+          action: 'duplicate_signup',
+          success: false,
+          error: 'User already exists',
+          ip: req.ip,
+          userAgent: req.get('User-Agent')
+        });
 
-      if (!user) {
-        // Create new user
-        user = await authService.createUser({
-          phone: phoneNumber,
-          name: name || `User_${phoneNumber.slice(-4)}`,
-          userType,
-          isVerified: true,
-          lastLoginAt: new Date()
+        return res.status(409).json({
+          success: false,
+          message: 'An account with this phone number already exists. Please login instead.',
+          error: {
+            code: 'USER_ALREADY_EXISTS',
+            message: 'An account with this phone number already exists'
+          },
+          timestamp: new Date().toISOString()
         });
-        isNewUser = true;
-        console.log(`✅ New user created: ${user.id}`);
-      } else {
-        // Update existing user
-        user = await authService.updateUser(user.id, {
-          lastLoginAt: new Date(),
-          isVerified: true
-        });
-        console.log(`✅ Existing user updated: ${user.id}`);
       }
 
-      // Generate JWT token
-      const token = jwtService.generateToken({
-        userId: user.id,
-        phone: user.phone,
-        userType: user.userType
-      });
+      // If user exists but no name provided, this is a login attempt
+      if (userExists && !name) {
+        console.log(`🔐 Login attempt for existing user: ${phoneNumber}`);
+        
+        // Get existing user
+        const existingUser = await authService.getUserByPhone(phoneNumber);
+        
+        // Generate JWT token for existing user
+        const token = jwtService.generateAccessToken({
+          userId: existingUser.id,
+          phone: existingUser.phone,
+          userType: existingUser.userType
+        });
+
+        // Log successful login
+        await authService.logAuthAttempt({
+          phoneNumber,
+          action: 'login',
+          success: true,
+          userId: existingUser.id,
+          ip: req.ip,
+          userAgent: req.get('User-Agent')
+        });
+
+        return res.json({
+          success: true,
+          message: 'Login successful',
+          data: {
+            user: {
+              id: existingUser.id,
+              name: existingUser.name,
+              phone: existingUser.phone,
+              userType: existingUser.userType,
+              isVerified: existingUser.isVerified
+            },
+            token: token,
+            isNewUser: false
+          },
+          timestamp: new Date().toISOString()
+        });
+      }
+
+      // If user doesn't exist and no name provided, this is invalid
+      if (!userExists && !name) {
+        console.log(`❌ Login attempt for non-existent user: ${phoneNumber}`);
+        
+        await authService.logAuthAttempt({
+          phoneNumber,
+          action: 'login',
+          success: false,
+          error: 'User not found',
+          ip: req.ip,
+          userAgent: req.get('User-Agent')
+        });
+
+        return res.status(404).json({
+          success: false,
+          message: 'No account found with this phone number. Please sign up first.',
+          error: {
+            code: 'USER_NOT_FOUND',
+            message: 'No account found with this phone number'
+          },
+          timestamp: new Date().toISOString()
+        });
+      }
+
+      // If user doesn't exist and name is provided, this is a new signup
+      if (!userExists && name) {
+        console.log(`📝 New signup attempt: ${phoneNumber}`);
+        
+        // Create new user
+        const { user, isNewUser } = await authService.getOrCreateUser(phoneNumber, {
+          name: name,
+          userType: userType
+        });
+
+        // Generate JWT token
+        const token = jwtService.generateAccessToken({
+          userId: user.id,
+          phone: user.phone,
+          userType: user.userType
+        });
+
+        // Log successful signup
+        await authService.logAuthAttempt({
+          phoneNumber,
+          action: 'signup',
+          success: true,
+          userId: user.id,
+          ip: req.ip,
+          userAgent: req.get('User-Agent')
+        });
+
+        return res.json({
+          success: true,
+          message: 'Account created successfully',
+          data: {
+            user: {
+              id: user.id,
+              name: user.name,
+              phone: user.phone,
+              userType: user.userType,
+              isVerified: user.isVerified
+            },
+            token: token,
+            isNewUser: true
+          },
+          timestamp: new Date().toISOString()
+        });
+      }
+
+
 
       // Log successful authentication
       await authService.logAuthAttempt({

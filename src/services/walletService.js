@@ -406,6 +406,47 @@ class WalletService {
       };
     }
   }
+
+  /**
+   * Get wallet stats (alias for getWalletStatistics)
+   * @param {string} driverId - Driver ID
+   * @returns {Promise<Object>} Wallet statistics
+   */
+  async getWalletStats(driverId) {
+    return this.getWalletStatistics(driverId);
+  }
+
+  /**
+   * Check if driver can work based on wallet balance
+   * @param {string} driverId - Driver ID
+   * @returns {Promise<Object>} Work status
+   */
+  async canDriverWork(driverId) {
+    try {
+      const wallet = await DriverWallet.findOne({ driverId });
+      
+      if (!wallet) {
+        return {
+          success: false,
+          error: 'Wallet not found'
+        };
+      }
+      
+      return {
+        success: true,
+        canWork: wallet.canWork(),
+        currentBalance: wallet.currentBalance,
+        isLowBalance: wallet.isLowBalance(),
+        remainingTrips: wallet.getRemainingTrips()
+      };
+    } catch (error) {
+      console.error('Error checking driver work status:', error);
+      return {
+        success: false,
+        error: 'Failed to check driver work status'
+      };
+    }
+  }
 }
 
 module.exports = new WalletService();

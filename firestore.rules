@@ -1,0 +1,261 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // ========================================
+    // HELPER FUNCTIONS
+    // ========================================
+    
+    // Check if user is authenticated
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+    
+    // Check if user is admin
+    function isAdmin() {
+      return isAuthenticated() && 
+             exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+             get(/databases/$(database)/documents/users/$(request.auth.uid)).data.userType == 'admin' &&
+             isUserActive();
+    }
+    
+    // Check if user is driver
+    function isDriver() {
+      return isAuthenticated() && 
+             exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+             get(/databases/$(database)/documents/users/$(request.auth.uid)).data.userType == 'driver';
+    }
+    
+    // Check if user is customer
+    function isCustomer() {
+      return isAuthenticated() && 
+             exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+             get(/databases/$(database)/documents/users/$(request.auth.uid)).data.userType == 'customer';
+    }
+    
+    // Check if user owns the document
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+    
+    // Check if user is active (used in admin functions)
+    function isUserActive() {
+      return isAuthenticated() && 
+             exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+             get(/databases/$(database)/documents/users/$(request.auth.uid)).data.isActive == true;
+    }
+    
+    // ========================================
+    // USERS COLLECTION
+    // ========================================
+    match /users/{userId} {
+      // Users can read/write their own data
+      allow read, write: if isOwner(userId);
+      
+      // Admins can read all users
+      allow read: if isAdmin();
+      
+      // Admins can update user status
+      allow update: if isAdmin() && 
+                   (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['isActive', 'userType', 'updatedAt']));
+    }
+    
+    // ========================================
+    // CUSTOMERS COLLECTION
+    // ========================================
+    match /customers/{customerId} {
+      // Customers can read/write their own data
+      allow read, write: if isOwner(customerId);
+      
+      // Admins can read all customers
+      allow read: if isAdmin();
+      
+      // Drivers can read customer data for bookings they're assigned to
+      allow read: if isDriver() && 
+                 exists(/databases/$(database)/documents/bookings) &&
+                 getAfter(/databases/$(database)/documents/bookings).data.driverId == request.auth.uid;
+    }
+    
+    // ========================================
+    // DRIVERS COLLECTION
+    // ========================================
+    match /drivers/{driverId} {
+      // Drivers can read/write their own data
+      allow read, write: if isOwner(driverId);
+      
+      // Admins can read all drivers
+      allow read: if isAdmin();
+      
+      // Customers can read driver data for bookings they've made
+      allow read: if isCustomer() && 
+                 exists(/databases/$(database)/documents/bookings) &&
+                 getAfter(/databases/$(database)/documents/bookings).data.customerId == request.auth.uid;
+    }
+    
+    // ========================================
+    // BOOKINGS COLLECTION
+    // ========================================
+    match /bookings/{bookingId} {
+      // Customers can read/write their own bookings
+      allow read, write: if isCustomer() && 
+                        resource.data.customerId == request.auth.uid;
+      
+      // Drivers can read/write bookings assigned to them
+      allow read, write: if isDriver() && 
+                        resource.data.driverId == request.auth.uid;
+      
+      // Admins can read/write all bookings
+      allow read, write: if isAdmin();
+      
+      // Create booking - customer can create booking for themselves
+      allow create: if isCustomer() && 
+                   request.resource.data.customerId == request.auth.uid;
+    }
+    
+    // ========================================
+    // ORDERS COLLECTION
+    // ========================================
+    match /orders/{orderId} {
+      // Customers can read their own orders
+      allow read: if isCustomer() && 
+                 resource.data.customerId == request.auth.uid;
+      
+      // Drivers can read orders assigned to them
+      allow read: if isDriver() && 
+                 resource.data.driverId == request.auth.uid;
+      
+      // Admins can read/write all orders
+      allow read, write: if isAdmin();
+      
+      // Drivers can update order status
+      allow update: if isDriver() && 
+                   resource.data.driverId == request.auth.uid &&
+                   request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'tracking', 'updatedAt']);
+    }
+    
+    // ========================================
+    // PAYMENTS COLLECTION
+    // ========================================
+    match /payments/{paymentId} {
+      // Customers can read their own payments
+      allow read: if isCustomer() && 
+                 resource.data.customerId == request.auth.uid;
+      
+      // Admins can read/write all payments
+      allow read, write: if isAdmin();
+      
+      // Create payment - customer can create payment for themselves
+      allow create: if isCustomer() && 
+                   request.resource.data.customerId == request.auth.uid;
+    }
+    
+    // ========================================
+    // NOTIFICATIONS COLLECTION
+    // ========================================
+    match /notifications/{notificationId} {
+      // Users can read their own notifications
+      allow read: if isAuthenticated() && 
+                 resource.data.userId == request.auth.uid;
+      
+      // Users can update their own notifications (mark as read)
+      allow update: if isAuthenticated() && 
+                   resource.data.userId == request.auth.uid &&
+                   request.resource.data.diff(resource.data).affectedKeys().hasOnly(['isRead', 'readAt']);
+      
+      // Admins can read/write all notifications
+      allow read, write: if isAdmin();
+      
+      // Create notification - system can create for any user
+      allow create: if isAdmin() || 
+                   (isAuthenticated() && request.resource.data.userId == request.auth.uid);
+    }
+    
+    // ========================================
+    // WALLET SYSTEM COLLECTIONS
+    // ========================================
+    
+    // Driver Wallets
+    match /driverWallets/{driverId} {
+      // Drivers can read/write their own wallet
+      allow read, write: if isOwner(driverId);
+      
+      // Admins can read/write all wallets
+      allow read, write: if isAdmin();
+    }
+    
+    // Commission Transactions
+    match /commissionTransactions/{transactionId} {
+      // Drivers can read their own commission transactions
+      allow read: if isDriver() && 
+                 resource.data.driverId == request.auth.uid;
+      
+      // Admins can read/write all commission transactions
+      allow read, write: if isAdmin();
+      
+      // Create commission transaction - system only
+      allow create: if isAdmin();
+    }
+    
+    // Recharge Transactions
+    match /rechargeTransactions/{transactionId} {
+      // Drivers can read their own recharge transactions
+      allow read: if isDriver() && 
+                 resource.data.driverId == request.auth.uid;
+      
+      // Admins can read/write all recharge transactions
+      allow read, write: if isAdmin();
+      
+      // Create recharge transaction - drivers can create for themselves
+      allow create: if isDriver() && 
+                   request.resource.data.driverId == request.auth.uid;
+    }
+    
+    // ========================================
+    // SYSTEM COLLECTIONS
+    // ========================================
+    
+    // App Settings - Admin only
+    match /appSettings/{settingKey} {
+      allow read: if isAuthenticated();
+      allow write: if isAdmin();
+    }
+    
+    // Rates - Admin only
+    match /rates/{rateId} {
+      allow read: if isAuthenticated();
+      allow write: if isAdmin();
+    }
+    
+    // Support Tickets
+    match /support/{ticketId} {
+      // Customers can read/write their own tickets
+      allow read, write: if isCustomer() && 
+                        resource.data.customerId == request.auth.uid;
+      
+      // Admins can read/write all tickets
+      allow read, write: if isAdmin();
+      
+      // Create ticket - customers can create for themselves
+      allow create: if isCustomer() && 
+                   request.resource.data.customerId == request.auth.uid;
+    }
+    
+    // ========================================
+    // SCHEMA DOCUMENTS
+    // ========================================
+    
+    // Allow access to schema documents (for migration)
+    match /{collection}/{document=**} {
+      allow read, write: if document == '_schema' && isAdmin();
+    }
+    
+    // ========================================
+    // DEFAULT DENY
+    // ========================================
+    
+    // Deny all other access
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

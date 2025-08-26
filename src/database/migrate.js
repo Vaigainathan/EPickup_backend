@@ -163,6 +163,62 @@ const collections = {
       updatedAt: 'timestamp',
       resolvedAt: 'timestamp'
     }
+  },
+
+  // Wallet System Collections
+  driverWallets: {
+    description: 'Driver wallet balances and information',
+    fields: {
+      driverId: 'string',
+      initialCredit: 'number',
+      commissionUsed: 'number',
+      recharges: 'number',
+      currentBalance: 'number',
+      status: 'string', // 'active', 'inactive', 'suspended'
+      lastRechargeDate: 'timestamp',
+      lastCommissionDeduction: 'timestamp',
+      createdAt: 'timestamp',
+      updatedAt: 'timestamp'
+    }
+  },
+
+  commissionTransactions: {
+    description: 'Commission deduction transactions',
+    fields: {
+      driverId: 'string',
+      tripId: 'string',
+      distanceKm: 'number',
+      commissionAmount: 'number',
+      walletBalanceBefore: 'number',
+      walletBalanceAfter: 'number',
+      pickupLocation: 'map',
+      dropoffLocation: 'map',
+      tripFare: 'number',
+      status: 'string', // 'pending', 'completed', 'failed', 'refunded'
+      notes: 'string',
+      createdAt: 'timestamp',
+      updatedAt: 'timestamp'
+    }
+  },
+
+  rechargeTransactions: {
+    description: 'Wallet recharge transactions',
+    fields: {
+      driverId: 'string',
+      amount: 'number',
+      paymentMethod: 'string', // 'upi', 'card', 'netbanking', 'cash'
+      paymentGateway: 'string', // 'razorpay', 'paytm', 'phonepe', 'cash'
+      transactionId: 'string',
+      gatewayTransactionId: 'string',
+      status: 'string', // 'pending', 'completed', 'failed', 'cancelled'
+      walletBalanceBefore: 'number',
+      walletBalanceAfter: 'number',
+      failureReason: 'string',
+      receiptUrl: 'string',
+      notes: 'string',
+      createdAt: 'timestamp',
+      updatedAt: 'timestamp'
+    }
   }
 };
 
@@ -231,6 +287,37 @@ async function createIndexes() {
       collection: 'notifications',
       fields: ['userId', 'isRead'],
       description: 'Query unread notifications for user'
+    },
+    // Wallet System Indexes
+    {
+      collection: 'driverWallets',
+      fields: ['driverId'],
+      description: 'Query driver wallet by driver ID'
+    },
+    {
+      collection: 'commissionTransactions',
+      fields: ['driverId', 'createdAt'],
+      description: 'Query commission transactions by driver and date'
+    },
+    {
+      collection: 'commissionTransactions',
+      fields: ['tripId'],
+      description: 'Query commission transaction by trip ID'
+    },
+    {
+      collection: 'rechargeTransactions',
+      fields: ['driverId', 'createdAt'],
+      description: 'Query recharge transactions by driver and date'
+    },
+    {
+      collection: 'rechargeTransactions',
+      fields: ['transactionId'],
+      description: 'Query recharge transaction by transaction ID'
+    },
+    {
+      collection: 'rechargeTransactions',
+      fields: ['status', 'createdAt'],
+      description: 'Query recharge transactions by status and date'
     }
   ];
   

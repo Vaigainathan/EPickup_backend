@@ -1,69 +1,116 @@
-const mongoose = require('mongoose');
+const { getFirestore } = require('../services/firebase');
 
-const driverWalletSchema = new mongoose.Schema({
-  driverId: {
-    type: String,
-    required: true,
-    unique: true,
-    index: true
-  },
-  initialCredit: {
-    type: Number,
-    default: 0,
-    min: 0
-  },
-  commissionUsed: {
-    type: Number,
-    default: 0,
-    min: 0
-  },
-  recharges: {
-    type: Number,
-    default: 0,
-    min: 0
-  },
-  currentBalance: {
-    type: Number,
-    default: 0,
-    min: 0
-  },
-  status: {
-    type: String,
-    enum: ['active', 'inactive', 'suspended'],
-    default: 'active'
-  },
-  lastRechargeDate: {
-    type: Date,
-    default: null
-  },
-  lastCommissionDeduction: {
-    type: Date,
-    default: null
+class DriverWallet {
+  constructor(data = {}) {
+    this.driverId = data.driverId || '';
+    this.initialCredit = data.initialCredit || 0;
+    this.commissionUsed = data.commissionUsed || 0;
+    this.recharges = data.recharges || 0;
+    this.currentBalance = data.currentBalance || 0;
+    this.status = data.status || 'active';
+    this.lastRechargeDate = data.lastRechargeDate || null;
+    this.lastCommissionDeduction = data.lastCommissionDeduction || null;
+    this.createdAt = data.createdAt || new Date();
+    this.updatedAt = data.updatedAt || new Date();
   }
-}, {
-  timestamps: true
-});
 
-// Calculate current balance before saving
-driverWalletSchema.pre('save', function(next) {
-  this.currentBalance = this.initialCredit + this.recharges - this.commissionUsed;
-  next();
-});
+  // Calculate current balance
+  calculateBalance() {
+    this.currentBalance = this.initialCredit + this.recharges - this.commissionUsed;
+    return this.currentBalance;
+  }
 
-// Virtual for remaining trips based on current balance
-driverWalletSchema.virtual('remainingTrips').get(function() {
-  const commissionPerTrip = 1; // ₹1 per km, assuming average 1km per trip
-  return Math.floor(this.currentBalance / commissionPerTrip);
-});
+  // Get remaining trips based on current balance
+  getRemainingTrips() {
+    const commissionPerTrip = 1; // ₹1 per km, assuming average 1km per trip
+    return Math.floor(this.currentBalance / commissionPerTrip);
+  }
 
-// Virtual for low balance warning
-driverWalletSchema.virtual('isLowBalance').get(function() {
-  return this.currentBalance < 100;
-});
+  // Check if balance is low
+  isLowBalance() {
+    return this.currentBalance < 100;
+  }
 
-// Virtual for can work status
-driverWalletSchema.virtual('canWork').get(function() {
-  return this.status === 'active' && this.currentBalance > 0;
-});
+  // Check if driver can work
+  canWork() {
+    return this.status === 'active' && this.currentBalance > 0;
+  }
 
-module.exports = mongoose.model('DriverWallet', driverWalletSchema);
+  // Convert to plain object
+  toObject() {
+    return {
+      driverId: this.driverId,
+      initialCredit: this.initialCredit,
+      commissionUsed: this.commissionUsed,
+      recharges: this.recharges,
+      currentBalance: this.currentBalance,
+      status: this.status,
+      lastRechargeDate: this.lastRechargeDate,
+      lastCommissionDeduction: this.lastCommissionDeduction,
+      createdAt: this.createdAt,
+      updatedAt: this.updatedAt,
+      remainingTrips: this.getRemainingTrips(),
+      isLowBalance: this.isLowBalance(),
+      canWork: this.canWork()
+    };
+  }
+
+  // Static methods for Firestore operations
+  static async findOne(query) {
+    const db = getFirestore();
+    const walletsRef = db.collection('driverWallets');
+    
+    if (query.driverId) {
+      const doc = await walletsRef.doc(query.driverId).get();
+      if (doc.exists) {
+        return new DriverWallet({ id: doc.id, ...doc.data() });
+      }
+    }
+    return null;
+  }
+
+  static async create(data) {
+    const db = getFirestore();
+    const walletsRef = db.collection('driverWallets');
+    
+    const wallet = new DriverWallet(data);
+    wallet.calculateBalance();
+    wallet.createdAt = new Date();
+    wallet.updatedAt = new Date();
+    
+    const docRef = await walletsRef.doc(wallet.driverId).set(wallet.toObject());
+    return wallet;
+  }
+
+  async save() {
+    const db = getFirestore();
+    const walletsRef = db.collection('driverWallets');
+    
+    this.calculateBalance();
+    this.updatedAt = new Date();
+    
+    await walletsRef.doc(this.driverId).set(this.toObject());
+    return this;
+  }
+
+  static async findByIdAndUpdate(id, update, options = {}) {
+    const db = getFirestore();
+    const walletsRef = db.collection('driverWallets');
+    
+    const doc = await walletsRef.doc(id).get();
+    if (!doc.exists) {
+      return null;
+    }
+    
+    const wallet = new DriverWallet({ id: doc.id, ...doc.data() });
+    
+    // Apply updates
+    Object.assign(wallet, update);
+    wallet.updatedAt = new Date();
+    
+    await wallet.save();
+    return wallet;
+  }
+}
+
+module.exports = DriverWallet;

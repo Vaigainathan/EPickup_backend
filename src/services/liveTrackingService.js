@@ -1,4 +1,4 @@
-const { getFirestore } = require('firebase-admin/firestore');
+const { getFirestore } = require('./firebase');
 const { getRedisClient } = require('./redis');
 const RealTimeService = require('./realTimeService');
 const { getSocketIO } = require('./socket');

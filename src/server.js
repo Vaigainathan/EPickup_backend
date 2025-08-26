@@ -39,6 +39,7 @@ const { initializeFirebase } = require('./services/firebase');
 const { initializeRedis } = require('./services/redis');
 const { initializeSocketIO } = require('./services/socket');
 const socketService = require('./services/socketService');
+const twilioService = require('./services/twilioService');
 
 const app = express();
 const PORT = env.getServerPort();
@@ -70,6 +71,19 @@ if (env.isRedisEnabled()) {
   }
 } else {
   console.log('⚠️  Redis is disabled in configuration');
+}
+
+// Initialize Twilio service
+try {
+  twilioService.initialize().then(() => {
+    console.log('✅ Twilio service initialization completed');
+  }).catch((error) => {
+    console.log('⚠️  Twilio service initialization failed, continuing with mock service...');
+    console.error('Twilio Error:', error.message);
+  });
+} catch (error) {
+  console.log('⚠️  Twilio service initialization failed, continuing with mock service...');
+  console.error('Twilio Error:', error.message);
 }
 
 // Initialize WebSocket service

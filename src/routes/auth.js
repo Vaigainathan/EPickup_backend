@@ -44,6 +44,7 @@ router.post('/send-otp',
       const result = await twilioService.sendOTP(phoneNumber, options);
 
       if (!result.success) {
+        console.error('❌ OTP send failed:', result);
         return res.status(400).json({
           success: false,
           message: 'Failed to send OTP',
@@ -62,6 +63,8 @@ router.post('/send-otp',
         ip: req.ip,
         userAgent: req.get('User-Agent')
       });
+
+      console.log(`✅ OTP sent successfully to ${phoneNumber}`);
 
       res.json({
         success: true,
@@ -126,6 +129,8 @@ router.post('/verify-otp',
       const verificationResult = await twilioService.verifyOTP(phoneNumber, otp, verificationSid);
 
       if (!verificationResult.success) {
+        console.error('❌ OTP verification failed:', verificationResult);
+        
         // Log failed verification
         await authService.logAuthAttempt({
           phoneNumber,
@@ -161,12 +166,14 @@ router.post('/verify-otp',
           lastLoginAt: new Date()
         });
         isNewUser = true;
+        console.log(`✅ New user created: ${user.id}`);
       } else {
         // Update existing user
         user = await authService.updateUser(user.id, {
           lastLoginAt: new Date(),
           isVerified: true
         });
+        console.log(`✅ Existing user updated: ${user.id}`);
       }
 
       // Generate JWT token
@@ -185,6 +192,8 @@ router.post('/verify-otp',
         ip: req.ip,
         userAgent: req.get('User-Agent')
       });
+
+      console.log(`✅ OTP verification successful for ${phoneNumber}`);
 
       res.json({
         success: true,
@@ -571,10 +580,17 @@ router.get('/twilio-status', async (req, res) => {
       NODE_ENV: process.env.NODE_ENV
     };
     
+    // Check if there are any issues
+    const hasIssues = twilioHealth.mockMode || twilioHealth.errorCount > 0 || twilioHealth.lastError;
+    const status = hasIssues ? 'warning' : 'healthy';
+    
+    console.log(`📊 Twilio Status Check - Status: ${status}, Mock Mode: ${twilioHealth.mockMode}, Error Count: ${twilioHealth.errorCount}`);
+    
     res.json({
       success: true,
       message: 'Twilio status retrieved successfully',
       data: {
+        status: status,
         health: twilioHealth,
         config: {
           enabled: env.isTwilioEnabled(),
@@ -584,6 +600,11 @@ router.get('/twilio-status', async (req, res) => {
           mockMode: twilioConfig.mockMode
         },
         debug: debugEnv,
+        issues: hasIssues ? {
+          mockMode: twilioHealth.mockMode,
+          errorCount: twilioHealth.errorCount,
+          lastError: twilioHealth.lastError
+        } : null,
         timestamp: new Date().toISOString()
       }
     });

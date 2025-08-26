@@ -5,7 +5,6 @@ const authService = require('../services/authService');
 const jwtService = require('../services/jwtService');
 const { validateRequest } = require('../middleware/validation');
 const { rateLimit } = require('../middleware/rateLimit');
-const { env } = require('../config');
 
 // Rate limiting configuration
 const authRateLimit = rateLimit({

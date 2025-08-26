@@ -138,7 +138,7 @@ class LiveTrackingService {
    * @param {Object} location - Location data
    * @param {Object} options - Update options
    */
-  async updateDriverLocation(tripId, driverId, location, options = {}) {
+  async updateDriverLocation(tripId, driverId, location, options = {}) { // eslint-disable-line no-unused-vars
     try {
       // Validate location data
       if (!location.latitude || !location.longitude) {
@@ -510,7 +510,6 @@ class LiveTrackingService {
 
     for (let i = 1; i < locationHistory.length; i++) {
       const prev = locationHistory[i - 1];
-      const curr = locationHistory[i];
 
       if (prev.speed && prev.speed > 0) {
         totalSpeed += prev.speed;

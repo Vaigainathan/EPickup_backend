@@ -1,6 +1,5 @@
 const express = require('express');
 const multer = require('multer');
-const path = require('path');
 const FileUploadService = require('../services/fileUploadService');
 const { requireRole } = require('../middleware/auth');
 

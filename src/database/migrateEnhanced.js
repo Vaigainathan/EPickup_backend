@@ -21,30 +21,30 @@ async function migrateEnhancedSchema() {
       const updates = {};
 
       // Add missing fields if they don't exist
-      if (!userData.hasOwnProperty('emailVerified')) {
+      if (!Object.prototype.hasOwnProperty.call(userData, 'emailVerified')) {
         updates.emailVerified = false;
       }
-      if (!userData.hasOwnProperty('phoneVerified')) {
+      if (!Object.prototype.hasOwnProperty.call(userData, 'phoneVerified')) {
         updates.phoneVerified = userData.isVerified || false;
       }
-      if (!userData.hasOwnProperty('passwordHash')) {
+      if (!Object.prototype.hasOwnProperty.call(userData, 'passwordHash')) {
         updates.passwordHash = null;
       }
-      if (!userData.hasOwnProperty('profilePicture')) {
+      if (!Object.prototype.hasOwnProperty.call(userData, 'profilePicture')) {
         updates.profilePicture = null;
       }
-      if (!userData.hasOwnProperty('accountStatus')) {
+      if (!Object.prototype.hasOwnProperty.call(userData, 'accountStatus')) {
         updates.accountStatus = 'active';
       }
-      if (!userData.hasOwnProperty('lastLoginAt')) {
+      if (!Object.prototype.hasOwnProperty.call(userData, 'lastLoginAt')) {
         updates.lastLoginAt = userData.createdAt || new Date();
       }
-      if (!userData.hasOwnProperty('updatedAt')) {
+      if (!Object.prototype.hasOwnProperty.call(userData, 'updatedAt')) {
         updates.updatedAt = new Date();
       }
 
       // Update customer-specific fields
-      if (userData.userType === 'customer' && !userData.hasOwnProperty('customer')) {
+      if (userData.userType === 'customer' && !Object.prototype.hasOwnProperty.call(userData, 'customer')) {
         updates.customer = {
           wallet: {
             balance: 0,
@@ -203,7 +203,7 @@ async function validateMigration() {
     const collections = ['emailVerifications', 'auditLogs', 'sessions', 'fileUploads'];
     
     for (const collectionName of collections) {
-      const snapshot = await db.collection(collectionName).limit(1).get();
+      await db.collection(collectionName).limit(1).get();
       console.log(`✓ ${collectionName} collection exists`);
     }
 
@@ -214,7 +214,7 @@ async function validateMigration() {
       const requiredFields = ['emailVerified', 'phoneVerified', 'accountStatus', 'lastLoginAt'];
       
       for (const field of requiredFields) {
-        if (userData.hasOwnProperty(field)) {
+        if (Object.prototype.hasOwnProperty.call(userData, field)) {
           console.log(`✓ Users have ${field} field`);
         } else {
           console.warn(`⚠ Users missing ${field} field`);

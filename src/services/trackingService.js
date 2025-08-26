@@ -578,7 +578,7 @@ class TrackingService extends EventEmitter {
    * @param {Object} tripData - Trip information
    * @returns {Object|null} Simulated location or null
    */
-  simulateDriverMovement(tripId, tripData) {
+  simulateDriverMovement(tripId, tripData) { // eslint-disable-line no-unused-vars
     try {
       const trip = this.activeTrips.get(tripId);
       if (!trip || !trip.currentLocation) return null;

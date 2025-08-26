@@ -1,7 +1,5 @@
 const sharp = require('sharp');
-const multer = require('multer');
 const path = require('path');
-const crypto = require('crypto');
 const { v4: uuidv4 } = require('uuid');
 const { getFirebaseApp, getFirestore, getStorage } = require('./firebase');
 
@@ -560,7 +558,7 @@ class FileUploadService {
    * @param {string} status - Verification status
    * @param {string} comments - Verification comments
    */
-  async sendVerificationNotification(driverId, documentType, status, comments) {
+  async sendVerificationNotification(driverId, documentType, status, comments) { // eslint-disable-line no-unused-vars
     try {
       // This would integrate with your notification service
       // For now, we'll just log it

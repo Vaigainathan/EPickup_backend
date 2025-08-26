@@ -1,4 +1,3 @@
-const { env } = require('../config');
 const { getFirestore } = require('../services/firebase');
 
 /**

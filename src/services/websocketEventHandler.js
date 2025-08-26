@@ -136,7 +136,7 @@ class WebSocketEventHandler {
    */
   async handleTrackingSubscription(socket, data) {
     try {
-      const { tripId, userId, userType } = data;
+      const { tripId, userId, userType } = data; // eslint-disable-line no-unused-vars
 
       if (!tripId || !userId) {
         socket.emit('error', {

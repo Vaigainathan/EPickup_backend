@@ -1,5 +1,4 @@
 const admin = require('firebase-admin');
-const env = require('../config/environment');
 
 let firebaseApp = null;
 

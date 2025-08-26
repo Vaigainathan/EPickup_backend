@@ -553,7 +553,7 @@ class DriverAssignmentService {
    * @param {Array} preferredAreas - Array of preferred area names
    * @returns {boolean} True if location is in preferred areas
    */
-  isLocationInPreferredAreas(location, preferredAreas) {
+  isLocationInPreferredAreas(location, preferredAreas) { // eslint-disable-line no-unused-vars
     // This is a simplified check. In a real implementation,
     // you would use a geocoding service to check if the location
     // falls within the preferred areas

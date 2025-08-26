@@ -467,7 +467,6 @@ class BookingService {
         throw new Error('Booking not found');
       }
 
-      const bookingData = bookingDoc.data();
       const validStatuses = [
         'pending', 'confirmed', 'driver_assigned', 'driver_enroute',
         'driver_arrived', 'picked_up', 'in_transit', 'at_dropoff', 'delivered', 'cancelled'
@@ -617,7 +616,7 @@ class BookingService {
    */
   async getAvailableDrivers(pickupLocation, radius = 5, vehicleType = null) {
     try {
-      let query = this.db.collection('driverLocations')
+      const query = this.db.collection('driverLocations')
         .where('isOnline', '==', true)
         .where('isAvailable', '==', true);
 

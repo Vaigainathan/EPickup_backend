@@ -745,7 +745,7 @@ router.post('/:id/assign-driver', [
     }
 
     const { id } = req.params;
-    const { driverId, forceAssign = false } = req.body;
+    const { driverId } = req.body;
 
     // Assign driver
     const result = await bookingService.assignDriverToBooking(id, driverId);

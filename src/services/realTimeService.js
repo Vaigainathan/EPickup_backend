@@ -397,7 +397,7 @@ class RealTimeService {
       if (tokens.length === 0) return false;
 
       // Send push notification
-      const notification = {
+      const notification = { // eslint-disable-line no-unused-vars
         title: `Trip ${status.replace('_', ' ').toUpperCase()}`,
         body: `Your trip has been ${status.replace('_', ' ')}`,
         data: {
@@ -438,7 +438,7 @@ class RealTimeService {
       if (!recipientToken) return false;
 
       // Send push notification
-      const notification = {
+      const notification = { // eslint-disable-line no-unused-vars
         title: 'New Message',
         body: message.length > 50 ? `${message.substring(0, 50)}...` : message,
         data: {
@@ -469,7 +469,7 @@ class RealTimeService {
       const customerToken = await this.getUserFCMToken(customerId);
       if (!customerToken) return false;
 
-      const notification = {
+      const notification = { // eslint-disable-line no-unused-vars
         title: 'Driver Assigned! 🚗',
         body: `${driverInfo.name} is your driver. They'll arrive in ${driverInfo.estimatedArrival || 'a few'} minutes.`,
         data: {
@@ -498,7 +498,7 @@ class RealTimeService {
       const driverToken = await this.getUserFCMToken(driverId);
       if (!driverToken) return false;
 
-      const notification = {
+      const notification = { // eslint-disable-line no-unused-vars
         title: 'New Trip Assignment! 📦',
         body: 'You have a new delivery request. Tap to view details.',
         data: {
@@ -542,7 +542,7 @@ class RealTimeService {
       if (tokens.length === 0) return false;
 
       // Send emergency push notification
-      const notification = {
+      const notification = { // eslint-disable-line no-unused-vars
         title: '🚨 Emergency Alert',
         body: `Emergency situation: ${alertType}. Please check the app immediately.`,
         data: {
@@ -573,7 +573,7 @@ class RealTimeService {
       const userToken = await this.getUserFCMToken(userId);
       if (!userToken) return false;
 
-      const notification = {
+      const notification = { // eslint-disable-line no-unused-vars
         title: '🎉 Trip Completed!',
         body: 'Your delivery has been completed successfully. Thank you for using EPickup!',
         data: {

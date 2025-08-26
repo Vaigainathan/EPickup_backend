@@ -365,7 +365,7 @@ router.get('/transactions', [
     const { uid, userType } = req.user;
     const { limit = 20, offset = 0, status, paymentMethod } = req.query;
 
-    let filters = { limit: parseInt(limit), offset: parseInt(offset) };
+    const filters = { limit: parseInt(limit), offset: parseInt(offset) };
     if (status) filters.status = status;
     if (paymentMethod) filters.paymentMethod = paymentMethod;
 

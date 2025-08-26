@@ -3,7 +3,7 @@ const { validationResult } = require('express-validator');
 /**
  * Global error handler middleware
  */
-const errorHandler = (err, req, res, next) => {
+const errorHandler = (err, req, res, next) => { // eslint-disable-line no-unused-vars
   console.error('Error:', err);
 
   // Default error response

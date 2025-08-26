@@ -343,13 +343,6 @@ class EnvironmentConfig {
   }
 
   /**
-   * Get Google Maps API key
-   */
-  getGoogleMapsApiKey() {
-    return this.config.googleMaps.apiKey;
-  }
-
-  /**
    * Get reCAPTCHA secret key
    */
   getRecaptchaSecret() {
@@ -490,13 +483,6 @@ class EnvironmentConfig {
   }
 
   /**
-   * Check if reCAPTCHA is enabled
-   */
-  isRecaptchaEnabled() {
-    return this.config.recaptcha.enabled;
-  }
-
-  /**
    * Get Firebase configuration
    */
   getFirebaseConfig() {
@@ -508,13 +494,6 @@ class EnvironmentConfig {
    */
   getGoogleMapsConfig() {
     return this.config.googleMaps;
-  }
-
-  /**
-   * Get Google Maps API key
-   */
-  getGoogleMapsApiKey() {
-    return this.config.googleMaps.apiKey;
   }
 
   /**

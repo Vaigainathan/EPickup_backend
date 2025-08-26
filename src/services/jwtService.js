@@ -222,7 +222,7 @@ class JWTService {
    * @param {string} token - JWT token
    * @returns {boolean} True if format is valid
    */
-  isValidTokenFormat(token) {
+  isValidTokenFormat(token) { // eslint-disable-line no-unused-vars
     if (!token || typeof token !== 'string') {
       return false;
     }
@@ -267,7 +267,7 @@ class JWTService {
    * @param {string} token - JWT token to check
    * @returns {boolean} True if token is blacklisted
    */
-  async isTokenBlacklisted(token) {
+  async isTokenBlacklisted(token) { // eslint-disable-line no-unused-vars
     // This would typically check Redis or database
     // For now, we'll just return false
     // In production, implement proper blacklist checking

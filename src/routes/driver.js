@@ -2,7 +2,6 @@ const express = require('express');
 const { body, validationResult } = require('express-validator');
 const { getFirestore } = require('../services/firebase');
 const { requireDriver } = require('../middleware/auth');
-const { userRateLimit } = require('../middleware/auth');
 
 const router = express.Router();
 

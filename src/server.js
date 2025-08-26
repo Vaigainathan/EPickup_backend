@@ -33,14 +33,12 @@ const fareCalculationRoutes = require('./routes/fareCalculation');
 // Import middleware
 const { errorHandler } = require('./middleware/errorHandler');
 const { authMiddleware } = require('./middleware/auth');
-const { validateRequest } = require('./middleware/validation');
 
 // Import services
 const { initializeFirebase } = require('./services/firebase');
 const { initializeRedis } = require('./services/redis');
 const { initializeSocketIO } = require('./services/socket');
 const socketService = require('./services/socketService');
-const notificationService = require('./services/notificationService');
 
 const app = express();
 const PORT = env.getServerPort();

@@ -60,8 +60,11 @@ class DriverWallet {
     const db = getFirestore();
     const walletsRef = db.collection('driverWallets');
     
-    if (query.driverId) {
-      const doc = await walletsRef.doc(query.driverId).get();
+    // Handle both object and direct driverId
+    const driverId = query.driverId || query;
+    
+    if (driverId) {
+      const doc = await walletsRef.doc(driverId).get();
       if (doc.exists) {
         return new DriverWallet({ id: doc.id, ...doc.data() });
       }
@@ -78,7 +81,7 @@ class DriverWallet {
     wallet.createdAt = new Date();
     wallet.updatedAt = new Date();
     
-    const docRef = await walletsRef.doc(wallet.driverId).set(wallet.toObject());
+    await walletsRef.doc(wallet.driverId).set(wallet.toObject());
     return wallet;
   }
 
@@ -93,7 +96,7 @@ class DriverWallet {
     return this;
   }
 
-  static async findByIdAndUpdate(id, update, options = {}) {
+  static async findByIdAndUpdate(id, update) {
     const db = getFirestore();
     const walletsRef = db.collection('driverWallets');
     

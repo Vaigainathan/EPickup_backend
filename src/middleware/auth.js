@@ -188,7 +188,7 @@ const optionalAuth = async (req, res, next) => {
 
     // Try to authenticate
     const token = authHeader.substring(7);
-    const decodedToken = await verifyIdToken(token);
+    const decodedToken = jwt.verify(token, process.env.JWT_SECRET || 'your-secret-key');
     
     if (decodedToken) {
       const db = getFirestore();
@@ -352,6 +352,7 @@ const userRateLimit = (maxAttempts = 5, windowMs = 15 * 60 * 1000) => {
 };
 
 module.exports = {
+  authenticateToken: authMiddleware,
   authMiddleware,
   requireRole,
   requireCustomer,

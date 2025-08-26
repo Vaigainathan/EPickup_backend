@@ -223,7 +223,7 @@ class SessionService {
     }
   }
 
-  async detectSuspiciousActivity(userId, currentSession) {
+  async detectSuspiciousActivity(userId, currentSession) { // eslint-disable-line no-unused-vars
     try {
       const recentSessions = await this.db
         .collection('sessions')

@@ -1,7 +1,6 @@
 const multer = require('multer');
 const sharp = require('sharp');
 const { getStorage } = require('./firebase');
-const path = require('path');
 const crypto = require('crypto');
 
 class EnhancedFileUploadService {

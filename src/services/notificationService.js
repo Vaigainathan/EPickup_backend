@@ -371,7 +371,7 @@ class NotificationService {
    * @param {Object} bookingData - Booking data
    * @returns {Object} Send result
    */
-  async sendBookingStatusNotification(userId, bookingId, status, bookingData = {}) {
+  async sendBookingStatusNotification(userId, bookingId, status, bookingData = {}) { // eslint-disable-line no-unused-vars
     const statusMessages = {
       'confirmed': {
         title: 'Booking Confirmed',
@@ -419,7 +419,7 @@ class NotificationService {
    * @param {Object} paymentData - Payment data
    * @returns {Object} Send result
    */
-  async sendPaymentStatusNotification(userId, paymentId, status, paymentData = {}) {
+  async sendPaymentStatusNotification(userId, paymentId, status, paymentData = {}) { // eslint-disable-line no-unused-vars
     const statusMessages = {
       'completed': {
         title: 'Payment Successful',
@@ -454,7 +454,7 @@ class NotificationService {
    * @param {Object} bookingData - Booking data
    * @returns {Object} Send result
    */
-  async sendDriverAssignmentNotification(driverId, bookingId, bookingData = {}) {
+  async sendDriverAssignmentNotification(driverId, bookingId, bookingData = {}) { // eslint-disable-line no-unused-vars
     return await this.sendToUser(driverId, {
       title: 'New Booking Assigned',
       body: `You have been assigned a new booking (${bookingId}).`,
@@ -470,7 +470,7 @@ class NotificationService {
    * @param {Object} locationData - Location data
    * @returns {Object} Send result
    */
-  async sendDriverLocationNotification(customerId, bookingId, locationData = {}) {
+  async sendDriverLocationNotification(customerId, bookingId, locationData = {}) { // eslint-disable-line no-unused-vars
     return await this.sendToUser(customerId, {
       title: 'Driver Location Update',
       body: 'Your driver\'s location has been updated.',

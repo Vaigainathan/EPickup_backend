@@ -1,4 +1,4 @@
-const { validationResult } = require('express-validator');
+
 
 /**
  * Generic request validation middleware

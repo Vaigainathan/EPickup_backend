@@ -114,7 +114,7 @@ class CommissionTransaction {
     return this;
   }
 
-  static async findByIdAndUpdate(id, update, options = {}) {
+  static async findByIdAndUpdate(id, update) {
     const db = getFirestore();
     const transactionsRef = db.collection('commissionTransactions');
     

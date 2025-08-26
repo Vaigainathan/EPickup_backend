@@ -4,7 +4,6 @@ const { getFirestore } = require('../services/firebase');
 const enhancedFileUploadService = require('../services/enhancedFileUploadService');
 const auditService = require('../services/auditService');
 const { requireCustomer } = require('../middleware/auth');
-const { userRateLimit } = require('../middleware/auth');
 
 const router = express.Router();
 
@@ -274,7 +273,7 @@ router.post('/addresses', [
       // Add address without changing defaults
       const userRef = db.collection('users').doc(uid);
       await userRef.update({
-        'customer.savedAddresses': admin.firestore.FieldValue.arrayUnion(newAddress),
+        'customer.savedAddresses': newAddress,
         updatedAt: new Date()
       });
     }

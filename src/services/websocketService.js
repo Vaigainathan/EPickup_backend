@@ -491,7 +491,7 @@ class WebSocketService {
   handleBookingStatusUpdate(socket, data) {
     try {
       const { bookingId, status, driverInfo, estimatedTime } = data;
-      const { userId, userType } = socket;
+      const { userId, userType } = socket; // eslint-disable-line no-unused-vars
 
       if (!bookingId || !status) {
         socket.emit('error', {
@@ -560,7 +560,6 @@ class WebSocketService {
   handleDriverAssignment(socket, data) {
     try {
       const { bookingId, driverInfo, estimatedArrival } = data;
-      const { userId } = socket;
 
       if (!bookingId || !driverInfo) {
         socket.emit('error', {

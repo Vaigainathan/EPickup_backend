@@ -1,6 +1,6 @@
 const express = require('express');
 const { body, validationResult, query } = require('express-validator');
-const { requireRole, requireOwnership } = require('../middleware/auth');
+const { requireRole } = require('../middleware/auth');
 const TrackingService = require('../services/trackingService');
 
 const router = express.Router();

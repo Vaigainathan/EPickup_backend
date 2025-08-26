@@ -294,6 +294,7 @@ app.use('/api/realtime', authMiddleware, realtimeRoutes);
 app.use('/api/fcm-tokens', authMiddleware, fcmTokenRoutes);
 app.use('/api/emergency', authMiddleware, emergencyRoutes);
 app.use('/api/service-area', serviceAreaRoutes); // No auth required for service area validation
+app.use('/service-area', serviceAreaRoutes); // Alternative path for service area validation
 app.use('/api/wallet', walletRoutes);
 app.use('/api/fare', fareCalculationRoutes);
 

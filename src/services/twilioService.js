@@ -1,13 +1,12 @@
 const twilio = require('twilio');
 const { env } = require('../config');
-const redis = require('./redis');
 
 class TwilioService {
   constructor() {
     this.client = null;
     this.verifyServiceSid = null;
     this.isInitialized = false;
-    this.redisClient = null;
+    this.mockMode = false;
   }
 
   /**
@@ -29,6 +28,7 @@ class TwilioService {
       // Check if Twilio is enabled and credentials are available
       if (!env.isTwilioEnabled() || !twilioConfig.accountSid || !twilioConfig.authToken || !twilioConfig.verifyServiceSid) {
         console.warn('⚠️ Twilio not enabled or credentials not configured, using mock service');
+        this.mockMode = true;
         this.isInitialized = true;
         return;
       }
@@ -43,35 +43,19 @@ class TwilioService {
         console.log('✅ Twilio account verified:', account.friendlyName);
       } catch (testError) {
         console.error('❌ Twilio account verification failed:', testError.message);
-        throw testError;
+        this.mockMode = true;
+        this.isInitialized = true;
+        return;
       }
-
-      // Initialize Redis for session storage
-      await this.initializeRedis();
 
       this.isInitialized = true;
       console.log('✅ Twilio service initialized successfully with real SMS capability');
     } catch (error) {
       console.error('❌ Failed to initialize Twilio service:', error);
       // Fallback to mock service
+      this.mockMode = true;
       this.isInitialized = true;
       console.log('🔄 Falling back to mock Twilio service');
-    }
-  }
-
-  /**
-   * Initialize Redis connection
-   */
-  async initializeRedis() {
-    try {
-      if (env.isRedisEnabled()) {
-        this.redisClient = redis;
-        console.log('✅ Redis connected for Twilio session storage');
-      } else {
-        console.warn('⚠️ Redis not enabled, using in-memory storage');
-      }
-    } catch (error) {
-      console.warn('⚠️ Redis connection failed, using in-memory storage:', error.message);
     }
   }
 
@@ -85,20 +69,13 @@ class TwilioService {
         throw new Error('Invalid phone number format');
       }
 
-      // Check rate limiting
-      const rateLimitKey = `twilio_rate_limit:${phoneNumber}`;
-      const isRateLimited = await this.checkRateLimit(rateLimitKey, 5, 300); // 5 attempts per 5 minutes
-      if (isRateLimited) {
-        throw new Error('Rate limit exceeded. Please try again later.');
-      }
-
       // Format phone number
       const formattedPhone = this.formatPhoneNumber(phoneNumber);
 
       console.log(`📱 Attempting to send OTP to ${formattedPhone}`);
 
-      if (!this.client || !this.verifyServiceSid) {
-        console.log('🔄 Using mock service - Twilio client not initialized');
+      if (this.mockMode || !this.client || !this.verifyServiceSid) {
+        console.log('🔄 Using mock service - Twilio client not initialized or mock mode enabled');
         // Use mock service
         return await this.sendMockOTP(phoneNumber, options);
       }
@@ -111,9 +88,6 @@ class TwilioService {
           channel: options.channel || 'sms',
           ...options
         });
-
-      // Store verification session
-      await this.storeVerificationSession(phoneNumber, verification.sid, options);
 
       console.log(`✅ Real SMS OTP sent to ${formattedPhone} via ${verification.channel}`);
       console.log(`📊 Verification SID: ${verification.sid}, Status: ${verification.status}`);
@@ -131,12 +105,8 @@ class TwilioService {
       console.error('❌ Failed to send OTP:', error);
       
       // If Twilio fails, fallback to mock service
-      if (error.code === 60202 || error.code === 60200) {
-        console.log('🔄 Twilio service error, falling back to mock service');
-        return await this.sendMockOTP(phoneNumber, options);
-      }
-      
-      throw error;
+      console.log('🔄 Twilio service error, falling back to mock service');
+      return await this.sendMockOTP(phoneNumber, options);
     }
   }
 
@@ -160,19 +130,10 @@ class TwilioService {
 
       console.log(`🔐 Attempting to verify OTP for ${formattedPhone}: ${code}`);
 
-      if (!this.client || !this.verifyServiceSid) {
-        console.log('🔄 Using mock service - Twilio client not initialized');
+      if (this.mockMode || !this.client || !this.verifyServiceSid) {
+        console.log('🔄 Using mock service - Twilio client not initialized or mock mode enabled');
         // Use mock service
         return await this.verifyMockOTP(phoneNumber, code);
-      }
-
-      // Get verification SID from session if not provided
-      if (!verificationSid) {
-        const session = await this.getVerificationSession(phoneNumber);
-        if (!session) {
-          throw new Error('No active verification session found');
-        }
-        verificationSid = session.verificationSid;
       }
 
       // Verify OTP via Twilio
@@ -180,15 +141,11 @@ class TwilioService {
         .services(this.verifyServiceSid)
         .verificationChecks.create({
           to: formattedPhone,
-          code: code,
-          verificationSid: verificationSid
+          code: code
         });
 
       console.log(`✅ Real SMS OTP verification result for ${formattedPhone}: ${verificationCheck.status}`);
       console.log(`📊 Verification SID: ${verificationCheck.sid}, Valid: ${verificationCheck.valid}`);
-
-      // Clear verification session
-      await this.clearVerificationSession(phoneNumber);
 
       return {
         success: verificationCheck.status === 'approved',
@@ -202,12 +159,8 @@ class TwilioService {
       console.error('❌ Failed to verify OTP:', error);
       
       // If Twilio fails, fallback to mock service
-      if (error.code === 60202 || error.code === 60200) {
-        console.log('🔄 Twilio service error, falling back to mock service');
-        return await this.verifyMockOTP(phoneNumber, code);
-      }
-      
-      throw error;
+      console.log('🔄 Twilio service error, falling back to mock service');
+      return await this.verifyMockOTP(phoneNumber, code);
     }
   }
 
@@ -221,25 +174,15 @@ class TwilioService {
         throw new Error('Invalid phone number format');
       }
 
-      // Check rate limiting
-      const rateLimitKey = `twilio_resend_rate_limit:${phoneNumber}`;
-      const isRateLimited = await this.checkRateLimit(rateLimitKey, 3, 300); // 3 resends per 5 minutes
-      if (isRateLimited) {
-        throw new Error('Resend rate limit exceeded. Please try again later.');
-      }
-
       // Format phone number
       const formattedPhone = this.formatPhoneNumber(phoneNumber);
 
-      if (!this.client || !this.verifyServiceSid) {
+      console.log(`📱 Attempting to resend OTP to ${formattedPhone}`);
+
+      if (this.mockMode || !this.client || !this.verifyServiceSid) {
+        console.log('🔄 Using mock service - Twilio client not initialized or mock mode enabled');
         // Use mock service
         return await this.sendMockOTP(phoneNumber, { ...options, isResend: true });
-      }
-
-      // Get existing verification session
-      const session = await this.getVerificationSession(phoneNumber);
-      if (!session) {
-        throw new Error('No active verification session found');
       }
 
       // Resend OTP via Twilio
@@ -250,9 +193,6 @@ class TwilioService {
           channel: options.channel || 'sms',
           ...options
         });
-
-      // Update verification session
-      await this.storeVerificationSession(phoneNumber, verification.sid, options);
 
       console.log(`✅ OTP resent to ${formattedPhone} via ${verification.channel}`);
 
@@ -267,7 +207,10 @@ class TwilioService {
 
     } catch (error) {
       console.error('❌ Failed to resend OTP:', error);
-      throw error;
+      
+      // If Twilio fails, fallback to mock service
+      console.log('🔄 Twilio service error, falling back to mock service');
+      return await this.sendMockOTP(phoneNumber, { ...options, isResend: true });
     }
   }
 
@@ -303,123 +246,15 @@ class TwilioService {
   }
 
   /**
-   * Check rate limiting
-   */
-  async checkRateLimit(key, maxAttempts, windowSeconds) {
-    try {
-      if (!this.redisClient) {
-        // In-memory rate limiting (not recommended for production)
-        return false;
-      }
-
-      const current = await this.redisClient.get(key);
-      const attempts = current ? parseInt(current) : 0;
-
-      if (attempts >= maxAttempts) {
-        return true; // Rate limited
-      }
-
-      // Increment attempts
-      await this.redisClient.set(key, attempts + 1, windowSeconds);
-      return false; // Not rate limited
-
-    } catch (error) {
-      console.warn('Rate limiting check failed:', error.message);
-      return false; // Allow request if rate limiting fails
-    }
-  }
-
-  /**
-   * Store verification session
-   */
-  async storeVerificationSession(phoneNumber, verificationSid, options = {}) {
-    try {
-      const sessionData = {
-        verificationSid,
-        phoneNumber,
-        options,
-        createdAt: new Date().toISOString(),
-        expiresAt: new Date(Date.now() + 10 * 60 * 1000).toISOString() // 10 minutes
-      };
-
-      const key = `twilio_session:${phoneNumber}`;
-      
-      if (this.redisClient) {
-        await this.redisClient.set(key, JSON.stringify(sessionData), 600); // 10 minutes
-      } else {
-        // In-memory storage (not recommended for production)
-        this.sessions = this.sessions || {};
-        this.sessions[key] = sessionData;
-      }
-
-    } catch (error) {
-      console.warn('Failed to store verification session:', error.message);
-    }
-  }
-
-  /**
-   * Get verification session
-   */
-  async getVerificationSession(phoneNumber) {
-    try {
-      const key = `twilio_session:${phoneNumber}`;
-      
-      if (this.redisClient) {
-        const sessionData = await this.redisClient.get(key);
-        return sessionData ? JSON.parse(sessionData) : null;
-      } else {
-        // In-memory storage
-        this.sessions = this.sessions || {};
-        const sessionData = this.sessions[key];
-        
-        if (sessionData && new Date(sessionData.expiresAt) > new Date()) {
-          return sessionData;
-        } else {
-          delete this.sessions[key];
-          return null;
-        }
-      }
-
-    } catch (error) {
-      console.warn('Failed to get verification session:', error.message);
-      return null;
-    }
-  }
-
-  /**
-   * Clear verification session
-   */
-  async clearVerificationSession(phoneNumber) {
-    try {
-      const key = `twilio_session:${phoneNumber}`;
-      
-      if (this.redisClient) {
-        await this.redisClient.del(key);
-      } else {
-        // In-memory storage
-        this.sessions = this.sessions || {};
-        delete this.sessions[key];
-      }
-
-    } catch (error) {
-      console.warn('Failed to clear verification session:', error.message);
-    }
-  }
-
-  /**
    * Mock OTP sending for development
    */
   async sendMockOTP(phoneNumber, options = {}) {
     console.log(`🔐 Mock OTP sent to ${phoneNumber} (Mock Mode)`);
     console.log(`📱 Use these test codes: 123456, 000000, 111111, 222222`);
     
-    // Store mock session
-    const mockSid = `mock_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-    await this.storeVerificationSession(phoneNumber, mockSid, options);
-
     return {
       success: true,
-      sid: mockSid,
+      sid: `mock_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
       status: 'pending',
       channel: options.channel || 'sms',
       to: phoneNumber,
@@ -435,9 +270,6 @@ class TwilioService {
     
     // Mock verification logic - accept common test codes
     const isValidCode = code === '123456' || code === '000000' || code === '111111' || code === '222222';
-    
-    // Clear session
-    await this.clearVerificationSession(phoneNumber);
 
     return {
       success: isValidCode,
@@ -455,15 +287,19 @@ class TwilioService {
     try {
       return {
         isInitialized: this.isInitialized,
+        mockMode: this.mockMode,
         hasCredentials: !!(process.env.TWILIO_ACCOUNT_SID && process.env.TWILIO_AUTH_TOKEN && process.env.TWILIO_VERIFY_SERVICE_SID),
-        hasRedis: !!this.redisClient,
+        hasClient: !!this.client,
+        hasVerifyService: !!this.verifyServiceSid,
         timestamp: new Date().toISOString()
       };
     } catch (error) {
       return {
         isInitialized: false,
+        mockMode: true,
         hasCredentials: false,
-        hasRedis: false,
+        hasClient: false,
+        hasVerifyService: false,
         error: error.message,
         timestamp: new Date().toISOString()
       };

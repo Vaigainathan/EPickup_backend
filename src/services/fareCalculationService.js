@@ -2,25 +2,31 @@ const axios = require('axios');
 
 class FareCalculationService {
     constructor() {
-        this.BASE_FARE_PER_KM = 10; // ₹10 per km
+        this.BASE_FARE_PER_KM = 10; // ₹10 per km (updated from previous rate)
         this.COMMISSION_PER_KM = 1; // ₹1 per km commission
         this.MINIMUM_FARE = 50; // Minimum fare for any trip
         this.GOOGLE_MAPS_API_KEY = process.env.GOOGLE_MAPS_API_KEY;
     }
 
     /**
-     * Calculate fare based on distance
-     * @param {number} distanceKm - Distance in kilometers
+     * Calculate fare based on distance with rounding up to next km
+     * @param {number} exactDistanceKm - Exact distance in kilometers
      * @returns {Object} Fare breakdown
      */
-    calculateFare(distanceKm) {
-        const baseFare = Math.max(this.MINIMUM_FARE, distanceKm * this.BASE_FARE_PER_KM);
-        const commission = distanceKm * this.COMMISSION_PER_KM;
+    calculateFare(exactDistanceKm) {
+        // Round up to next km for any fraction
+        // e.g., 6.3km → 7km, 6.1km → 7km, 6.0km → 6km
+        const roundedDistanceKm = Math.ceil(exactDistanceKm);
+        
+        // Calculate fare using rounded distance
+        const baseFare = Math.max(this.MINIMUM_FARE, roundedDistanceKm * this.BASE_FARE_PER_KM);
+        const commission = roundedDistanceKm * this.COMMISSION_PER_KM;
         const driverNet = baseFare; // Driver gets full amount from customer
         const companyRevenue = commission; // Company gets commission from wallet
 
         return {
-            distanceKm: parseFloat(distanceKm.toFixed(2)),
+            exactDistanceKm: parseFloat(exactDistanceKm.toFixed(2)), // Show exact distance
+            roundedDistanceKm: roundedDistanceKm, // Distance used for pricing
             baseFare: Math.round(baseFare),
             commission: Math.round(commission),
             driverNet: Math.round(driverNet),
@@ -28,7 +34,9 @@ class FareCalculationService {
             breakdown: {
                 perKmRate: this.BASE_FARE_PER_KM,
                 commissionRate: this.COMMISSION_PER_KM,
-                minimumFare: this.MINIMUM_FARE
+                minimumFare: this.MINIMUM_FARE,
+                exactDistance: parseFloat(exactDistanceKm.toFixed(2)),
+                roundedDistance: roundedDistanceKm
             }
         };
     }

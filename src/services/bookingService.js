@@ -278,12 +278,12 @@ class BookingService {
 
   /**
    * Calculate dynamic pricing based on distance, weight, and other factors
-   * @param {number} distance - Distance in kilometers
+   * @param {number} exactDistance - Exact distance in kilometers
    * @param {number} weight - Package weight in kg
    * @param {string} vehicleType - Vehicle type (2_wheeler only)
    * @returns {Object} Pricing breakdown
    */
-  async calculatePricing(distance, weight, vehicleType) {
+  async calculatePricing(exactDistance, weight, vehicleType) {
     try {
       // Only support 2-wheeler vehicles
       if (vehicleType !== '2_wheeler') {
@@ -292,10 +292,14 @@ class BookingService {
 
       const rates = await this.getDefaultRates();
       
-      // Base calculation
+      // Round up to next km for any fraction
+      // e.g., 6.3km → 7km, 6.1km → 7km, 6.0km → 6km
+      const roundedDistance = Math.ceil(exactDistance);
+      
+      // Base calculation using rounded distance
       const baseFare = rates.baseFare;
-      const perKmRate = rates.baseRate;
-      const distanceCharge = distance * perKmRate;
+      const perKmRate = rates.baseRate; // ₹10 per km
+      const distanceCharge = roundedDistance * perKmRate;
       
       // Vehicle type multiplier - only 2-wheeler supported
       const vehicleMultiplier = 1; // 2-wheeler has no multiplier
@@ -319,6 +323,8 @@ class BookingService {
       const finalTotal = Math.round(totalWithSurge);
       
       return {
+        exactDistance: parseFloat(exactDistance.toFixed(2)), // Show exact distance
+        roundedDistance: roundedDistance, // Distance used for pricing
         baseFare,
         distanceCharge,
         vehicleMultiplier,
@@ -327,7 +333,10 @@ class BookingService {
         subtotal,
         total: finalTotal,
         currency: 'INR',
+        ratePerKm: perKmRate, // ₹10 per km
         breakdown: {
+          exactDistance: parseFloat(exactDistance.toFixed(2)),
+          roundedDistance: roundedDistance,
           baseFare,
           distanceCharge,
           vehicleCharge: 0, // No additional charge for 2-wheeler
@@ -372,7 +381,7 @@ class BookingService {
     // Default rates for 2-wheeler only
     const defaultRates = {
       baseFare: 30,
-      baseRate: 12, // per km
+      baseRate: 10, // per km (updated from ₹12 to ₹10)
       vehicleRates: {
         '2_wheeler': 1 // no multiplier for 2-wheeler
       },

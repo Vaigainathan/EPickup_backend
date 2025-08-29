@@ -1287,20 +1287,26 @@ router.post('/calculate-fare', [
     const { pickup, dropoff, package: packageInfo, vehicle } = req.body;
 
     // Calculate distance and pricing
-    const distance = await bookingService.calculateDistance(pickup.coordinates, dropoff.coordinates);
-    const pricing = await bookingService.calculatePricing(distance, packageInfo.weight, vehicle.type);
+    const exactDistance = await bookingService.calculateDistance(pickup.coordinates, dropoff.coordinates);
+    const pricing = await bookingService.calculatePricing(exactDistance, packageInfo.weight, vehicle.type);
 
     // Format response to match frontend expectations
     const chargeCalculation = {
-      distance: distance,
+      distance: exactDistance, // Show exact distance
       baseRate: pricing.ratePerKm,
-      totalCharge: pricing.totalAmount,
+      totalCharge: pricing.total,
       currency: 'INR',
-      estimatedTime: bookingService.calculateEstimatedTime(distance),
+      estimatedTime: bookingService.calculateEstimatedTime(exactDistance),
       breakdown: {
         distanceCharge: pricing.distanceCharge,
         baseFare: pricing.baseFare,
-        total: pricing.totalAmount
+        total: pricing.total
+      },
+      // Add pricing transparency info
+      pricingInfo: {
+        exactDistance: pricing.exactDistance,
+        roundedDistance: pricing.roundedDistance,
+        ratePerKm: pricing.ratePerKm
       }
     };
 

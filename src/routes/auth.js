@@ -173,6 +173,7 @@ router.post('/verify-otp',
       const { phoneNumber, otp, verificationSid, name, userType = 'customer' } = req.body;
 
       console.log(`🔐 Verifying OTP for ${phoneNumber}`);
+      console.log(`📝 Request body:`, { phoneNumber, otp, verificationSid, name, userType });
 
       // Verify OTP via Twilio
       const verificationResult = await twilioService.verifyOTP(phoneNumber, otp, verificationSid);

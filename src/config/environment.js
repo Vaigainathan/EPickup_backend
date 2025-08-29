@@ -229,9 +229,9 @@ class EnvironmentConfig {
         NAME: 'Tirupattur Town'
       },
       RADIUS: {
-        MIN_METERS: 23000, // 23 km
-        MAX_METERS: 27000, // 27 km
-        DEFAULT_METERS: 25000 // 25 km
+        MIN_METERS: 0, // 0 km - service available from center
+        MAX_METERS: 27000, // 27 km - maximum service radius
+        DEFAULT_METERS: 25000 // 25 km - default service radius
       },
       VALIDATION: {
         ENABLED: true,

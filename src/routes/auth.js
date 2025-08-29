@@ -21,6 +21,55 @@ const otpRateLimit = rateLimit({
 });
 
 /**
+ * @route POST /api/auth/check-user
+ * @desc Check if user exists by phone number
+ * @access Public
+ */
+router.post('/check-user',
+  authRateLimit,
+  validateRequest({
+    body: {
+      phoneNumber: { type: 'string', required: true, minLength: 10, maxLength: 15 }
+    }
+  }),
+  async (req, res) => {
+    try {
+      const { phoneNumber } = req.body;
+
+      console.log(`🔍 Checking if user exists: ${phoneNumber}`);
+
+      // Check if user exists in database
+      const userExists = await authService.userExists(phoneNumber);
+
+      console.log(`✅ User existence check completed for ${phoneNumber}: ${userExists}`);
+
+      res.json({
+        success: true,
+        message: userExists ? 'User exists' : 'User not found',
+        data: {
+          exists: userExists,
+          phoneNumber
+        },
+        timestamp: new Date().toISOString()
+      });
+
+    } catch (error) {
+      console.error('❌ Check user error:', error);
+
+      res.status(400).json({
+        success: false,
+        message: error.message || 'Failed to check user existence',
+        error: {
+          code: 'USER_CHECK_ERROR',
+          message: error.message
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+  }
+);
+
+/**
  * @route POST /api/auth/send-otp
  * @desc Send OTP to phone number
  * @access Public

@@ -187,7 +187,7 @@ router.get('/place/autocomplete/json', asyncHandler(async (req, res) => {
         types: params.types || 'geocode',
         components: params.components || 'country:in',
         radius: params.radius || environmentConfig.getGoogleMapsConfig().defaultRadius,
-        location: params.location || '12.9716,77.5946', // Bangalore default
+        location: params.location || '12.4950,78.5678', // Tirupattur default
         strictbounds: params.strictbounds === 'true',
         sessiontoken: params.sessionToken,
         language: environmentConfig.getGoogleMapsConfig().defaultLanguage,

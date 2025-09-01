@@ -1,5 +1,6 @@
 const { getFirestore } = require('./firebase');
 const twilioService = require('./twilioService');
+const JWTService = require('./jwtService');
 const crypto = require('crypto');
 
 /**
@@ -9,6 +10,7 @@ const crypto = require('crypto');
 class AuthService {
   constructor() {
     this.db = getFirestore();
+    this.jwtService = new JWTService();
   }
 
   /**
@@ -520,11 +522,7 @@ class AuthService {
    * @returns {string} JWT token
    */
   generateJWTToken(payload) {
-    const jwt = require('jsonwebtoken');
-    const secret = process.env.JWT_SECRET || 'your-secret-key';
-    const expiresIn = process.env.JWT_EXPIRES_IN || '7d';
-
-    return jwt.sign(payload, secret, { expiresIn });
+    return this.jwtService.generateAccessToken(payload);
   }
 
   /**
@@ -533,14 +531,7 @@ class AuthService {
    * @returns {Object} Decoded token payload
    */
   verifyJWTToken(token) {
-    const jwt = require('jsonwebtoken');
-    const secret = process.env.JWT_SECRET || 'your-secret-key';
-
-    try {
-      return jwt.verify(token, secret);
-    } catch (error) {
-      throw new Error('INVALID_TOKEN');
-    }
+    return this.jwtService.verifyToken(token);
   }
 
   /**

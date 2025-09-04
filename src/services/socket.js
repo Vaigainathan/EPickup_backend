@@ -110,6 +110,19 @@ const initializeSocketIO = async (server) => {
         eventHandler.handleTripStatusUpdate(socket, data);
       });
 
+      // Handle authentication events
+      socket.on('session_expired', (data) => {
+        eventHandler.handleSessionExpiration(socket, data);
+      });
+
+      socket.on('token_refresh', (data) => {
+        eventHandler.handleTokenRefresh(socket, data);
+      });
+
+      socket.on('force_logout', (data) => {
+        eventHandler.handleForceLogout(socket, data);
+      });
+
       // Handle disconnection
       socket.on('disconnect', (reason) => {
         console.log(`🔌 User disconnected: ${socket.userId} (${socket.userType}) - Reason: ${reason}`);

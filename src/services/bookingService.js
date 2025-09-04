@@ -89,8 +89,8 @@ class BookingService {
         fare: {
           base: pricing.baseFare,
           distance: pricing.distanceCharge,
-          time: pricing.timeCharge || 0,
-          total: pricing.totalAmount,
+          time: 0, // No time charges
+          total: pricing.total, // Use the correct total from pricing calculation
           currency: 'INR'
         },
         
@@ -296,28 +296,24 @@ class BookingService {
       // e.g., 6.3km → 7km, 6.1km → 7km, 6.0km → 6km
       const roundedDistance = Math.ceil(exactDistance);
       
-      // Base calculation using rounded distance
-      const baseFare = rates.baseFare;
+      // Base calculation using rounded distance - NO BASE FARE
+      const baseFare = 0; // NO BASE FARE
       const perKmRate = rates.baseRate; // ₹10 per km
       const distanceCharge = roundedDistance * perKmRate;
       
       // Vehicle type multiplier - only 2-wheeler supported
       const vehicleMultiplier = 1; // 2-wheeler has no multiplier
       
-      // Weight multiplier
-      let weightMultiplier = 1;
-      if (weight > 10) {
-        weightMultiplier = 1.2; // 20% extra for heavy packages
-      } else if (weight > 5) {
-        weightMultiplier = 1.1; // 10% extra for medium packages
-      }
+      // SIMPLIFIED PRICING: No weight multiplier, no surge pricing, no base fare
+      // Weight doesn't affect fare - removed weight multiplier
+      const weightMultiplier = 1; // No weight-based charges
       
-      // Calculate total
-      const subtotal = (baseFare + distanceCharge) * vehicleMultiplier * weightMultiplier;
+      // Calculate total - SIMPLE: Distance charge ONLY (no base fare)
+      const subtotal = distanceCharge; // Only distance charge
       
-      // Apply surge pricing if applicable
-      const surgeMultiplier = this.calculateSurgePricing(new Date());
-      const totalWithSurge = subtotal * surgeMultiplier;
+      // NO SURGE PRICING - removed surge calculation
+      const surgeMultiplier = 1.0; // No surge pricing
+      const totalWithSurge = subtotal; // No surge applied
       
       // Round to nearest rupee
       const finalTotal = Math.round(totalWithSurge);
@@ -337,11 +333,11 @@ class BookingService {
         breakdown: {
           exactDistance: parseFloat(exactDistance.toFixed(2)),
           roundedDistance: roundedDistance,
-          baseFare,
+          baseFare: 0, // No base fare
           distanceCharge,
           vehicleCharge: 0, // No additional charge for 2-wheeler
-          weightCharge: subtotal - (baseFare + distanceCharge),
-          surgeCharge: totalWithSurge - subtotal,
+          weightCharge: 0, // No weight-based charges
+          surgeCharge: 0, // No surge pricing
           total: finalTotal
         }
       };
@@ -356,21 +352,10 @@ class BookingService {
    * @param {Object} timeSurcharge - Time-based surge configuration
    * @returns {number} Surge multiplier
    */
-  calculateSurgePricing(timeSurcharge) {
-    const now = new Date();
-    const currentTime = now.toTimeString().slice(0, 5); // HH:MM format
-
-    // Check peak hours
-    if (currentTime >= timeSurcharge.peakHours.start && currentTime <= timeSurcharge.peakHours.end) {
-      return timeSurcharge.peakHours.rate;
-    }
-
-    // Check late night
-    if (currentTime >= timeSurcharge.lateNight.start || currentTime <= timeSurcharge.lateNight.end) {
-      return timeSurcharge.lateNight.rate;
-    }
-
-    return 1.0; // No surge
+  calculateSurgePricing() {
+    // SIMPLIFIED: No surge pricing at any time
+    // Always return 1.0 (no surge multiplier)
+    return 1.0;
   }
 
   /**
@@ -378,31 +363,33 @@ class BookingService {
    * @returns {Object} Default rates
    */
   getDefaultRates() {
-    // Default rates for 2-wheeler only
+    // Default rates for 2-wheeler only - SIMPLIFIED PRICING
     const defaultRates = {
-      baseFare: 30,
-      baseRate: 10, // per km (updated from ₹12 to ₹10)
+      baseFare: 0, // NO BASE FARE - removed completely
+      baseRate: 10, // ₹10 per km only
       vehicleRates: {
         '2_wheeler': 1 // no multiplier for 2-wheeler
       },
+      // REMOVED: No weight surcharge, distance surcharge, or time surcharge
+      // Simple pricing: ₹10 per km ONLY (no base fare)
       weightSurcharge: {
-        threshold: 5, // kg
-        rate: 5 // per kg above threshold
+        threshold: 0, // No weight surcharge
+        rate: 0 // No additional charges
       },
       distanceSurcharge: {
-        threshold: 10, // km
-        rate: 15 // per km above threshold
+        threshold: 0, // No distance surcharge
+        rate: 0 // No additional charges
       },
       timeSurcharge: {
         peakHours: {
-          start: '08:00',
-          end: '10:00',
-          multiplier: 1.2
+          start: '00:00',
+          end: '00:00',
+          multiplier: 1.0 // No surge pricing
         },
         nightHours: {
-          start: '22:00',
-          end: '06:00',
-          multiplier: 1.3
+          start: '00:00',
+          end: '00:00',
+          multiplier: 1.0 // No surge pricing
         }
       },
       currency: 'INR',

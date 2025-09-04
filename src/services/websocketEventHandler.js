@@ -78,6 +78,17 @@ class WebSocketEventHandler {
         }
       });
 
+      // Send authentication status update
+      socket.emit('auth_status_update', {
+        isAuthenticated: true,
+        user: {
+          id: userId,
+          userType: userType,
+          role: userRole
+        },
+        timestamp: new Date().toISOString()
+      });
+
       // Update user online status
       await this.updateUserOnlineStatus(userId, true);
 
@@ -698,6 +709,111 @@ class WebSocketEventHandler {
     } catch (error) {
       console.error('Error getting user FCM token:', error);
       return null;
+    }
+  }
+
+  /**
+   * Handle session expiration
+   * @param {Socket} socket - Socket instance
+   * @param {Object} data - Session data
+   */
+  async handleSessionExpiration(socket, data) {
+    try {
+      const { userId, reason = 'Session expired' } = data;
+
+      console.log(`🔐 Session expired for user: ${userId}`);
+
+      // Notify user about session expiration
+      socket.emit('session_expired', {
+        reason,
+        timestamp: new Date().toISOString()
+      });
+
+      // Disconnect user after a short delay
+      setTimeout(() => {
+        socket.disconnect(true);
+      }, 1000);
+
+    } catch (error) {
+      console.error('Error handling session expiration:', error);
+    }
+  }
+
+  /**
+   * Handle token refresh
+   * @param {Socket} socket - Socket instance
+   * @param {Object} data - Token data
+   */
+  async handleTokenRefresh(socket, data) {
+    try {
+      const { userId, newToken } = data;
+
+      console.log(`🔄 Token refreshed for user: ${userId}`);
+
+      // Notify user about token refresh
+      socket.emit('token_refresh', {
+        success: true,
+        newToken,
+        timestamp: new Date().toISOString()
+      });
+
+    } catch (error) {
+      console.error('Error handling token refresh:', error);
+      socket.emit('token_refresh', {
+        success: false,
+        error: error.message,
+        timestamp: new Date().toISOString()
+      });
+    }
+  }
+
+  /**
+   * Handle force logout
+   * @param {Socket} socket - Socket instance
+   * @param {Object} data - Logout data
+   */
+  async handleForceLogout(socket, data) {
+    try {
+      const { userId, reason = 'Admin logout' } = data;
+
+      console.log(`🔐 Force logout for user: ${userId}`);
+
+      // Notify user about force logout
+      socket.emit('force_logout', {
+        reason,
+        timestamp: new Date().toISOString()
+      });
+
+      // Disconnect user after a short delay
+      setTimeout(() => {
+        socket.disconnect(true);
+      }, 1000);
+
+    } catch (error) {
+      console.error('Error handling force logout:', error);
+    }
+  }
+
+  /**
+   * Send authentication status update to user
+   * @param {string} userId - User ID
+   * @param {Object} authData - Authentication data
+   */
+  async sendAuthStatusUpdate(userId, authData) {
+    try {
+      const { getSocketIO } = require('./socket');
+      const io = getSocketIO();
+
+      io.to(`user:${userId}`).emit('auth_status_update', {
+        isAuthenticated: authData.isAuthenticated,
+        user: authData.user,
+        timestamp: new Date().toISOString()
+      });
+
+      console.log(`✅ Auth status update sent to user: ${userId}`);
+
+    } catch (error) {
+      console.error('Error sending auth status update:', error);
     }
   }
 

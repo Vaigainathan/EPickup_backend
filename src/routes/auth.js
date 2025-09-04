@@ -302,7 +302,7 @@ router.post('/verify-otp',
         console.log(`📝 New signup attempt: ${phoneNumber}`);
         
         // Create new user
-        const { user, isNewUser } = await authService.getOrCreateUser(phoneNumber, {
+        const { user } = await authService.getOrCreateUser(phoneNumber, {
           name: name,
           userType: userType
         });
@@ -342,39 +342,54 @@ router.post('/verify-otp',
         });
       }
 
+      // Handle existing user login
+      if (userExists) {
+        console.log(`🔐 Existing user login: ${phoneNumber}`);
+        
+        // Get existing user
+        const { user } = await authService.getOrCreateUser(phoneNumber, {
+          userType: userType
+        });
 
+        // Generate JWT token
+        const token = jwtService.generateAccessToken({
+          userId: user.id,
+          phone: user.phone,
+          userType: user.userType
+        });
 
-      // Log successful authentication
-      await authService.logAuthAttempt({
-        phoneNumber,
-        action: 'verify_otp',
-        success: true,
-        userId: user.id,
-        ip: req.ip,
-        userAgent: req.get('User-Agent')
-      });
+        // Log successful authentication
+        await authService.logAuthAttempt({
+          phoneNumber,
+          action: 'verify_otp',
+          success: true,
+          userId: user.id,
+          ip: req.ip,
+          userAgent: req.get('User-Agent')
+        });
 
-      console.log(`✅ OTP verification successful for ${phoneNumber}`);
+        console.log(`✅ OTP verification successful for ${phoneNumber}`);
 
-      res.json({
-        success: true,
-        message: isNewUser ? 'Account created and verified successfully' : 'Login successful',
-        data: {
-          user: {
-            id: user.id,
-            phone: user.phone,
-            name: user.name,
-            userType: user.userType,
-            isVerified: user.isVerified,
-            createdAt: user.createdAt,
-            updatedAt: user.updatedAt
+        return res.json({
+          success: true,
+          message: 'Login successful',
+          data: {
+            user: {
+              id: user.id,
+              phone: user.phone,
+              name: user.name,
+              userType: user.userType,
+              isVerified: user.isVerified,
+              createdAt: user.createdAt,
+              updatedAt: user.updatedAt
+            },
+            accessToken: token,
+            isNewUser: false,
+            expiresIn: '7d'
           },
-          accessToken: token,
-          isNewUser,
-          expiresIn: '7d'
-        },
-        timestamp: new Date().toISOString()
-      });
+          timestamp: new Date().toISOString()
+        });
+      }
 
     } catch (error) {
       console.error('❌ Verify OTP error:', error);

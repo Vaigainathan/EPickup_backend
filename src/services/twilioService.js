@@ -153,7 +153,7 @@ class TwilioService {
   /**
    * Verify OTP code
    */
-  async verifyOTP(phoneNumber, code, verificationSid = null) {
+  async verifyOTP(phoneNumber, code) {
     try {
       // Validate phone number
       if (!this.validatePhoneNumber(phoneNumber)) {

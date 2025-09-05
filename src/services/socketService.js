@@ -453,6 +453,25 @@ class SocketService {
     }
   }
 
+  /**
+   * Send to topic/room
+   * @param {string} topic - Topic/room name
+   * @param {Object} data - Event data
+   */
+  sendToTopic(topic, data) {
+    if (this.io) {
+      this.io.to(`topic:${topic}`).emit('notification', data);
+    }
+  }
+
+  /**
+   * Get Socket.IO instance
+   * @returns {Object|null} Socket.IO instance
+   */
+  getSocketIO() {
+    return this.io;
+  }
+
   // Database helper methods
 
   /**

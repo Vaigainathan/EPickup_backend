@@ -2,7 +2,7 @@ const express = require('express');
 const { body, validationResult, query } = require('express-validator');
 const { requireRole } = require('../middleware/auth');
 const { getFirestore } = require('../services/firebase');
-const { sendToTopic } = require('../services/socket');
+const socketService = require('../services/socketService');
 
 const router = express.Router();
 

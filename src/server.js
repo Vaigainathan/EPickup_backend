@@ -37,7 +37,6 @@ const { authMiddleware } = require('./middleware/auth');
 // Import services
 const { initializeFirebase } = require('./services/firebase');
 const { initializeRedis } = require('./services/redis');
-const { initializeSocketIO } = require('./services/socket');
 const socketService = require('./services/socketService');
 const twilioService = require('./services/twilioService');
 
@@ -86,9 +85,8 @@ try {
   console.error('Twilio Error:', error.message);
 }
 
-// Initialize WebSocket service
+// Create HTTP server
 const server = require('http').createServer(app);
-socketService.initialize(server);
 
 // Sentry is initialized in instrument.js
 const Sentry = require('../instrument.js');
@@ -388,7 +386,7 @@ app.use(errorHandler);
 
 // Initialize Socket.IO with error handling
 try {
-  initializeSocketIO(server);
+  socketService.initialize(server);
   console.log('✅ Socket.IO service initialized successfully');
 } catch (error) {
   console.log('⚠️  Socket.IO initialization failed, continuing without real-time features...');

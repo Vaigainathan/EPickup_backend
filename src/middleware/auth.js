@@ -43,7 +43,21 @@ const authMiddleware = async (req, res, next) => {
 
     // Get user data from Firestore
     const db = getFirestore();
-    const userDoc = await db.collection('users').doc(decodedToken.uid).get();
+    const userId = decodedToken.userId || decodedToken.uid;
+    
+    if (!userId) {
+      return res.status(401).json({
+        success: false,
+        error: {
+          code: 'INVALID_TOKEN',
+          message: 'Invalid access token',
+          details: 'Token does not contain valid user ID'
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+    
+    const userDoc = await db.collection('users').doc(userId).get();
     
     if (!userDoc.exists) {
       return res.status(404).json({
@@ -74,8 +88,8 @@ const authMiddleware = async (req, res, next) => {
 
     // Add user info to request
     req.user = {
-      uid: decodedToken.userId,
-      phone: decodedToken.phoneNumber,
+      uid: userId,
+      phone: decodedToken.phone,
       userType: userData.userType,
       ...userData
     };

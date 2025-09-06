@@ -6,6 +6,61 @@ const { requireDriver } = require('../middleware/auth');
 const router = express.Router();
 
 /**
+ * @route   GET /api/driver/
+ * @desc    Get driver data (root endpoint)
+ * @access  Private (Driver only)
+ */
+router.get('/', requireDriver, async (req, res) => {
+  try {
+    const { uid } = req.user;
+    const db = getFirestore();
+    
+    const userDoc = await db.collection('users').doc(uid).get();
+    
+    if (!userDoc.exists) {
+      return res.status(404).json({
+        success: false,
+        error: {
+          code: 'DRIVER_NOT_FOUND',
+          message: 'Driver not found',
+          details: 'Driver profile does not exist'
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    const userData = userDoc.data();
+    
+    res.status(200).json({
+      success: true,
+      message: 'Driver data retrieved successfully',
+      data: {
+        driver: {
+          id: userData.id,
+          name: userData.name,
+          email: userData.email,
+          phone: userData.phone,
+          profilePicture: userData.profilePicture,
+          driver: userData.driver
+        }
+      },
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('Error getting driver data:', error);
+    res.status(500).json({
+      success: false,
+      error: {
+        code: 'DRIVER_RETRIEVAL_ERROR',
+        message: 'Failed to retrieve driver data',
+        details: 'An error occurred while retrieving driver data'
+      },
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+/**
  * @route   GET /api/driver/profile
  * @desc    Get driver profile
  * @access  Private (Driver only)
@@ -137,6 +192,62 @@ router.put('/profile', [
         code: 'PROFILE_UPDATE_ERROR',
         message: 'Failed to update profile',
         details: 'An error occurred while updating profile'
+      },
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+/**
+ * @route   GET /api/driver/documents
+ * @desc    Get driver documents
+ * @access  Private (Driver only)
+ */
+router.get('/documents', requireDriver, async (req, res) => {
+  try {
+    const { uid } = req.user;
+    const db = getFirestore();
+    
+    const userDoc = await db.collection('users').doc(uid).get();
+    
+    if (!userDoc.exists) {
+      return res.status(404).json({
+        success: false,
+        error: {
+          code: 'DRIVER_NOT_FOUND',
+          message: 'Driver not found',
+          details: 'Driver profile does not exist'
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    const userData = userDoc.data();
+    const documents = userData.driver?.documents || {};
+    
+    res.status(200).json({
+      success: true,
+      message: 'Documents retrieved successfully',
+      data: {
+        documents: {
+          drivingLicense: documents.drivingLicense || null,
+          profilePhoto: documents.profilePhoto || null,
+          aadhaarCard: documents.aadhaarCard || null,
+          bikeInsurance: documents.bikeInsurance || null,
+          rcBook: documents.rcBook || null
+        },
+        verificationStatus: userData.driver?.verificationStatus || 'pending'
+      },
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('Error getting documents:', error);
+    res.status(500).json({
+      success: false,
+      error: {
+        code: 'DOCUMENTS_RETRIEVAL_ERROR',
+        message: 'Failed to retrieve documents',
+        details: 'An error occurred while retrieving documents'
       },
       timestamp: new Date().toISOString()
     });
@@ -490,6 +601,178 @@ router.get('/trips', requireDriver, async (req, res) => {
         code: 'TRIPS_RETRIEVAL_ERROR',
         message: 'Failed to retrieve trips',
         details: 'An error occurred while retrieving trips'
+      },
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+/**
+ * @route   GET /api/driver/trips/:id/summary
+ * @desc    Get trip summary
+ * @access  Private (Driver only)
+ */
+router.get('/trips/:id/summary', requireDriver, async (req, res) => {
+  try {
+    const { uid } = req.user;
+    const { id } = req.params;
+    const db = getFirestore();
+    
+    const bookingRef = db.collection('bookings').doc(id);
+    const bookingDoc = await bookingRef.get();
+    
+    if (!bookingDoc.exists) {
+      return res.status(404).json({
+        success: false,
+        error: {
+          code: 'TRIP_NOT_FOUND',
+          message: 'Trip not found',
+          details: 'Trip with this ID does not exist'
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    const bookingData = bookingDoc.data();
+    
+    // Check if driver is assigned to this trip
+    if (bookingData.driverId !== uid) {
+      return res.status(403).json({
+        success: false,
+        error: {
+          code: 'ACCESS_DENIED',
+          message: 'Access denied',
+          details: 'You can only view trips assigned to you'
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+    
+    res.status(200).json({
+      success: true,
+      message: 'Trip summary retrieved successfully',
+      data: {
+        trip: {
+          id: bookingData.id,
+          customerId: bookingData.customerId,
+          pickupLocation: bookingData.pickupLocation,
+          dropoffLocation: bookingData.dropoffLocation,
+          status: bookingData.status,
+          fare: bookingData.fare,
+          distance: bookingData.distance,
+          duration: bookingData.duration,
+          createdAt: bookingData.createdAt,
+          completedAt: bookingData.completedAt
+        }
+      },
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('Error getting trip summary:', error);
+    res.status(500).json({
+      success: false,
+      error: {
+        code: 'TRIP_SUMMARY_ERROR',
+        message: 'Failed to retrieve trip summary',
+        details: 'An error occurred while retrieving trip summary'
+      },
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+/**
+ * @route   POST /api/driver/trips/:id/rating
+ * @desc    Submit trip rating
+ * @access  Private (Driver only)
+ */
+router.post('/trips/:id/rating', [
+  requireDriver,
+  body('rating')
+    .isInt({ min: 1, max: 5 })
+    .withMessage('Rating must be between 1 and 5'),
+  body('comment')
+    .optional()
+    .isLength({ max: 500 })
+    .withMessage('Comment must be less than 500 characters')
+], async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'VALIDATION_ERROR',
+          message: 'Validation failed',
+          details: errors.array()
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    const { uid } = req.user;
+    const { id } = req.params;
+    const { rating, comment } = req.body;
+    const db = getFirestore();
+    
+    const bookingRef = db.collection('bookings').doc(id);
+    const bookingDoc = await bookingRef.get();
+    
+    if (!bookingDoc.exists) {
+      return res.status(404).json({
+        success: false,
+        error: {
+          code: 'TRIP_NOT_FOUND',
+          message: 'Trip not found',
+          details: 'Trip with this ID does not exist'
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    const bookingData = bookingDoc.data();
+    
+    // Check if driver is assigned to this trip
+    if (bookingData.driverId !== uid) {
+      return res.status(403).json({
+        success: false,
+        error: {
+          code: 'ACCESS_DENIED',
+          message: 'Access denied',
+          details: 'You can only rate trips assigned to you'
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+    
+    // Update booking with driver rating
+    await bookingRef.update({
+      'driverRating.rating': rating,
+      'driverRating.comment': comment || '',
+      'driverRating.ratedAt': new Date(),
+      updatedAt: new Date()
+    });
+    
+    res.status(200).json({
+      success: true,
+      message: 'Rating submitted successfully',
+      data: {
+        rating: {
+          rating,
+          comment: comment || '',
+          ratedAt: new Date()
+        }
+      },
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('Error submitting rating:', error);
+    res.status(500).json({
+      success: false,
+      error: {
+        code: 'RATING_SUBMISSION_ERROR',
+        message: 'Failed to submit rating',
+        details: 'An error occurred while submitting rating'
       },
       timestamp: new Date().toISOString()
     });

@@ -211,9 +211,12 @@ class AuthService {
 
         // Create user document with transaction to ensure atomicity
         await this.db.runTransaction(async (transaction) => {
-          // Double-check that user doesn't exist (race condition protection)
+          // Double-check that user doesn't exist with the same userType (race condition protection)
           const doubleCheckQuery = await transaction.get(
-            this.db.collection('users').where('phone', '==', normalizedPhone).limit(1)
+            this.db.collection('users')
+              .where('phone', '==', normalizedPhone)
+              .where('userType', '==', userType)
+              .limit(1)
           );
           
           if (!doubleCheckQuery.empty) {

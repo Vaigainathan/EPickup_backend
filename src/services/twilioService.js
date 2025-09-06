@@ -297,6 +297,9 @@ class TwilioService {
   async sendMockOTP(phoneNumber, options = {}) {
     console.log(`🔐 Mock OTP sent to ${phoneNumber} (Mock Mode)`);
     console.log(`📱 Use these test codes: 123456, 000000, 111111, 222222`);
+    console.log(`📱 For signup: Use 123456`);
+    console.log(`📱 For login: Use 000000`);
+    console.log(`📱 For testing: Use 111111 or 222222`);
     
     return {
       success: true,
@@ -304,7 +307,8 @@ class TwilioService {
       status: 'pending',
       channel: options.channel || 'sms',
       to: phoneNumber,
-      expiresIn: '10 minutes'
+      expiresIn: '10 minutes',
+      message: 'Mock OTP sent successfully. Use test codes: 123456, 000000, 111111, 222222'
     };
   }
 
@@ -316,13 +320,20 @@ class TwilioService {
     
     // Mock verification logic - accept common test codes
     const isValidCode = code === '123456' || code === '000000' || code === '111111' || code === '222222';
+    
+    if (isValidCode) {
+      console.log(`✅ Mock OTP verification successful for ${phoneNumber}`);
+    } else {
+      console.log(`❌ Mock OTP verification failed for ${phoneNumber}. Use: 123456, 000000, 111111, 222222`);
+    }
 
     return {
       success: isValidCode,
       status: isValidCode ? 'approved' : 'denied',
       sid: `mock_${Date.now()}`,
       to: phoneNumber,
-      valid: isValidCode
+      valid: isValidCode,
+      message: isValidCode ? 'Mock OTP verified successfully' : 'Invalid OTP. Use test codes: 123456, 000000, 111111, 222222'
     };
   }
 

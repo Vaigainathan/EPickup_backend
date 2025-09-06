@@ -139,7 +139,7 @@ class AuthService {
   }
 
   /**
-   * Get or create user based on phone number
+   * Get or create user based on phone number and user type
    * @param {string} phoneNumber - Phone number
    * @param {Object} userData - User data for new signups
    * @returns {Promise<Object>} User data and creation status
@@ -148,12 +148,15 @@ class AuthService {
     try {
       // Normalize phone number (remove spaces, dashes, etc.)
       const normalizedPhone = this.normalizePhoneNumber(phoneNumber);
+      const userType = userData.userType || 'customer';
       
-      // Check if user exists in Firestore with proper query
-      const userQuery = await this.db.collection('users')
-        .where('phone', '==', normalizedPhone)
-        .limit(1)
-        .get();
+      // Check if user exists in Firestore with user type filtering
+      let query = this.db.collection('users').where('phone', '==', normalizedPhone);
+      
+      // Filter by user type to ensure we get the correct account type
+      query = query.where('userType', '==', userType);
+      
+      const userQuery = await query.limit(1).get();
 
       let user;
       let isNewUser = false;
@@ -561,18 +564,22 @@ class AuthService {
   }
 
   /**
-   * Check if user exists by phone number
+   * Check if user exists by phone number and user type
    * @param {string} phoneNumber - Phone number to check
-   * @returns {Promise<boolean>} True if user exists
+   * @param {string} userType - User type to check ('customer' or 'driver')
+   * @returns {Promise<boolean>} True if user exists with the specified type
    */
-  async userExists(phoneNumber) {
+  async userExists(phoneNumber, userType = null) {
     try {
       const normalizedPhone = this.normalizePhoneNumber(phoneNumber);
-      const userQuery = await this.db.collection('users')
-        .where('phone', '==', normalizedPhone)
-        .limit(1)
-        .get();
+      let query = this.db.collection('users').where('phone', '==', normalizedPhone);
       
+      // If userType is specified, filter by user type
+      if (userType) {
+        query = query.where('userType', '==', userType);
+      }
+      
+      const userQuery = await query.limit(1).get();
       return !userQuery.empty;
     } catch (error) {
       console.error('Error checking if user exists:', error);
@@ -581,17 +588,22 @@ class AuthService {
   }
 
   /**
-   * Get user by phone number
+   * Get user by phone number and user type
    * @param {string} phoneNumber - Phone number
+   * @param {string} userType - User type ('customer' or 'driver')
    * @returns {Promise<Object|null>} User data or null
    */
-  async getUserByPhone(phoneNumber) {
+  async getUserByPhone(phoneNumber, userType = null) {
     try {
       const normalizedPhone = this.normalizePhoneNumber(phoneNumber);
-      const userQuery = await this.db.collection('users')
-        .where('phone', '==', normalizedPhone)
-        .limit(1)
-        .get();
+      let query = this.db.collection('users').where('phone', '==', normalizedPhone);
+      
+      // If userType is specified, filter by user type
+      if (userType) {
+        query = query.where('userType', '==', userType);
+      }
+      
+      const userQuery = await query.limit(1).get();
       
       if (userQuery.empty) {
         return null;

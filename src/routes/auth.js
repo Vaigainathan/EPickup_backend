@@ -30,25 +30,39 @@ router.post('/check-user',
   authRateLimit,
   validateRequest({
     body: {
-      phoneNumber: { type: 'string', required: true, minLength: 10, maxLength: 15 }
+      phoneNumber: { type: 'string', required: true, minLength: 10, maxLength: 15 },
+      userType: { type: 'string', required: false, enum: ['customer', 'driver'] }
     }
   }),
   async (req, res) => {
     try {
-      const { phoneNumber } = req.body;
+      const { phoneNumber, userType = 'customer' } = req.body;
 
-      console.log(`🔍 Checking if user exists: ${phoneNumber}`);
+      console.log(`🔍 Checking if user exists: ${phoneNumber} (type: ${userType})`);
 
-      // Check if user exists in database
-      const userExists = await authService.userExists(phoneNumber);
+      // Check if user exists in database with specific user type
+      const userExists = await authService.userExists(phoneNumber, userType);
+      
+      let userData = null;
+      let isCorrectUserType = userExists; // If user exists with the correct type, then it's correct
+      
+      if (userExists) {
+        // Get user data
+        const user = await authService.getUserByPhone(phoneNumber, userType);
+        userData = user;
+        
+        console.log(`📊 User found: ${user.userType}, Expected: ${userType}, Match: ${isCorrectUserType}`);
+      }
 
-      console.log(`✅ User existence check completed for ${phoneNumber}: ${userExists}`);
+      console.log(`✅ User existence check completed for ${phoneNumber}: exists=${userExists}, correctType=${isCorrectUserType}`);
 
       res.json({
         success: true,
-        message: userExists ? 'User exists' : 'User not found',
+        message: userExists ? (isCorrectUserType ? 'User exists with correct type' : 'User exists but wrong type') : 'User not found',
         data: {
           exists: userExists,
+          userType: userData?.userType || null,
+          isCorrectUserType: isCorrectUserType,
           phoneNumber
         },
         timestamp: new Date().toISOString()
@@ -81,14 +95,15 @@ router.post('/send-otp',
     body: {
       phoneNumber: { type: 'string', required: true, minLength: 10, maxLength: 15 },
       isSignup: { type: 'boolean', required: false },
+      userType: { type: 'string', required: false, enum: ['customer', 'driver'] },
       options: { type: 'object', required: false }
     }
   }),
   async (req, res) => {
     try {
-      const { phoneNumber, isSignup = false, options = {} } = req.body;
+      const { phoneNumber, isSignup = false, userType = 'customer', options = {} } = req.body;
 
-      console.log(`📱 Sending OTP to ${phoneNumber} (signup: ${isSignup})`);
+      console.log(`📱 Sending OTP to ${phoneNumber} (signup: ${isSignup}, userType: ${userType})`);
 
       // Send OTP via Twilio
       const result = await twilioService.sendOTP(phoneNumber, options);
@@ -203,29 +218,29 @@ router.post('/verify-otp',
         });
       }
 
-      // Check if this is a signup attempt and user already exists
-      const userExists = await authService.userExists(phoneNumber);
+      // Check if this is a signup attempt and user already exists with the same user type
+      const userExists = await authService.userExists(phoneNumber, userType);
       
       if (userExists && name) {
-        // User exists but trying to signup with name - this is a duplicate signup attempt
-        console.log(`❌ Duplicate signup attempt for existing user: ${phoneNumber}`);
+        // User exists with the same user type but trying to signup - this is a duplicate signup attempt
+        console.log(`❌ Duplicate signup attempt for existing ${userType} user: ${phoneNumber}`);
         
         // Log failed signup attempt
         await authService.logAuthAttempt({
           phoneNumber,
           action: 'duplicate_signup',
           success: false,
-          error: 'User already exists',
+          error: `${userType} user already exists`,
           ip: req.ip,
           userAgent: req.get('User-Agent')
         });
 
         return res.status(409).json({
           success: false,
-          message: 'An account with this phone number already exists. Please login instead.',
+          message: `A ${userType} account with this phone number already exists. Please login instead.`,
           error: {
             code: 'USER_ALREADY_EXISTS',
-            message: 'An account with this phone number already exists'
+            message: `${userType} account already exists`
           },
           timestamp: new Date().toISOString()
         });
@@ -233,10 +248,10 @@ router.post('/verify-otp',
 
       // If user exists but no name provided, this is a login attempt
       if (userExists && !name) {
-        console.log(`🔐 Login attempt for existing user: ${phoneNumber}`);
+        console.log(`🔐 Login attempt for existing ${userType} user: ${phoneNumber}`);
         
-        // Get existing user
-        const existingUser = await authService.getUserByPhone(phoneNumber);
+        // Get existing user with specific user type
+        const existingUser = await authService.getUserByPhone(phoneNumber, userType);
         
         // Generate JWT token for existing user
         const token = jwtService.generateAccessToken({
@@ -344,9 +359,9 @@ router.post('/verify-otp',
 
       // Handle existing user login
       if (userExists) {
-        console.log(`🔐 Existing user login: ${phoneNumber}`);
+        console.log(`🔐 Existing ${userType} user login: ${phoneNumber}`);
         
-        // Get existing user
+        // Get existing user with specific user type
         const { user } = await authService.getOrCreateUser(phoneNumber, {
           userType: userType
         });

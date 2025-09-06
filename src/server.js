@@ -29,6 +29,8 @@ const serviceAreaRoutes = require('./routes/serviceArea');
 const healthRoutes = require('./routes/health');
 const walletRoutes = require('./routes/wallet');
 const fareCalculationRoutes = require('./routes/fareCalculation');
+const adminRoutes = require('./routes/admin');
+const adminAuthRoutes = require('./routes/adminAuth');
 
 // Import middleware
 const { errorHandler } = require('./middleware/errorHandler');
@@ -295,6 +297,8 @@ app.use('/api/service-area', serviceAreaRoutes); // No auth required for service
 app.use('/service-area', serviceAreaRoutes); // Alternative path for service area validation
 app.use('/api/wallet', walletRoutes);
 app.use('/api/fare', fareCalculationRoutes);
+app.use('/api/admin/auth', adminAuthRoutes); // No auth required for admin login
+app.use('/api/admin', authMiddleware, adminRoutes);
 
 // Health check routes (for keepalive script) - No auth required
 app.use('/health', healthRoutes);

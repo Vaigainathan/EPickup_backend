@@ -692,6 +692,157 @@ class WebSocketEventHandler {
   }
 
   /**
+   * Handle room join request
+   * @param {Socket} socket - Socket instance
+   * @param {Object} data - Room join data
+   */
+  async handleRoomJoin(socket, data) {
+    try {
+      const { room } = data;
+      const { userId, userType, userRole } = socket;
+
+      if (!room) {
+        socket.emit('error', {
+          code: 'INVALID_ROOM',
+          message: 'Room name is required'
+        });
+        return;
+      }
+
+      // Check if user has permission to join this room
+      const hasPermission = this.checkRoomPermission(userType, userRole, room);
+      if (!hasPermission) {
+        socket.emit('error', {
+          code: 'ROOM_ACCESS_DENIED',
+          message: 'You do not have permission to join this room'
+        });
+        return;
+      }
+
+      // Join the room
+      socket.join(room);
+      socket.userRooms.add(room);
+
+      console.log(`🚪 User ${userId} joined room: ${room}`);
+
+      // Send confirmation
+      socket.emit('room_joined', {
+        success: true,
+        room: room,
+        message: `Successfully joined room: ${room}`
+      });
+
+    } catch (error) {
+      console.error('Error handling room join:', error);
+      socket.emit('error', {
+        code: 'ROOM_JOIN_ERROR',
+        message: 'Failed to join room'
+      });
+    }
+  }
+
+  /**
+   * Handle room leave request
+   * @param {Socket} socket - Socket instance
+   * @param {Object} data - Room leave data
+   */
+  async handleRoomLeave(socket, data) {
+    try {
+      const { room } = data;
+      const { userId } = socket;
+
+      if (!room) {
+        socket.emit('error', {
+          code: 'INVALID_ROOM',
+          message: 'Room name is required'
+        });
+        return;
+      }
+
+      // Leave the room
+      socket.leave(room);
+      socket.userRooms.delete(room);
+
+      console.log(`🚪 User ${userId} left room: ${room}`);
+
+      // Send confirmation
+      socket.emit('room_left', {
+        success: true,
+        room: room,
+        message: `Successfully left room: ${room}`
+      });
+
+    } catch (error) {
+      console.error('Error handling room leave:', error);
+      socket.emit('error', {
+        code: 'ROOM_LEAVE_ERROR',
+        message: 'Failed to leave room'
+      });
+    }
+  }
+
+  /**
+   * Handle leave all rooms request
+   * @param {Socket} socket - Socket instance
+   */
+  async handleLeaveAllRooms(socket) {
+    try {
+      const { userId } = socket;
+
+      // Leave all rooms except the default socket room
+      socket.rooms.forEach(room => {
+        if (room !== socket.id) {
+          socket.leave(room);
+        }
+      });
+
+      // Clear user rooms set
+      socket.userRooms.clear();
+
+      console.log(`🚪 User ${userId} left all rooms`);
+
+      // Send confirmation
+      socket.emit('all_rooms_left', {
+        success: true,
+        message: 'Successfully left all rooms'
+      });
+
+    } catch (error) {
+      console.error('Error handling leave all rooms:', error);
+      socket.emit('error', {
+        code: 'LEAVE_ALL_ROOMS_ERROR',
+        message: 'Failed to leave all rooms'
+      });
+    }
+  }
+
+  /**
+   * Check if user has permission to join a room
+   * @param {string} userType - User type
+   * @param {string} userRole - User role
+   * @param {string} room - Room name
+   * @returns {boolean} Permission result
+   */
+  checkRoomPermission(userType, userRole, room) {
+    // Admin can join any room
+    if (userType === 'admin' || userRole === 'admin') {
+      return true;
+    }
+
+    // Customer can join customer-specific rooms
+    if (userType === 'customer') {
+      return room.startsWith('customer_') || room.startsWith('user_') || room.startsWith('booking_');
+    }
+
+    // Driver can join driver-specific rooms
+    if (userType === 'driver') {
+      return room.startsWith('driver_') || room.startsWith('user_') || room.startsWith('booking_') || room.startsWith('location_');
+    }
+
+    return false;
+  }
+
+  /**
    * Get user's FCM token
    * @param {string} userId - User ID
    * @returns {string|null} FCM token
@@ -814,6 +965,417 @@ class WebSocketEventHandler {
 
     } catch (error) {
       console.error('Error sending auth status update:', error);
+    }
+  }
+
+  /**
+   * Handle booking acceptance
+   * @param {Socket} socket - Socket instance
+   * @param {Object} data - Booking acceptance data
+   */
+  async handleBookingAcceptance(socket, data) {
+    try {
+      const { bookingId } = data;
+      const { userId, userType } = socket;
+
+      if (userType !== 'driver') {
+        socket.emit('error', {
+          code: 'ACCESS_DENIED',
+          message: 'Only drivers can accept bookings'
+        });
+        return;
+      }
+
+      if (!bookingId) {
+        socket.emit('error', {
+          code: 'INVALID_BOOKING_ID',
+          message: 'Booking ID is required'
+        });
+        return;
+      }
+
+      console.log(`✅ Driver ${userId} accepting booking ${bookingId}`);
+
+      // Update booking status in Firestore
+      const bookingRef = this.db.collection('bookings').doc(bookingId);
+      const bookingDoc = await bookingRef.get();
+
+      if (!bookingDoc.exists) {
+        socket.emit('error', {
+          code: 'BOOKING_NOT_FOUND',
+          message: 'Booking not found'
+        });
+        return;
+      }
+
+      const bookingData = bookingDoc.data();
+      
+      // Check if booking is still available
+      if (bookingData.status !== 'pending') {
+        socket.emit('error', {
+          code: 'BOOKING_NOT_AVAILABLE',
+          message: 'Booking is no longer available'
+        });
+        return;
+      }
+
+      // Update booking with driver assignment
+      await bookingRef.update({
+        status: 'accepted',
+        driverId: userId,
+        acceptedAt: new Date(),
+        updatedAt: new Date()
+      });
+
+      // Create booking status update
+      const statusUpdate = {
+        bookingId,
+        status: 'accepted',
+        driverId: userId,
+        timestamp: new Date().toISOString(),
+        updatedBy: userId
+      };
+
+      // Store status update
+      await this.db.collection('booking_status_updates').add(statusUpdate);
+
+      // Notify customer
+      this.io.to(`user:${bookingData.customerId}`).emit('booking_accepted', {
+        bookingId,
+        driverId: userId,
+        timestamp: new Date().toISOString()
+      });
+
+      // Notify admin
+      this.io.to(`type:admin`).emit('booking_status_update', statusUpdate);
+
+      // Confirm acceptance
+      socket.emit('booking_accepted_confirmed', {
+        success: true,
+        message: 'Booking accepted successfully',
+        data: { bookingId, driverId: userId }
+      });
+
+    } catch (error) {
+      console.error('Error handling booking acceptance:', error);
+      socket.emit('error', {
+        code: 'BOOKING_ACCEPTANCE_ERROR',
+        message: 'Failed to accept booking'
+      });
+    }
+  }
+
+  /**
+   * Handle booking rejection
+   * @param {Socket} socket - Socket instance
+   * @param {Object} data - Booking rejection data
+   */
+  async handleBookingRejection(socket, data) {
+    try {
+      const { bookingId, reason } = data;
+      const { userId, userType } = socket;
+
+      if (userType !== 'driver') {
+        socket.emit('error', {
+          code: 'ACCESS_DENIED',
+          message: 'Only drivers can reject bookings'
+        });
+        return;
+      }
+
+      if (!bookingId) {
+        socket.emit('error', {
+          code: 'INVALID_BOOKING_ID',
+          message: 'Booking ID is required'
+        });
+        return;
+      }
+
+      console.log(`❌ Driver ${userId} rejecting booking ${bookingId}: ${reason || 'No reason provided'}`);
+
+      // Update booking status in Firestore
+      const bookingRef = this.db.collection('bookings').doc(bookingId);
+      const bookingDoc = await bookingRef.get();
+
+      if (!bookingDoc.exists) {
+        socket.emit('error', {
+          code: 'BOOKING_NOT_FOUND',
+          message: 'Booking not found'
+        });
+        return;
+      }
+
+      const bookingData = bookingDoc.data();
+      
+      // Update booking with rejection
+      await bookingRef.update({
+        status: 'rejected',
+        rejectedBy: userId,
+        rejectionReason: reason || 'No reason provided',
+        rejectedAt: new Date(),
+        updatedAt: new Date()
+      });
+
+      // Create booking status update
+      const statusUpdate = {
+        bookingId,
+        status: 'rejected',
+        driverId: userId,
+        reason: reason || 'No reason provided',
+        timestamp: new Date().toISOString(),
+        updatedBy: userId
+      };
+
+      // Store status update
+      await this.db.collection('booking_status_updates').add(statusUpdate);
+
+      // Notify customer
+      this.io.to(`user:${bookingData.customerId}`).emit('booking_rejected', {
+        bookingId,
+        driverId: userId,
+        reason: reason || 'No reason provided',
+        timestamp: new Date().toISOString()
+      });
+
+      // Notify admin
+      this.io.to(`type:admin`).emit('booking_status_update', statusUpdate);
+
+      // Confirm rejection
+      socket.emit('booking_rejected_confirmed', {
+        success: true,
+        message: 'Booking rejected successfully',
+        data: { bookingId, driverId: userId }
+      });
+
+    } catch (error) {
+      console.error('Error handling booking rejection:', error);
+      socket.emit('error', {
+        code: 'BOOKING_REJECTION_ERROR',
+        message: 'Failed to reject booking'
+      });
+    }
+  }
+
+  /**
+   * Handle driver status update
+   * @param {Socket} socket - Socket instance
+   * @param {Object} data - Driver status data
+   */
+  async handleDriverStatusUpdate(socket, data) {
+    try {
+      const { isOnline, isAvailable, currentLocation } = data;
+      const { userId, userType } = socket;
+
+      if (userType !== 'driver') {
+        socket.emit('error', {
+          code: 'ACCESS_DENIED',
+          message: 'Only drivers can update status'
+        });
+        return;
+      }
+
+      const statusData = {
+        driverId: userId,
+        isOnline: Boolean(isOnline),
+        isAvailable: Boolean(isAvailable),
+        currentLocation: currentLocation || null,
+        lastSeen: new Date(),
+        timestamp: new Date().toISOString()
+      };
+
+      console.log(`👤 Driver status update from ${userId}:`, statusData);
+
+      // Update driver status in Firestore
+      await this.db.collection('driver_status').doc(userId).set(statusData, { merge: true });
+
+      // Update driver location if provided
+      if (currentLocation) {
+        await this.db.collection('driver_locations').doc(userId).set({
+          driverId: userId,
+          location: currentLocation,
+          timestamp: new Date().toISOString()
+        }, { merge: true });
+      }
+
+      // Broadcast status update to relevant users
+      this.io.to(`type:admin`).emit('driver_status_update', statusData);
+
+      // Confirm status update
+      socket.emit('driver_status_confirmed', {
+        success: true,
+        message: 'Driver status updated successfully',
+        data: statusData
+      });
+
+    } catch (error) {
+      console.error('Error handling driver status update:', error);
+      socket.emit('error', {
+        code: 'DRIVER_STATUS_ERROR',
+        message: 'Failed to update driver status'
+      });
+    }
+  }
+
+  /**
+   * Handle booking status update
+   * @param {Socket} socket - Socket instance
+   * @param {Object} data - Booking status data
+   */
+  async handleBookingStatusUpdate(socket, data) {
+    try {
+      const { bookingId, status, message } = data;
+      const { userId, userType } = socket;
+
+      if (!bookingId || !status) {
+        socket.emit('error', {
+          code: 'INVALID_BOOKING_DATA',
+          message: 'Booking ID and status are required'
+        });
+        return;
+      }
+
+      // Verify user has access to this booking
+      const hasAccess = await this.verifyBookingAccess(userId, bookingId);
+      if (!hasAccess) {
+        socket.emit('error', {
+          code: 'ACCESS_DENIED',
+          message: 'You do not have access to this booking'
+        });
+        return;
+      }
+
+      console.log(`📊 Booking status update from ${userType} ${userId} for booking ${bookingId}: ${status}`);
+
+      // Update booking status in Firestore
+      const bookingRef = this.db.collection('bookings').doc(bookingId);
+      await bookingRef.update({
+        status,
+        updatedAt: new Date(),
+        lastUpdatedBy: userId
+      });
+
+      // Create status update record
+      const statusUpdate = {
+        bookingId,
+        status,
+        message: message || null,
+        updatedBy: userId,
+        userType,
+        timestamp: new Date().toISOString()
+      };
+
+      await this.db.collection('booking_status_updates').add(statusUpdate);
+
+      // Get booking data for notifications
+      const bookingDoc = await bookingRef.get();
+      const bookingData = bookingDoc.data();
+
+      // Notify relevant parties
+      if (bookingData.customerId) {
+        this.io.to(`user:${bookingData.customerId}`).emit('booking_status_update', statusUpdate);
+      }
+
+      if (bookingData.driverId) {
+        this.io.to(`user:${bookingData.driverId}`).emit('booking_status_update', statusUpdate);
+      }
+
+      // Notify admin
+      this.io.to(`type:admin`).emit('booking_status_update', statusUpdate);
+
+      // Confirm status update
+      socket.emit('booking_status_confirmed', {
+        success: true,
+        message: 'Booking status updated successfully',
+        data: statusUpdate
+      });
+
+    } catch (error) {
+      console.error('Error handling booking status update:', error);
+      socket.emit('error', {
+        code: 'BOOKING_STATUS_ERROR',
+        message: 'Failed to update booking status'
+      });
+    }
+  }
+
+  /**
+   * Handle ETA update
+   * @param {Socket} socket - Socket instance
+   * @param {Object} data - ETA data
+   */
+  async handleETAUpdate(socket, data) {
+    try {
+      const { bookingId, eta } = data;
+      const { userId, userType } = socket;
+
+      if (!bookingId || typeof eta !== 'number') {
+        socket.emit('error', {
+          code: 'INVALID_ETA_DATA',
+          message: 'Booking ID and valid ETA are required'
+        });
+        return;
+      }
+
+      // Verify user has access to this booking
+      const hasAccess = await this.verifyBookingAccess(userId, bookingId);
+      if (!hasAccess) {
+        socket.emit('error', {
+          code: 'ACCESS_DENIED',
+          message: 'You do not have access to this booking'
+        });
+        return;
+      }
+
+      console.log(`⏰ ETA update from ${userType} ${userId} for booking ${bookingId}: ${eta} minutes`);
+
+      // Update booking ETA in Firestore
+      const bookingRef = this.db.collection('bookings').doc(bookingId);
+      await bookingRef.update({
+        estimatedArrival: eta,
+        etaUpdatedAt: new Date(),
+        etaUpdatedBy: userId
+      });
+
+      // Create ETA update record
+      const etaUpdate = {
+        bookingId,
+        eta,
+        updatedBy: userId,
+        userType,
+        timestamp: new Date().toISOString()
+      };
+
+      await this.db.collection('eta_updates').add(etaUpdate);
+
+      // Get booking data for notifications
+      const bookingDoc = await bookingRef.get();
+      const bookingData = bookingDoc.data();
+
+      // Notify relevant parties
+      if (bookingData.customerId) {
+        this.io.to(`user:${bookingData.customerId}`).emit('eta_updated', etaUpdate);
+      }
+
+      if (bookingData.driverId && bookingData.driverId !== userId) {
+        this.io.to(`user:${bookingData.driverId}`).emit('eta_updated', etaUpdate);
+      }
+
+      // Notify admin
+      this.io.to(`type:admin`).emit('eta_updated', etaUpdate);
+
+      // Confirm ETA update
+      socket.emit('eta_updated_confirmed', {
+        success: true,
+        message: 'ETA updated successfully',
+        data: etaUpdate
+      });
+
+    } catch (error) {
+      console.error('Error handling ETA update:', error);
+      socket.emit('error', {
+        code: 'ETA_UPDATE_ERROR',
+        message: 'Failed to update ETA'
+      });
     }
   }
 

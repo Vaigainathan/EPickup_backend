@@ -124,6 +124,39 @@ const initializeSocketIO = async (server) => {
         eventHandler.handleForceLogout(socket, data);
       });
 
+      // Handle driver-specific events
+      socket.on('accept_booking', (data) => {
+        eventHandler.handleBookingAcceptance(socket, data);
+      });
+
+      socket.on('reject_booking', (data) => {
+        eventHandler.handleBookingRejection(socket, data);
+      });
+
+      socket.on('update_driver_status', (data) => {
+        eventHandler.handleDriverStatusUpdate(socket, data);
+      });
+
+      socket.on('update_booking_status', (data) => {
+        eventHandler.handleBookingStatusUpdate(socket, data);
+      });
+
+      socket.on('update_eta', (data) => {
+        eventHandler.handleETAUpdate(socket, data);
+      });
+
+      socket.on('send_message', (data) => {
+        eventHandler.handleChatMessage(socket, data);
+      });
+
+      socket.on('typing_start', (data) => {
+        eventHandler.handleTypingIndicator(socket, data, true);
+      });
+
+      socket.on('typing_stop', (data) => {
+        eventHandler.handleTypingIndicator(socket, data, false);
+      });
+
       // Handle disconnection
       socket.on('disconnect', (reason) => {
         console.log(`🔌 User disconnected: ${socket.userId} (${socket.userType}) - Reason: ${reason}`);
@@ -137,6 +170,19 @@ const initializeSocketIO = async (server) => {
             socket.leave(room);
           }
         });
+      });
+
+      // Handle admin-specific events
+      socket.on('join_room', (data) => {
+        eventHandler.handleRoomJoin(socket, data);
+      });
+
+      socket.on('leave_room', (data) => {
+        eventHandler.handleRoomLeave(socket, data);
+      });
+
+      socket.on('leave_all_rooms', () => {
+        eventHandler.handleLeaveAllRooms(socket);
       });
 
       // Handle errors

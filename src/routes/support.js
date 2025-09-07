@@ -1115,4 +1115,80 @@ router.get('/health', (req, res) => {
   });
 });
 
+/**
+ * @route   POST /api/support/message
+ * @desc    Send a support message
+ * @access  Private
+ */
+router.post('/message', [
+  requireRole(['customer', 'driver']),
+  body('message').isLength({ min: 10, max: 1000 }).withMessage('Message must be between 10 and 1000 characters'),
+  body('category').optional().isIn(['general', 'technical', 'billing', 'delivery', 'account']).withMessage('Invalid category'),
+  body('priority').optional().isIn(['low', 'normal', 'high', 'urgent']).withMessage('Invalid priority')
+], async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'VALIDATION_ERROR',
+          message: 'Validation failed',
+          details: errors.array()
+        }
+      });
+    }
+
+    const { message, category = 'general', priority = 'normal' } = req.body;
+    const userId = req.user.uid;
+    const userType = req.user.userType || 'customer';
+
+    // Create support message
+    const messageData = {
+      id: `msg_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+      userId,
+      userType,
+      message,
+      category,
+      priority,
+      status: 'pending',
+      createdAt: new Date(),
+      updatedAt: new Date()
+    };
+
+    const messageRef = await getDb().collection('support_messages').add(messageData);
+
+    // Send notification to support team
+    sendToTopic('support_messages', {
+      type: 'new_message',
+      messageId: messageRef.id,
+      userId,
+      userType,
+      category,
+      priority,
+      message: message.substring(0, 100) + (message.length > 100 ? '...' : '')
+    });
+
+    res.status(200).json({
+      success: true,
+      message: 'Support message sent successfully',
+      data: {
+        messageId: messageRef.id,
+        status: 'pending'
+      }
+    });
+
+  } catch (error) {
+    console.error('Error sending support message:', error);
+    res.status(500).json({
+      success: false,
+      error: {
+        code: 'SUPPORT_MESSAGE_ERROR',
+        message: 'Failed to send support message',
+        details: 'An error occurred while sending support message'
+      }
+    });
+  }
+});
+
 module.exports = router;

@@ -268,4 +268,56 @@ router.delete('/contacts/:contactId', [
   }
 });
 
+/**
+ * @route   GET /api/emergency/history
+ * @desc    Get emergency alert history for user
+ * @access  Private
+ */
+router.get('/history', requireRole(['customer', 'driver']), async (req, res) => {
+  try {
+    const userId = req.user.uid;
+    const { limit = 20, offset = 0 } = req.query;
+
+    // Get emergency alerts for user
+    const alertsSnapshot = await db.collection('emergency_alerts')
+      .where('userId', '==', userId)
+      .orderBy('createdAt', 'desc')
+      .limit(parseInt(limit))
+      .offset(parseInt(offset))
+      .get();
+
+    const alerts = [];
+    alertsSnapshot.forEach(doc => {
+      alerts.push({
+        id: doc.id,
+        ...doc.data()
+      });
+    });
+
+    res.status(200).json({
+      success: true,
+      message: 'Emergency history retrieved successfully',
+      data: {
+        alerts,
+        pagination: {
+          limit: parseInt(limit),
+          offset: parseInt(offset),
+          total: alerts.length
+        }
+      }
+    });
+
+  } catch (error) {
+    console.error('Error getting emergency history:', error);
+    res.status(500).json({
+      success: false,
+      error: {
+        code: 'EMERGENCY_HISTORY_ERROR',
+        message: 'Failed to retrieve emergency history',
+        details: 'An error occurred while retrieving emergency history'
+      }
+    });
+  }
+});
+
 module.exports = router;

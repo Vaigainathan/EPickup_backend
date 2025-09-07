@@ -4,6 +4,270 @@ const { requireRole } = require('../middleware/auth');
 const router = express.Router();
 
 /**
+ * @route   GET /api/admin/drivers
+ * @desc    Get all drivers with pagination and filters
+ * @access  Private (Admin only)
+ */
+router.get('/drivers', requireRole(['admin']), async (req, res) => {
+  try {
+    const db = getFirestore();
+    const { limit = 20, offset = 0, status, verificationStatus } = req.query;
+
+    let query = db.collection('users').where('userType', '==', 'driver');
+
+    // Apply filters
+    if (status) {
+      query = query.where('isActive', '==', status === 'active');
+    }
+    if (verificationStatus) {
+      query = query.where('isVerified', '==', verificationStatus === 'verified');
+    }
+
+    // Apply pagination and ordering
+    query = query.orderBy('createdAt', 'desc').limit(parseInt(limit)).offset(parseInt(offset));
+
+    const snapshot = await query.get();
+    const drivers = [];
+
+    snapshot.forEach(doc => {
+      const data = doc.data();
+      drivers.push({
+        id: doc.id,
+        ...data,
+        createdAt: data.createdAt?.toDate?.() || data.createdAt
+      });
+    });
+
+    res.json({
+      success: true,
+      data: drivers,
+      pagination: {
+        limit: parseInt(limit),
+        offset: parseInt(offset),
+        total: drivers.length
+      },
+      timestamp: new Date().toISOString()
+    });
+
+  } catch (error) {
+    console.error('Error fetching drivers:', error);
+    res.status(500).json({
+      success: false,
+      error: {
+        code: 'FETCH_DRIVERS_ERROR',
+        message: 'Failed to fetch drivers',
+        details: error.message
+      },
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+/**
+ * @route   GET /api/admin/bookings
+ * @desc    Get all bookings with pagination and filters
+ * @access  Private (Admin only)
+ */
+router.get('/bookings', requireRole(['admin']), async (req, res) => {
+  try {
+    const db = getFirestore();
+    const { limit = 20, offset = 0, status, dateFrom, dateTo } = req.query;
+
+    let query = db.collection('bookings');
+
+    // Apply filters
+    if (status) {
+      query = query.where('status', '==', status);
+    }
+    if (dateFrom) {
+      query = query.where('createdAt', '>=', new Date(dateFrom));
+    }
+    if (dateTo) {
+      query = query.where('createdAt', '<=', new Date(dateTo));
+    }
+
+    // Apply pagination and ordering
+    query = query.orderBy('createdAt', 'desc').limit(parseInt(limit)).offset(parseInt(offset));
+
+    const snapshot = await query.get();
+    const bookings = [];
+
+    snapshot.forEach(doc => {
+      const data = doc.data();
+      bookings.push({
+        id: doc.id,
+        ...data,
+        createdAt: data.createdAt?.toDate?.() || data.createdAt,
+        updatedAt: data.updatedAt?.toDate?.() || data.updatedAt
+      });
+    });
+
+    res.json({
+      success: true,
+      data: bookings,
+      pagination: {
+        limit: parseInt(limit),
+        offset: parseInt(offset),
+        total: bookings.length
+      },
+      timestamp: new Date().toISOString()
+    });
+
+  } catch (error) {
+    console.error('Error fetching bookings:', error);
+    res.status(500).json({
+      success: false,
+      error: {
+        code: 'FETCH_BOOKINGS_ERROR',
+        message: 'Failed to fetch bookings',
+        details: error.message
+      },
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+/**
+ * @route   GET /api/admin/emergency-alerts
+ * @desc    Get all emergency alerts with pagination and filters
+ * @access  Private (Admin only)
+ */
+router.get('/emergency-alerts', requireRole(['admin']), async (req, res) => {
+  try {
+    const db = getFirestore();
+    const { limit = 20, offset = 0, status, alertType } = req.query;
+
+    let query = db.collection('emergencyAlerts');
+
+    // Apply filters
+    if (status) {
+      query = query.where('status', '==', status);
+    }
+    if (alertType) {
+      query = query.where('alertType', '==', alertType);
+    }
+
+    // Apply pagination and ordering
+    query = query.orderBy('createdAt', 'desc').limit(parseInt(limit)).offset(parseInt(offset));
+
+    const snapshot = await query.get();
+    const alerts = [];
+
+    snapshot.forEach(doc => {
+      const data = doc.data();
+      alerts.push({
+        id: doc.id,
+        ...data,
+        createdAt: data.createdAt?.toDate?.() || data.createdAt,
+        updatedAt: data.updatedAt?.toDate?.() || data.updatedAt
+      });
+    });
+
+    res.json({
+      success: true,
+      data: alerts,
+      pagination: {
+        limit: parseInt(limit),
+        offset: parseInt(offset),
+        total: alerts.length
+      },
+      timestamp: new Date().toISOString()
+    });
+
+  } catch (error) {
+    console.error('Error fetching emergency alerts:', error);
+    res.status(500).json({
+      success: false,
+      error: {
+        code: 'FETCH_EMERGENCY_ALERTS_ERROR',
+        message: 'Failed to fetch emergency alerts',
+        details: error.message
+      },
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+/**
+ * @route   GET /api/admin/system-health
+ * @desc    Get system health metrics
+ * @access  Private (Admin only)
+ */
+router.get('/system-health', requireRole(['admin']), async (req, res) => {
+  try {
+    const db = getFirestore();
+    
+    // Get system metrics
+    const metrics = {
+      totalUsers: 0,
+      totalDrivers: 0,
+      totalCustomers: 0,
+      activeBookings: 0,
+      pendingVerifications: 0,
+      openSupportTickets: 0,
+      activeEmergencyAlerts: 0,
+      systemUptime: process.uptime(),
+      memoryUsage: process.memoryUsage(),
+      timestamp: new Date().toISOString()
+    };
+
+    // Count users by type
+    const usersSnapshot = await db.collection('users').get();
+    usersSnapshot.forEach(doc => {
+      const data = doc.data();
+      metrics.totalUsers++;
+      if (data.userType === 'driver') {
+        metrics.totalDrivers++;
+      } else if (data.userType === 'customer') {
+        metrics.totalCustomers++;
+      }
+    });
+
+    // Count active bookings
+    const activeBookingsSnapshot = await db.collection('bookings')
+      .where('status', 'in', ['pending', 'accepted', 'in_progress'])
+      .get();
+    metrics.activeBookings = activeBookingsSnapshot.size;
+
+    // Count pending verifications
+    const pendingVerificationsSnapshot = await db.collection('documentVerificationRequests')
+      .where('status', '==', 'pending')
+      .get();
+    metrics.pendingVerifications = pendingVerificationsSnapshot.size;
+
+    // Count open support tickets
+    const openTicketsSnapshot = await db.collection('supportTickets')
+      .where('status', 'in', ['open', 'in_progress'])
+      .get();
+    metrics.openSupportTickets = openTicketsSnapshot.size;
+
+    // Count active emergency alerts
+    const activeAlertsSnapshot = await db.collection('emergencyAlerts')
+      .where('status', '==', 'active')
+      .get();
+    metrics.activeEmergencyAlerts = activeAlertsSnapshot.size;
+
+    res.json({
+      success: true,
+      data: metrics,
+      timestamp: new Date().toISOString()
+    });
+
+  } catch (error) {
+    console.error('Error fetching system health:', error);
+    res.status(500).json({
+      success: false,
+      error: {
+        code: 'FETCH_SYSTEM_HEALTH_ERROR',
+        message: 'Failed to fetch system health',
+        details: error.message
+      },
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+/**
  * @route   GET /api/admin/drivers/pending
  * @desc    Get drivers pending verification
  * @access  Private (Admin only)

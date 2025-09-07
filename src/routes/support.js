@@ -2,12 +2,18 @@ const express = require('express');
 const { body, validationResult, query } = require('express-validator');
 const { requireRole } = require('../middleware/auth');
 const { getFirestore } = require('../services/firebase');
-const socketService = require('../services/socketService');
+// const socketService = require('../services/socketService');
 
 const router = express.Router();
 
 // Lazy database initialization
 const getDb = () => getFirestore();
+
+// Placeholder function for topic notifications
+const sendToTopic = (topic, data) => {
+  console.log(`📢 Topic notification: ${topic}`, data);
+  // TODO: Implement actual topic notification system
+};
 
 /**
  * @route   POST /api/support/ticket

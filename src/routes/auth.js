@@ -44,7 +44,7 @@ router.post('/check-user',
       const userExists = await authService.userExists(phoneNumber, userType);
       
       let userData = null;
-      let isCorrectUserType = userExists; // If user exists with the correct type, then it's correct
+      const isCorrectUserType = userExists; // If user exists with the correct type, then it's correct
       
       if (userExists) {
         // Get user data

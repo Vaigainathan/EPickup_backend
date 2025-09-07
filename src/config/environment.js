@@ -171,8 +171,9 @@ class EnvironmentConfig {
     // CORS Configuration
     this.config.cors = {
       allowedOrigins: process.env.ALLOWED_ORIGINS?.split(',') || [
-        'http://localhost:3000',
-        'http://localhost:3001',
+        'http://localhost:3000',  // Admin dashboard
+        'http://localhost:3001',  // Customer app
+        'http://localhost:8081',  // Driver app (Expo)
         'https://epickup-app.web.app',
         'https://epickup-app.firebaseapp.com'
       ]

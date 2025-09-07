@@ -13,8 +13,9 @@ const initializeSocketIO = async (server) => {
     io = new Server(server, {
       cors: {
         origin: process.env.ALLOWED_ORIGINS?.split(',') || [
-          'http://localhost:3000',
-          'http://localhost:3001',
+          'http://localhost:3000',  // Admin dashboard
+          'http://localhost:3001',  // Customer app
+          'http://localhost:8081',  // Driver app (Expo)
           'https://epickup-app.web.app'
         ],
         methods: ['GET', 'POST'],

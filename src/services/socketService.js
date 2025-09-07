@@ -22,7 +22,12 @@ class SocketService {
   initialize(server) {
     this.io = new Server(server, {
       cors: {
-        origin: process.env.FRONTEND_URL || "http://localhost:3000",
+        origin: process.env.ALLOWED_ORIGINS?.split(',') || [
+          'http://localhost:3000',  // Admin dashboard
+          'http://localhost:3001',  // Customer app
+          'http://localhost:8081',  // Driver app (Expo)
+          'https://epickup-app.web.app'
+        ],
         methods: ["GET", "POST"],
         credentials: true
       },

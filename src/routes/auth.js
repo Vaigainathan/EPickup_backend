@@ -398,7 +398,8 @@ router.post('/verify-otp',
               createdAt: user.createdAt,
               updatedAt: user.updatedAt
             },
-            accessToken: token,
+            token: token,
+            accessToken: token, // Keep both for backward compatibility
             isNewUser: false,
             expiresIn: '7d'
           },

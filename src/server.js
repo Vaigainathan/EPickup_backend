@@ -39,7 +39,7 @@ const { authMiddleware } = require('./middleware/auth');
 // Import services
 const { initializeFirebase } = require('./services/firebase');
 const { initializeRedis } = require('./services/redis');
-const socketService = require('./services/socketService');
+const socketService = require('./services/socket');
 const twilioService = require('./services/twilioService');
 
 const app = express();

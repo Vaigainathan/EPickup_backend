@@ -1443,7 +1443,7 @@ router.post('/:id/search-drivers', [
 
     // Send real-time notification to customer
     try {
-      const socketService = require('../services/socketService');
+      const socketService = require('../services/socket');
       const io = socketService.getSocketIO();
       io.to(`user:${uid}`).emit('driver_search_started', {
         bookingId,
@@ -1537,7 +1537,7 @@ router.post('/:id/cancel-search', [
 
     // Send real-time notification to customer
     try {
-      const socketService = require('../services/socketService');
+      const socketService = require('../services/socket');
       const io = socketService.getSocketIO();
       io.to(`user:${uid}`).emit('driver_search_cancelled', {
         bookingId,

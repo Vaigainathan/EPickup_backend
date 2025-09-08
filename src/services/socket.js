@@ -504,6 +504,60 @@ const healthCheck = async () => {
   }
 };
 
+// Additional methods required by realtime.js
+const getConnectedUsersCount = () => {
+  if (!io) return 0;
+  return io.sockets.sockets.size;
+};
+
+const getActiveBookingRoomsCount = () => {
+  if (!io) return 0;
+  const rooms = io.sockets.adapter.rooms;
+  let bookingRooms = 0;
+  for (const [roomName] of rooms) {
+    if (roomName.startsWith('booking_')) {
+      bookingRooms++;
+    }
+  }
+  return bookingRooms;
+};
+
+const getDriverLocations = () => {
+  // Return a Map of driver locations (placeholder implementation)
+  return new Map();
+};
+
+const updateDriverLocationInDB = async (driverId, location, bookingId) => {
+  // Placeholder implementation - should update driver location in database
+  console.log(`Updating driver ${driverId} location for booking ${bookingId}:`, location);
+  return true;
+};
+
+const sendToBooking = (bookingId, event, data) => {
+  if (!io) return false;
+  const roomName = `booking_${bookingId}`;
+  io.to(roomName).emit(event, data);
+  return true;
+};
+
+const updateBookingStatus = async (bookingId, status, updatedBy) => {
+  // Placeholder implementation - should update booking status in database
+  console.log(`Updating booking ${bookingId} status to ${status} by ${updatedBy}`);
+  return true;
+};
+
+const updatePaymentStatus = async (paymentId, status, updatedBy) => {
+  // Placeholder implementation - should update payment status in database
+  console.log(`Updating payment ${paymentId} status to ${status} by ${updatedBy}`);
+  return true;
+};
+
+const getPayment = async (paymentId) => {
+  // Placeholder implementation - should get payment from database
+  console.log(`Getting payment ${paymentId}`);
+  return { bookingId: 'placeholder_booking_id', customerId: 'placeholder_customer_id' };
+};
+
 module.exports = {
   initializeSocketIO,
   getSocketIO,
@@ -518,5 +572,14 @@ module.exports = {
   getUserConnectionInfo,
   forceDisconnectUser,
   cleanupExpiredConnections,
-  healthCheck
+  healthCheck,
+  // Additional methods for realtime.js
+  getConnectedUsersCount,
+  getActiveBookingRoomsCount,
+  getDriverLocations,
+  updateDriverLocationInDB,
+  sendToBooking,
+  updateBookingStatus,
+  updatePaymentStatus,
+  getPayment
 };

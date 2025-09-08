@@ -852,7 +852,7 @@ router.post('/:bookingId/update-location', [
 
     // Emit real-time update via Socket.IO if available
     try {
-      const socketService = require('../services/socketService');
+      const socketService = require('../services/socket');
       if (socketService.sendToUser) {
         socketService.sendToUser(booking.customerId, 'driver_location_update', {
           bookingId: bookingId,

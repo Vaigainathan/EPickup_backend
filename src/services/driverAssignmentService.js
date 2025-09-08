@@ -1,5 +1,5 @@
 const { getFirestore } = require('./firebase');
-const socketService = require('./socketService');
+const socketService = require('./socket');
 const serviceAreaValidation = require('./serviceAreaValidation');
 
 /**

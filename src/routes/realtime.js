@@ -1,6 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const socketService = require('../services/socketService');
+const socketService = require('../services/socket');
 const driverAssignmentService = require('../services/driverAssignmentService');
 const notificationService = require('../services/notificationService');
 const { requireRole } = require('../middleware/auth');

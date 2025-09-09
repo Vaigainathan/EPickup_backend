@@ -390,7 +390,7 @@ app.use(errorHandler);
 
 // Initialize Socket.IO with error handling
 try {
-  socketService.initialize(server);
+  socketService.initializeSocketIO(server);
   console.log('✅ Socket.IO service initialized successfully');
 } catch (error) {
   console.log('⚠️  Socket.IO initialization failed, continuing without real-time features...');

@@ -1,4 +1,5 @@
 const { getFirestore } = require('./firebase');
+const firestoreSessionService = require('./firestoreSessionService');
 
 /**
  * Real-time Communication Service for EPickup
@@ -8,7 +9,7 @@ const { getFirestore } = require('./firebase');
 class RealTimeService {
   constructor() {
     this.io = null;
-    this.redis = null;
+    this.firestoreSessionService = firestoreSessionService;
     this.db = null;
     this.realTimeService = null;
   }
@@ -23,20 +24,13 @@ class RealTimeService {
         const { getSocketIO } = require('./socket');
         this.io = getSocketIO();
         console.log('✅ Socket.IO connected for real-time service');
-      } catch (socketError) {
+      } catch {
         console.log('⚠️  Socket.IO not available for real-time service, continuing without it...');
         this.io = null;
       }
       
-      // Try to get Redis, but don't fail if it's not available
-      try {
-        const { getRedisClient } = require('./redis');
-        this.redis = getRedisClient();
-        console.log('✅ Redis connected for real-time service');
-      } catch (redisError) {
-        console.log('⚠️  Redis not available for real-time service, continuing without it...');
-        this.redis = null;
-      }
+      // Firestore Session Service is already initialized
+      console.log('✅ Firestore Session Service connected for real-time service');
       
       this.db = getFirestore();
       
@@ -75,15 +69,8 @@ class RealTimeService {
         this.io.to(`trip:${tripId}`).emit('location_updated', locationData);
       }
 
-      // Store in Redis for caching
-      if (this.redis) {
-        await this.redis.set(
-          `location:${tripId}`,
-          JSON.stringify(locationData),
-          'EX',
-          300 // 5 minutes expiry
-        );
-      }
+      // Store in Firestore cache for caching
+      await this.firestoreSessionService.setCache(`location:${tripId}`, locationData, 300); // 5 minutes expiry
 
       // Store in Firestore for persistence
       if (this.db) {
@@ -129,15 +116,8 @@ class RealTimeService {
         await this.sendTripStatusPushNotification(tripId, status, data);
       }
 
-      // Store in Redis for caching
-      if (this.redis) {
-        await this.redis.set(
-          `trip_status:${tripId}`,
-          JSON.stringify(statusData),
-          'EX',
-          600 // 10 minutes expiry
-        );
-      }
+      // Store in Firestore cache for caching
+      await this.firestoreSessionService.setCache(`trip_status:${tripId}`, statusData, 600); // 10 minutes expiry
 
       console.log(`🔄 Trip status update sent: ${status} for trip ${tripId}`);
       return true;
@@ -277,15 +257,8 @@ class RealTimeService {
         this.io.to(`trip:${tripId}`).emit('eta_updated', etaUpdateData);
       }
 
-      // Store in Redis for caching
-      if (this.redis) {
-        await this.redis.set(
-          `eta:${tripId}`,
-          JSON.stringify(etaUpdateData),
-          'EX',
-          300 // 5 minutes expiry
-        );
-      }
+      // Store in Firestore cache for caching
+      await this.firestoreSessionService.setCache(`eta:${tripId}`, etaUpdateData, 300); // 5 minutes expiry
 
       console.log(`⏰ ETA update sent for trip ${tripId}`);
       return true;
@@ -616,12 +589,10 @@ class RealTimeService {
    */
   async getRealTimeTripData(tripId) {
     try {
-      // Try Redis first
-      if (this.redis) {
-        const cachedData = await this.redis.get(`trip_status:${tripId}`);
-        if (cachedData) {
-          return JSON.parse(cachedData);
-        }
+      // Try Firestore cache first
+      const cachedData = await this.firestoreSessionService.getCache(`trip_status:${tripId}`);
+      if (cachedData.success && cachedData.data) {
+        return cachedData.data;
       }
 
       // Fallback to Firestore
@@ -682,7 +653,7 @@ class RealTimeService {
         timestamp: new Date().toISOString(),
         components: {
           socketIO: this.io ? 'connected' : 'disconnected',
-          redis: this.redis ? 'connected' : 'disconnected',
+          firestoreSession: this.firestoreSessionService ? 'connected' : 'disconnected',
           firestore: this.db ? 'connected' : 'disconnected'
         }
       };

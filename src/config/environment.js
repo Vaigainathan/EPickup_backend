@@ -152,15 +152,12 @@ class EnvironmentConfig {
       sessionExpiryHours: parseInt(process.env.SESSION_EXPIRY_HOURS) || 168 // 7 days
     };
 
-    // Redis Configuration
-    this.config.redis = {
-      url: process.env.REDIS_URL,
-      host: process.env.REDIS_HOST,
-      port: parseInt(process.env.REDIS_PORT) || 6379,
-      password: process.env.REDIS_PASSWORD,
-      username: process.env.REDIS_USERNAME || 'default',
-      db: parseInt(process.env.REDIS_DB) || 0,
-      enabled: process.env.REDIS_ENABLED === 'true'
+    // Firestore Session Configuration (replaces Redis)
+    this.config.firestoreSession = {
+      enabled: true, // Always enabled since we're using Firestore
+      sessionTTL: parseInt(process.env.SESSION_TTL) || 3600, // 1 hour
+      cacheTTL: parseInt(process.env.CACHE_TTL) || 300, // 5 minutes
+      rateLimitTTL: parseInt(process.env.RATE_LIMIT_TTL) || 3600 // 1 hour
     };
 
     // Database Configuration
@@ -269,9 +266,9 @@ class EnvironmentConfig {
       errors.push('GOOGLE_MAPS_API_KEY is required');
     }
 
-    // Redis validation (optional but recommended)
-    if (this.config.redis.enabled && !this.config.redis.url) {
-      errors.push('REDIS_URL is required when Redis is enabled');
+    // Firestore Session validation (always enabled)
+    if (!this.config.firestoreSession.enabled) {
+      errors.push('Firestore Session service must be enabled');
     }
 
     if (errors.length > 0) {
@@ -319,10 +316,10 @@ class EnvironmentConfig {
   }
 
   /**
-   * Check if Redis is enabled
+   * Check if Firestore Session is enabled
    */
-  isRedisEnabled() {
-    return this.config.redis.enabled;
+  isFirestoreSessionEnabled() {
+    return this.config.firestoreSession.enabled;
   }
 
   /**
@@ -347,10 +344,10 @@ class EnvironmentConfig {
   }
 
   /**
-   * Get Redis connection URL
+   * Get Firestore Session configuration
    */
-  getRedisUrl() {
-    return this.config.redis.url;
+  getFirestoreSessionConfig() {
+    return this.config.firestoreSession;
   }
 
   /**

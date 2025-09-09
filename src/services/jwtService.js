@@ -141,7 +141,7 @@ class JWTService {
   decodeToken(token) {
     try {
       return jwt.decode(token);
-    } catch (error) {
+    } catch {
       throw new Error('Failed to decode token');
     }
   }
@@ -212,7 +212,7 @@ class JWTService {
         isExpired: decoded.exp ? now >= decoded.exp : false,
         timeUntilExpiry: decoded.exp ? decoded.exp - now : null
       };
-    } catch (error) {
+    } catch {
       throw new Error('Failed to get token info');
     }
   }
@@ -222,7 +222,7 @@ class JWTService {
    * @param {string} token - JWT token
    * @returns {boolean} True if format is valid
    */
-  isValidTokenFormat(token) { // eslint-disable-line no-unused-vars
+  isValidTokenFormat(token) {
     if (!token || typeof token !== 'string') {
       return false;
     }
@@ -241,7 +241,7 @@ class JWTService {
         }
       });
       return true;
-    } catch (error) {
+    } catch {
       return false;
     }
   }

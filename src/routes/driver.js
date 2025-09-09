@@ -485,9 +485,6 @@ router.get('/earnings/detailed', requireDriver, async (req, res) => {
       });
     }
 
-    const userData = userDoc.data();
-    const earnings = userData.driver?.earnings || { total: 0, thisMonth: 0, thisWeek: 0 };
-
     // Get detailed earnings from completed bookings
     let query = db.collection('bookings')
       .where('driverId', '==', uid)
@@ -3630,6 +3627,566 @@ router.post('/bookings/:id/payment', [
         code: 'PAYMENT_COLLECTION_ERROR',
         message: 'Failed to collect payment',
         details: 'An error occurred while collecting payment'
+      },
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+/**
+ * @route   GET /api/driver/availability
+ * @desc    Get current driver availability status
+ * @access  Private (Driver only)
+ */
+router.get('/availability', requireDriver, async (req, res) => {
+  try {
+    const { uid } = req.user;
+    const db = getFirestore();
+    
+    const userDoc = await db.collection('users').doc(uid).get();
+    
+    if (!userDoc.exists) {
+      return res.status(404).json({
+        success: false,
+        error: {
+          code: 'DRIVER_NOT_FOUND',
+          message: 'Driver not found'
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    const userData = userDoc.data();
+    
+    res.status(200).json({
+      success: true,
+      data: {
+        isOnline: userData.isOnline || false,
+        isAvailable: userData.isAvailable || false,
+        status: userData.status || 'offline',
+        lastSeen: userData.lastSeen || null,
+        currentLocation: userData.currentLocation || null
+      },
+      timestamp: new Date().toISOString()
+    });
+
+  } catch (error) {
+    console.error('Error getting driver availability:', error);
+    res.status(500).json({
+      success: false,
+      error: {
+        code: 'GET_AVAILABILITY_ERROR',
+        message: 'Failed to get driver availability',
+        details: error.message
+      },
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+/**
+ * @route   GET /api/driver/earnings/detailed
+ * @desc    Get detailed driver earnings breakdown
+ * @access  Private (Driver only)
+ */
+router.get('/earnings/detailed', requireDriver, async (req, res) => {
+  try {
+    const { uid } = req.user;
+    const { period = '30d' } = req.query;
+    const db = getFirestore();
+    
+    // Calculate date range
+    const endDate = new Date();
+    const startDate = new Date();
+    switch (period) {
+      case '7d':
+        startDate.setDate(endDate.getDate() - 7);
+        break;
+      case '30d':
+        startDate.setDate(endDate.getDate() - 30);
+        break;
+      case '90d':
+        startDate.setDate(endDate.getDate() - 90);
+        break;
+      default:
+        startDate.setDate(endDate.getDate() - 30);
+    }
+
+    // Get completed bookings for the period
+    const bookingsSnapshot = await db.collection('bookings')
+      .where('driverId', '==', uid)
+      .where('status', '==', 'completed')
+      .where('completedAt', '>=', startDate)
+      .where('completedAt', '<=', endDate)
+      .orderBy('completedAt', 'desc')
+      .get();
+
+    let totalEarnings = 0;
+    let totalTrips = 0;
+    const dailyEarnings = {};
+    const tripDetails = [];
+
+    bookingsSnapshot.forEach(doc => {
+      const data = doc.data();
+      const earnings = data.driverEarnings || data.fare?.totalFare || 0;
+      totalEarnings += earnings;
+      totalTrips++;
+
+      // Group by date
+      const date = new Date(data.completedAt).toDateString();
+      if (!dailyEarnings[date]) {
+        dailyEarnings[date] = { earnings: 0, trips: 0 };
+      }
+      dailyEarnings[date].earnings += earnings;
+      dailyEarnings[date].trips += 1;
+
+      tripDetails.push({
+        id: doc.id,
+        completedAt: data.completedAt,
+        earnings: earnings,
+        distance: data.distance || 0,
+        duration: data.actualDuration || 0,
+        customerName: data.customerInfo?.name || 'Unknown'
+      });
+    });
+
+    // Get wallet balance
+    const userDoc = await db.collection('users').doc(uid).get();
+    const userData = userDoc.data();
+    const walletBalance = userData.driver?.wallet?.balance || 0;
+
+    const detailedEarnings = {
+      period,
+      dateRange: {
+        start: startDate.toISOString(),
+        end: endDate.toISOString()
+      },
+      summary: {
+        totalEarnings,
+        totalTrips,
+        averagePerTrip: totalTrips > 0 ? (totalEarnings / totalTrips).toFixed(2) : 0,
+        walletBalance
+      },
+      dailyBreakdown: Object.entries(dailyEarnings).map(([date, data]) => ({
+        date,
+        earnings: data.earnings,
+        trips: data.trips
+      })),
+      recentTrips: tripDetails.slice(0, 10), // Last 10 trips
+      timestamp: new Date().toISOString()
+    };
+
+    res.status(200).json({
+      success: true,
+      data: detailedEarnings,
+      timestamp: new Date().toISOString()
+    });
+
+  } catch (error) {
+    console.error('Error getting detailed earnings:', error);
+    res.status(500).json({
+      success: false,
+      error: {
+        code: 'GET_DETAILED_EARNINGS_ERROR',
+        message: 'Failed to get detailed earnings',
+        details: error.message
+      },
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+/**
+ * @route   POST /api/driver/bookings/:id/accept
+ * @desc    Accept a booking request
+ * @access  Private (Driver only)
+ */
+router.post('/bookings/:id/accept', requireDriver, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { uid } = req.user;
+    const db = getFirestore();
+    
+    const bookingRef = db.collection('bookings').doc(id);
+    const bookingDoc = await bookingRef.get();
+    
+    if (!bookingDoc.exists) {
+      return res.status(404).json({
+        success: false,
+        error: {
+          code: 'BOOKING_NOT_FOUND',
+          message: 'Booking not found'
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    const bookingData = bookingDoc.data();
+    
+    // Check if booking is still available
+    if (bookingData.status !== 'pending') {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'BOOKING_NOT_AVAILABLE',
+          message: 'Booking is no longer available'
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    // Update booking status
+    await bookingRef.update({
+      status: 'accepted',
+      driverId: uid,
+      acceptedAt: new Date(),
+      updatedAt: new Date()
+    });
+
+    // Update driver status to busy
+    await db.collection('users').doc(uid).update({
+      isAvailable: false,
+      currentBookingId: id,
+      updatedAt: new Date()
+    });
+
+    res.status(200).json({
+      success: true,
+      message: 'Booking accepted successfully',
+      data: {
+        bookingId: id,
+        status: 'accepted',
+        acceptedAt: new Date()
+      },
+      timestamp: new Date().toISOString()
+    });
+
+  } catch (error) {
+    console.error('Error accepting booking:', error);
+    res.status(500).json({
+      success: false,
+      error: {
+        code: 'ACCEPT_BOOKING_ERROR',
+        message: 'Failed to accept booking',
+        details: error.message
+      },
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+/**
+ * @route   POST /api/driver/bookings/:id/reject
+ * @desc    Reject a booking request
+ * @access  Private (Driver only)
+ */
+router.post('/bookings/:id/reject', requireDriver, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { reason } = req.body;
+    const { uid } = req.user;
+    const db = getFirestore();
+    
+    const bookingRef = db.collection('bookings').doc(id);
+    const bookingDoc = await bookingRef.get();
+    
+    if (!bookingDoc.exists) {
+      return res.status(404).json({
+        success: false,
+        error: {
+          code: 'BOOKING_NOT_FOUND',
+          message: 'Booking not found'
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    const bookingData = bookingDoc.data();
+    
+    // Check if booking is still pending
+    if (bookingData.status !== 'pending') {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'BOOKING_NOT_AVAILABLE',
+          message: 'Booking is no longer available'
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    // Update booking status
+    await bookingRef.update({
+      status: 'rejected',
+      rejectedBy: uid,
+      rejectionReason: reason || 'No reason provided',
+      rejectedAt: new Date(),
+      updatedAt: new Date()
+    });
+
+    res.status(200).json({
+      success: true,
+      message: 'Booking rejected successfully',
+      data: {
+        bookingId: id,
+        status: 'rejected',
+        rejectedAt: new Date(),
+        reason: reason || 'No reason provided'
+      },
+      timestamp: new Date().toISOString()
+    });
+
+  } catch (error) {
+    console.error('Error rejecting booking:', error);
+    res.status(500).json({
+      success: false,
+      error: {
+        code: 'REJECT_BOOKING_ERROR',
+        message: 'Failed to reject booking',
+        details: error.message
+      },
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+/**
+ * @route   POST /api/driver/trips/track
+ * @desc    Track trip progress
+ * @access  Private (Driver only)
+ */
+router.post('/trips/track', requireDriver, async (req, res) => {
+  try {
+    const { bookingId, status, location, notes } = req.body;
+    const { uid } = req.user;
+    const db = getFirestore();
+    
+    if (!bookingId || !status) {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'MISSING_REQUIRED_FIELDS',
+          message: 'Booking ID and status are required'
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    const bookingRef = db.collection('bookings').doc(bookingId);
+    const bookingDoc = await bookingRef.get();
+    
+    if (!bookingDoc.exists) {
+      return res.status(404).json({
+        success: false,
+        error: {
+          code: 'BOOKING_NOT_FOUND',
+          message: 'Booking not found'
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    const bookingData = bookingDoc.data();
+    
+    // Verify driver is assigned to this booking
+    if (bookingData.driverId !== uid) {
+      return res.status(403).json({
+        success: false,
+        error: {
+          code: 'UNAUTHORIZED',
+          message: 'You are not assigned to this booking'
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    // Update booking with tracking information
+    const updateData = {
+      status: status,
+      updatedAt: new Date()
+    };
+
+    // Add location if provided
+    if (location) {
+      updateData.driverLocation = {
+        latitude: location.latitude,
+        longitude: location.longitude,
+        address: location.address,
+        timestamp: new Date()
+      };
+    }
+
+    // Add status-specific timestamps
+    switch (status) {
+      case 'in_progress':
+        updateData.startedAt = new Date();
+        break;
+      case 'picked_up':
+        updateData.pickedUpAt = new Date();
+        break;
+      case 'completed':
+        updateData.completedAt = new Date();
+        updateData.actualDuration = bookingData.estimatedDuration || 0;
+        break;
+    }
+
+    // Add notes if provided
+    if (notes) {
+      updateData.driverNotes = notes;
+    }
+
+    await bookingRef.update(updateData);
+
+    // Update driver location if provided
+    if (location) {
+      await db.collection('users').doc(uid).update({
+        currentLocation: {
+          latitude: location.latitude,
+          longitude: location.longitude,
+          address: location.address,
+          timestamp: new Date()
+        },
+        lastSeen: new Date(),
+        updatedAt: new Date()
+      });
+    }
+
+    res.status(200).json({
+      success: true,
+      message: 'Trip tracking updated successfully',
+      data: {
+        bookingId,
+        status,
+        updatedAt: new Date(),
+        location: location || null
+      },
+      timestamp: new Date().toISOString()
+    });
+
+  } catch (error) {
+    console.error('Error tracking trip:', error);
+    res.status(500).json({
+      success: false,
+      error: {
+        code: 'TRACK_TRIP_ERROR',
+        message: 'Failed to track trip',
+        details: error.message
+      },
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+/**
+ * @route   POST /api/driver/photo/verify
+ * @desc    Verify pickup/delivery with photo
+ * @access  Private (Driver only)
+ */
+router.post('/photo/verify', requireDriver, async (req, res) => {
+  try {
+    const { bookingId, type, photoUrl, notes } = req.body;
+    const { uid } = req.user;
+    const db = getFirestore();
+    
+    if (!bookingId || !type || !photoUrl) {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'MISSING_REQUIRED_FIELDS',
+          message: 'Booking ID, type, and photo URL are required'
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    if (!['pickup', 'delivery'].includes(type)) {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'INVALID_TYPE',
+          message: 'Type must be either "pickup" or "delivery"'
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    const bookingRef = db.collection('bookings').doc(bookingId);
+    const bookingDoc = await bookingRef.get();
+    
+    if (!bookingDoc.exists) {
+      return res.status(404).json({
+        success: false,
+        error: {
+          code: 'BOOKING_NOT_FOUND',
+          message: 'Booking not found'
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    const bookingData = bookingDoc.data();
+    
+    // Verify driver is assigned to this booking
+    if (bookingData.driverId !== uid) {
+      return res.status(403).json({
+        success: false,
+        error: {
+          code: 'UNAUTHORIZED',
+          message: 'You are not assigned to this booking'
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    // Create photo verification record
+    const photoVerification = {
+      id: `photo_${Date.now()}`,
+      bookingId,
+      driverId: uid,
+      type,
+      photoUrl,
+      notes: notes || null,
+      verifiedAt: new Date(),
+      status: 'verified'
+    };
+
+    await db.collection('photoVerifications').add(photoVerification);
+
+    // Update booking with photo verification
+    const updateData = {
+      updatedAt: new Date()
+    };
+
+    if (type === 'pickup') {
+      updateData.pickupPhoto = photoVerification;
+      updateData.pickupVerifiedAt = new Date();
+    } else if (type === 'delivery') {
+      updateData.deliveryPhoto = photoVerification;
+      updateData.deliveryVerifiedAt = new Date();
+    }
+
+    await bookingRef.update(updateData);
+
+    res.status(200).json({
+      success: true,
+      message: 'Photo verification submitted successfully',
+      data: {
+        bookingId,
+        type,
+        photoUrl,
+        verifiedAt: new Date()
+      },
+      timestamp: new Date().toISOString()
+    });
+
+  } catch (error) {
+    console.error('Error verifying photo:', error);
+    res.status(500).json({
+      success: false,
+      error: {
+        code: 'PHOTO_VERIFICATION_ERROR',
+        message: 'Failed to verify photo',
+        details: error.message
       },
       timestamp: new Date().toISOString()
     });

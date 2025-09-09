@@ -24,7 +24,7 @@ function initializeFirebase() {
         if (!privateKey.includes('-----BEGIN PRIVATE KEY-----')) {
           try {
             privateKey = Buffer.from(privateKey, 'base64').toString('utf8');
-          } catch (e) {
+          } catch {
             // If base64 decode fails, try with escaped newlines
             privateKey = process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, '\n');
           }

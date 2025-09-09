@@ -18,7 +18,7 @@ router.get('/', (req, res) => {
       services: {
         server: 'running',
         database: 'connected', // Firebase Firestore
-        redis: process.env.REDIS_URL ? 'configured' : 'not_configured',
+        firestoreSession: 'configured',
         twilio: process.env.TWILIO_ACCOUNT_SID ? 'configured' : 'not_configured',
         expo: process.env.EXPO_ACCESS_TOKEN ? 'configured' : 'not_configured'
       }
@@ -65,9 +65,9 @@ router.get('/detailed', (req, res) => {
           type: 'Firebase Firestore',
           project: process.env.FIREBASE_PROJECT_ID || 'not_configured'
         },
-        redis: {
-          status: process.env.REDIS_URL ? 'configured' : 'not_configured',
-          url: process.env.REDIS_URL ? 'configured' : null
+        firestoreSession: {
+          status: 'configured',
+          type: 'Firestore-based session management'
         },
         twilio: {
           status: process.env.TWILIO_ACCOUNT_SID ? 'configured' : 'not_configured',

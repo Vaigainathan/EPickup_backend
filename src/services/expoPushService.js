@@ -1,6 +1,6 @@
 const { Expo } = require('expo-server-sdk');
 const { getFirestore } = require('./firebase');
-const { getRedisClient } = require('./redis');
+const firestoreSessionService = require('./firestoreSessionService');
 
 /**
  * Expo Push Notification Service for EPickup
@@ -10,20 +10,19 @@ class ExpoPushService {
   constructor() {
     this.expo = new Expo({ accessToken: process.env.EXPO_ACCESS_TOKEN });
     this.db = getFirestore();
-    this.redis = null;
+    this.firestoreSessionService = firestoreSessionService;
     this.initialize();
   }
 
   /**
-   * Initialize Redis client
+   * Initialize Firestore Session Service
    */
-  async initializeRedis() {
+  async initializeFirestoreSession() {
     try {
-      this.redis = getRedisClient();
+      console.log('✅ Firestore Session Service connected for Expo service');
       return true;
     } catch (error) {
-      console.warn('⚠️  Redis not available for Expo service:', error.message);
-      this.redis = null;
+      console.warn('⚠️  Firestore Session Service not available for Expo service:', error.message);
       return false;
     }
   }

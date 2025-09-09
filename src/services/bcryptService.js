@@ -146,7 +146,7 @@ class BcryptService {
       const currentRounds = bcrypt.getRounds(hash);
       
       return currentRounds < target;
-    } catch (error) {
+    } catch {
       // If we can't determine rounds, assume rehashing is needed
       return true;
     }

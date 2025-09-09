@@ -1,4 +1,5 @@
 const { getFirestore } = require('./firebase');
+const firestoreSessionService = require('./firestoreSessionService');
 
 /**
  * WebSocket Event Handler Service
@@ -7,7 +8,7 @@ const { getFirestore } = require('./firebase');
 class WebSocketEventHandler {
   constructor() {
     this.db = null;
-    this.redis = null;
+    this.firestoreSessionService = firestoreSessionService;
     this.realTimeService = null;
     this.io = null;
   }
@@ -19,15 +20,8 @@ class WebSocketEventHandler {
     try {
       this.db = getFirestore();
       
-      // Try to initialize Redis, but don't fail if it's not available
-      try {
-        const { getRedisClient } = require('./redis');
-        this.redis = getRedisClient();
-        console.log('✅ Redis connected for WebSocket handler');
-      } catch (redisError) {
-        console.log('⚠️  Redis not available for WebSocket handler, continuing without Redis...');
-        this.redis = null;
-      }
+      // Firestore Session Service is already initialized
+      console.log('✅ Firestore Session Service connected for WebSocket handler');
       
       // Try to initialize RealTimeService, but don't fail if it's not available
       try {
@@ -35,7 +29,7 @@ class WebSocketEventHandler {
         this.realTimeService = new RealTimeService();
         await this.realTimeService.initialize();
         console.log('✅ RealTimeService initialized for WebSocket handler');
-      } catch (realTimeError) {
+      } catch {
         console.log('⚠️  RealTimeService not available for WebSocket handler, continuing without it...');
         this.realTimeService = null;
       }
@@ -170,11 +164,12 @@ class WebSocketEventHandler {
       // Join trip-specific room
       socket.join(`trip:${tripId}`);
 
-      // Store subscription in Redis if available
-      if (this.redis) {
-        await this.redis.sadd(`trip_subscribers:${tripId}`, userId);
-        await this.redis.expire(`trip_subscribers:${tripId}`, 3600); // 1 hour expiry
-      }
+      // Store subscription in Firestore
+      await this.firestoreSessionService.setCache(`trip_subscribers:${tripId}`, {
+        subscribers: [userId],
+        tripId,
+        subscribedAt: new Date()
+      }, 3600); // 1 hour expiry
 
       // Send current trip status
       await this.sendCurrentTripStatus(socket, tripId);
@@ -216,9 +211,18 @@ class WebSocketEventHandler {
       // Leave trip-specific room
       socket.leave(`trip:${tripId}`);
 
-      // Remove subscription from Redis if available
-      if (this.redis) {
-        await this.redis.srem(`trip_subscribers:${tripId}`, userId);
+      // Remove subscription from Firestore
+      const cacheData = await this.firestoreSessionService.getCache(`trip_subscribers:${tripId}`);
+      if (cacheData.success && cacheData.data) {
+        const updatedSubscribers = cacheData.data.subscribers.filter(id => id !== userId);
+        if (updatedSubscribers.length > 0) {
+          await this.firestoreSessionService.setCache(`trip_subscribers:${tripId}`, {
+            ...cacheData.data,
+            subscribers: updatedSubscribers
+          }, 3600);
+        } else {
+          await this.firestoreSessionService.deleteCache(`trip_subscribers:${tripId}`);
+        }
       }
 
       console.log(`✅ User ${userId} unsubscribed from trip ${tripId}`);
@@ -426,15 +430,8 @@ class WebSocketEventHandler {
         timestamp: new Date().toISOString()
       };
 
-      // Store presence in Redis
-      if (this.redis) {
-        await this.redis.set(
-          `presence:${userId}`,
-          JSON.stringify(presenceData),
-          'EX',
-          300 // 5 minutes expiry
-        );
-      }
+      // Store presence in Firestore
+      await this.firestoreSessionService.setCache(`presence:${userId}`, presenceData, 300); // 5 minutes expiry
 
       // Broadcast presence update to role-based room
       socket.broadcast.to(`type:${userType}`).emit('presence_updated', presenceData);
@@ -570,14 +567,11 @@ class WebSocketEventHandler {
    */
   async updateUserOnlineStatus(userId, isOnline) {
     try {
-      if (this.redis) {
-        await this.redis.set(
-          `user_online:${userId}`,
-          isOnline ? '1' : '0',
-          'EX',
-          300 // 5 minutes expiry
-        );
-      }
+      // Store online status in Firestore
+      await this.firestoreSessionService.setCache(`user_online:${userId}`, {
+        isOnline,
+        updatedAt: new Date()
+      }, 300); // 5 minutes expiry
 
       if (this.db) {
         await this.db.collection('users').doc(userId).update({
@@ -1391,7 +1385,7 @@ class WebSocketEventHandler {
         timestamp: new Date().toISOString(),
         components: {
           firestore: this.db ? 'connected' : 'disconnected',
-          redis: this.redis ? 'connected' : 'disconnected',
+          firestoreSession: this.firestoreSessionService ? 'connected' : 'disconnected',
           realTimeService: this.realTimeService ? 'connected' : 'disconnected'
         }
       };

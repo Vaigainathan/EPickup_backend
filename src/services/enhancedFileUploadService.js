@@ -225,7 +225,7 @@ class EnhancedFileUploadService {
       if (!metadata.width || !metadata.height) {
         errors.push('File must be a valid image');
       }
-    } catch (error) {
+    } catch {
       errors.push('File must be a valid image');
     }
 

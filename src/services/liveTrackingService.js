@@ -1,5 +1,5 @@
 const { getFirestore } = require('./firebase');
-const { getRedisClient } = require('./redis');
+const firestoreSessionService = require('./firestoreSessionService');
 const RealTimeService = require('./realTimeService');
 const { getSocketIO } = require('./socket');
 
@@ -10,7 +10,7 @@ const { getSocketIO } = require('./socket');
 class LiveTrackingService {
   constructor() {
     this.db = null;
-    this.redis = null;
+    this.firestoreSessionService = firestoreSessionService;
     this.realTimeService = null;
     this.io = null;
     this.activeTrips = new Map(); // tripId -> tracking data
@@ -24,7 +24,6 @@ class LiveTrackingService {
   async initialize() {
     try {
       this.db = getFirestore();
-      this.redis = getRedisClient();
       this.realTimeService = new RealTimeService();
       this.io = getSocketIO();
       
@@ -100,15 +99,8 @@ class LiveTrackingService {
       // Store in active trips
       this.activeTrips.set(tripId, trackingData);
 
-      // Store in Redis for persistence
-      if (this.redis) {
-        await this.redis.set(
-          `live_tracking:${tripId}`,
-          JSON.stringify(trackingData),
-          'EX',
-          3600 // 1 hour expiry
-        );
-      }
+      // Store in Firestore cache for persistence
+      await this.firestoreSessionService.setCache(`live_tracking:${tripId}`, trackingData, 3600); // 1 hour expiry
 
       // Create tracking document in Firestore
       await this.createTrackingDocument(tripId, trackingData);
@@ -187,15 +179,8 @@ class LiveTrackingService {
         await this.checkGeofenceTriggers(tripId, locationUpdate);
       }
 
-      // Update Redis
-      if (this.redis) {
-        await this.redis.set(
-          `live_tracking:${tripId}`,
-          JSON.stringify(trackingData),
-          'EX',
-          3600
-        );
-      }
+      // Update Firestore cache
+      await this.firestoreSessionService.setCache(`live_tracking:${tripId}`, trackingData, 3600);
 
       // Update Firestore
       await this.updateTrackingDocument(tripId, trackingData);
@@ -405,10 +390,8 @@ class LiveTrackingService {
       // Remove from active trips
       this.activeTrips.delete(tripId);
 
-      // Remove from Redis
-      if (this.redis) {
-        await this.redis.del(`live_tracking:${tripId}`);
-      }
+      // Remove from Firestore cache
+      await this.firestoreSessionService.deleteCache(`live_tracking:${tripId}`);
 
       // Update Firestore
       await this.updateTrackingDocument(tripId, trackingData);
@@ -439,11 +422,11 @@ class LiveTrackingService {
       // Try active trips first
       let trackingData = this.activeTrips.get(tripId);
       
-      if (!trackingData && this.redis) {
-        // Try Redis
-        const cachedData = await this.redis.get(`live_tracking:${tripId}`);
-        if (cachedData) {
-          trackingData = JSON.parse(cachedData);
+      if (!trackingData) {
+        // Try Firestore cache
+        const cachedData = await this.firestoreSessionService.getCache(`live_tracking:${tripId}`);
+        if (cachedData.success && cachedData.data) {
+          trackingData = cachedData.data;
         }
       }
 
@@ -619,7 +602,7 @@ class LiveTrackingService {
         activeTrips: this.activeTrips.size,
         components: {
           firestore: this.db ? 'connected' : 'disconnected',
-          redis: this.redis ? 'connected' : 'disconnected',
+          firestoreSession: this.firestoreSessionService ? 'connected' : 'disconnected',
           realTimeService: this.realTimeService ? 'connected' : 'disconnected',
           socketIO: this.io ? 'connected' : 'disconnected'
         }

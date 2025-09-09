@@ -498,7 +498,7 @@ router.get('/health', async (req, res) => {
         version: '1.0.0'
       }
     });
-  } catch (error) {
+  } catch {
     res.status(500).json({
       success: false,
       error: {

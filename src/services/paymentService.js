@@ -393,7 +393,7 @@ class PaymentService {
    */
   verifyWebhookSignature(webhookData) {
     try {
-      const { merchantTransactionId } = webhookData; // eslint-disable-line no-unused-vars
+      const { merchantTransactionId } = webhookData;
       const string = `/pg/v1/status/${this.phonepeConfig.merchantId}/${merchantTransactionId}` + this.phonepeConfig.saltKey;
       const sha256 = crypto.createHash('sha256').update(string).digest('hex');
       const checksum = sha256 + '###' + this.phonepeConfig.saltIndex;
@@ -412,7 +412,7 @@ class PaymentService {
    */
   async processPhonePeWebhook(webhookData) {
     try {
-      const { merchantTransactionId, status } = webhookData; // eslint-disable-line no-unused-vars
+      const { merchantTransactionId, status } = webhookData;
       
       // Get payment record
       const paymentRecord = await this.getPaymentRecord(merchantTransactionId);

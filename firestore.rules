@@ -47,7 +47,7 @@ service cloud.firestore {
       return isAuthenticated() && request.auth.uid == userId;
     }
     
-    // Check if user is active
+    // Check if user is active (used in other functions)
     function isUserActive() {
       return isAuthenticated() && 
              exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
@@ -79,15 +79,15 @@ service cloud.firestore {
         isAuthenticated() && 
         request.auth.uid == userId &&
         // Validate required fields
-        resource.data.phone is string &&
-        resource.data.phone.size() >= 10 &&
-        resource.data.name is string &&
-        resource.data.name.size() > 0 &&
-        isValidUserType(resource.data.userType) &&
-        resource.data.isVerified is bool &&
-        resource.data.isActive is bool &&
-        resource.data.createdAt is timestamp &&
-        resource.data.updatedAt is timestamp;
+        request.resource.data.phone is string &&
+        request.resource.data.phone.size() >= 10 &&
+        request.resource.data.name is string &&
+        request.resource.data.name.size() > 0 &&
+        isValidUserType(request.resource.data.userType) &&
+        request.resource.data.isVerified is bool &&
+        request.resource.data.isActive is bool &&
+        request.resource.data.createdAt is timestamp &&
+        request.resource.data.updatedAt is timestamp;
       
       // Allow updates but prevent phone number changes
       allow update: if 
@@ -300,15 +300,15 @@ service cloud.firestore {
       allow write: if isAdmin();
     }
     
-    // Support Tickets
-    match /support/{ticketId} {
+    // Support Tickets (new collection structure)
+    match /supportTickets/{ticketId} {
       // Customers can read/write their own tickets
       allow read, write: if isCustomer() && 
-                        resource.data.customerId == request.auth.uid;
+                        resource.data.userId == request.auth.uid;
       
       // Drivers can read/write their own tickets
       allow read, write: if isDriver() && 
-                        resource.data.driverId == request.auth.uid;
+                        resource.data.userId == request.auth.uid;
       
       // Admins can read/write all tickets
       allow read, write: if isAdmin();
@@ -317,9 +317,70 @@ service cloud.firestore {
       allow read, write: if isSupport();
       
       // Create ticket - users can create for themselves
-      allow create: if (isCustomer() && request.resource.data.customerId == request.auth.uid) ||
-                      (isDriver() && request.resource.data.driverId == request.auth.uid);
+      allow create: if (isCustomer() && request.resource.data.userId == request.auth.uid) ||
+                      (isDriver() && request.resource.data.userId == request.auth.uid);
     }
+    
+    // FAQ Collection
+    match /faqs/{faqId} {
+      allow read: if isAuthenticated();
+      allow write: if isAdmin();
+      
+      // Support can read FAQs
+      allow read: if isSupport();
+    }
+    
+    // Emergency Contacts
+    match /emergencyContacts/{contactId} {
+      // Users can read/write their own emergency contacts
+      allow read, write: if isAuthenticated() && 
+                        resource.data.userId == request.auth.uid;
+      
+      // Admins can read/write all emergency contacts
+      allow read, write: if isAdmin();
+      
+      // Support can read emergency contacts
+      allow read: if isSupport();
+      
+      // Create emergency contact - users can create for themselves
+      allow create: if isAuthenticated() && 
+                    request.resource.data.userId == request.auth.uid;
+    }
+    
+    // Emergency Alerts
+    match /emergencyAlerts/{alertId} {
+      // Users can read their own emergency alerts
+      allow read: if isAuthenticated() && 
+                  resource.data.userId == request.auth.uid;
+      
+      // Admins can read/write all emergency alerts
+      allow read, write: if isAdmin();
+      
+      // Support can read all emergency alerts
+      allow read: if isSupport();
+      
+      // Create emergency alert - users can create for themselves
+      allow create: if isAuthenticated() && 
+                    request.resource.data.userId == request.auth.uid;
+    }
+    
+    // Feedback Collection
+    match /feedback/{feedbackId} {
+      // Users can read/write their own feedback
+      allow read, write: if isAuthenticated() && 
+                        resource.data.userId == request.auth.uid;
+      
+      // Admins can read/write all feedback
+      allow read, write: if isAdmin();
+      
+      // Support can read all feedback
+      allow read: if isSupport();
+      
+      // Create feedback - users can create for themselves
+      allow create: if isAuthenticated() && 
+                    request.resource.data.userId == request.auth.uid;
+    }
+    
     
     // ========================================
     // AUTH ATTEMPTS COLLECTION (for logging)

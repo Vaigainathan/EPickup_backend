@@ -864,7 +864,7 @@ router.post('/:bookingId/update-location', [
           }
         });
       }
-    } catch (socketError) {
+    } catch {
       console.log('Socket.IO not available for real-time updates');
     }
 

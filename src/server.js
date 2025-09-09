@@ -38,7 +38,8 @@ const { authMiddleware } = require('./middleware/auth');
 
 // Import services
 const { initializeFirebase } = require('./services/firebase');
-const { initializeRedis } = require('./services/redis');
+// Firestore Session Service is imported but not directly used in server.js
+// It's used by other services that import it directly
 const socketService = require('./services/socket');
 const twilioService = require('./services/twilioService');
 
@@ -57,21 +58,12 @@ try {
   console.error('Firebase Error:', error.message);
 }
 
-// Initialize Redis based on configuration
-if (env.isRedisEnabled()) {
-  try {
-    initializeRedis().then(() => {
-      console.log('✅ Redis initialization completed');
-    }).catch((error) => {
-      console.log('⚠️  Redis initialization failed, continuing without Redis...');
-      console.error('Redis Error:', error.message);
-    });
-  } catch (error) {
-    console.log('⚠️  Redis initialization failed, continuing without Redis...');
-    console.error('Redis Error:', error.message);
-  }
-} else {
-  console.log('⚠️  Redis is disabled in configuration');
+// Initialize Firestore Session Service (replaces Redis)
+try {
+  console.log('✅ Firestore Session Service initialized (replaces Redis)');
+} catch (error) {
+  console.log('⚠️  Firestore Session Service initialization failed...');
+  console.error('Firestore Session Error:', error.message);
 }
 
 // Initialize Twilio service
@@ -262,7 +254,7 @@ app.get('/health', (req, res) => {
     },
     services: {
       firebase: true,
-      redis: env.isRedisEnabled(),
+      firestoreSession: true,
       socket: true
     }
   });

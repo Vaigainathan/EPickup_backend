@@ -564,4 +564,337 @@ router.get('/verification/stats', requireRole(['admin']), async (req, res) => {
   }
 });
 
+/**
+ * @route   GET /api/admin/analytics
+ * @desc    Get comprehensive analytics data
+ * @access  Private (Admin only)
+ */
+router.get('/analytics', requireRole(['admin']), async (req, res) => {
+  try {
+    const db = getFirestore();
+    const { period = '30d' } = req.query;
+    
+    // Calculate date range
+    const endDate = new Date();
+    const startDate = new Date();
+    switch (period) {
+      case '7d':
+        startDate.setDate(endDate.getDate() - 7);
+        break;
+      case '30d':
+        startDate.setDate(endDate.getDate() - 30);
+        break;
+      case '90d':
+        startDate.setDate(endDate.getDate() - 90);
+        break;
+      default:
+        startDate.setDate(endDate.getDate() - 30);
+    }
+
+    // Get analytics data
+    const [
+      totalUsers,
+      totalDrivers,
+      totalCustomers,
+      totalBookings,
+      completedBookings,
+      activeBookings,
+      driverEarnings
+    ] = await Promise.all([
+      db.collection('users').get(),
+      db.collection('users').where('userType', '==', 'driver').get(),
+      db.collection('users').where('userType', '==', 'customer').get(),
+      db.collection('bookings').where('createdAt', '>=', startDate).get(),
+      db.collection('bookings').where('status', '==', 'completed').where('createdAt', '>=', startDate).get(),
+      db.collection('bookings').where('status', 'in', ['pending', 'accepted', 'in_progress']).get(),
+      db.collection('users').where('userType', '==', 'driver').get()
+    ]);
+
+    // Calculate revenue
+    let revenue = 0;
+    completedBookings.forEach(doc => {
+      const data = doc.data();
+      revenue += data.fare?.totalFare || data.fare || 0;
+    });
+
+    // Calculate driver earnings
+    let totalDriverEarnings = 0;
+    driverEarnings.forEach(doc => {
+      const data = doc.data();
+      totalDriverEarnings += data.driver?.wallet?.balance || 0;
+    });
+
+    const analytics = {
+      period,
+      dateRange: {
+        start: startDate.toISOString(),
+        end: endDate.toISOString()
+      },
+      users: {
+        total: totalUsers.size,
+        drivers: totalDrivers.size,
+        customers: totalCustomers.size,
+        growth: 0 // Would need historical data to calculate
+      },
+      bookings: {
+        total: totalBookings.size,
+        completed: completedBookings.size,
+        active: activeBookings.size,
+        completionRate: totalBookings.size > 0 ? (completedBookings.size / totalBookings.size * 100).toFixed(2) : 0
+      },
+      revenue: {
+        total: revenue,
+        averagePerBooking: completedBookings.size > 0 ? (revenue / completedBookings.size).toFixed(2) : 0,
+        driverEarnings: totalDriverEarnings,
+        platformCommission: revenue - totalDriverEarnings
+      },
+      timestamp: new Date().toISOString()
+    };
+
+    res.json({
+      success: true,
+      data: analytics,
+      timestamp: new Date().toISOString()
+    });
+
+  } catch (error) {
+    console.error('Error fetching analytics:', error);
+    res.status(500).json({
+      success: false,
+      error: {
+        code: 'FETCH_ANALYTICS_ERROR',
+        message: 'Failed to fetch analytics data',
+        details: error.message
+      },
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+/**
+ * @route   GET /api/admin/support/tickets
+ * @desc    Get all support tickets with pagination and filters
+ * @access  Private (Admin only)
+ */
+router.get('/support/tickets', requireRole(['admin']), async (req, res) => {
+  try {
+    const db = getFirestore();
+    const { limit = 20, offset = 0, status, priority, category } = req.query;
+
+    let query = db.collection('supportTickets');
+
+    // Apply filters
+    if (status) {
+      query = query.where('status', '==', status);
+    }
+    if (priority) {
+      query = query.where('priority', '==', priority);
+    }
+    if (category) {
+      query = query.where('category', '==', category);
+    }
+
+    // Apply pagination and ordering
+    query = query.orderBy('createdAt', 'desc').limit(parseInt(limit)).offset(parseInt(offset));
+
+    const snapshot = await query.get();
+    const tickets = [];
+
+    snapshot.forEach(doc => {
+      const data = doc.data();
+      tickets.push({
+        id: doc.id,
+        ...data,
+        createdAt: data.createdAt?.toDate?.() || data.createdAt,
+        updatedAt: data.updatedAt?.toDate?.() || data.updatedAt
+      });
+    });
+
+    res.json({
+      success: true,
+      data: tickets,
+      pagination: {
+        limit: parseInt(limit),
+        offset: parseInt(offset),
+        total: tickets.length
+      },
+      timestamp: new Date().toISOString()
+    });
+
+  } catch (error) {
+    console.error('Error fetching support tickets:', error);
+    res.status(500).json({
+      success: false,
+      error: {
+        code: 'FETCH_SUPPORT_TICKETS_ERROR',
+        message: 'Failed to fetch support tickets',
+        details: error.message
+      },
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+/**
+ * @route   POST /api/admin/support/tickets/:ticketId/resolve
+ * @desc    Resolve a support ticket
+ * @access  Private (Admin only)
+ */
+router.post('/support/tickets/:ticketId/resolve', requireRole(['admin']), async (req, res) => {
+  try {
+    const { ticketId } = req.params;
+    const { resolution, notes } = req.body;
+    const adminId = req.user.uid;
+
+    if (!resolution) {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'RESOLUTION_REQUIRED',
+          message: 'Resolution is required'
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    const db = getFirestore();
+    const ticketRef = db.collection('supportTickets').doc(ticketId);
+    const ticketDoc = await ticketRef.get();
+
+    if (!ticketDoc.exists) {
+      return res.status(404).json({
+        success: false,
+        error: {
+          code: 'TICKET_NOT_FOUND',
+          message: 'Support ticket not found'
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    await ticketRef.update({
+      status: 'resolved',
+      resolution,
+      resolvedBy: adminId,
+      resolvedAt: new Date(),
+      adminNotes: notes || null,
+      updatedAt: new Date()
+    });
+
+    res.json({
+      success: true,
+      message: 'Support ticket resolved successfully',
+      data: {
+        ticketId,
+        status: 'resolved',
+        resolvedAt: new Date(),
+        resolvedBy: adminId
+      },
+      timestamp: new Date().toISOString()
+    });
+
+  } catch (error) {
+    console.error('Error resolving support ticket:', error);
+    res.status(500).json({
+      success: false,
+      error: {
+        code: 'RESOLVE_TICKET_ERROR',
+        message: 'Failed to resolve support ticket',
+        details: error.message
+      },
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+/**
+ * @route   GET /api/admin/system/health
+ * @desc    Get detailed system health information
+ * @access  Private (Admin only)
+ */
+router.get('/system/health', requireRole(['admin']), async (req, res) => {
+  try {
+    const db = getFirestore();
+    
+    // Get system health metrics
+    const health = {
+      status: 'healthy',
+      uptime: process.uptime(),
+      memory: process.memoryUsage(),
+      timestamp: new Date().toISOString(),
+      services: {
+        api: { status: 'healthy', lastCheck: new Date().toISOString() },
+        database: { status: 'healthy', lastCheck: new Date().toISOString() },
+        websocket: { status: 'healthy', lastCheck: new Date().toISOString() },
+        firebase: { status: 'healthy', lastCheck: new Date().toISOString() }
+      },
+      metrics: {
+        totalUsers: 0,
+        totalDrivers: 0,
+        totalCustomers: 0,
+        activeBookings: 0,
+        pendingVerifications: 0,
+        openSupportTickets: 0,
+        activeEmergencyAlerts: 0
+      }
+    };
+
+    // Test database connectivity
+    try {
+      await db.collection('users').limit(1).get();
+      health.services.database.status = 'healthy';
+    } catch {
+      health.services.database.status = 'unhealthy';
+      health.status = 'warning';
+    }
+
+    // Get metrics
+    const [
+      usersSnapshot,
+      driversSnapshot,
+      customersSnapshot,
+      activeBookingsSnapshot,
+      pendingVerificationsSnapshot,
+      openTicketsSnapshot,
+      activeAlertsSnapshot
+    ] = await Promise.all([
+      db.collection('users').get(),
+      db.collection('users').where('userType', '==', 'driver').get(),
+      db.collection('users').where('userType', '==', 'customer').get(),
+      db.collection('bookings').where('status', 'in', ['pending', 'accepted', 'in_progress']).get(),
+      db.collection('documentVerificationRequests').where('status', '==', 'pending').get(),
+      db.collection('supportTickets').where('status', 'in', ['open', 'in_progress']).get(),
+      db.collection('emergencyAlerts').where('status', '==', 'active').get()
+    ]);
+
+    health.metrics = {
+      totalUsers: usersSnapshot.size,
+      totalDrivers: driversSnapshot.size,
+      totalCustomers: customersSnapshot.size,
+      activeBookings: activeBookingsSnapshot.size,
+      pendingVerifications: pendingVerificationsSnapshot.size,
+      openSupportTickets: openTicketsSnapshot.size,
+      activeEmergencyAlerts: activeAlertsSnapshot.size
+    };
+
+    res.json({
+      success: true,
+      data: health,
+      timestamp: new Date().toISOString()
+    });
+
+  } catch (error) {
+    console.error('Error fetching system health:', error);
+    res.status(500).json({
+      success: false,
+      error: {
+        code: 'FETCH_SYSTEM_HEALTH_ERROR',
+        message: 'Failed to fetch system health',
+        details: error.message
+      },
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
 module.exports = router;

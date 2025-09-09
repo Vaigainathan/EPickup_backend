@@ -9,7 +9,7 @@ module.exports = {
   env: environmentConfig,
   // Export individual configs for convenience
   firebase: environmentConfig.get('firebase'),
-  redis: environmentConfig.get('redis'),
+  firestoreSession: environmentConfig.get('firestoreSession'),
   jwt: environmentConfig.get('jwt'),
   payment: environmentConfig.get('payment'),
   googleMaps: environmentConfig.get('googleMaps'),

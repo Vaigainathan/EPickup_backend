@@ -546,6 +546,122 @@ router.get('/bookings', requireCustomer, async (req, res) => {
 });
 
 /**
+ * @route   GET /api/customer/bookings/history
+ * @desc    Get customer booking history with pagination
+ * @access  Private (Customer only)
+ */
+router.get('/bookings/history', requireCustomer, async (req, res) => {
+  try {
+    const { uid } = req.user;
+    const { limit = 20, offset = 0, status } = req.query;
+    const db = getFirestore();
+    
+    // Build query without orderBy first to avoid index issues
+    let query = db.collection('bookings')
+      .where('customerId', '==', uid)
+      .limit(parseInt(limit));
+    
+    if (status) {
+      query = query.where('status', '==', status);
+    }
+    
+    const snapshot = await query.get();
+    const bookings = [];
+    
+    snapshot.forEach(doc => {
+      const data = doc.data();
+      bookings.push({
+        id: doc.id,
+        ...data,
+        createdAt: data.createdAt?.toDate?.() || data.createdAt,
+        updatedAt: data.updatedAt?.toDate?.() || data.updatedAt
+      });
+    });
+    
+    // Sort by createdAt in memory if we have data
+    if (bookings.length > 0) {
+      bookings.sort((a, b) => {
+        const dateA = new Date(a.createdAt);
+        const dateB = new Date(b.createdAt);
+        return dateB - dateA; // Descending order
+      });
+    }
+    
+    res.status(200).json({
+      success: true,
+      message: 'Booking history retrieved successfully',
+      data: {
+        bookings,
+        pagination: {
+          limit: parseInt(limit),
+          offset: parseInt(offset),
+          total: bookings.length
+        }
+      },
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('Get booking history error:', error);
+    res.status(500).json({
+      success: false,
+      error: {
+        code: 'BOOKING_HISTORY_ERROR',
+        message: 'Failed to retrieve booking history',
+        details: error.message
+      },
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+/**
+ * @route   GET /api/customer/bookings/active
+ * @desc    Get customer active bookings
+ * @access  Private (Customer only)
+ */
+router.get('/bookings/active', requireCustomer, async (req, res) => {
+  try {
+    const { uid } = req.user;
+    const db = getFirestore();
+    
+    const activeStatuses = ['pending', 'confirmed', 'driver_assigned', 'driver_enroute', 'driver_arrived', 'picked_up', 'in_transit', 'at_dropoff'];
+    
+    const snapshot = await db.collection('bookings')
+      .where('customerId', '==', uid)
+      .where('status', 'in', activeStatuses)
+      .get();
+    
+    const bookings = [];
+    snapshot.forEach(doc => {
+      const data = doc.data();
+      bookings.push({
+        id: doc.id,
+        ...data,
+        createdAt: data.createdAt?.toDate?.() || data.createdAt,
+        updatedAt: data.updatedAt?.toDate?.() || data.updatedAt
+      });
+    });
+    
+    res.status(200).json({
+      success: true,
+      message: 'Active bookings retrieved successfully',
+      data: { bookings },
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('Get active bookings error:', error);
+    res.status(500).json({
+      success: false,
+      error: {
+        code: 'ACTIVE_BOOKINGS_ERROR',
+        message: 'Failed to retrieve active bookings'
+      },
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+/**
  * @route   GET /api/customer/bookings/:id
  * @desc    Get specific customer booking
  * @access  Private (Customer only)
@@ -1751,11 +1867,10 @@ router.get('/bookings/history', requireCustomer, async (req, res) => {
     const { limit = 20, offset = 0, status } = req.query;
     const db = getFirestore();
     
+    // Build query without orderBy first to avoid index issues
     let query = db.collection('bookings')
       .where('customerId', '==', uid)
-      .orderBy('createdAt', 'desc')
-      .limit(parseInt(limit))
-      .offset(parseInt(offset));
+      .limit(parseInt(limit));
     
     if (status) {
       query = query.where('status', '==', status);
@@ -1773,6 +1888,15 @@ router.get('/bookings/history', requireCustomer, async (req, res) => {
         updatedAt: data.updatedAt?.toDate?.() || data.updatedAt
       });
     });
+    
+    // Sort by createdAt in memory if we have data
+    if (bookings.length > 0) {
+      bookings.sort((a, b) => {
+        const dateA = new Date(a.createdAt);
+        const dateB = new Date(b.createdAt);
+        return dateB - dateA; // Descending order
+      });
+    }
     
     res.status(200).json({
       success: true,
@@ -1793,7 +1917,8 @@ router.get('/bookings/history', requireCustomer, async (req, res) => {
       success: false,
       error: {
         code: 'BOOKING_HISTORY_ERROR',
-        message: 'Failed to retrieve booking history'
+        message: 'Failed to retrieve booking history',
+        details: error.message
       },
       timestamp: new Date().toISOString()
     });
@@ -1924,11 +2049,10 @@ router.get('/support/tickets', requireCustomer, async (req, res) => {
     const { limit = 20, offset = 0, status } = req.query;
     const db = getFirestore();
     
+    // Build query without orderBy first to avoid index issues
     let query = db.collection('supportTickets')
       .where('customerId', '==', uid)
-      .orderBy('createdAt', 'desc')
-      .limit(parseInt(limit))
-      .offset(parseInt(offset));
+      .limit(parseInt(limit));
     
     if (status) {
       query = query.where('status', '==', status);
@@ -1946,6 +2070,15 @@ router.get('/support/tickets', requireCustomer, async (req, res) => {
         updatedAt: data.updatedAt?.toDate?.() || data.updatedAt
       });
     });
+    
+    // Sort by createdAt in memory if we have data
+    if (tickets.length > 0) {
+      tickets.sort((a, b) => {
+        const dateA = new Date(a.createdAt);
+        const dateB = new Date(b.createdAt);
+        return dateB - dateA; // Descending order
+      });
+    }
     
     res.status(200).json({
       success: true,
@@ -1966,7 +2099,8 @@ router.get('/support/tickets', requireCustomer, async (req, res) => {
       success: false,
       error: {
         code: 'SUPPORT_TICKETS_ERROR',
-        message: 'Failed to retrieve support tickets'
+        message: 'Failed to retrieve support tickets',
+        details: error.message
       },
       timestamp: new Date().toISOString()
     });

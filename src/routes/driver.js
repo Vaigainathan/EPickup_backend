@@ -461,6 +461,151 @@ router.put('/documents/:type', [
 });
 
 /**
+ * @route   GET /api/driver/earnings/detailed
+ * @desc    Get detailed driver earnings breakdown
+ * @access  Private (Driver only)
+ */
+router.get('/earnings/detailed', requireDriver, async (req, res) => {
+  try {
+    const { uid } = req.user;
+    const { period = 'all', startDate, endDate, limit = 50 } = req.query;
+    const db = getFirestore();
+    
+    const userDoc = await db.collection('users').doc(uid).get();
+    
+    if (!userDoc.exists) {
+      return res.status(404).json({
+        success: false,
+        error: {
+          code: 'USER_NOT_FOUND',
+          message: 'User not found',
+          details: 'Driver does not exist'
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    const userData = userDoc.data();
+    const earnings = userData.driver?.earnings || { total: 0, thisMonth: 0, thisWeek: 0 };
+
+    // Get detailed earnings from completed bookings
+    let query = db.collection('bookings')
+      .where('driverId', '==', uid)
+      .where('status', '==', 'completed');
+
+    if (period === 'week' || period === 'month') {
+      const now = new Date();
+      let start;
+      
+      if (period === 'week') {
+        start = new Date(now.getTime() - (7 * 24 * 60 * 60 * 1000));
+      } else if (period === 'month') {
+        start = new Date(now.getFullYear(), now.getMonth(), 1);
+      }
+      
+      query = query.where('timing.completedAt', '>=', start);
+    } else if (startDate && endDate) {
+      query = query
+        .where('timing.completedAt', '>=', new Date(startDate))
+        .where('timing.completedAt', '<=', new Date(endDate));
+    }
+
+    query = query.orderBy('timing.completedAt', 'desc').limit(parseInt(limit));
+    
+    const snapshot = await query.get();
+    const trips = [];
+    let totalEarnings = 0;
+    let totalDistance = 0;
+    let totalTrips = 0;
+
+    snapshot.forEach(doc => {
+      const tripData = doc.data();
+      const tripEarnings = tripData.fare?.total || 0;
+      const tripDistance = tripData.distance?.total || 0;
+      
+      trips.push({
+        id: doc.id,
+        customerName: tripData.pickup?.name || 'Unknown',
+        pickupLocation: tripData.pickup?.address || '',
+        dropoffLocation: tripData.dropoff?.address || '',
+        fare: tripEarnings,
+        distance: tripDistance,
+        completedAt: tripData.timing?.completedAt || tripData.updatedAt,
+        rating: tripData.rating?.customerRating || 0,
+        paymentMethod: tripData.paymentMethod || 'cash',
+        packageWeight: tripData.package?.weight || 0
+      });
+      
+      totalEarnings += tripEarnings;
+      totalDistance += tripDistance;
+      totalTrips++;
+    });
+
+    // Calculate commission (assuming 80% for driver, 20% for platform)
+    const commission = totalEarnings * 0.8;
+    const platformFee = totalEarnings * 0.2;
+
+    // Get earnings by payment method
+    const earningsByMethod = trips.reduce((acc, trip) => {
+      const method = trip.paymentMethod;
+      acc[method] = (acc[method] || 0) + trip.fare;
+      return acc;
+    }, {});
+
+    // Get earnings by day of week
+    const earningsByDay = trips.reduce((acc, trip) => {
+      const day = new Date(trip.completedAt).toLocaleDateString('en-US', { weekday: 'long' });
+      acc[day] = (acc[day] || 0) + trip.fare;
+      return acc;
+    }, {});
+
+    res.status(200).json({
+      success: true,
+      message: 'Detailed earnings retrieved successfully',
+      data: {
+        summary: {
+          totalEarnings: totalEarnings,
+          commission: commission,
+          platformFee: platformFee,
+          totalDistance: totalDistance,
+          totalTrips: totalTrips,
+          averageEarningsPerTrip: totalTrips > 0 ? totalEarnings / totalTrips : 0,
+          averageDistancePerTrip: totalTrips > 0 ? totalDistance / totalTrips : 0
+        },
+        breakdown: {
+          byPaymentMethod: earningsByMethod,
+          byDayOfWeek: earningsByDay,
+          period: period,
+          dateRange: {
+            startDate: startDate || null,
+            endDate: endDate || null
+          }
+        },
+        trips: trips,
+        pagination: {
+          limit: parseInt(limit),
+          total: trips.length,
+          hasMore: trips.length === parseInt(limit)
+        }
+      },
+      timestamp: new Date().toISOString()
+    });
+
+  } catch (error) {
+    console.error('Error getting detailed earnings:', error);
+    res.status(500).json({
+      success: false,
+      error: {
+        code: 'DETAILED_EARNINGS_RETRIEVAL_ERROR',
+        message: 'Failed to retrieve detailed earnings',
+        details: 'An error occurred while retrieving detailed earnings'
+      },
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+/**
  * @route   GET /api/driver/earnings
  * @desc    Get driver earnings
  * @access  Private (Driver only)
@@ -2331,6 +2476,71 @@ router.put('/availability/slots', [
 });
 
 /**
+ * @route   GET /api/driver/availability
+ * @desc    Get current driver availability status
+ * @access  Private (Driver only)
+ */
+router.get('/availability', requireDriver, async (req, res) => {
+  try {
+    const { uid } = req.user;
+    const db = getFirestore();
+    
+    const userDoc = await db.collection('users').doc(uid).get();
+    
+    if (!userDoc.exists) {
+      return res.status(404).json({
+        success: false,
+        error: {
+          code: 'USER_NOT_FOUND',
+          message: 'User not found',
+          details: 'Driver does not exist'
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    const userData = userDoc.data();
+    const driverData = userData.driver || {};
+    const availability = driverData.availability || {};
+
+    // Get current status from driverLocations collection
+    const locationDoc = await db.collection('driverLocations').doc(uid).get();
+    const locationData = locationDoc.exists ? locationDoc.data() : {};
+
+    res.status(200).json({
+      success: true,
+      message: 'Driver availability retrieved successfully',
+      data: {
+        isOnline: driverData.isOnline || false,
+        isAvailable: driverData.isAvailable || false,
+        currentStatus: driverData.isOnline && driverData.isAvailable ? 'available' : 
+                      driverData.isOnline ? 'online_unavailable' : 'offline',
+        workingHours: availability.workingHours || {},
+        workingDays: availability.workingDays || [],
+        maxBookingsPerDay: availability.maxBookingsPerDay || 10,
+        currentBookings: locationData.currentTripId ? 1 : 0,
+        lastSeen: locationData.lastUpdated || userData.updatedAt,
+        currentLocation: locationData.currentLocation || null,
+        preferredAreas: availability.preferredAreas || []
+      },
+      timestamp: new Date().toISOString()
+    });
+
+  } catch (error) {
+    console.error('Error getting driver availability:', error);
+    res.status(500).json({
+      success: false,
+      error: {
+        code: 'AVAILABILITY_RETRIEVAL_ERROR',
+        message: 'Failed to retrieve driver availability',
+        details: 'An error occurred while retrieving driver availability'
+      },
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+/**
  * @route   GET /api/driver/availability/slots
  * @desc    Get driver availability slots and working hours
  * @access  Private (Driver only)
@@ -3258,6 +3468,168 @@ router.post('/tracking/stop', [
         code: 'TRACKING_STOP_ERROR',
         message: 'Failed to stop trip tracking',
         details: 'An error occurred while stopping trip tracking'
+      },
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+/**
+ * @route   POST /api/driver/bookings/:id/payment
+ * @desc    Collect payment from customer
+ * @access  Private (Driver only)
+ */
+router.post('/bookings/:id/payment', [
+  requireDriver,
+  body('amount')
+    .isNumeric()
+    .withMessage('Amount must be a number'),
+  body('paymentMethod')
+    .isIn(['cash', 'upi', 'card'])
+    .withMessage('Payment method must be cash, upi, or card'),
+  body('collectedAt')
+    .isISO8601()
+    .withMessage('Collected at must be a valid date')
+], async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'VALIDATION_ERROR',
+          message: 'Validation failed',
+          details: errors.array()
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    const { uid } = req.user;
+    const { id } = req.params;
+    const { amount, paymentMethod, collectedAt } = req.body;
+    const db = getFirestore();
+
+    // Get booking details
+    const bookingRef = db.collection('bookings').doc(id);
+    const bookingDoc = await bookingRef.get();
+
+    if (!bookingDoc.exists) {
+      return res.status(404).json({
+        success: false,
+        error: {
+          code: 'BOOKING_NOT_FOUND',
+          message: 'Booking not found',
+          details: 'The specified booking does not exist'
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    const bookingData = bookingDoc.data();
+
+    // Verify driver is assigned to this booking
+    if (bookingData.driverId !== uid) {
+      return res.status(403).json({
+        success: false,
+        error: {
+          code: 'ACCESS_DENIED',
+          message: 'Access denied',
+          details: 'You can only collect payment for your assigned bookings'
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    // Verify booking is in correct status for payment collection
+    if (!['delivered', 'payment_pending'].includes(bookingData.status)) {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'INVALID_STATUS',
+          message: 'Invalid booking status',
+          details: 'Payment can only be collected for delivered bookings'
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    const currentTime = new Date();
+
+    // Update booking with payment information
+    const updateData = {
+      status: 'completed',
+      payment: {
+        amount: parseFloat(amount),
+        method: paymentMethod,
+        collectedAt: new Date(collectedAt),
+        collectedBy: uid,
+        status: 'collected'
+      },
+      'timing.completedAt': currentTime,
+      updatedAt: currentTime
+    };
+
+    await bookingRef.update(updateData);
+
+    // Update driver earnings
+    const driverRef = db.collection('users').doc(uid);
+    const driverDoc = await driverRef.get();
+    
+    if (driverDoc.exists) {
+      const driverData = driverDoc.data();
+      const currentEarnings = driverData.driver?.earnings || { total: 0, thisMonth: 0, thisWeek: 0 };
+      const tripEarnings = parseFloat(amount) * 0.8; // 80% for driver, 20% for platform
+      
+      const newEarnings = {
+        total: currentEarnings.total + tripEarnings,
+        thisMonth: currentEarnings.thisMonth + tripEarnings,
+        thisWeek: currentEarnings.thisWeek + tripEarnings
+      };
+
+      await driverRef.update({
+        'driver.earnings': newEarnings,
+        'driver.totalTrips': (driverData.driver?.totalTrips || 0) + 1,
+        updatedAt: currentTime
+      });
+    }
+
+    // Create payment record
+    const paymentRecord = {
+      bookingId: id,
+      driverId: uid,
+      customerId: bookingData.customerId,
+      amount: parseFloat(amount),
+      method: paymentMethod,
+      collectedAt: new Date(collectedAt),
+      status: 'collected',
+      createdAt: currentTime,
+      updatedAt: currentTime
+    };
+
+    await db.collection('payments').add(paymentRecord);
+
+    res.status(200).json({
+      success: true,
+      message: 'Payment collected successfully',
+      data: {
+        bookingId: id,
+        amount: parseFloat(amount),
+        method: paymentMethod,
+        collectedAt: new Date(collectedAt),
+        status: 'collected'
+      },
+      timestamp: new Date().toISOString()
+    });
+
+  } catch (error) {
+    console.error('Error collecting payment:', error);
+    res.status(500).json({
+      success: false,
+      error: {
+        code: 'PAYMENT_COLLECTION_ERROR',
+        message: 'Failed to collect payment',
+        details: 'An error occurred while collecting payment'
       },
       timestamp: new Date().toISOString()
     });

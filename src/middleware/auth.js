@@ -27,7 +27,22 @@ const authMiddleware = async (req, res, next) => {
 
     // Verify JWT token
     const secret = process.env.JWT_SECRET || 'your-secret-key';
-    const decodedToken = jwt.verify(token, secret);
+    let decodedToken;
+    
+    try {
+      decodedToken = jwt.verify(token, secret, {
+        issuer: 'epickup-app',
+        audience: 'epickup-users'
+      });
+    } catch (verifyError) {
+      // If verification fails with issuer/audience, try without them
+      try {
+        decodedToken = jwt.verify(token, secret);
+      } catch (fallbackError) {
+        console.error('JWT verification failed:', verifyError.message, 'Fallback failed:', fallbackError.message);
+        throw verifyError;
+      }
+    }
     
     if (!decodedToken) {
       return res.status(401).json({

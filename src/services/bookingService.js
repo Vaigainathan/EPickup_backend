@@ -99,8 +99,8 @@ class BookingService {
         
         timing: {
           createdAt: new Date(),
-          estimatedPickupTime,
-          estimatedDeliveryTime
+          estimatedPickupTime: estimatedPickupTime || new Date(Date.now() + 15 * 60 * 1000), // Default: 15 minutes from now
+          estimatedDeliveryTime: estimatedDeliveryTime || new Date(Date.now() + 45 * 60 * 1000) // Default: 45 minutes from now
         },
         
         distance: {
@@ -414,7 +414,7 @@ class BookingService {
     if (!bookingData.package?.weight) errors.push('Package weight is required');
 
     // Weight limits
-    const maxWeight = 50; // kg
+    const maxWeight = 25; // kg
     if (bookingData.package.weight > maxWeight) {
       errors.push(`Package weight cannot exceed ${maxWeight} kg`);
     }

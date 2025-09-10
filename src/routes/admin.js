@@ -518,7 +518,7 @@ router.get('/emergency/analytics', requireRole(['admin']), async (req, res) => {
  */
 router.get('/emergency/nearby-drivers', requireRole(['admin']), async (req, res) => {
   try {
-    const { latitude, longitude, radius = 5 } = req.query;
+    const { latitude, longitude } = req.query;
     
     if (!latitude || !longitude) {
       return res.status(400).json({
@@ -632,7 +632,7 @@ router.post('/emergency/notify-drivers', requireRole(['admin']), async (req, res
  */
 router.post('/emergency/contact-services', requireRole(['admin']), async (req, res) => {
   try {
-    const { alertId, serviceType, details } = req.body;
+    const { alertId, serviceType } = req.body;
     
     if (!alertId || !serviceType) {
       return res.status(400).json({
@@ -677,7 +677,7 @@ router.post('/emergency/contact-services', requireRole(['admin']), async (req, r
  */
 router.get('/emergency/reports', requireRole(['admin']), async (req, res) => {
   try {
-    const { startDate, endDate, type, severity } = req.query;
+    // const { startDate, endDate, type, severity } = req.query; // TODO: Implement filtering
     
     // Mock emergency reports data
     const reports = [
@@ -1652,7 +1652,7 @@ router.put('/settings', requireRole(['admin']), async (req, res) => {
     const filteredSettings = {};
     
     for (const key of allowedSettings) {
-      if (settings.hasOwnProperty(key)) {
+      if (Object.prototype.hasOwnProperty.call(settings, key)) {
         filteredSettings[key] = settings[key];
       }
     }

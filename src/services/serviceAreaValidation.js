@@ -102,7 +102,7 @@ class ServiceAreaValidationService {
     const isValid = pickupValidation.isValid && dropoffValidation.isValid;
 
     let message = '';
-    let warnings = [];
+    const warnings = [];
 
     if (!isValid) {
       if (!pickupValidation.isValid) {

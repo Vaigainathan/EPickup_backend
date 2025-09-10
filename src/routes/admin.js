@@ -365,46 +365,44 @@ router.get('/emergency/alerts/active', requireRole(['admin']), async (req, res) 
       const mockAlerts = [
         {
           id: 'mock-alert-1',
+          alertId: 'mock-alert-1',
+          userId: 'customer-1',
+          userType: 'customer',
+          userInfo: {
+            name: 'Alice Johnson',
+            phone: '+1234567890'
+          },
           type: 'medical',
-          severity: 'high',
+          priority: 'high',
           status: 'active',
-          customerId: 'customer-1',
-          driverId: 'driver-1',
-          customerName: 'Alice Johnson',
-          driverName: 'John Doe',
           location: {
             address: '123 Main St, New York, NY',
             latitude: 40.7128,
             longitude: -74.0060
           },
           description: 'Customer experiencing chest pain during ride',
-          reportedAt: new Date().toISOString(),
-          respondedAt: null,
-          response: null,
-          assignedTo: null,
           createdAt: new Date().toISOString(),
           updatedAt: new Date().toISOString()
         },
         {
           id: 'mock-alert-2',
-          type: 'safety',
-          severity: 'medium',
+          alertId: 'mock-alert-2',
+          userId: 'customer-2',
+          userType: 'customer',
+          userInfo: {
+            name: 'Bob Smith',
+            phone: '+1234567891'
+          },
+          type: 'other',
+          priority: 'medium',
           status: 'active',
-          customerId: 'customer-2',
-          driverId: 'driver-2',
-          customerName: 'Bob Smith',
-          driverName: 'Jane Wilson',
           location: {
             address: '456 Broadway, New York, NY',
             latitude: 40.7589,
             longitude: -73.9851
           },
           description: 'Driver reported aggressive behavior from customer',
-          reportedAt: new Date(Date.now() - 300000).toISOString(), // 5 minutes ago
-          respondedAt: null,
-          response: null,
-          assignedTo: null,
-          createdAt: new Date(Date.now() - 300000).toISOString(),
+          createdAt: new Date(Date.now() - 300000).toISOString(), // 5 minutes ago
           updatedAt: new Date(Date.now() - 300000).toISOString()
         }
       ];
@@ -469,25 +467,27 @@ router.get('/emergency/analytics', requireRole(['admin']), async (req, res) => {
       },
       byType: {
         medical: 0,
-        safety: 0,
-        technical: 0,
+        sos: 0,
+        accident: 0,
+        harassment: 0,
         other: 0
       },
-      bySeverity: {
+      byPriority: {
         high: 0,
         medium: 0,
-        low: 0
+        low: 0,
+        critical: 0
       }
     };
 
-    // Count by type and severity
+    // Count by type and priority
     totalAlerts.forEach(doc => {
       const data = doc.data();
       if (analytics.byType[data.type]) {
         analytics.byType[data.type]++;
       }
-      if (analytics.bySeverity[data.severity]) {
-        analytics.bySeverity[data.severity]++;
+      if (analytics.byPriority[data.priority]) {
+        analytics.byPriority[data.priority]++;
       }
     });
 

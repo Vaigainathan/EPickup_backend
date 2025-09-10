@@ -151,7 +151,10 @@ class BookingService {
       return {
         success: true,
         message: 'Booking created successfully',
-        data: { booking }
+        data: { 
+          booking,
+          serviceAreaWarnings: serviceAreaValidation.warnings || []
+        }
       };
 
     } catch (error) {

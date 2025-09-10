@@ -97,15 +97,25 @@ class ServiceAreaValidationService {
       bookingData.dropoff.coordinates.longitude
     );
 
+    // Service area validation: Both pickup AND dropoff must be within service area
+    // Customer can be anywhere in the world, but delivery must be within Tirupattur 25km
     const isValid = pickupValidation.isValid && dropoffValidation.isValid;
 
     let message = '';
-    if (!pickupValidation.isValid) {
-      message = `Pickup location: ${pickupValidation.message}`;
-    } else if (!dropoffValidation.isValid) {
-      message = `Dropoff location: ${dropoffValidation.message}`;
-    } else if (pickupValidation.isApproachingBoundary || dropoffValidation.isApproachingBoundary) {
-      message = 'One or more locations are near the service boundary.';
+    let warnings = [];
+
+    if (!isValid) {
+      if (!pickupValidation.isValid) {
+        message = `Pickup location is outside our service area. We only deliver within 25km of ${this.serviceCenter.NAME}.`;
+      } else if (!dropoffValidation.isValid) {
+        message = `Dropoff location is outside our service area. We only deliver within 25km of ${this.serviceCenter.NAME}.`;
+      }
+    } else {
+      // Both locations are valid, but check for boundary warnings
+      if (pickupValidation.isApproachingBoundary || dropoffValidation.isApproachingBoundary) {
+        warnings.push('One or more locations are near the service boundary. Delivery may take longer.');
+        message = warnings.join(' ');
+      }
     }
 
     return {
@@ -113,6 +123,7 @@ class ServiceAreaValidationService {
       pickup: pickupValidation,
       dropoff: dropoffValidation,
       message,
+      warnings,
       serviceCenter: this.serviceCenter,
       radiusConfig: this.radiusConfig
     };

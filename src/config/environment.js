@@ -232,8 +232,8 @@ class EnvironmentConfig {
         DEFAULT_METERS: 25000 // 25 km - default service radius
       },
       VALIDATION: {
-        ENABLED: false, // Temporarily disabled for testing
-        STRICT_MODE: false, // Allow bookings from anywhere
+        ENABLED: true, // Enable service area validation
+        STRICT_MODE: true, // Reject bookings outside service area
         WARNING_THRESHOLD: 26000 // Warn when approaching boundary
       }
     };

@@ -1071,4 +1071,113 @@ router.get('/system/health', requireRole(['admin']), async (req, res) => {
   }
 });
 
+/**
+ * @route   GET /api/admin/system/users/online
+ * @desc    Get online users count
+ * @access  Private (Admin)
+ */
+router.get('/system/users/online', async (req, res) => {
+  try {
+    const db = getFirestore();
+    
+    // Get active users (last seen within 5 minutes)
+    const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000);
+    
+    const activeUsers = await db.collection('users')
+      .where('lastSeen', '>=', fiveMinutesAgo)
+      .get();
+    
+    const onlineUsers = {
+      total: activeUsers.size,
+      drivers: 0,
+      customers: 0,
+      admins: 0
+    };
+    
+    activeUsers.forEach(doc => {
+      const userData = doc.data();
+      switch (userData.userType) {
+        case 'driver':
+          onlineUsers.drivers++;
+          break;
+        case 'customer':
+          onlineUsers.customers++;
+          break;
+        case 'admin':
+          onlineUsers.admins++;
+          break;
+      }
+    });
+    
+    res.json({
+      success: true,
+      data: onlineUsers,
+      message: 'Online users retrieved successfully'
+    });
+  } catch (error) {
+    console.error('Error fetching online users:', error);
+    res.status(500).json({
+      success: false,
+      error: {
+        code: 'FETCH_ONLINE_USERS_ERROR',
+        message: 'Failed to fetch online users'
+      }
+    });
+  }
+});
+
+/**
+ * @route   GET /api/admin/system/logs
+ * @desc    Get system logs
+ * @access  Private (Admin)
+ */
+router.get('/system/logs', async (req, res) => {
+  try {
+    const { limit = 50, level, startDate, endDate } = req.query;
+    
+    const db = getFirestore();
+    let query = db.collection('system_logs')
+      .orderBy('timestamp', 'desc')
+      .limit(parseInt(limit));
+    
+    // Apply filters
+    if (level) {
+      query = query.where('level', '==', level);
+    }
+    
+    if (startDate) {
+      query = query.where('timestamp', '>=', new Date(startDate));
+    }
+    
+    if (endDate) {
+      query = query.where('timestamp', '<=', new Date(endDate));
+    }
+    
+    const logsSnapshot = await query.get();
+    
+    const logs = [];
+    logsSnapshot.forEach(doc => {
+      logs.push({
+        id: doc.id,
+        ...doc.data()
+      });
+    });
+    
+    res.json({
+      success: true,
+      data: logs,
+      message: 'System logs retrieved successfully'
+    });
+  } catch (error) {
+    console.error('Error fetching system logs:', error);
+    res.status(500).json({
+      success: false,
+      error: {
+        code: 'FETCH_SYSTEM_LOGS_ERROR',
+        message: 'Failed to fetch system logs'
+      }
+    });
+  }
+});
+
 module.exports = router;

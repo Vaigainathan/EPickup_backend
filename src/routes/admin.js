@@ -4,6 +4,152 @@ const { requireRole } = require('../middleware/auth');
 const router = express.Router();
 
 /**
+ * @route   POST /api/admin/create-admin
+ * @desc    Create admin user for testing (temporary endpoint)
+ * @access  Public (for initial setup)
+ */
+router.post('/create-admin', async (req, res) => {
+  try {
+    const { email, password, name } = req.body;
+    
+    if (!email || !password || !name) {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'MISSING_FIELDS',
+          message: 'Email, password, and name are required'
+        }
+      });
+    }
+
+    const db = getFirestore();
+    
+    // Check if admin already exists
+    const existingAdmin = await db.collection('users')
+      .where('email', '==', email)
+      .where('userType', '==', 'admin')
+      .get();
+    
+    if (!existingAdmin.empty) {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'ADMIN_EXISTS',
+          message: 'Admin user already exists'
+        }
+      });
+    }
+
+    // Create admin user
+    const adminData = {
+      email,
+      name,
+      userType: 'admin',
+      role: 'super_admin',
+      permissions: ['all'],
+      isActive: true,
+      createdAt: new Date(),
+      updatedAt: new Date()
+    };
+
+    const adminRef = await db.collection('users').add(adminData);
+    
+    res.status(201).json({
+      success: true,
+      message: 'Admin user created successfully',
+      data: {
+        id: adminRef.id,
+        email,
+        name,
+        role: 'super_admin'
+      }
+    });
+
+  } catch (error) {
+    console.error('Error creating admin user:', error);
+    res.status(500).json({
+      success: false,
+      error: {
+        code: 'CREATE_ADMIN_ERROR',
+        message: 'Failed to create admin user',
+        details: error.message
+      }
+    });
+  }
+});
+
+/**
+ * @route   POST /api/admin/login
+ * @desc    Admin login (simplified for testing)
+ * @access  Public
+ */
+router.post('/login', async (req, res) => {
+  try {
+    const { email, password } = req.body;
+    
+    if (!email || !password) {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'MISSING_CREDENTIALS',
+          message: 'Email and password are required'
+        }
+      });
+    }
+
+    const db = getFirestore();
+    
+    // Find admin user
+    const adminQuery = await db.collection('users')
+      .where('email', '==', email)
+      .where('userType', '==', 'admin')
+      .get();
+    
+    if (adminQuery.empty) {
+      return res.status(401).json({
+        success: false,
+        error: {
+          code: 'INVALID_CREDENTIALS',
+          message: 'Invalid email or password'
+        }
+      });
+    }
+
+    const adminDoc = adminQuery.docs[0];
+    const adminData = adminDoc.data();
+    
+    // For testing, accept any password (in production, use proper authentication)
+    const token = `admin_token_${adminDoc.id}_${Date.now()}`;
+    
+    res.json({
+      success: true,
+      message: 'Login successful',
+      data: {
+        token,
+        user: {
+          id: adminDoc.id,
+          email: adminData.email,
+          name: adminData.name,
+          role: adminData.role,
+          permissions: adminData.permissions
+        }
+      }
+    });
+
+  } catch (error) {
+    console.error('Admin login error:', error);
+    res.status(500).json({
+      success: false,
+      error: {
+        code: 'LOGIN_ERROR',
+        message: 'Login failed',
+        details: error.message
+      }
+    });
+  }
+});
+
+/**
  * @route   GET /api/admin/drivers
  * @desc    Get all drivers with pagination and filters
  * @access  Private (Admin only)
@@ -822,12 +968,12 @@ router.get('/system/health', requireRole(['admin']), async (req, res) => {
       uptime: process.uptime(),
       memory: process.memoryUsage(),
       timestamp: new Date().toISOString(),
-      services: {
-        api: { status: 'healthy', lastCheck: new Date().toISOString() },
-        database: { status: 'healthy', lastCheck: new Date().toISOString() },
-        websocket: { status: 'healthy', lastCheck: new Date().toISOString() },
-        firebase: { status: 'healthy', lastCheck: new Date().toISOString() }
-      },
+      services: [
+        { name: 'API', status: 'healthy', lastCheck: new Date().toISOString() },
+        { name: 'Database', status: 'healthy', lastCheck: new Date().toISOString() },
+        { name: 'WebSocket', status: 'healthy', lastCheck: new Date().toISOString() },
+        { name: 'Firebase', status: 'healthy', lastCheck: new Date().toISOString() }
+      ],
       metrics: {
         totalUsers: 0,
         totalDrivers: 0,
@@ -836,16 +982,44 @@ router.get('/system/health', requireRole(['admin']), async (req, res) => {
         pendingVerifications: 0,
         openSupportTickets: 0,
         activeEmergencyAlerts: 0
+      },
+      // Add SystemMetrics structure for frontend compatibility
+      systemMetrics: {
+        timestamp: new Date().toISOString(),
+        server: {
+          cpu: 0, // Placeholder - would need actual CPU monitoring
+          memory: Math.round(process.memoryUsage().heapUsed / 1024 / 1024), // MB
+          disk: 0, // Placeholder
+          uptime: process.uptime()
+        },
+        database: {
+          connections: 0,
+          responseTime: 0,
+          queries: 0
+        },
+        api: {
+          requests: 0,
+          responseTime: 0,
+          errorRate: 0
+        },
+        websocket: {
+          connections: 0,
+          messages: 0
+        },
+        users: {
+          online: 0,
+          active: 0
+        }
       }
     };
 
     // Test database connectivity
     try {
       await db.collection('users').limit(1).get();
-      health.services.database.status = 'healthy';
+      health.services[1].status = 'healthy'; // Database service
     } catch {
-      health.services.database.status = 'unhealthy';
-      health.status = 'warning';
+      health.services[1].status = 'unhealthy'; // Database service
+      health.status = 'degraded';
     }
 
     // Get metrics

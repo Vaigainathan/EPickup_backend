@@ -192,8 +192,8 @@ class EnvironmentConfig {
 
     // Rate Limiting Configuration
     this.config.rateLimit = {
-      windowMs: parseInt(process.env.RATE_LIMIT_WINDOW_MS) || 900000,
-      maxRequests: parseInt(process.env.RATE_LIMIT_MAX_REQUESTS) || 100
+      windowMs: parseInt(process.env.RATE_LIMIT_WINDOW_MS) || 900000, // 15 minutes
+      maxRequests: parseInt(process.env.RATE_LIMIT_MAX_REQUESTS) || 2000 // Increased for admin dashboard
     };
 
     // Logging Configuration

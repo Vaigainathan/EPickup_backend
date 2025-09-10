@@ -137,6 +137,22 @@ const speedLimiter = slowDown({
 app.use(limiter);
 app.use(speedLimiter);
 
+// Admin-specific rate limiter (more lenient)
+const adminLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 5000, // 5000 requests per 15 minutes for admin
+  message: {
+    error: 'Too many admin requests from this IP, please try again later.',
+    retryAfter: '15 minutes'
+  },
+  standardHeaders: true,
+  legacyHeaders: false,
+  trustProxy: true
+});
+
+// Apply admin rate limiter to admin routes
+app.use('/api/admin', adminLimiter);
+
 // Compression middleware
 app.use(compression());
 

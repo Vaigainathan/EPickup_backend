@@ -335,6 +335,53 @@ router.get('/emergency-alerts', requireRole(['admin']), async (req, res) => {
 });
 
 /**
+ * @route   GET /api/admin/emergency/alerts/active
+ * @desc    Get active emergency alerts
+ * @access  Private (Admin only)
+ */
+router.get('/emergency/alerts/active', requireRole(['admin']), async (req, res) => {
+  try {
+    const db = getFirestore();
+    
+    // Get active emergency alerts
+    const activeAlertsSnapshot = await db.collection('emergencyAlerts')
+      .where('status', '==', 'active')
+      .orderBy('createdAt', 'desc')
+      .get();
+
+    const activeAlerts = [];
+    activeAlertsSnapshot.forEach(doc => {
+      const data = doc.data();
+      activeAlerts.push({
+        id: doc.id,
+        ...data,
+        createdAt: data.createdAt?.toDate?.() || data.createdAt,
+        updatedAt: data.updatedAt?.toDate?.() || data.updatedAt
+      });
+    });
+
+    res.json({
+      success: true,
+      data: activeAlerts,
+      count: activeAlerts.length,
+      timestamp: new Date().toISOString()
+    });
+
+  } catch (error) {
+    console.error('Error fetching active emergency alerts:', error);
+    res.status(500).json({
+      success: false,
+      error: {
+        code: 'FETCH_ACTIVE_EMERGENCY_ALERTS_ERROR',
+        message: 'Failed to fetch active emergency alerts',
+        details: error.message
+      },
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+/**
  * @route   GET /api/admin/system-health
  * @desc    Get system health metrics
  * @access  Private (Admin only)

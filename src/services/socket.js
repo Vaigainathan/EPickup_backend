@@ -45,13 +45,40 @@ const initializeSocketIO = async (server) => {
 
         // Verify JWT token
         const secret = process.env.JWT_SECRET || 'your-secret-key';
-        const decodedToken = jwt.verify(token, secret);
+        let decodedToken;
+        
+        try {
+          decodedToken = jwt.verify(token, secret);
+        } catch (jwtError) {
+          if (jwtError.name === 'TokenExpiredError') {
+            // Token expired - allow connection but mark for token refresh
+            console.log('Socket token expired, allowing connection for refresh');
+            socket.needsTokenRefresh = true;
+            socket.originalToken = token;
+            
+            // Try to decode without verification to get user info
+            try {
+              decodedToken = jwt.decode(token);
+              if (decodedToken && decodedToken.userId) {
+                socket.userId = decodedToken.userId;
+                socket.userType = decodedToken.userType || 'customer';
+                socket.userRole = decodedToken.role || 'customer';
+                socket.userRooms = new Set();
+                return next();
+              }
+            } catch (decodeError) {
+              console.error('Failed to decode expired token:', decodeError.message);
+            }
+          }
+          throw jwtError;
+        }
         
         // Add user info to socket
         socket.userId = decodedToken.userId;
         socket.userType = decodedToken.userType || 'customer';
         socket.userRole = decodedToken.role || 'customer';
         socket.userRooms = new Set();
+        socket.needsTokenRefresh = false;
         
         next();
       } catch (error) {
@@ -63,6 +90,14 @@ const initializeSocketIO = async (server) => {
     // Connection handler
     io.on('connection', (socket) => {
       console.log(`🔌 User connected: ${socket.userId} (${socket.userType})`);
+      
+      // Check if token needs refresh
+      if (socket.needsTokenRefresh) {
+        socket.emit('token_refresh_required', {
+          message: 'Token expired, please refresh',
+          timestamp: new Date().toISOString()
+        });
+      }
       
       // Handle connection with event handler
       eventHandler.handleConnection(socket);
@@ -118,6 +153,43 @@ const initializeSocketIO = async (server) => {
 
       socket.on('token_refresh', (data) => {
         eventHandler.handleTokenRefresh(socket, data);
+      });
+
+      // Handle token refresh with new token
+      socket.on('refresh_token', async (data) => {
+        try {
+          const { newToken } = data;
+          if (!newToken) {
+            socket.emit('token_refresh_failed', {
+              message: 'No new token provided',
+              timestamp: new Date().toISOString()
+            });
+            return;
+          }
+
+          // Verify the new token
+          const secret = process.env.JWT_SECRET || 'your-secret-key';
+          const decodedToken = jwt.verify(newToken, secret);
+          
+          // Update socket with new token info
+          socket.userId = decodedToken.userId;
+          socket.userType = decodedToken.userType || 'customer';
+          socket.userRole = decodedToken.role || 'customer';
+          socket.needsTokenRefresh = false;
+          
+          socket.emit('token_refresh_success', {
+            message: 'Token refreshed successfully',
+            timestamp: new Date().toISOString()
+          });
+          
+          console.log(`✅ Token refreshed for user: ${socket.userId}`);
+        } catch (error) {
+          console.error('Token refresh failed:', error.message);
+          socket.emit('token_refresh_failed', {
+            message: 'Invalid new token',
+            timestamp: new Date().toISOString()
+          });
+        }
       });
 
       socket.on('force_logout', (data) => {

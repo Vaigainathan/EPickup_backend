@@ -816,4 +816,55 @@ router.get('/twilio-status', async (req, res) => {
   }
 });
 
+/**
+ * @route POST /api/auth/refresh
+ * @desc Refresh access token using refresh token
+ * @access Public
+ */
+router.post('/refresh',
+  authRateLimit,
+  validateRequest({
+    body: {
+      refreshToken: { type: 'string', required: true }
+    }
+  }),
+  async (req, res) => {
+    try {
+      const { refreshToken } = req.body;
+
+      console.log('🔄 Token refresh request received');
+
+      // Refresh the access token
+      const tokenData = jwtService.refreshAccessToken(refreshToken);
+
+      console.log('✅ Token refreshed successfully');
+
+      res.status(200).json({
+        success: true,
+        message: 'Token refreshed successfully',
+        data: {
+          accessToken: tokenData.accessToken,
+          refreshToken: tokenData.refreshToken,
+          expiresIn: tokenData.expiresIn,
+          refreshExpiresIn: tokenData.refreshExpiresIn
+        },
+        timestamp: new Date().toISOString()
+      });
+
+    } catch (error) {
+      console.error('❌ Token refresh error:', error);
+
+      res.status(401).json({
+        success: false,
+        message: 'Token refresh failed',
+        error: {
+          code: 'TOKEN_REFRESH_ERROR',
+          message: error.message
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+  }
+);
+
 module.exports = router;

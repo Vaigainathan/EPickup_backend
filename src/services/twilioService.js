@@ -175,7 +175,7 @@ class TwilioService {
       console.log(`🔐 Sending OTP to ${phoneNumber} via ${channel}`);
       
       const verification = await this.client.verify.v2
-        .services(this.serviceSid)
+        .services(this.verifyServiceSid)
         .verifications
         .create({
           to: phoneNumber,
@@ -212,7 +212,7 @@ class TwilioService {
       console.log(`🔐 Verifying OTP for ${phoneNumber}`);
       
       const verificationCheck = await this.client.verify.v2
-        .services(this.serviceSid)
+        .services(this.verifyServiceSid)
         .verificationChecks
         .create({
           to: phoneNumber,

@@ -172,18 +172,21 @@ class TwilioService {
 
       const { channel = 'sms', locale = 'en' } = options;
       
-      console.log(`🔐 Sending OTP to ${phoneNumber} via ${channel}`);
+      // Format phone number for Twilio
+      const formattedPhone = this.formatPhoneNumber(phoneNumber);
+      
+      console.log(`🔐 Sending OTP to ${formattedPhone} via ${channel}`);
       
       const verification = await this.client.verify.v2
         .services(this.verifyServiceSid)
         .verifications
         .create({
-          to: phoneNumber,
+          to: formattedPhone,
           channel: channel,
           locale: locale
         });
 
-      console.log(`✅ OTP sent successfully to ${phoneNumber}`);
+      console.log(`✅ OTP sent successfully to ${formattedPhone}`);
       
       return {
         success: true,
@@ -209,22 +212,25 @@ class TwilioService {
         throw new Error('Twilio client not initialized');
       }
 
-      console.log(`🔐 Verifying OTP for ${phoneNumber}`);
+      // Format phone number for Twilio
+      const formattedPhone = this.formatPhoneNumber(phoneNumber);
+      
+      console.log(`🔐 Verifying OTP for ${formattedPhone}`);
       
       const verificationCheck = await this.client.verify.v2
         .services(this.verifyServiceSid)
         .verificationChecks
         .create({
-          to: phoneNumber,
+          to: formattedPhone,
           code: code
         });
 
       const isValid = verificationCheck.status === 'approved';
       
       if (isValid) {
-        console.log(`✅ OTP verification successful for ${phoneNumber}`);
+        console.log(`✅ OTP verification successful for ${formattedPhone}`);
       } else {
-        console.log(`❌ OTP verification failed for ${phoneNumber}`);
+        console.log(`❌ OTP verification failed for ${formattedPhone}`);
       }
 
       return {

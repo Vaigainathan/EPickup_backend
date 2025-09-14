@@ -41,7 +41,7 @@ const { initializeFirebase } = require('./services/firebase');
 // Firestore Session Service is imported but not directly used in server.js
 // It's used by other services that import it directly
 const socketService = require('./services/socket');
-const twilioService = require('./services/twilioService');
+const msg91Service = require('./services/msg91Service');
 
 const app = express();
 const PORT = env.getServerPort();
@@ -66,17 +66,17 @@ try {
   console.error('Firestore Session Error:', error.message);
 }
 
-// Initialize Twilio service
+// Initialize MSG91 service
 try {
-  twilioService.initialize().then(() => {
-    console.log('✅ Twilio service initialization completed');
+  msg91Service.initialize().then(() => {
+    console.log('✅ MSG91 service initialization completed');
   }).catch((error) => {
-    console.log('⚠️  Twilio service initialization failed, continuing with mock service...');
-    console.error('Twilio Error:', error.message);
+    console.log('⚠️  MSG91 service initialization failed, continuing with mock service...');
+    console.error('MSG91 Error:', error.message);
   });
 } catch (error) {
-  console.log('⚠️  Twilio service initialization failed, continuing with mock service...');
-  console.error('Twilio Error:', error.message);
+  console.log('⚠️  MSG91 service initialization failed, continuing with mock service...');
+  console.error('MSG91 Error:', error.message);
 }
 
 // Create HTTP server

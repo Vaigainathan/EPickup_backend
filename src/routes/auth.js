@@ -1,6 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const twilioService = require('../services/twilioService');
+const msg91Service = require('../services/msg91Service');
 const authService = require('../services/authService');
 const JWTService = require('../services/jwtService');
 const jwtService = new JWTService(); // Create instance
@@ -105,8 +105,8 @@ router.post('/send-otp',
 
       console.log(`📱 Sending OTP to ${phoneNumber} (signup: ${isSignup}, userType: ${userType})`);
 
-      // Send OTP via Twilio
-      const result = await twilioService.sendOTP(phoneNumber, options);
+      // Send OTP via MSG91
+      const result = await msg91Service.sendOTP(phoneNumber, options);
 
       if (!result.success) {
         console.error('❌ OTP send failed:', result);
@@ -191,8 +191,8 @@ router.post('/verify-otp',
       console.log(`🔐 Verifying OTP for ${phoneNumber}`);
       console.log(`📝 Request body:`, { phoneNumber, otp, verificationSid, name, userType });
 
-      // Verify OTP via Twilio
-      const verificationResult = await twilioService.verifyOTP(phoneNumber, otp, verificationSid);
+      // Verify OTP via MSG91
+      const verificationResult = await msg91Service.verifyOTP(phoneNumber, otp, verificationSid);
 
       if (!verificationResult.success) {
         console.error('❌ OTP verification failed:', verificationResult);
@@ -452,8 +452,8 @@ router.post('/resend-otp',
 
       console.log(`📱 Resending OTP to ${phoneNumber}`);
 
-      // Resend OTP via Twilio
-      const result = await twilioService.resendOTP(phoneNumber, options);
+      // Resend OTP via MSG91
+      const result = await msg91Service.resendOTP(phoneNumber, options);
 
       if (!result.success) {
         return res.status(400).json({
@@ -726,13 +726,13 @@ router.post('/logout',
  */
 router.get('/health', async (req, res) => {
   try {
-    const twilioHealth = await twilioService.getHealthStatus();
+    const msg91Health = await msg91Service.getHealthStatus();
     
     res.json({
       success: true,
       message: 'Authentication service is healthy',
       data: {
-        twilio: twilioHealth,
+        msg91: msg91Health,
         timestamp: new Date().toISOString()
       }
     });
@@ -753,62 +753,62 @@ router.get('/health', async (req, res) => {
 });
 
 /**
- * @route GET /api/auth/twilio-status
- * @desc Check Twilio service status and configuration
+ * @route GET /api/auth/msg91-status
+ * @desc Check MSG91 service status and configuration
  * @access Public
  */
-router.get('/twilio-status', async (req, res) => {
+router.get('/msg91-status', async (req, res) => {
   try {
-    const twilioHealth = await twilioService.getHealthStatus();
-    const twilioConfig = env.getTwilioConfig();
+    const msg91Health = await msg91Service.getHealthStatus();
+    const msg91Config = env.getMsg91Config();
     
     // Debug environment variables
     const debugEnv = {
-      TWILIO_ENABLED: process.env.TWILIO_ENABLED,
-      TWILIO_MOCK_MODE: process.env.TWILIO_MOCK_MODE,
-      TWILIO_ACCOUNT_SID: process.env.TWILIO_ACCOUNT_SID ? 'SET' : 'NOT SET',
-      TWILIO_AUTH_TOKEN: process.env.TWILIO_AUTH_TOKEN ? 'SET' : 'NOT SET',
-      TWILIO_VERIFY_SERVICE_SID: process.env.TWILIO_VERIFY_SERVICE_SID ? 'SET' : 'NOT SET',
+      MSG91_ENABLED: process.env.MSG91_ENABLED,
+      MSG91_MOCK_MODE: process.env.MSG91_MOCK_MODE,
+      MSG91_AUTH_KEY: process.env.MSG91_AUTH_KEY ? 'SET' : 'NOT SET',
+      MSG91_SENDER_ID: process.env.MSG91_SENDER_ID ? 'SET' : 'NOT SET',
+      MSG91_API_URL: process.env.MSG91_API_URL ? 'SET' : 'NOT SET',
       NODE_ENV: process.env.NODE_ENV
     };
     
     // Check if there are any issues
-    const hasIssues = twilioHealth.mockMode || twilioHealth.errorCount > 0 || twilioHealth.lastError;
+    const hasIssues = msg91Health.mockMode || msg91Health.errorCount > 0 || msg91Health.lastError;
     const status = hasIssues ? 'warning' : 'healthy';
     
-    console.log(`📊 Twilio Status Check - Status: ${status}, Mock Mode: ${twilioHealth.mockMode}, Error Count: ${twilioHealth.errorCount}`);
+    console.log(`📊 MSG91 Status Check - Status: ${status}, Mock Mode: ${msg91Health.mockMode}, Error Count: ${msg91Health.errorCount}`);
     
     res.json({
       success: true,
-      message: 'Twilio status retrieved successfully',
+      message: 'MSG91 status retrieved successfully',
       data: {
         status: status,
-        health: twilioHealth,
+        health: msg91Health,
         config: {
-          enabled: env.isTwilioEnabled(),
-          hasAccountSid: !!twilioConfig.accountSid,
-          hasAuthToken: !!twilioConfig.authToken,
-          hasVerifyServiceSid: !!twilioConfig.verifyServiceSid,
-          mockMode: twilioConfig.mockMode
+          enabled: env.isMsg91Enabled(),
+          hasAuthKey: !!msg91Config.authKey,
+          hasSenderId: !!msg91Config.senderId,
+          hasApiUrl: !!msg91Config.apiUrl,
+          mockMode: msg91Config.mockMode
         },
         debug: debugEnv,
         issues: hasIssues ? {
-          mockMode: twilioHealth.mockMode,
-          errorCount: twilioHealth.errorCount,
-          lastError: twilioHealth.lastError
+          mockMode: msg91Health.mockMode,
+          errorCount: msg91Health.errorCount,
+          lastError: msg91Health.lastError
         } : null,
         timestamp: new Date().toISOString()
       }
     });
 
   } catch (error) {
-    console.error('❌ Twilio status check error:', error);
+    console.error('❌ MSG91 status check error:', error);
 
     res.status(500).json({
       success: false,
-      message: 'Failed to check Twilio status',
+      message: 'Failed to check MSG91 status',
       error: {
-        code: 'TWILIO_STATUS_ERROR',
+        code: 'MSG91_STATUS_ERROR',
         message: error.message
       },
       timestamp: new Date().toISOString()

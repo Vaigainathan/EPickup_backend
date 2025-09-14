@@ -1,5 +1,5 @@
 const { getFirestore } = require('./firebase');
-const twilioService = require('./twilioService');
+const msg91Service = require('./msg91Service');
 const JWTService = require('./jwtService');
 const crypto = require('crypto');
 
@@ -14,7 +14,7 @@ class AuthService {
   }
 
   /**
-   * Generate OTP for phone number using Twilio Verify
+   * Generate OTP for phone number using MSG91
    * @param {string} phoneNumber - Phone number to send OTP to
    * @param {boolean} isSignup - Whether this is for signup or login
    * @param {Object} options - Additional options for OTP
@@ -34,8 +34,8 @@ class AuthService {
         throw new Error('USER_NOT_FOUND');
       }
 
-      // Send OTP via Twilio Verify
-      const result = await twilioService.sendOTP(phoneNumber, {
+      // Send OTP via MSG91
+      const result = await msg91Service.sendOTP(phoneNumber, {
         ...options,
         metadata: {
           isSignup,
@@ -49,8 +49,8 @@ class AuthService {
 
       return {
         success: true,
-        sessionId: result.verificationSid,
-        expiresIn: '10 minutes',
+        sessionId: result.sid,
+        expiresIn: '5 minutes',
         resendCount: 0,
         maxResends: 3,
         channel: result.channel,
@@ -64,7 +64,7 @@ class AuthService {
   }
 
   /**
-   * Verify OTP and authenticate user using Twilio Verify
+   * Verify OTP and authenticate user using MSG91
    * @param {string} phoneNumber - Phone number
    * @param {string} otp - OTP to verify
    * @param {string} verificationSid - Verification session ID (optional)
@@ -73,8 +73,8 @@ class AuthService {
    */
   async verifyOTP(phoneNumber, otp, verificationSid = null, userData = {}) {
     try {
-      // Verify OTP via Twilio
-      const result = await twilioService.verifyOTP(phoneNumber, otp, verificationSid);
+      // Verify OTP via MSG91
+      const result = await msg91Service.verifyOTP(phoneNumber, otp, verificationSid);
 
       if (!result.success) {
         throw new Error('INVALID_OTP');
@@ -110,15 +110,15 @@ class AuthService {
   }
 
   /**
-   * Resend OTP to phone number using Twilio Verify
+   * Resend OTP to phone number using MSG91
    * @param {string} phoneNumber - Phone number
    * @param {Object} options - Additional options for resend
    * @returns {Promise<Object>} Resend result
    */
   async resendOTP(phoneNumber, options = {}) {
     try {
-      // Resend OTP via Twilio
-      const result = await twilioService.resendOTP(phoneNumber, options);
+      // Resend OTP via MSG91
+      const result = await msg91Service.resendOTP(phoneNumber, options);
 
       if (!result.success) {
         throw new Error(result.error?.code || 'OTP_RESEND_FAILED');
@@ -126,8 +126,8 @@ class AuthService {
 
       return {
         success: true,
-        sessionId: result.verificationSid,
-        expiresIn: '10 minutes',
+        sessionId: result.sid,
+        expiresIn: '5 minutes',
         channel: result.channel,
         to: result.to
       };

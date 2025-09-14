@@ -19,7 +19,7 @@ router.get('/', (req, res) => {
         server: 'running',
         database: 'connected', // Firebase Firestore
         firestoreSession: 'configured',
-        twilio: process.env.TWILIO_ACCOUNT_SID ? 'configured' : 'not_configured',
+        msg91: process.env.MSG91_AUTH_KEY ? 'configured' : 'not_configured',
         expo: process.env.EXPO_ACCESS_TOKEN ? 'configured' : 'not_configured'
       }
     };
@@ -69,10 +69,11 @@ router.get('/detailed', (req, res) => {
           status: 'configured',
           type: 'Firestore-based session management'
         },
-        twilio: {
-          status: process.env.TWILIO_ACCOUNT_SID ? 'configured' : 'not_configured',
-          accountSid: process.env.TWILIO_ACCOUNT_SID ? 'configured' : null,
-          verifyService: process.env.TWILIO_VERIFY_SERVICE_SID ? 'configured' : 'not_configured'
+        msg91: {
+          status: process.env.MSG91_AUTH_KEY ? 'configured' : 'not_configured',
+          authKey: process.env.MSG91_AUTH_KEY ? 'configured' : null,
+          senderId: process.env.MSG91_SENDER_ID ? 'configured' : 'not_configured',
+          apiUrl: process.env.MSG91_API_URL ? 'configured' : 'not_configured'
         },
         expo: {
           status: process.env.EXPO_ACCESS_TOKEN ? 'configured' : 'not_configured',

@@ -84,14 +84,14 @@ class EnvironmentConfig {
       },
     };
 
-    // Twilio Configuration
-    this.config.twilio = {
-      accountSid: process.env.TWILIO_ACCOUNT_SID,
-      authToken: process.env.TWILIO_AUTH_TOKEN,
-      verifyServiceSid: process.env.TWILIO_VERIFY_SERVICE_SID,
-      phoneNumber: process.env.TWILIO_PHONE_NUMBER,
-      enabled: process.env.TWILIO_ENABLED === 'true',
-      mockMode: process.env.TWILIO_MOCK_MODE === 'true'
+    // MSG91 Configuration
+    this.config.msg91 = {
+      authKey: process.env.MSG91_AUTH_KEY,
+      senderId: process.env.MSG91_SENDER_ID,
+      apiUrl: process.env.MSG91_API_URL,
+      enabled: process.env.MSG91_ENABLED === 'true',
+      mockMode: process.env.MSG91_MOCK_MODE === 'true',
+      whitelistedIps: process.env.MSG91_WHITELISTED_IPS
     };
 
     // reCAPTCHA Configuration
@@ -491,22 +491,22 @@ class EnvironmentConfig {
   }
 
   /**
-   * Get Twilio configuration
+   * Get MSG91 configuration
    */
-  getTwilioConfig() {
-    return this.config.twilio;
+  getMsg91Config() {
+    return this.config.msg91;
   }
 
   /**
-   * Check if Twilio is enabled
+   * Check if MSG91 is enabled
    */
-  isTwilioEnabled() {
+  isMsg91Enabled() {
     // Force enable in production if credentials are available
-    if (this.isProduction() && this.config.twilio.accountSid && this.config.twilio.authToken && this.config.twilio.verifyServiceSid) {
-      console.log('🚀 Production environment detected - forcing Twilio enabled');
+    if (this.isProduction() && this.config.msg91.authKey && this.config.msg91.senderId && this.config.msg91.apiUrl) {
+      console.log('🚀 Production environment detected - forcing MSG91 enabled');
       return true;
     }
-    return this.config.twilio.enabled && !this.config.twilio.mockMode;
+    return this.config.msg91.enabled && !this.config.msg91.mockMode;
   }
 
   /**

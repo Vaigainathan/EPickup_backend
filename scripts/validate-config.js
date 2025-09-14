@@ -32,10 +32,10 @@ const REQUIRED_ENV_VARS = {
   // Google Maps
   GOOGLE_MAPS_API_KEY: 'Google Maps API key',
   
-  // Twilio Configuration
-  TWILIO_ACCOUNT_SID: 'Twilio account SID',
-  TWILIO_AUTH_TOKEN: 'Twilio auth token',
-  TWILIO_VERIFY_SERVICE_SID: 'Twilio verify service SID',
+  // MSG91 Configuration
+  MSG91_AUTH_KEY: 'MSG91 auth key',
+  MSG91_SENDER_ID: 'MSG91 sender ID',
+  MSG91_API_URL: 'MSG91 API URL',
   
   // Redis Configuration
   REDIS_URL: 'Redis connection URL',
@@ -133,10 +133,10 @@ function validateSpecificConfigs(warnings) {
   }
   
   // Validate phone number format
-  const phoneNumber = process.env.TWILIO_ACCOUNT_SID;
+  const phoneNumber = process.env.MSG91_AUTH_KEY;
   if (phoneNumber && phoneNumber.length < 10) {
     warnings.push({ 
-      name: 'TWILIO_ACCOUNT_SID', 
+      name: 'MSG91_AUTH_KEY', 
       message: 'Account SID format may be incorrect' 
     });
   }

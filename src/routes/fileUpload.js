@@ -34,17 +34,7 @@ router.post('/upload',
   upload.single('document'),
   async (req, res) => {
     try {
-      if (!req.file) {
-        return res.status(400).json({
-          success: false,
-          error: {
-            code: 'NO_FILE_PROVIDED',
-            message: 'No file provided'
-          }
-        });
-      }
-
-      const { documentType } = req.body;
+      const { documentType, documentUrl, documentNumber } = req.body;
       const driverId = req.user.uid;
 
       if (!documentType) {
@@ -57,34 +47,56 @@ router.post('/upload',
         });
       }
 
-      // Validate file before processing
-      const validation = fileUploadService.validateFile(req.file, documentType);
-      if (!validation.isValid) {
+      // Handle direct file upload
+      if (req.file) {
+        // Validate file before processing
+        const validation = fileUploadService.validateFile(req.file, documentType);
+        if (!validation.isValid) {
+          return res.status(400).json({
+            success: false,
+            error: {
+              code: 'FILE_VALIDATION_FAILED',
+              message: 'File validation failed',
+              details: validation.errors,
+              warnings: validation.warnings
+            }
+          });
+        }
+
+        // Upload document
+        const result = await fileUploadService.uploadDocument(
+          req.file,
+          documentType,
+          driverId,
+          {
+            originalName: req.file.originalname,
+            uploadedBy: driverId,
+            ipAddress: req.ip,
+            userAgent: req.get('User-Agent')
+          }
+        );
+
+        res.status(201).json(result);
+      } 
+      // Handle document URL registration (from mobile app)
+      else if (documentUrl) {
+        const result = await fileUploadService.registerDocumentFromUrl(
+          driverId,
+          documentType,
+          documentUrl,
+          documentNumber
+        );
+
+        res.status(201).json(result);
+      } else {
         return res.status(400).json({
           success: false,
           error: {
-            code: 'FILE_VALIDATION_FAILED',
-            message: 'File validation failed',
-            details: validation.errors,
-            warnings: validation.warnings
+            code: 'NO_FILE_OR_URL_PROVIDED',
+            message: 'Either a file or document URL must be provided'
           }
         });
       }
-
-      // Upload document
-      const result = await fileUploadService.uploadDocument(
-        req.file,
-        documentType,
-        driverId,
-        {
-          originalName: req.file.originalname,
-          uploadedBy: driverId,
-          ipAddress: req.ip,
-          userAgent: req.get('User-Agent')
-        }
-      );
-
-      res.status(201).json(result);
 
     } catch (error) {
       console.error('Document upload error:', error);

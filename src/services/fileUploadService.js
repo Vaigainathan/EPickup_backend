@@ -365,7 +365,11 @@ class FileUploadService {
         updatedAt: new Date()
       };
 
+      // Create document in driverDocuments collection
       const docRef = await this.db.collection('driverDocuments').add(documentData);
+      
+      // Also create/update verification request for admin dashboard
+      await this.createOrUpdateVerificationRequest(driverId, documentType, documentData);
       
       return {
         id: docRef.id,
@@ -375,6 +379,173 @@ class FileUploadService {
     } catch (error) {
       console.error('Document record creation failed:', error);
       throw new Error(`Document record creation failed: ${error.message}`);
+    }
+  }
+
+  /**
+   * Create or update verification request for admin dashboard
+   * @param {string} driverId - Driver ID
+   * @param {string} documentType - Document type
+   * @param {Object} documentData - Document data
+   */
+  async createOrUpdateVerificationRequest(driverId, documentType, documentData) {
+    try {
+      // Get driver information
+      const driverDoc = await this.db.collection('users').doc(driverId).get();
+      if (!driverDoc.exists) {
+        console.warn(`Driver ${driverId} not found for verification request`);
+        return;
+      }
+
+      const driverData = driverDoc.data();
+      
+      // Check if verification request already exists
+      const existingRequestQuery = await this.db.collection('documentVerificationRequests')
+        .where('driverId', '==', driverId)
+        .where('status', '==', 'pending')
+        .limit(1)
+        .get();
+
+      const verificationRequestData = {
+        driverId,
+        driverName: driverData.name || 'Unknown Driver',
+        driverPhone: driverData.phone || 'Unknown Phone',
+        documents: {
+          [documentType]: {
+            documentId: documentData.id || 'pending',
+            filename: documentData.filename,
+            downloadURL: documentData.uploadDetails.downloadURL,
+            thumbnailURL: documentData.uploadDetails.thumbnailURL,
+            uploadedAt: documentData.metadata.uploadedAt,
+            status: 'uploaded',
+            verificationStatus: 'pending'
+          }
+        },
+        status: 'pending',
+        requestedAt: new Date(),
+        updatedAt: new Date()
+      };
+
+      if (existingRequestQuery.empty) {
+        // Create new verification request
+        await this.db.collection('documentVerificationRequests').add(verificationRequestData);
+        console.log(`Created new verification request for driver ${driverId}`);
+      } else {
+        // Update existing verification request
+        const existingRequest = existingRequestQuery.docs[0];
+        const existingData = existingRequest.data();
+        
+        // Merge documents
+        const updatedDocuments = {
+          ...existingData.documents,
+          [documentType]: {
+            documentId: documentData.id || 'pending',
+            filename: documentData.filename,
+            downloadURL: documentData.uploadDetails.downloadURL,
+            thumbnailURL: documentData.uploadDetails.thumbnailURL,
+            uploadedAt: documentData.metadata.uploadedAt,
+            status: 'uploaded',
+            verificationStatus: 'pending'
+          }
+        };
+
+        await existingRequest.ref.update({
+          documents: updatedDocuments,
+          updatedAt: new Date()
+        });
+        console.log(`Updated verification request for driver ${driverId}`);
+      }
+
+    } catch (error) {
+      console.error('Failed to create/update verification request:', error);
+      // Don't throw error as this is not critical for upload success
+    }
+  }
+
+  /**
+   * Register document from URL (for mobile app uploads)
+   * @param {string} driverId - Driver ID
+   * @param {string} documentType - Document type
+   * @param {string} documentUrl - Document URL
+   * @param {string} documentNumber - Document number (optional)
+   * @returns {Object} Registration result
+   */
+  async registerDocumentFromUrl(driverId, documentType, documentUrl, documentNumber = null) {
+    try {
+      // Validate document type
+      if (!this.documentTypes[documentType]) {
+        throw new Error(`Invalid document type: ${documentType}`);
+      }
+
+      // Generate unique filename
+      const fileId = uuidv4();
+      const timestamp = Date.now();
+      const filename = `${documentType}_${driverId}_${timestamp}_${fileId}.jpg`;
+
+      // Create document record
+      const documentData = {
+        driverId,
+        documentType,
+        filename,
+        originalName: filename,
+        status: 'uploaded',
+        verificationStatus: 'pending',
+        uploadDetails: {
+          downloadURL: documentUrl,
+          thumbnailURL: null,
+          filePath: `mobile_upload/${driverId}/${documentType}/${filename}`,
+          size: 0, // Unknown size for mobile uploads
+          contentType: 'image/jpeg'
+        },
+        metadata: {
+          documentNumber,
+          uploadedAt: new Date(),
+          uploadSource: 'mobile_app'
+        },
+        verification: {
+          status: 'pending',
+          verifiedBy: null,
+          verifiedAt: null,
+          comments: null,
+          rejectionReason: null
+        },
+        createdAt: new Date(),
+        updatedAt: new Date()
+      };
+
+      // Create document in driverDocuments collection
+      const docRef = await this.db.collection('driverDocuments').add(documentData);
+      
+      // Also create/update verification request for admin dashboard
+      await this.createOrUpdateVerificationRequest(driverId, documentType, {
+        id: docRef.id,
+        ...documentData
+      });
+
+      // Update driver's document status
+      await this.updateDriverDocumentStatus(driverId, documentType, 'uploaded');
+
+      return {
+        success: true,
+        message: 'Document registered successfully',
+        data: {
+          documentId: docRef.id,
+          filename: filename,
+          originalName: filename,
+          type: documentType,
+          status: 'uploaded',
+          uploadUrl: documentUrl,
+          uploadedAt: new Date(),
+          metadata: {
+            documentNumber,
+            uploadSource: 'mobile_app'
+          }
+        }
+      };
+
+    } catch (error) {
+      console.error('Document registration failed:', error);
+      throw new Error(`Document registration failed: ${error.message}`);
     }
   }
 

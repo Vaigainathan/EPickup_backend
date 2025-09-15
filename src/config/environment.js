@@ -88,6 +88,7 @@ class EnvironmentConfig {
     this.config.msg91 = {
       authKey: process.env.MSG91_AUTH_KEY,
       senderId: process.env.MSG91_SENDER_ID,
+      templateId: process.env.MSG91_TEMPLATE_ID,
       apiUrl: process.env.MSG91_API_URL,
       enabled: process.env.MSG91_ENABLED === 'true',
       mockMode: process.env.MSG91_MOCK_MODE === 'true',

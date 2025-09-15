@@ -128,6 +128,35 @@ class Msg91Service {
   }
 
   /**
+   * Send mock OTP for testing
+   */
+  async sendMockOTP(phoneNumber, formattedPhone) {
+    console.log('🧪 MOCK MODE: Simulating OTP send');
+    
+    // Generate OTP
+    const otpCode = this.generateOTP();
+    
+    // Log OTP to console for testing
+    console.log(`🔑 MOCK OTP for ${phoneNumber}: ${otpCode}`);
+    console.log(`📱 Use this OTP to login: ${otpCode}`);
+    console.log(`📱 Phone: ${phoneNumber} (formatted: ${formattedPhone})`);
+    
+    // Simulate API delay
+    await new Promise(resolve => setTimeout(resolve, 1000));
+    
+    return {
+      success: true,
+      sid: `mock_${Date.now()}`,
+      to: phoneNumber,
+      status: 'sent',
+      channel: 'sms',
+      message: 'OTP sent successfully (MOCK MODE)',
+      expiresIn: '5 minutes',
+      mockOTP: otpCode
+    };
+  }
+
+  /**
    * Send OTP via MSG91
    */
   async sendOTP(phoneNumber) {
@@ -144,34 +173,28 @@ class Msg91Service {
       // Format phone number
       const formattedPhone = this.formatPhoneNumber(phoneNumber);
       
+      // Check if mock mode is enabled
+      if (this.mockMode) {
+        return this.sendMockOTP(phoneNumber, formattedPhone);
+      }
+      
       console.log(`🔐 Sending OTP to ${formattedPhone} via MSG91`);
       
       // Generate OTP
       const otpCode = this.generateOTP();
-      
-      // If in mock mode, return success without sending
-      if (this.mockMode) {
-        console.log(`📱 Mock OTP sent to ${formattedPhone}: ${otpCode}`);
-        return {
-          success: true,
-          sid: `mock_${Date.now()}`,
-          to: phoneNumber,
-          status: 'sent',
-          channel: 'sms',
-          message: 'OTP sent successfully (mock mode)',
-          otp: otpCode // Include OTP in mock mode for testing
-        };
-      }
 
+      // Get template ID from config
+      const templateId = process.env.MSG91_TEMPLATE_ID;
+      
+      if (!templateId) {
+        throw new Error('MSG91_TEMPLATE_ID environment variable is required');
+      }
+      
       // Prepare MSG91 API request
       const requestData = {
-        authkey: this.authKey,
+        template_id: templateId,
         mobile: formattedPhone,
-        message: `Your EPickup OTP is ${otpCode}. Valid for 5 minutes.`,
-        sender: this.senderId,
-        otp: otpCode,
-        otp_length: 6,
-        otp_expiry: 5 // 5 minutes
+        otp: otpCode
       };
 
       console.log('📤 MSG91 API Request:', {
@@ -185,7 +208,8 @@ class Msg91Service {
       const response = await axios.post(this.apiUrl, requestData, {
         headers: {
           'Content-Type': 'application/json',
-          'Accept': 'application/json'
+          'Accept': 'application/json',
+          'authkey': this.authKey
         },
         timeout: 10000 // 10 second timeout
       });
@@ -236,10 +260,11 @@ class Msg91Service {
       
       console.log(`🔐 Verifying OTP for ${formattedPhone}`);
       
-      // If in mock mode, accept any 6-digit code
+      // If in mock mode, accept any 6-digit code for testing
       if (this.mockMode) {
         const isValid = /^\d{6}$/.test(code);
         console.log(`📱 Mock OTP verification for ${formattedPhone}: ${isValid ? 'valid' : 'invalid'}`);
+        console.log(`📱 Code provided: ${code}`);
         
         return {
           success: isValid,
@@ -247,7 +272,8 @@ class Msg91Service {
           sid: `mock_verify_${Date.now()}`,
           to: phoneNumber,
           valid: isValid,
-          message: isValid ? 'OTP verified successfully' : 'Invalid OTP code'
+          message: isValid ? 'OTP verified successfully (MOCK MODE)' : 'Invalid OTP code',
+          mockMode: true
         };
       }
 

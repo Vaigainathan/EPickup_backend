@@ -70,14 +70,6 @@ class PaymentService {
   }
 
   /**
-   * Get supported payment methods
-   * @returns {Object} Supported payment methods
-   */
-  getSupportedPaymentMethods() {
-    return this.supportedPaymentMethods;
-  }
-
-  /**
    * Validate payment method
    * @param {string} paymentMethod - Payment method code
    * @returns {Object} Validation result

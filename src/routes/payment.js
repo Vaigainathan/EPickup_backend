@@ -258,6 +258,37 @@ router.post('/phonepe/verify', [
 });
 
 /**
+ * @route   GET /api/payments/phonepe/status/:transactionId
+ * @desc    Get PhonePe payment status
+ * @access  Private (Customer)
+ */
+router.get('/phonepe/status/:transactionId', [
+  requireRole(['customer'])
+], async (req, res) => {
+  try {
+    const { transactionId } = req.params;
+
+    const result = await paymentService.getPaymentStatus(transactionId);
+
+    if (result.success) {
+      res.status(200).json(result);
+    } else {
+      res.status(400).json(result);
+    }
+
+  } catch (error) {
+    console.error('Get payment status error:', error);
+    res.status(500).json({
+      success: false,
+      error: {
+        code: 'INTERNAL_SERVER_ERROR',
+        message: 'Failed to get payment status'
+      }
+    });
+  }
+});
+
+/**
  * @route   POST /api/payments/phonepe/callback
  * @desc    PhonePe payment callback webhook
  * @access  Public (PhonePe webhook)

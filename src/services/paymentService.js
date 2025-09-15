@@ -9,12 +9,18 @@ const crypto = require('crypto');
 class PaymentService {
   constructor() {
     this.phonepeConfig = {
-      merchantId: process.env.PHONEPE_MERCHANT_ID,
-      saltKey: process.env.PHONEPE_SALT_KEY,
-      saltIndex: process.env.PHONEPE_SALT_INDEX,
+      merchantId: process.env.PHONEPE_MERCHANT_ID || 'PGTESTPAYUAT',
+      saltKey: process.env.PHONEPE_SALT_KEY || '099eb0cd-02cf-4e2a-8aca-3e6c6aff0399',
+      saltIndex: process.env.PHONEPE_SALT_INDEX || '1',
       baseUrl: process.env.PHONEPE_BASE_URL || 'https://api.phonepe.com/apis/pg-sandbox',
       redirectUrl: process.env.PHONEPE_REDIRECT_URL || 'https://epickup-app.web.app/payment/callback'
     };
+    
+    console.log('🔧 Payment Service initialized with PhonePe config:', {
+      merchantId: this.phonepeConfig.merchantId,
+      baseUrl: this.phonepeConfig.baseUrl,
+      saltIndex: this.phonepeConfig.saltIndex
+    });
     
     // Commission rates
     this.commissionRates = {
@@ -53,6 +59,14 @@ class PaymentService {
 
   get db() {
     return getFirestore();
+  }
+
+  /**
+   * Get supported payment methods
+   * @returns {Object} Supported payment methods
+   */
+  getSupportedPaymentMethods() {
+    return this.supportedPaymentMethods;
   }
 
   /**
@@ -434,6 +448,15 @@ class PaymentService {
 
       if (status === 'PAYMENT_SUCCESS') {
         updatedPayment.completedAt = new Date();
+        
+        // Update booking payment status if booking exists
+        await this.updateBookingPaymentStatus(paymentRecord.bookingId, 'completed', merchantTransactionId);
+        
+        // Send payment success notification
+        await this.sendPaymentSuccessNotification(paymentRecord.customerId, paymentRecord.bookingId, merchantTransactionId);
+      } else if (status === 'PAYMENT_ERROR' || status === 'PAYMENT_CANCELLED') {
+        // Update booking payment status to failed
+        await this.updateBookingPaymentStatus(paymentRecord.bookingId, 'failed', merchantTransactionId);
       }
 
       await this.updatePaymentRecord(merchantTransactionId, updatedPayment);
@@ -452,6 +475,63 @@ class PaymentService {
           details: error.message
         }
       };
+    }
+  }
+
+  /**
+   * Update booking payment status
+   * @param {string} bookingId - Booking ID
+   * @param {string} status - Payment status
+   * @param {string} transactionId - Transaction ID
+   */
+  async updateBookingPaymentStatus(bookingId, status, transactionId) {
+    try {
+      const bookingRef = this.db.collection('bookings').doc(bookingId);
+      const bookingDoc = await bookingRef.get();
+      
+      if (bookingDoc.exists) {
+        const updateData = {
+          paymentStatus: status,
+          paymentTransactionId: transactionId,
+          updatedAt: new Date()
+        };
+
+        if (status === 'completed') {
+          updateData.status = 'confirmed'; // Move booking to confirmed status
+        }
+
+        await bookingRef.update(updateData);
+        console.log(`✅ Updated booking ${bookingId} payment status to ${status}`);
+      }
+    } catch (error) {
+      console.error('Error updating booking payment status:', error);
+    }
+  }
+
+  /**
+   * Send payment success notification
+   * @param {string} customerId - Customer ID
+   * @param {string} bookingId - Booking ID
+   * @param {string} transactionId - Transaction ID
+   */
+  async sendPaymentSuccessNotification(customerId, bookingId, transactionId) {
+    try {
+      const notificationService = require('./notificationService');
+      
+      await notificationService.sendToUser(customerId, {
+        type: 'payment_success',
+        title: 'Payment Successful!',
+        body: 'Your payment has been processed successfully. Your booking is now confirmed.',
+        data: {
+          bookingId,
+          transactionId,
+          type: 'payment_success'
+        }
+      });
+      
+      console.log(`✅ Sent payment success notification to customer ${customerId}`);
+    } catch (error) {
+      console.error('Error sending payment success notification:', error);
     }
   }
 
@@ -495,6 +575,50 @@ class PaymentService {
     } catch (error) {
       console.error('Error getting payment record:', error);
       return null;
+    }
+  }
+
+  /**
+   * Get payment status by transaction ID
+   * @param {string} transactionId - Transaction ID
+   * @returns {Object} Payment status result
+   */
+  async getPaymentStatus(transactionId) {
+    try {
+      const paymentRecord = await this.getPaymentRecord(transactionId);
+      
+      if (!paymentRecord) {
+        return {
+          success: false,
+          error: {
+            code: 'PAYMENT_NOT_FOUND',
+            message: 'Payment record not found'
+          }
+        };
+      }
+
+      return {
+        success: true,
+        data: {
+          transactionId,
+          status: paymentRecord.status,
+          amount: paymentRecord.amount,
+          bookingId: paymentRecord.bookingId,
+          customerId: paymentRecord.customerId,
+          createdAt: paymentRecord.createdAt,
+          completedAt: paymentRecord.completedAt,
+          paymentDetails: paymentRecord.paymentDetails
+        }
+      };
+    } catch (error) {
+      console.error('Error getting payment status:', error);
+      return {
+        success: false,
+        error: {
+          code: 'GET_PAYMENT_STATUS_ERROR',
+          message: 'Failed to get payment status'
+        }
+      };
     }
   }
 

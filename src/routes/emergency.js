@@ -4,6 +4,7 @@ const { requireRole } = require('../middleware/auth');
 const { body, validationResult } = require('express-validator');
 const { getFirestore } = require('../services/firebase');
 const notificationService = require('../services/notificationService');
+const realTimeService = require('../services/realTimeService');
 
 const db = getFirestore();
 
@@ -81,6 +82,23 @@ router.post('/alert', [
         message
       }
     });
+
+    // Send real-time emergency alert via WebSocket
+    try {
+      await realTimeService.sendEmergencyAlert(bookingId || 'general', alertType, {
+        alertId: alertRef.id,
+        userId,
+        userType: req.user.role,
+        userName: req.user.name,
+        alertType,
+        location,
+        message,
+        timestamp: new Date().toISOString()
+      });
+    } catch (websocketError) {
+      console.warn('WebSocket emergency alert failed:', websocketError);
+      // Continue even if WebSocket fails
+    }
 
     res.status(201).json({
       success: true,
@@ -315,6 +333,148 @@ router.get('/history', requireRole(['customer', 'driver']), async (req, res) => 
         code: 'EMERGENCY_HISTORY_ERROR',
         message: 'Failed to retrieve emergency history',
         details: 'An error occurred while retrieving emergency history'
+      }
+    });
+  }
+});
+
+/**
+ * @route   GET /api/emergency/admin/alerts
+ * @desc    Get all emergency alerts for admin
+ * @access  Private (Admin only)
+ */
+router.get('/admin/alerts', [
+  requireRole(['admin'])
+], async (req, res) => {
+  try {
+    const { status = 'all', limit = 50, offset = 0 } = req.query;
+
+    let query = db.collection('emergency_alerts')
+      .orderBy('createdAt', 'desc')
+      .limit(parseInt(limit))
+      .offset(parseInt(offset));
+
+    // Filter by status if specified
+    if (status !== 'all') {
+      query = query.where('status', '==', status);
+    }
+
+    const alertsSnapshot = await query.get();
+    const alerts = [];
+
+    for (const doc of alertsSnapshot.docs) {
+      const alertData = doc.data();
+      
+      // Get user information
+      const userDoc = await db.collection('users').doc(alertData.userId).get();
+      const userData = userDoc.exists ? userDoc.data() : null;
+
+      alerts.push({
+        id: doc.id,
+        ...alertData,
+        user: userData ? {
+          name: userData.name,
+          phone: userData.phone,
+          email: userData.email,
+          role: userData.role
+        } : null
+      });
+    }
+
+    res.status(200).json({
+      success: true,
+      data: {
+        alerts,
+        pagination: {
+          limit: parseInt(limit),
+          offset: parseInt(offset),
+          total: alerts.length
+        }
+      }
+    });
+
+  } catch (error) {
+    console.error('Get admin emergency alerts error:', error);
+    res.status(500).json({
+      success: false,
+      error: {
+        code: 'GET_ADMIN_ALERTS_ERROR',
+        message: 'Failed to get emergency alerts'
+      }
+    });
+  }
+});
+
+/**
+ * @route   PUT /api/emergency/admin/alerts/:alertId/status
+ * @desc    Update emergency alert status
+ * @access  Private (Admin only)
+ */
+router.put('/admin/alerts/:alertId/status', [
+  requireRole(['admin']),
+  body('status').isIn(['active', 'resolved', 'cancelled']).withMessage('Valid status required'),
+  body('adminNotes').optional().isString()
+], async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'VALIDATION_ERROR',
+          message: 'Validation failed',
+          details: errors.array()
+        }
+      });
+    }
+
+    const { alertId } = req.params;
+    const { status, adminNotes } = req.body;
+    const adminId = req.user.uid;
+
+    // Update alert status
+    await db.collection('emergency_alerts').doc(alertId).update({
+      status,
+      adminNotes,
+      updatedBy: adminId,
+      updatedAt: new Date()
+    });
+
+    // Get updated alert data
+    const alertDoc = await db.collection('emergency_alerts').doc(alertId).get();
+    const alertData = alertDoc.data();
+
+    // Send notification to user about status update
+    if (alertData.userId) {
+      await notificationService.sendToUser(alertData.userId, {
+        type: 'emergency_status_update',
+        title: 'Emergency Alert Update',
+        body: `Your emergency alert has been ${status}`,
+        data: {
+          alertId,
+          status,
+          adminNotes
+        }
+      });
+    }
+
+    res.status(200).json({
+      success: true,
+      data: {
+        alertId,
+        status,
+        adminNotes,
+        updatedAt: new Date()
+      }
+    });
+
+  } catch (error) {
+    console.error('Update emergency alert status error:', error);
+    res.status(500).json({
+      success: false,
+      error: {
+        code: 'UPDATE_ALERT_STATUS_ERROR',
+        message: 'Failed to update emergency alert status'
       }
     });
   }

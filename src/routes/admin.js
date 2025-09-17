@@ -429,15 +429,30 @@ router.get('/emergency/alerts/active', requireRole(['admin']), async (req, res) 
 
   } catch (error) {
     console.error('Error fetching active emergency alerts:', error);
-    res.status(500).json({
-      success: false,
-      error: {
-        code: 'FETCH_ACTIVE_EMERGENCY_ALERTS_ERROR',
-        message: 'Failed to fetch active emergency alerts',
-        details: error.message
-      },
-      timestamp: new Date().toISOString()
-    });
+
+    // Check if it's a Firestore index error
+    if (error.code === 9 && error.details && error.details.includes('index')) {
+      console.error('Firestore index required. Please create the composite index for emergencyAlerts collection with fields: status (ASC), createdAt (DESC), __name__ (DESC)');
+      res.status(500).json({
+        success: false,
+        error: {
+          code: 'FIRESTORE_INDEX_REQUIRED',
+          message: 'Database index required. Please contact administrator to create the required index.',
+          details: 'The query requires a composite index on emergencyAlerts collection'
+        },
+        timestamp: new Date().toISOString()
+      });
+    } else {
+      res.status(500).json({
+        success: false,
+        error: {
+          code: 'FETCH_ACTIVE_EMERGENCY_ALERTS_ERROR',
+          message: 'Failed to fetch active emergency alerts',
+          details: error.message
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
   }
 });
 

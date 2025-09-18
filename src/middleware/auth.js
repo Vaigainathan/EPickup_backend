@@ -25,6 +25,19 @@ const authMiddleware = async (req, res, next) => {
     // Extract token
     const token = authHeader.substring(7); // Remove 'Bearer ' prefix
 
+    // Check if token is malformed before verification
+    if (!token || token.length < 10) {
+      console.error('JWT verification failed: jwt malformed - token too short or empty');
+      return res.status(401).json({
+        success: false,
+        error: {
+          code: 'INVALID_TOKEN',
+          message: 'Invalid or malformed token'
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
     // Verify JWT token
     const secret = process.env.JWT_SECRET || 'your-secret-key';
     let decodedToken;
@@ -40,7 +53,36 @@ const authMiddleware = async (req, res, next) => {
         decodedToken = jwt.verify(token, secret);
       } catch (fallbackError) {
         console.error('JWT verification failed:', verifyError.message, 'Fallback failed:', fallbackError.message);
-        throw verifyError;
+        
+        // Handle specific JWT errors
+        if (verifyError.name === 'TokenExpiredError') {
+          return res.status(401).json({
+            success: false,
+            error: {
+              code: 'TOKEN_EXPIRED',
+              message: 'Token has expired. Please login again.'
+            },
+            timestamp: new Date().toISOString()
+          });
+        } else if (verifyError.name === 'JsonWebTokenError') {
+          return res.status(401).json({
+            success: false,
+            error: {
+              code: 'INVALID_TOKEN',
+              message: 'Invalid token format'
+            },
+            timestamp: new Date().toISOString()
+          });
+        }
+        
+        return res.status(401).json({
+          success: false,
+          error: {
+            code: 'AUTHENTICATION_FAILED',
+            message: 'Authentication failed'
+          },
+          timestamp: new Date().toISOString()
+        });
       }
     }
     

@@ -198,7 +198,7 @@ class AuthService {
           phone: normalizedPhone,
           name: userData.name,
           userType: userType,
-          isVerified: true,
+          isVerified: false, // New users should be unverified until admin approval
           isActive: true,
           createdAt: new Date(),
           updatedAt: new Date(),

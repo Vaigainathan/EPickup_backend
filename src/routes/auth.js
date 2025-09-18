@@ -930,6 +930,44 @@ router.get('/msg91-status', async (req, res) => {
 });
 
 /**
+ * @route GET /api/auth/mock-otp-status
+ * @desc Check mock OTP service status and get active OTPs
+ * @access Public
+ */
+router.get('/mock-otp-status', async (req, res) => {
+  try {
+    const mockOTPService = require('../services/mockOTPService');
+    const status = mockOTPService.getStatus();
+    const activeOTPs = mockOTPService.getActiveOTPs();
+    
+    console.log(`🧪 Mock OTP Status Check - Enabled: ${status.enabled}, Active OTPs: ${status.activeOTPs}`);
+    
+    res.json({
+      success: true,
+      message: 'Mock OTP status retrieved successfully',
+      data: {
+        status: status,
+        activeOTPs: activeOTPs,
+        timestamp: new Date().toISOString()
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ Mock OTP status check error:', error);
+
+    res.status(500).json({
+      success: false,
+      message: 'Failed to check mock OTP status',
+      error: {
+        code: 'MOCK_OTP_STATUS_ERROR',
+        message: error.message
+      },
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+/**
  * @route POST /api/auth/refresh
  * @desc Refresh access token using refresh token
  * @access Public

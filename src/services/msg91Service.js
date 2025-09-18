@@ -1,4 +1,5 @@
 const axios = require('axios');
+const mockOTPService = require('./mockOTPService');
 const { env } = require('../config');
 
 class Msg91Service {
@@ -159,8 +160,14 @@ class Msg91Service {
   /**
    * Send OTP via MSG91
    */
-  async sendOTP(phoneNumber) {
+  async sendOTP(phoneNumber, options = {}) {
     try {
+      // Check if mock service is enabled
+      if (mockOTPService.isMockModeEnabled()) {
+        console.log('🧪 Using Mock OTP Service for testing');
+        return await mockOTPService.sendOTP(phoneNumber, options);
+      }
+
       if (!this.isInitialized) {
         throw new Error('MSG91 service not initialized');
       }
@@ -337,8 +344,14 @@ class Msg91Service {
   /**
    * Verify OTP via MSG91
    */
-  async verifyOTP(phoneNumber, code) {
+  async verifyOTP(phoneNumber, code, sessionId = null) {
     try {
+      // Check if mock service is enabled
+      if (mockOTPService.isMockModeEnabled()) {
+        console.log('🧪 Using Mock OTP Service for verification');
+        return await mockOTPService.verifyOTP(phoneNumber, code, sessionId);
+      }
+
       if (!this.isInitialized) {
         throw new Error('MSG91 service not initialized');
       }
@@ -425,6 +438,12 @@ class Msg91Service {
    */
   async resendOTP(phoneNumber, options = {}) {
     try {
+      // Check if mock service is enabled
+      if (mockOTPService.isMockModeEnabled()) {
+        console.log('🧪 Using Mock OTP Service for resend');
+        return await mockOTPService.resendOTP(phoneNumber, options);
+      }
+
       // Validate phone number
       if (!this.validatePhoneNumber(phoneNumber)) {
         throw new Error('Invalid phone number format');

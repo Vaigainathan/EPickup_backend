@@ -31,6 +31,7 @@ const upload = multer({
  * @access Private (Driver)
  */
 router.post('/upload', 
+  requireRole(['driver']),
   upload.single('document'),
   async (req, res) => {
     try {
@@ -493,32 +494,6 @@ router.post('/validate',
   }
 );
 
-/**
- * @route GET /api/file-upload/health
- * @desc Health check for file upload service
- * @access Public
- */
-router.get('/health', async (req, res) => {
-  try {
-    res.json({
-      success: true,
-      message: 'File Upload Service is healthy',
-      data: {
-        status: 'healthy',
-        timestamp: new Date().toISOString(),
-        service: 'EPickup File Upload Service',
-        version: '1.0.0'
-      }
-    });
-  } catch {
-    res.status(500).json({
-      success: false,
-      error: {
-        code: 'SERVICE_UNHEALTHY',
-        message: 'File Upload Service is unhealthy'
-      }
-    });
-  }
-});
+// Health check moved to server.js to avoid authentication middleware
 
 module.exports = router;

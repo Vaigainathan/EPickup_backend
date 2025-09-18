@@ -311,6 +311,30 @@ app.use('/api/admin', authMiddleware, adminRoutes);
 // Health check routes (for keepalive script) - No auth required
 app.use('/health', healthRoutes);
 
+// File Upload Service Health Check (Public)
+app.get('/api/file-upload/health', (req, res) => {
+  try {
+    res.json({
+      success: true,
+      message: 'File Upload Service is healthy',
+      data: {
+        status: 'healthy',
+        timestamp: new Date().toISOString(),
+        service: 'EPickup File Upload Service',
+        version: '1.0.0'
+      }
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: {
+        code: 'SERVICE_UNHEALTHY',
+        message: 'File Upload Service is unhealthy'
+      }
+    });
+  }
+});
+
 // Test Endpoints (No authentication required) - For Development Only
 if (process.env.NODE_ENV === 'development' || process.env.ENABLE_TEST_ENDPOINTS === 'true') {
   app.get('/api/test/customer', (req, res) => {

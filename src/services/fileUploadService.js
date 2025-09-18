@@ -482,6 +482,65 @@ class FileUploadService {
       const timestamp = Date.now();
       const filename = `${documentType}_${driverId}_${timestamp}_${fileId}.jpg`;
 
+      let downloadURL = documentUrl;
+      let fileSize = 0;
+      let contentType = 'image/jpeg';
+
+      // Handle base64 data URLs
+      if (documentUrl.startsWith('data:')) {
+        console.log('📤 Processing base64 data URL for document upload');
+        
+        // Extract base64 data and content type
+        const matches = documentUrl.match(/^data:([^;]+);base64,(.+)$/);
+        if (matches) {
+          contentType = matches[1];
+          const base64Data = matches[2];
+          const buffer = Buffer.from(base64Data, 'base64');
+          fileSize = buffer.length;
+          
+          console.log(`📤 Base64 data extracted: ${fileSize} bytes, type: ${contentType}`);
+          
+          // Upload to Firebase Storage
+          if (this.isAvailable) {
+            try {
+              const storage = getStorage();
+              const bucket = storage.bucket();
+              const filePath = `driver-documents/${driverId}/${documentType}/${filename}`;
+              const file = bucket.file(filePath);
+              
+              await file.save(buffer, {
+                metadata: {
+                  contentType: contentType,
+                  metadata: {
+                    driverId,
+                    documentType,
+                    originalName: filename,
+                    uploadedAt: new Date().toISOString(),
+                    uploadSource: 'mobile_app'
+                  }
+                }
+              });
+              
+              // Make file publicly readable
+              await file.makePublic();
+              
+              // Get download URL
+              downloadURL = `https://storage.googleapis.com/${bucket.name}/${filePath}`;
+              console.log(`✅ Document uploaded to Firebase Storage: ${downloadURL}`);
+              
+            } catch (storageError) {
+              console.error('❌ Firebase Storage upload failed:', storageError);
+              // Continue with data URL as fallback
+              console.log('⚠️ Using data URL as fallback');
+            }
+          } else {
+            console.warn('⚠️ Firebase Storage not available, using data URL');
+          }
+        } else {
+          throw new Error('Invalid data URL format');
+        }
+      }
+
       // Create document record
       const documentData = {
         driverId,
@@ -491,11 +550,11 @@ class FileUploadService {
         status: 'uploaded',
         verificationStatus: 'pending',
         uploadDetails: {
-          downloadURL: documentUrl,
+          downloadURL: downloadURL,
           thumbnailURL: null,
-          filePath: `mobile_upload/${driverId}/${documentType}/${filename}`,
-          size: 0, // Unknown size for mobile uploads
-          contentType: 'image/jpeg'
+          filePath: `driver-documents/${driverId}/${documentType}/${filename}`,
+          size: fileSize,
+          contentType: contentType
         },
         metadata: {
           documentNumber,

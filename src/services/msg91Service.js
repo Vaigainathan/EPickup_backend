@@ -242,6 +242,99 @@ class Msg91Service {
   }
 
   /**
+   * Verify MSG91 Widget Token
+   */
+  async verifyWidgetToken(widgetToken) {
+    try {
+      if (!this.isInitialized) {
+        throw new Error('MSG91 service not initialized');
+      }
+
+      console.log('🔐 Verifying MSG91 widget token...');
+      
+      // Call MSG91 widget token verification endpoint
+      const verifyUrl = 'https://control.msg91.com/api/v5/widget/verifyAccessToken';
+      const requestData = {
+        authkey: this.authKey,
+        'access-token': widgetToken
+      };
+
+      console.log('📤 MSG91 Widget Token Verify Request:', {
+        authkey: this.authKey.substring(0, 10) + '...',
+        'access-token': widgetToken.substring(0, 20) + '...'
+      });
+
+      const response = await axios.post(verifyUrl, requestData, {
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json'
+        },
+        timeout: 10000 // 10 second timeout
+      });
+
+      console.log('📥 MSG91 Widget Token Verify Response:', response.data);
+
+      // Check response status
+      const isValid = response.data && response.data.type === 'success';
+      
+      if (isValid) {
+        console.log('✅ MSG91 widget token verification successful');
+        return {
+          success: true,
+          status: 'approved',
+          sid: `widget_verify_${Date.now()}`,
+          valid: true,
+          message: 'Widget token verified successfully',
+          data: response.data
+        };
+      } else {
+        console.log('❌ MSG91 widget token verification failed');
+        return {
+          success: false,
+          status: 'denied',
+          sid: `widget_verify_${Date.now()}`,
+          valid: false,
+          message: response.data?.message || 'Invalid widget token'
+        };
+      }
+
+    } catch (error) {
+      console.error('❌ MSG91 widget token verification error:', error);
+      
+      // Handle different types of errors
+      if (error.response) {
+        // Server responded with error status
+        const errorMessage = error.response.data?.message || 'Widget token verification failed';
+        return {
+          success: false,
+          status: 'denied',
+          sid: `widget_verify_${Date.now()}`,
+          valid: false,
+          message: errorMessage
+        };
+      } else if (error.request) {
+        // Network error
+        return {
+          success: false,
+          status: 'denied',
+          sid: `widget_verify_${Date.now()}`,
+          valid: false,
+          message: 'Network error during widget token verification'
+        };
+      } else {
+        // Other error
+        return {
+          success: false,
+          status: 'denied',
+          sid: `widget_verify_${Date.now()}`,
+          valid: false,
+          message: error.message || 'Widget token verification failed'
+        };
+      }
+    }
+  }
+
+  /**
    * Verify OTP via MSG91
    */
   async verifyOTP(phoneNumber, code) {

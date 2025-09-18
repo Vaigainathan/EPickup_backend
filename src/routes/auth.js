@@ -370,15 +370,39 @@ router.post('/verify-widget-otp',
     body: {
       phoneNumber: { type: 'string', required: true, minLength: 10, maxLength: 15 },
       name: { type: 'string', required: false, maxLength: 100 },
-      userType: { type: 'string', required: false, enum: ['customer', 'driver'] }
+      userType: { type: 'string', required: false, enum: ['customer', 'driver'] },
+      widgetToken: { type: 'string', required: false } // JWT token from MSG91 widget
     }
   }),
   async (req, res) => {
     try {
-      const { phoneNumber, name, userType = 'customer' } = req.body;
+      const { phoneNumber, name, userType = 'customer', widgetToken } = req.body;
 
       console.log(`🔐 Creating user session for widget-verified OTP: ${phoneNumber}`);
-      console.log(`📝 Request body:`, { phoneNumber, name, userType });
+      console.log(`📝 Request body:`, { phoneNumber, name, userType, hasWidgetToken: !!widgetToken });
+
+      // If widget token is provided, verify it with MSG91
+      if (widgetToken) {
+        console.log('🔐 Verifying MSG91 widget token...');
+        const tokenVerification = await msg91Service.verifyWidgetToken(widgetToken);
+        
+        if (!tokenVerification.success) {
+          console.error('❌ Widget token verification failed:', tokenVerification);
+          return res.status(400).json({
+            success: false,
+            message: 'Invalid widget token',
+            error: {
+              code: 'INVALID_WIDGET_TOKEN',
+              message: 'The widget token is invalid or expired'
+            },
+            timestamp: new Date().toISOString()
+          });
+        }
+        
+        console.log('✅ Widget token verified successfully');
+      } else {
+        console.log('⚠️ No widget token provided, proceeding without verification (for testing)');
+      }
 
       // Since OTP was already verified by MSG91 Widget, we can proceed directly to user creation
       // Simplified user handling logic

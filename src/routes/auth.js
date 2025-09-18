@@ -360,6 +360,169 @@ router.post('/verify-otp',
 );
 
 /**
+ * @route POST /api/auth/verify-widget-otp
+ * @desc Verify OTP that was already verified by MSG91 Widget and authenticate user
+ * @access Public
+ */
+router.post('/verify-widget-otp',
+  otpRateLimit,
+  validateRequest({
+    body: {
+      phoneNumber: { type: 'string', required: true, minLength: 10, maxLength: 15 },
+      name: { type: 'string', required: false, maxLength: 100 },
+      userType: { type: 'string', required: false, enum: ['customer', 'driver'] }
+    }
+  }),
+  async (req, res) => {
+    try {
+      const { phoneNumber, name, userType = 'customer' } = req.body;
+
+      console.log(`🔐 Creating user session for widget-verified OTP: ${phoneNumber}`);
+      console.log(`📝 Request body:`, { phoneNumber, name, userType });
+
+      // Since OTP was already verified by MSG91 Widget, we can proceed directly to user creation
+      // Simplified user handling logic
+      const userExists = await authService.userExists(phoneNumber, userType);
+      
+      console.log(`📊 User exists check: ${userExists}, Name provided: ${!!name}, UserType: ${userType}`);
+      
+      let user, isNewUser = false;
+      
+      if (userExists) {
+        // User exists - handle login
+        console.log(`🔐 Login attempt for existing ${userType} user: ${phoneNumber}`);
+        
+        if (name) {
+          // User exists but trying to signup - duplicate signup attempt
+          console.log(`❌ Duplicate signup attempt for existing ${userType} user: ${phoneNumber}`);
+          
+          await authService.logAuthAttempt({
+            phoneNumber,
+            action: 'duplicate_signup',
+            success: false,
+            error: `${userType} user already exists`,
+            ip: req.ip,
+            userAgent: req.get('User-Agent')
+          });
+
+          return res.status(409).json({
+            success: false,
+            message: `A ${userType} account with this phone number already exists. Please login instead.`,
+            error: {
+              code: 'USER_ALREADY_EXISTS',
+              message: `${userType} account already exists`
+            },
+            timestamp: new Date().toISOString()
+          });
+        }
+        
+        // Get existing user
+        user = await authService.getUserByPhone(phoneNumber, userType);
+        isNewUser = false;
+        
+      } else {
+        // User doesn't exist - handle signup
+        if (!name) {
+          console.log(`❌ Login attempt for non-existent user: ${phoneNumber}`);
+          
+          await authService.logAuthAttempt({
+            phoneNumber,
+            action: 'login',
+            success: false,
+            error: 'User not found',
+            ip: req.ip,
+            userAgent: req.get('User-Agent')
+          });
+
+          return res.status(404).json({
+            success: false,
+            message: 'No account found with this phone number. Please sign up first.',
+            error: {
+              code: 'USER_NOT_FOUND',
+              message: 'No account found with this phone number'
+            },
+            timestamp: new Date().toISOString()
+          });
+        }
+        
+        console.log(`📝 New signup attempt: ${phoneNumber}`);
+        
+        // Create new user
+        const result = await authService.getOrCreateUser(phoneNumber, {
+          name: name,
+          userType: userType
+        });
+        user = result.user;
+        isNewUser = true;
+      }
+
+      // Generate JWT token
+      const token = jwtService.generateAccessToken({
+        userId: user.id,
+        phone: user.phone,
+        userType: user.userType
+      });
+
+      // Log successful authentication
+      await authService.logAuthAttempt({
+        phoneNumber,
+        action: isNewUser ? 'signup' : 'login',
+        success: true,
+        userId: user.id,
+        ip: req.ip,
+        userAgent: req.get('User-Agent')
+      });
+
+      console.log(`✅ Widget-verified OTP authentication successful for ${phoneNumber} - ${isNewUser ? 'New user' : 'Existing user'}`);
+
+      return res.json({
+        success: true,
+        message: isNewUser ? 'Account created successfully' : 'Login successful',
+        data: {
+          user: {
+            id: user.id,
+            name: user.name,
+            phone: user.phone,
+            userType: user.userType,
+            isVerified: user.isVerified,
+            createdAt: user.createdAt,
+            updatedAt: user.updatedAt
+          },
+          token: token,
+          accessToken: token, // Keep both for backward compatibility
+          isNewUser: isNewUser,
+          expiresIn: '7d'
+        },
+        timestamp: new Date().toISOString()
+      });
+
+    } catch (error) {
+      console.error('❌ Verify widget OTP error:', error);
+
+      // Log failed attempt
+      await authService.logAuthAttempt({
+        phoneNumber: req.body.phoneNumber,
+        action: 'verify_widget_otp',
+        success: false,
+        error: error.message,
+        ip: req.ip,
+        userAgent: req.get('User-Agent')
+      });
+
+      res.status(400).json({
+        success: false,
+        message: error.message || 'Failed to verify widget OTP',
+        error: {
+          code: 'WIDGET_OTP_VERIFY_ERROR',
+          message: error.message
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+  }
+);
+
+/**
  * @route POST /api/auth/resend-otp
  * @desc Resend OTP to phone number
  * @access Public

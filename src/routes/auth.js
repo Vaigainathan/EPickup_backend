@@ -218,194 +218,120 @@ router.post('/verify-otp',
         });
       }
 
-      // Check if this is a signup attempt and user already exists with the same user type
+      // Simplified user handling logic
       const userExists = await authService.userExists(phoneNumber, userType);
       
-      if (userExists && name) {
-        // User exists with the same user type but trying to signup - this is a duplicate signup attempt
-        console.log(`❌ Duplicate signup attempt for existing ${userType} user: ${phoneNumber}`);
-        
-        // Log failed signup attempt
-        await authService.logAuthAttempt({
-          phoneNumber,
-          action: 'duplicate_signup',
-          success: false,
-          error: `${userType} user already exists`,
-          ip: req.ip,
-          userAgent: req.get('User-Agent')
-        });
-
-        return res.status(409).json({
-          success: false,
-          message: `A ${userType} account with this phone number already exists. Please login instead.`,
-          error: {
-            code: 'USER_ALREADY_EXISTS',
-            message: `${userType} account already exists`
-          },
-          timestamp: new Date().toISOString()
-        });
-      }
-
-      // If user exists but no name provided, this is a login attempt
-      if (userExists && !name) {
+      console.log(`📊 User exists check: ${userExists}, Name provided: ${!!name}, UserType: ${userType}`);
+      
+      let user, isNewUser = false;
+      
+      if (userExists) {
+        // User exists - handle login
         console.log(`🔐 Login attempt for existing ${userType} user: ${phoneNumber}`);
         
-        // Get existing user with specific user type
-        const existingUser = await authService.getUserByPhone(phoneNumber, userType);
-        
-        // Generate JWT token for existing user
-        const token = jwtService.generateAccessToken({
-          userId: existingUser.id,
-          phone: existingUser.phone,
-          userType: existingUser.userType
-        });
+        if (name) {
+          // User exists but trying to signup - duplicate signup attempt
+          console.log(`❌ Duplicate signup attempt for existing ${userType} user: ${phoneNumber}`);
+          
+          await authService.logAuthAttempt({
+            phoneNumber,
+            action: 'duplicate_signup',
+            success: false,
+            error: `${userType} user already exists`,
+            ip: req.ip,
+            userAgent: req.get('User-Agent')
+          });
 
-        // Log successful login
-        await authService.logAuthAttempt({
-          phoneNumber,
-          action: 'login',
-          success: true,
-          userId: existingUser.id,
-          ip: req.ip,
-          userAgent: req.get('User-Agent')
-        });
-
-        return res.json({
-          success: true,
-          message: 'Login successful',
-          data: {
-            user: {
-              id: existingUser.id,
-              name: existingUser.name,
-              phone: existingUser.phone,
-              userType: existingUser.userType,
-              isVerified: existingUser.isVerified
+          return res.status(409).json({
+            success: false,
+            message: `A ${userType} account with this phone number already exists. Please login instead.`,
+            error: {
+              code: 'USER_ALREADY_EXISTS',
+              message: `${userType} account already exists`
             },
-            token: token,
-            isNewUser: false
-          },
-          timestamp: new Date().toISOString()
-        });
-      }
-
-      // If user doesn't exist and no name provided, this is invalid
-      if (!userExists && !name) {
-        console.log(`❌ Login attempt for non-existent user: ${phoneNumber}`);
+            timestamp: new Date().toISOString()
+          });
+        }
         
-        await authService.logAuthAttempt({
-          phoneNumber,
-          action: 'login',
-          success: false,
-          error: 'User not found',
-          ip: req.ip,
-          userAgent: req.get('User-Agent')
-        });
+        // Get existing user
+        user = await authService.getUserByPhone(phoneNumber, userType);
+        isNewUser = false;
+        
+      } else {
+        // User doesn't exist - handle signup
+        if (!name) {
+          console.log(`❌ Login attempt for non-existent user: ${phoneNumber}`);
+          
+          await authService.logAuthAttempt({
+            phoneNumber,
+            action: 'login',
+            success: false,
+            error: 'User not found',
+            ip: req.ip,
+            userAgent: req.get('User-Agent')
+          });
 
-        return res.status(404).json({
-          success: false,
-          message: 'No account found with this phone number. Please sign up first.',
-          error: {
-            code: 'USER_NOT_FOUND',
-            message: 'No account found with this phone number'
-          },
-          timestamp: new Date().toISOString()
-        });
-      }
-
-      // If user doesn't exist and name is provided, this is a new signup
-      if (!userExists && name) {
+          return res.status(404).json({
+            success: false,
+            message: 'No account found with this phone number. Please sign up first.',
+            error: {
+              code: 'USER_NOT_FOUND',
+              message: 'No account found with this phone number'
+            },
+            timestamp: new Date().toISOString()
+          });
+        }
+        
         console.log(`📝 New signup attempt: ${phoneNumber}`);
         
         // Create new user
-        const { user } = await authService.getOrCreateUser(phoneNumber, {
+        const result = await authService.getOrCreateUser(phoneNumber, {
           name: name,
           userType: userType
         });
-
-        // Generate JWT token
-        const token = jwtService.generateAccessToken({
-          userId: user.id,
-          phone: user.phone,
-          userType: user.userType
-        });
-
-        // Log successful signup
-        await authService.logAuthAttempt({
-          phoneNumber,
-          action: 'signup',
-          success: true,
-          userId: user.id,
-          ip: req.ip,
-          userAgent: req.get('User-Agent')
-        });
-
-        return res.json({
-          success: true,
-          message: 'Account created successfully',
-          data: {
-            user: {
-              id: user.id,
-              name: user.name,
-              phone: user.phone,
-              userType: user.userType,
-              isVerified: user.isVerified
-            },
-            token: token,
-            isNewUser: true
-          },
-          timestamp: new Date().toISOString()
-        });
+        user = result.user;
+        isNewUser = true;
       }
 
-      // Handle existing user login
-      if (userExists) {
-        console.log(`🔐 Existing ${userType} user login: ${phoneNumber}`);
-        
-        // Get existing user with specific user type
-        const { user } = await authService.getOrCreateUser(phoneNumber, {
-          userType: userType
-        });
+      // Generate JWT token
+      const token = jwtService.generateAccessToken({
+        userId: user.id,
+        phone: user.phone,
+        userType: user.userType
+      });
 
-        // Generate JWT token
-        const token = jwtService.generateAccessToken({
-          userId: user.id,
-          phone: user.phone,
-          userType: user.userType
-        });
+      // Log successful authentication
+      await authService.logAuthAttempt({
+        phoneNumber,
+        action: isNewUser ? 'signup' : 'login',
+        success: true,
+        userId: user.id,
+        ip: req.ip,
+        userAgent: req.get('User-Agent')
+      });
 
-        // Log successful authentication
-        await authService.logAuthAttempt({
-          phoneNumber,
-          action: 'verify_otp',
-          success: true,
-          userId: user.id,
-          ip: req.ip,
-          userAgent: req.get('User-Agent')
-        });
+      console.log(`✅ OTP verification successful for ${phoneNumber} - ${isNewUser ? 'New user' : 'Existing user'}`);
 
-        console.log(`✅ OTP verification successful for ${phoneNumber}`);
-
-        return res.json({
-          success: true,
-          message: 'Login successful',
-          data: {
-            user: {
-              id: user.id,
-              phone: user.phone,
-              name: user.name,
-              userType: user.userType,
-              isVerified: user.isVerified,
-              createdAt: user.createdAt,
-              updatedAt: user.updatedAt
-            },
-            token: token,
-            accessToken: token, // Keep both for backward compatibility
-            isNewUser: false,
-            expiresIn: '7d'
+      return res.json({
+        success: true,
+        message: isNewUser ? 'Account created successfully' : 'Login successful',
+        data: {
+          user: {
+            id: user.id,
+            name: user.name,
+            phone: user.phone,
+            userType: user.userType,
+            isVerified: user.isVerified,
+            createdAt: user.createdAt,
+            updatedAt: user.updatedAt
           },
-          timestamp: new Date().toISOString()
-        });
-      }
+          token: token,
+          accessToken: token, // Keep both for backward compatibility
+          isNewUser: isNewUser,
+          expiresIn: '7d'
+        },
+        timestamp: new Date().toISOString()
+      });
 
     } catch (error) {
       console.error('❌ Verify OTP error:', error);

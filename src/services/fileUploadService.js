@@ -583,6 +583,9 @@ class FileUploadService {
 
       // Update driver's document status
       await this.updateDriverDocumentStatus(driverId, documentType, 'uploaded');
+      
+      // Also update the user's driver documents for verification request
+      await this.updateUserDriverDocuments(driverId, documentType, downloadURL);
 
       return {
         success: true,
@@ -593,7 +596,7 @@ class FileUploadService {
           originalName: filename,
           type: documentType,
           status: 'uploaded',
-          uploadUrl: documentUrl,
+          uploadUrl: downloadURL, // Use the actual download URL, not the original documentUrl
           uploadedAt: new Date(),
           metadata: {
             documentNumber,
@@ -626,6 +629,43 @@ class FileUploadService {
 
     } catch (error) {
       console.error('Driver document status update failed:', error);
+      // Don't throw error as this is not critical for upload success
+    }
+  }
+
+  /**
+   * Update user's driver documents for verification request
+   * @param {string} driverId - Driver ID
+   * @param {string} documentType - Document type
+   * @param {string} downloadURL - Document download URL
+   */
+  async updateUserDriverDocuments(driverId, documentType, downloadURL) {
+    try {
+      const driverRef = this.db.collection('users').doc(driverId);
+      
+      // Map backend document types to frontend document types
+      const documentTypeMap = {
+        'driving_license': 'drivingLicense',
+        'profile_photo': 'profilePhoto',
+        'aadhaar_card': 'aadhaarCard',
+        'bike_insurance': 'bikeInsurance',
+        'rc_book': 'rcBook'
+      };
+      
+      const frontendDocType = documentTypeMap[documentType] || documentType;
+      
+      await driverRef.update({
+        [`driver.documents.${frontendDocType}.url`]: downloadURL,
+        [`driver.documents.${frontendDocType}.status`]: 'uploaded',
+        [`driver.documents.${frontendDocType}.uploadedAt`]: new Date(),
+        [`driver.documents.${frontendDocType}.verificationStatus`]: 'pending',
+        'driver.updatedAt': new Date(),
+        updatedAt: new Date()
+      });
+      
+      console.log(`User driver documents updated: ${driverId} - ${frontendDocType} - ${downloadURL}`);
+    } catch (error) {
+      console.error('Failed to update user driver documents:', error);
       // Don't throw error as this is not critical for upload success
     }
   }

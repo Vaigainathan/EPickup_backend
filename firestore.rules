@@ -3,47 +3,56 @@ service cloud.firestore {
   match /databases/{database}/documents {
     // Users collection - allow admin access only
     match /users/{userId} {
-      allow read, write: if request.auth != null && request.auth.token.role == 'admin';
+      allow read, write: if request.auth != null && 
+        (request.auth.token.role == 'admin' || request.auth.token.userType == 'admin');
     }
     
     // Document verification requests - allow admin access only
     match /documentVerificationRequests/{requestId} {
-      allow read, write: if request.auth != null && request.auth.token.role == 'admin';
+      allow read, write: if request.auth != null && 
+        (request.auth.token.role == 'admin' || request.auth.token.userType == 'admin');
     }
     
     // Driver documents collection - allow admin access only
     match /driverDocuments/{documentId} {
-      allow read, write: if request.auth != null && request.auth.token.role == 'admin';
+      allow read, write: if request.auth != null && 
+        (request.auth.token.role == 'admin' || request.auth.token.userType == 'admin');
     }
     
     // Emergency alerts - allow admin access only
     match /emergencyAlerts/{alertId} {
-      allow read, write: if request.auth != null && request.auth.token.role == 'admin';
+      allow read, write: if request.auth != null && 
+        (request.auth.token.role == 'admin' || request.auth.token.userType == 'admin');
     }
     
     // Bookings - allow admin access only
     match /bookings/{bookingId} {
-      allow read, write: if request.auth != null && request.auth.token.role == 'admin';
+      allow read, write: if request.auth != null && 
+        (request.auth.token.role == 'admin' || request.auth.token.userType == 'admin');
     }
     
     // Support tickets - allow admin access only
     match /supportTickets/{ticketId} {
-      allow read, write: if request.auth != null && request.auth.token.role == 'admin';
+      allow read, write: if request.auth != null && 
+        (request.auth.token.role == 'admin' || request.auth.token.userType == 'admin');
     }
     
     // System health - allow admin access only
     match /systemHealth/{healthId} {
-      allow read, write: if request.auth != null && request.auth.token.role == 'admin';
+      allow read, write: if request.auth != null && 
+        (request.auth.token.role == 'admin' || request.auth.token.userType == 'admin');
     }
     
     // Admin settings - allow admin access only
     match /adminSettings/{settingId} {
-      allow read, write: if request.auth != null && request.auth.token.role == 'admin';
+      allow read, write: if request.auth != null && 
+        (request.auth.token.role == 'admin' || request.auth.token.userType == 'admin');
     }
     
     // File uploads - allow admin access only
     match /fileUploads/{uploadId} {
-      allow read, write: if request.auth != null && request.auth.token.role == 'admin';
+      allow read, write: if request.auth != null && 
+        (request.auth.token.role == 'admin' || request.auth.token.userType == 'admin');
     }
     
     // Default rule - deny all other access

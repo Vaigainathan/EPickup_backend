@@ -887,6 +887,789 @@ router.get('/drivers/pending', requireRole(['admin']), async (req, res) => {
 });
 
 /**
+ * @route   GET /api/admin/drivers/:driverId/documents
+ * @desc    Get driver documents for admin review
+ * @access  Private (Admin only)
+ */
+router.get('/drivers/:driverId/documents', requireRole(['admin']), async (req, res) => {
+  try {
+    const { driverId } = req.params;
+    const db = getFirestore();
+    
+    // Get driver information
+    const driverDoc = await db.collection('users').doc(driverId).get();
+    if (!driverDoc.exists) {
+      return res.status(404).json({
+        success: false,
+        error: {
+          code: 'DRIVER_NOT_FOUND',
+          message: 'Driver not found'
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    const driverData = driverDoc.data();
+    
+    // Get verification request if exists
+    const verificationQuery = await db.collection('documentVerificationRequests')
+      .where('driverId', '==', driverId)
+      .where('status', '==', 'pending')
+      .orderBy('requestedAt', 'desc')
+      .limit(1)
+      .get();
+
+    let documents = {};
+    let source = 'user_collection';
+
+    if (!verificationQuery.empty) {
+      // Use verification request data (most recent)
+      const verificationData = verificationQuery.docs[0].data();
+      documents = verificationData.documents || {};
+      source = 'verification_request';
+    } else {
+      // Fallback to user collection
+      documents = driverData.driver?.documents || driverData.documents || {};
+    }
+
+    // Normalize document structure for admin dashboard
+    const normalizedDocuments = {
+      drivingLicense: {
+        url: documents.drivingLicense?.downloadURL || documents.driving_license?.downloadURL || documents.drivingLicense?.url || '',
+        status: documents.drivingLicense?.verificationStatus || documents.driving_license?.verificationStatus || documents.drivingLicense?.status || 'pending',
+        uploadedAt: documents.drivingLicense?.uploadedAt || documents.driving_license?.uploadedAt || '',
+        verified: documents.drivingLicense?.verified || false
+      },
+      aadhaar: {
+        url: documents.aadhaarCard?.downloadURL || documents.aadhaar_card?.downloadURL || documents.aadhaar?.url || documents.aadhaarCard?.url || '',
+        status: documents.aadhaarCard?.verificationStatus || documents.aadhaar_card?.verificationStatus || documents.aadhaar?.status || documents.aadhaarCard?.status || 'pending',
+        uploadedAt: documents.aadhaarCard?.uploadedAt || documents.aadhaar_card?.uploadedAt || documents.aadhaar?.uploadedAt || documents.aadhaarCard?.uploadedAt || '',
+        verified: documents.aadhaar?.verified || documents.aadhaarCard?.verified || false
+      },
+      insurance: {
+        url: documents.bikeInsurance?.downloadURL || documents.bike_insurance?.downloadURL || documents.insurance?.url || documents.bikeInsurance?.url || '',
+        status: documents.bikeInsurance?.verificationStatus || documents.bike_insurance?.verificationStatus || documents.insurance?.status || documents.bikeInsurance?.status || 'pending',
+        uploadedAt: documents.bikeInsurance?.uploadedAt || documents.bike_insurance?.uploadedAt || documents.insurance?.uploadedAt || documents.bikeInsurance?.uploadedAt || '',
+        verified: documents.insurance?.verified || documents.bikeInsurance?.verified || false
+      },
+      rcBook: {
+        url: documents.rcBook?.downloadURL || documents.rc_book?.downloadURL || documents.rcBook?.url || '',
+        status: documents.rcBook?.verificationStatus || documents.rc_book?.verificationStatus || documents.rcBook?.status || 'pending',
+        uploadedAt: documents.rcBook?.uploadedAt || documents.rc_book?.uploadedAt || documents.rcBook?.uploadedAt || '',
+        verified: documents.rcBook?.verified || false
+      },
+      profilePhoto: {
+        url: documents.profilePhoto?.downloadURL || documents.profile_photo?.downloadURL || documents.profilePhoto?.url || '',
+        status: documents.profilePhoto?.verificationStatus || documents.profile_photo?.verificationStatus || documents.profilePhoto?.status || 'pending',
+        uploadedAt: documents.profilePhoto?.uploadedAt || documents.profile_photo?.uploadedAt || documents.profilePhoto?.uploadedAt || '',
+        verified: documents.profilePhoto?.verified || false
+      }
+    };
+
+    res.json({
+      success: true,
+      data: {
+        documents: normalizedDocuments,
+        source,
+        driverId,
+        driverName: driverData.name || 'Unknown',
+        verificationStatus: driverData.driver?.verificationStatus || 'pending'
+      },
+      timestamp: new Date().toISOString()
+    });
+
+  } catch (error) {
+    console.error('Error fetching driver documents:', error);
+    res.status(500).json({
+      success: false,
+      error: {
+        code: 'DOCUMENTS_FETCH_ERROR',
+        message: 'Failed to fetch driver documents',
+        details: error.message
+      },
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+/**
+ * @route   POST /api/admin/test-verification-flow/:driverId
+ * @desc    Test complete verification flow
+ * @access  Private (Admin only)
+ */
+router.post('/test-verification-flow/:driverId', requireRole(['admin']), async (req, res) => {
+  try {
+    const { driverId } = req.params;
+    const db = getFirestore();
+    
+    console.log(`🧪 Testing complete verification flow for driver: ${driverId}`);
+    
+    // Step 1: Get driver information
+    const driverRef = db.collection('users').doc(driverId);
+    const driverDoc = await driverRef.get();
+    
+    if (!driverDoc.exists) {
+      return res.status(404).json({
+        success: false,
+        error: { code: 'DRIVER_NOT_FOUND', message: 'Driver not found' }
+      });
+    }
+    
+    const driverData = driverDoc.data();
+    const documents = driverData.driver?.documents || driverData.documents || {};
+    
+    // Step 2: Check verification requests
+    const verificationQuery = await db.collection('documentVerificationRequests')
+      .where('driverId', '==', driverId)
+      .orderBy('requestedAt', 'desc')
+      .get();
+    
+    // Step 3: Test document verification for each document type
+    const testResults = [];
+    const documentTypes = ['drivingLicense', 'aadhaarCard', 'bikeInsurance', 'rcBook', 'profilePhoto'];
+    
+    for (const docType of documentTypes) {
+      const doc = documents[docType];
+      if (doc && doc.url) {
+        // Test individual document verification
+        try {
+          const testResponse = await fetch(`${req.protocol}://${req.get('host')}/api/admin/drivers/${driverId}/documents/${docType}/verify`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': req.headers.authorization
+            },
+            body: JSON.stringify({
+              status: 'approved',
+              comments: 'Test verification',
+              rejectionReason: null
+            })
+          });
+          
+          const testResult = await testResponse.json();
+          testResults.push({
+            documentType: docType,
+            hasUrl: !!doc.url,
+            verificationTest: testResult.success ? 'PASS' : 'FAIL',
+            error: testResult.error?.message || null
+          });
+        } catch (error) {
+          testResults.push({
+            documentType: docType,
+            hasUrl: !!doc.url,
+            verificationTest: 'ERROR',
+            error: error.message
+          });
+        }
+      } else {
+        testResults.push({
+          documentType: docType,
+          hasUrl: false,
+          verificationTest: 'SKIP',
+          error: 'No document URL found'
+        });
+      }
+    }
+    
+    // Step 4: Test overall verification
+    let overallVerificationTest = 'SKIP';
+    try {
+      const overallResponse = await fetch(`${req.protocol}://${req.get('host')}/api/admin/drivers/${driverId}/verify`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': req.headers.authorization
+        },
+        body: JSON.stringify({
+          status: 'approved',
+          comments: 'Test overall verification'
+        })
+      });
+      
+      const overallResult = await overallResponse.json();
+      overallVerificationTest = overallResult.success ? 'PASS' : 'FAIL';
+    } catch (error) {
+      overallVerificationTest = 'ERROR';
+    }
+    
+    // Step 5: Test status sync
+    let statusSyncTest = 'SKIP';
+    try {
+      const syncResponse = await fetch(`${req.protocol}://${req.get('host')}/api/admin/drivers/${driverId}/sync-status`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': req.headers.authorization
+        }
+      });
+      
+      const syncResult = await syncResponse.json();
+      statusSyncTest = syncResult.success ? 'PASS' : 'FAIL';
+    } catch (error) {
+      statusSyncTest = 'ERROR';
+    }
+    
+    const testSummary = {
+      driverId,
+      driverName: driverData.name,
+      currentStatus: driverData.driver?.verificationStatus || 'unknown',
+      documentsFound: Object.keys(documents).length,
+      verificationRequests: verificationQuery.size,
+      documentTests: testResults,
+      overallVerificationTest,
+      statusSyncTest,
+      timestamp: new Date().toISOString()
+    };
+    
+    console.log('🧪 Verification flow test completed:', testSummary);
+    
+    res.json({
+      success: true,
+      data: testSummary,
+      message: 'Verification flow test completed'
+    });
+    
+  } catch (error) {
+    console.error('Test verification flow error:', error);
+    res.status(500).json({
+      success: false,
+      error: {
+        code: 'TEST_VERIFICATION_FLOW_ERROR',
+        message: 'Failed to test verification flow',
+        details: error.message
+      }
+    });
+  }
+});
+
+/**
+ * @route   GET /api/admin/test-document-access/:driverId
+ * @desc    Test document access from Firebase Storage
+ * @access  Private (Admin only)
+ */
+router.get('/test-document-access/:driverId', requireRole(['admin']), async (req, res) => {
+  try {
+    const { driverId } = req.params;
+    const db = getFirestore();
+    const storage = require('../services/firebase').getStorage();
+    
+    console.log(`🔍 Testing document access for driver: ${driverId}`);
+    
+    // Get driver documents
+    const driverDoc = await db.collection('users').doc(driverId).get();
+    if (!driverDoc.exists) {
+      return res.status(404).json({
+        success: false,
+        error: { code: 'DRIVER_NOT_FOUND', message: 'Driver not found' }
+      });
+    }
+    
+    const driverData = driverDoc.data();
+    const documents = driverData.driver?.documents || driverData.documents || {};
+    
+    const testResults = [];
+    const documentTypes = ['drivingLicense', 'aadhaarCard', 'bikeInsurance', 'rcBook', 'profilePhoto'];
+    
+    for (const docType of documentTypes) {
+      const doc = documents[docType];
+      if (doc && doc.url) {
+        try {
+          // Test if URL is accessible
+          const response = await fetch(doc.url, { method: 'HEAD' });
+          testResults.push({
+            documentType: docType,
+            url: doc.url,
+            accessible: response.ok,
+            statusCode: response.status,
+            contentType: response.headers.get('content-type'),
+            size: response.headers.get('content-length')
+          });
+        } catch (error) {
+          testResults.push({
+            documentType: docType,
+            url: doc.url,
+            accessible: false,
+            error: error.message
+          });
+        }
+      } else {
+        testResults.push({
+          documentType: docType,
+          url: null,
+          accessible: false,
+          error: 'No document URL found'
+        });
+      }
+    }
+    
+    res.json({
+      success: true,
+      data: {
+        driverId,
+        driverName: driverData.name,
+        testResults,
+        summary: {
+          totalDocuments: documentTypes.length,
+          accessibleDocuments: testResults.filter(r => r.accessible).length,
+          inaccessibleDocuments: testResults.filter(r => !r.accessible).length
+        }
+      },
+      timestamp: new Date().toISOString()
+    });
+    
+  } catch (error) {
+    console.error('Document access test error:', error);
+    res.status(500).json({
+      success: false,
+      error: {
+        code: 'DOCUMENT_ACCESS_TEST_ERROR',
+        message: 'Failed to test document access',
+        details: error.message
+      }
+    });
+  }
+});
+
+/**
+ * @route   GET /api/admin/debug/documents/:driverId
+ * @desc    Debug endpoint to check document flow
+ * @access  Private (Admin only)
+ */
+router.get('/debug/documents/:driverId', requireRole(['admin']), async (req, res) => {
+  try {
+    const { driverId } = req.params;
+    const db = getFirestore();
+    
+    console.log(`🔍 Debug: Checking document flow for driver: ${driverId}`);
+    
+    // Get driver information
+    const driverDoc = await db.collection('users').doc(driverId).get();
+    if (!driverDoc.exists) {
+      return res.status(404).json({
+        success: false,
+        error: { code: 'DRIVER_NOT_FOUND', message: 'Driver not found' }
+      });
+    }
+
+    const driverData = driverDoc.data();
+    
+    // Get verification requests
+    const verificationQuery = await db.collection('documentVerificationRequests')
+      .where('driverId', '==', driverId)
+      .orderBy('requestedAt', 'desc')
+      .get();
+
+    // Get driver documents collection
+    const driverDocsQuery = await db.collection('driverDocuments')
+      .where('driverId', '==', driverId)
+      .get();
+
+    const debugInfo = {
+      driverId,
+      driverName: driverData.name,
+      driverPhone: driverData.phone,
+      verificationStatus: driverData.driver?.verificationStatus,
+      userCollectionDocuments: driverData.driver?.documents || driverData.documents || {},
+      verificationRequests: verificationQuery.docs.map(doc => ({
+        id: doc.id,
+        ...doc.data()
+      })),
+      driverDocumentsCollection: driverDocsQuery.docs.map(doc => ({
+        id: doc.id,
+        ...doc.data()
+      })),
+      timestamp: new Date().toISOString()
+    };
+
+    console.log(`🔍 Debug info for driver ${driverId}:`, JSON.stringify(debugInfo, null, 2));
+
+    res.json({
+      success: true,
+      data: debugInfo,
+      message: 'Debug information retrieved successfully'
+    });
+
+  } catch (error) {
+    console.error('Debug error:', error);
+    res.status(500).json({
+      success: false,
+      error: {
+        code: 'DEBUG_ERROR',
+        message: 'Failed to retrieve debug information',
+        details: error.message
+      }
+    });
+  }
+});
+
+/**
+ * @route   POST /api/admin/drivers/:driverId/documents/:documentType/verify
+ * @desc    Verify individual document
+ * @access  Private (Admin only)
+ */
+router.post('/drivers/:driverId/documents/:documentType/verify', requireRole(['admin']), async (req, res) => {
+  try {
+    const { driverId, documentType } = req.params;
+    const { status, comments, rejectionReason } = req.body;
+    const adminId = req.user.uid;
+
+    if (!status || !['approved', 'rejected'].includes(status)) {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'INVALID_STATUS',
+          message: 'Status must be either "approved" or "rejected"'
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    if (status === 'rejected' && !rejectionReason) {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'REJECTION_REASON_REQUIRED',
+          message: 'Rejection reason is required when rejecting a document'
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    const db = getFirestore();
+    const batch = db.batch();
+
+    // Get driver information
+    const driverRef = db.collection('users').doc(driverId);
+    const driverDoc = await driverRef.get();
+
+    if (!driverDoc.exists) {
+      return res.status(404).json({
+        success: false,
+        error: {
+          code: 'DRIVER_NOT_FOUND',
+          message: 'Driver not found'
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    const driverData = driverDoc.data();
+    const documents = driverData.driver?.documents || driverData.documents || {};
+
+    // Update specific document status with comprehensive mapping
+    const documentKey = documentType === 'aadhaar' ? 'aadhaarCard' : 
+                       documentType === 'insurance' ? 'bikeInsurance' : 
+                       documentType === 'rc' ? 'rcBook' : 
+                       documentType === 'profile' ? 'profilePhoto' : 
+                       documentType === 'drivingLicense' ? 'drivingLicense' :
+                       documentType === 'aadhaarCard' ? 'aadhaarCard' :
+                       documentType === 'bikeInsurance' ? 'bikeInsurance' :
+                       documentType === 'rcBook' ? 'rcBook' :
+                       documentType === 'profilePhoto' ? 'profilePhoto' : documentType;
+
+    if (documents[documentKey]) {
+      documents[documentKey] = {
+        ...documents[documentKey],
+        status: status === 'approved' ? 'verified' : 'rejected',
+        verified: status === 'approved',
+        verifiedAt: new Date(),
+        verifiedBy: adminId,
+        verificationComments: comments || null,
+        rejectionReason: status === 'rejected' ? rejectionReason : null
+      };
+
+      // Update driver's documents
+      batch.update(driverRef, {
+        'driver.documents': documents,
+        updatedAt: new Date()
+      });
+
+      // Check if all documents are verified
+      const allDocuments = ['drivingLicense', 'aadhaarCard', 'bikeInsurance', 'rcBook', 'profilePhoto'];
+      const verifiedDocuments = allDocuments.filter(doc => 
+        documents[doc]?.status === 'verified' || documents[doc]?.verified === true
+      );
+
+      // Update overall verification status
+      let overallStatus = 'pending';
+      if (verifiedDocuments.length === allDocuments.length) {
+        overallStatus = 'approved';
+      } else if (documents[documentKey]?.status === 'rejected') {
+        overallStatus = 'rejected';
+      } else {
+        overallStatus = 'pending_verification';
+      }
+
+      batch.update(driverRef, {
+        'driver.verificationStatus': overallStatus,
+        'driver.lastDocumentVerified': documentType,
+        'driver.lastDocumentVerifiedAt': new Date(),
+        updatedAt: new Date()
+      });
+
+      // Update verification request if exists
+      const verificationQuery = await db.collection('documentVerificationRequests')
+        .where('driverId', '==', driverId)
+        .where('status', '==', 'pending')
+        .limit(1)
+        .get();
+
+      if (!verificationQuery.empty) {
+        const verificationDoc = verificationQuery.docs[0];
+        const verificationData = verificationDoc.data();
+        
+        // Update document in verification request
+        if (verificationData.documents && verificationData.documents[documentKey]) {
+          verificationData.documents[documentKey] = {
+            ...verificationData.documents[documentKey],
+            verificationStatus: status === 'approved' ? 'verified' : 'rejected',
+            verified: status === 'approved',
+            verifiedAt: new Date(),
+            verifiedBy: adminId,
+            verificationComments: comments || null,
+            rejectionReason: status === 'rejected' ? rejectionReason : null
+          };
+
+          batch.update(verificationDoc.ref, {
+            documents: verificationData.documents,
+            status: overallStatus,
+            updatedAt: new Date()
+          });
+        }
+      }
+
+      await batch.commit();
+
+      res.json({
+        success: true,
+        message: `Document ${status} successfully`,
+        data: {
+          driverId,
+          documentType,
+          status,
+          overallStatus,
+          verifiedDocuments: verifiedDocuments.length,
+          totalDocuments: allDocuments.length,
+          verifiedAt: new Date(),
+          verifiedBy: adminId
+        },
+        timestamp: new Date().toISOString()
+      });
+
+    } else {
+      res.status(404).json({
+        success: false,
+        error: {
+          code: 'DOCUMENT_NOT_FOUND',
+          message: 'Document not found for this driver'
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
+  } catch (error) {
+    console.error('Error verifying document:', error);
+    res.status(500).json({
+      success: false,
+      error: {
+        code: 'DOCUMENT_VERIFICATION_ERROR',
+        message: 'Failed to verify document',
+        details: error.message
+      },
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+/**
+ * @route   POST /api/admin/sync-all-drivers-status
+ * @desc    Sync verification status for all drivers
+ * @access  Private (Admin only)
+ */
+router.post('/sync-all-drivers-status', requireRole(['admin']), async (req, res) => {
+  try {
+    const db = getFirestore();
+    
+    console.log('🔄 Syncing verification status for all drivers...');
+    
+    // Get all drivers
+    const driversSnapshot = await db.collection('users')
+      .where('userType', '==', 'driver')
+      .get();
+    
+    const syncResults = [];
+    let successCount = 0;
+    let errorCount = 0;
+    
+    for (const driverDoc of driversSnapshot.docs) {
+      try {
+        const driverData = driverDoc.data();
+        const documents = driverData.driver?.documents || driverData.documents || {};
+        
+        // Count verified documents
+        const allDocuments = ['drivingLicense', 'aadhaarCard', 'bikeInsurance', 'rcBook', 'profilePhoto'];
+        const verifiedDocuments = allDocuments.filter(doc => 
+          documents[doc]?.status === 'verified' || documents[doc]?.verified === true
+        );
+        
+        // Determine overall status
+        let overallStatus = 'pending';
+        if (verifiedDocuments.length === allDocuments.length) {
+          overallStatus = 'approved';
+        } else if (verifiedDocuments.length === 0) {
+          overallStatus = 'pending';
+        } else if (allDocuments.some(doc => documents[doc]?.status === 'rejected')) {
+          overallStatus = 'rejected';
+        } else {
+          overallStatus = 'pending_verification';
+        }
+        
+        // Update driver status
+        await driverDoc.ref.update({
+          'driver.verificationStatus': overallStatus,
+          'driver.isVerified': overallStatus === 'approved',
+          'driver.verifiedDocumentsCount': verifiedDocuments.length,
+          'driver.totalDocumentsCount': allDocuments.length,
+          updatedAt: new Date()
+        });
+        
+        syncResults.push({
+          driverId: driverDoc.id,
+          driverName: driverData.name,
+          oldStatus: driverData.driver?.verificationStatus || 'unknown',
+          newStatus: overallStatus,
+          verifiedDocuments: verifiedDocuments.length,
+          totalDocuments: allDocuments.length,
+          success: true
+        });
+        
+        successCount++;
+        
+      } catch (error) {
+        syncResults.push({
+          driverId: driverDoc.id,
+          driverName: driverData.name || 'Unknown',
+          error: error.message,
+          success: false
+        });
+        errorCount++;
+      }
+    }
+    
+    console.log(`✅ Status sync completed: ${successCount} successful, ${errorCount} errors`);
+    
+    res.json({
+      success: true,
+      message: 'Status synchronization completed',
+      data: {
+        totalDrivers: driversSnapshot.size,
+        successCount,
+        errorCount,
+        results: syncResults
+      },
+      timestamp: new Date().toISOString()
+    });
+    
+  } catch (error) {
+    console.error('Error syncing all drivers status:', error);
+    res.status(500).json({
+      success: false,
+      error: {
+        code: 'SYNC_ALL_DRIVERS_ERROR',
+        message: 'Failed to sync all drivers status',
+        details: error.message
+      },
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+/**
+ * @route   POST /api/admin/drivers/:driverId/sync-status
+ * @desc    Sync driver verification status based on documents
+ * @access  Private (Admin only)
+ */
+router.post('/drivers/:driverId/sync-status', requireRole(['admin']), async (req, res) => {
+  try {
+    const { driverId } = req.params;
+    const db = getFirestore();
+    
+    // Get driver information
+    const driverRef = db.collection('users').doc(driverId);
+    const driverDoc = await driverRef.get();
+
+    if (!driverDoc.exists) {
+      return res.status(404).json({
+        success: false,
+        error: {
+          code: 'DRIVER_NOT_FOUND',
+          message: 'Driver not found'
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    const driverData = driverDoc.data();
+    const documents = driverData.driver?.documents || driverData.documents || {};
+    
+    // Count verified documents
+    const allDocuments = ['drivingLicense', 'aadhaarCard', 'bikeInsurance', 'rcBook', 'profilePhoto'];
+    const verifiedDocuments = allDocuments.filter(doc => 
+      documents[doc]?.status === 'verified' || documents[doc]?.verified === true
+    );
+    
+    // Determine overall status
+    let overallStatus = 'pending';
+    if (verifiedDocuments.length === allDocuments.length) {
+      overallStatus = 'approved';
+    } else if (verifiedDocuments.length === 0) {
+      overallStatus = 'pending';
+    } else if (allDocuments.some(doc => documents[doc]?.status === 'rejected')) {
+      overallStatus = 'rejected';
+    } else {
+      overallStatus = 'pending_verification';
+    }
+    
+    // Update driver status
+    await driverRef.update({
+      'driver.verificationStatus': overallStatus,
+      'driver.isVerified': overallStatus === 'approved',
+      'driver.verifiedDocumentsCount': verifiedDocuments.length,
+      'driver.totalDocumentsCount': allDocuments.length,
+      updatedAt: new Date()
+    });
+    
+    console.log(`✅ Status synced for driver ${driverId}: ${overallStatus} (${verifiedDocuments.length}/${allDocuments.length} documents verified)`);
+    
+    res.json({
+      success: true,
+      message: 'Status synchronized successfully',
+      data: {
+        driverId,
+        overallStatus,
+        verifiedDocuments: verifiedDocuments.length,
+        totalDocuments: allDocuments.length,
+        isVerified: overallStatus === 'approved',
+        syncedAt: new Date()
+      },
+      timestamp: new Date().toISOString()
+    });
+
+  } catch (error) {
+    console.error('Error syncing status:', error);
+    res.status(500).json({
+      success: false,
+      error: {
+        code: 'SYNC_STATUS_ERROR',
+        message: 'Failed to sync verification status',
+        details: error.message
+      },
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+/**
  * @route   POST /api/admin/drivers/:driverId/verify
  * @desc    Approve or reject driver verification
  * @access  Private (Admin only)
@@ -1047,7 +1830,41 @@ router.get('/drivers/:driverId/documents', requireRole(['admin']), async (req, r
     }
 
     const driverData = driverDoc.data();
-    const documents = driverData.driver?.documents || {};
+    const documents = driverData.driver?.documents || driverData.documents || {};
+
+    // Normalize document structure for admin dashboard
+    const normalizedDocuments = {
+      drivingLicense: {
+        url: documents.drivingLicense?.url || documents.driving_license?.url || '',
+        status: documents.drivingLicense?.status || documents.driving_license?.status || 'pending',
+        uploadedAt: documents.drivingLicense?.uploadedAt || documents.driving_license?.uploadedAt || '',
+        verified: documents.drivingLicense?.verified || false
+      },
+      aadhaar: {
+        url: documents.aadhaarCard?.url || documents.aadhaar?.url || documents.aadhaar_card?.url || '',
+        status: documents.aadhaarCard?.status || documents.aadhaar?.status || documents.aadhaar_card?.status || 'pending',
+        uploadedAt: documents.aadhaarCard?.uploadedAt || documents.aadhaar?.uploadedAt || documents.aadhaar_card?.uploadedAt || '',
+        verified: documents.aadhaarCard?.verified || documents.aadhaar?.verified || false
+      },
+      insurance: {
+        url: documents.bikeInsurance?.url || documents.insurance?.url || documents.bike_insurance?.url || '',
+        status: documents.bikeInsurance?.status || documents.insurance?.status || documents.bike_insurance?.status || 'pending',
+        uploadedAt: documents.bikeInsurance?.uploadedAt || documents.insurance?.uploadedAt || documents.bike_insurance?.uploadedAt || '',
+        verified: documents.bikeInsurance?.verified || documents.insurance?.verified || false
+      },
+      rcBook: {
+        url: documents.rcBook?.url || documents.rc_book?.url || '',
+        status: documents.rcBook?.status || documents.rc_book?.status || 'pending',
+        uploadedAt: documents.rcBook?.uploadedAt || documents.rc_book?.uploadedAt || '',
+        verified: documents.rcBook?.verified || false
+      },
+      profilePhoto: {
+        url: documents.profilePhoto?.url || documents.profile_photo?.url || '',
+        status: documents.profilePhoto?.status || documents.profile_photo?.status || 'pending',
+        uploadedAt: documents.profilePhoto?.uploadedAt || documents.profile_photo?.uploadedAt || '',
+        verified: documents.profilePhoto?.verified || false
+      }
+    };
 
     res.json({
       success: true,
@@ -1055,7 +1872,7 @@ router.get('/drivers/:driverId/documents', requireRole(['admin']), async (req, r
         driverId,
         driverName: driverData.name,
         driverPhone: driverData.phone,
-        documents,
+        documents: normalizedDocuments,
         verificationStatus: driverData.driver?.verificationStatus || 'pending',
         verificationRequestedAt: driverData.driver?.verificationRequestedAt || null
       },

@@ -390,6 +390,8 @@ class FileUploadService {
    */
   async createOrUpdateVerificationRequest(driverId, documentType, documentData) {
     try {
+      console.log(`📋 Creating/updating verification request for driver: ${driverId}, document: ${documentType}`);
+      
       // Get driver information
       const driverDoc = await this.db.collection('users').doc(driverId).get();
       if (!driverDoc.exists) {
@@ -398,6 +400,7 @@ class FileUploadService {
       }
 
       const driverData = driverDoc.data();
+      console.log(`📋 Driver data retrieved:`, { name: driverData.name, phone: driverData.phone });
       
       // Check if verification request already exists
       const existingRequestQuery = await this.db.collection('documentVerificationRequests')
@@ -406,25 +409,86 @@ class FileUploadService {
         .limit(1)
         .get();
 
+      console.log(`📋 Existing verification requests found: ${existingRequestQuery.size}`);
+
+      // Get all current documents from user collection
+      const userDocuments = driverData.driver?.documents || driverData.documents || {};
+      console.log(`📋 Current user documents:`, userDocuments);
+
+      // Create normalized document structure
+      const normalizedDocuments = {
+        drivingLicense: {
+          downloadURL: userDocuments.drivingLicense?.url || userDocuments.driving_license?.url || '',
+          verificationStatus: userDocuments.drivingLicense?.status || userDocuments.driving_license?.status || 'pending',
+          uploadedAt: userDocuments.drivingLicense?.uploadedAt || userDocuments.driving_license?.uploadedAt || new Date(),
+          verified: userDocuments.drivingLicense?.verified || false
+        },
+        aadhaarCard: {
+          downloadURL: userDocuments.aadhaarCard?.url || userDocuments.aadhaar?.url || userDocuments.aadhaar_card?.url || '',
+          verificationStatus: userDocuments.aadhaarCard?.status || userDocuments.aadhaar?.status || userDocuments.aadhaar_card?.status || 'pending',
+          uploadedAt: userDocuments.aadhaarCard?.uploadedAt || userDocuments.aadhaar?.uploadedAt || userDocuments.aadhaar_card?.uploadedAt || new Date(),
+          verified: userDocuments.aadhaarCard?.verified || userDocuments.aadhaar?.verified || false
+        },
+        bikeInsurance: {
+          downloadURL: userDocuments.bikeInsurance?.url || userDocuments.insurance?.url || userDocuments.bike_insurance?.url || '',
+          verificationStatus: userDocuments.bikeInsurance?.status || userDocuments.insurance?.status || userDocuments.bike_insurance?.status || 'pending',
+          uploadedAt: userDocuments.bikeInsurance?.uploadedAt || userDocuments.insurance?.uploadedAt || userDocuments.bike_insurance?.uploadedAt || new Date(),
+          verified: userDocuments.bikeInsurance?.verified || userDocuments.insurance?.verified || false
+        },
+        rcBook: {
+          downloadURL: userDocuments.rcBook?.url || userDocuments.rc_book?.url || '',
+          verificationStatus: userDocuments.rcBook?.status || userDocuments.rc_book?.status || 'pending',
+          uploadedAt: userDocuments.rcBook?.uploadedAt || userDocuments.rc_book?.uploadedAt || new Date(),
+          verified: userDocuments.rcBook?.verified || false
+        },
+        profilePhoto: {
+          downloadURL: userDocuments.profilePhoto?.url || userDocuments.profile_photo?.url || '',
+          verificationStatus: userDocuments.profilePhoto?.status || userDocuments.profile_photo?.status || 'pending',
+          uploadedAt: userDocuments.profilePhoto?.uploadedAt || userDocuments.profile_photo?.uploadedAt || new Date(),
+          verified: userDocuments.profilePhoto?.verified || false
+        }
+      };
+
+      // Update the specific document that was just uploaded
+      if (documentData.uploadDetails?.downloadURL) {
+        const documentTypeMap = {
+          'drivingLicense': 'drivingLicense',
+          'driving_license': 'drivingLicense',
+          'aadhaarCard': 'aadhaarCard',
+          'aadhaar_card': 'aadhaarCard',
+          'aadhaar': 'aadhaarCard',
+          'bikeInsurance': 'bikeInsurance',
+          'bike_insurance': 'bikeInsurance',
+          'insurance': 'bikeInsurance',
+          'rcBook': 'rcBook',
+          'rc_book': 'rcBook',
+          'profilePhoto': 'profilePhoto',
+          'profile_photo': 'profilePhoto'
+        };
+
+        const normalizedType = documentTypeMap[documentType] || documentType;
+        if (normalizedDocuments[normalizedType]) {
+          normalizedDocuments[normalizedType] = {
+            downloadURL: documentData.uploadDetails.downloadURL,
+            verificationStatus: 'pending',
+            uploadedAt: documentData.metadata.uploadedAt || new Date(),
+            verified: false
+          };
+          console.log(`📋 Updated ${normalizedType} document with new URL:`, documentData.uploadDetails.downloadURL);
+        }
+      }
+
       const verificationRequestData = {
         driverId,
         driverName: driverData.name || 'Unknown Driver',
         driverPhone: driverData.phone || 'Unknown Phone',
-        documents: {
-          [documentType]: {
-            documentId: documentData.id || 'pending',
-            filename: documentData.filename,
-            downloadURL: documentData.uploadDetails.downloadURL,
-            thumbnailURL: documentData.uploadDetails.thumbnailURL,
-            uploadedAt: documentData.metadata.uploadedAt,
-            status: 'uploaded',
-            verificationStatus: 'pending'
-          }
-        },
+        documents: normalizedDocuments,
         status: 'pending',
         requestedAt: new Date(),
         updatedAt: new Date()
       };
+
+      console.log(`📋 Verification request data:`, verificationRequestData);
 
       if (existingRequestQuery.empty) {
         // Create new verification request

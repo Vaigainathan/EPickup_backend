@@ -2886,14 +2886,45 @@ router.post('/documents/request-verification', requireDriver, async (req, res) =
       updatedAt: new Date()
     });
 
-    // Create verification request record
+    // Create verification request record with normalized document structure
     const verificationRequestRef = db.collection('documentVerificationRequests').doc();
     const verificationRequest = {
       id: verificationRequestRef.id,
       driverId: uid,
       driverName: userData.name,
       driverPhone: userData.phone,
-      documents: documents,
+      documents: {
+        drivingLicense: {
+          downloadURL: documents.drivingLicense?.url || '',
+          verificationStatus: documents.drivingLicense?.status || 'pending',
+          uploadedAt: documents.drivingLicense?.uploadedAt || new Date(),
+          verified: documents.drivingLicense?.verified || false
+        },
+        aadhaarCard: {
+          downloadURL: documents.aadhaarCard?.url || documents.aadhaar?.url || '',
+          verificationStatus: documents.aadhaarCard?.status || documents.aadhaar?.status || 'pending',
+          uploadedAt: documents.aadhaarCard?.uploadedAt || documents.aadhaar?.uploadedAt || new Date(),
+          verified: documents.aadhaarCard?.verified || documents.aadhaar?.verified || false
+        },
+        bikeInsurance: {
+          downloadURL: documents.bikeInsurance?.url || documents.insurance?.url || '',
+          verificationStatus: documents.bikeInsurance?.status || documents.insurance?.status || 'pending',
+          uploadedAt: documents.bikeInsurance?.uploadedAt || documents.insurance?.uploadedAt || new Date(),
+          verified: documents.bikeInsurance?.verified || documents.insurance?.verified || false
+        },
+        rcBook: {
+          downloadURL: documents.rcBook?.url || '',
+          verificationStatus: documents.rcBook?.status || 'pending',
+          uploadedAt: documents.rcBook?.uploadedAt || new Date(),
+          verified: documents.rcBook?.verified || false
+        },
+        profilePhoto: {
+          downloadURL: documents.profilePhoto?.url || '',
+          verificationStatus: documents.profilePhoto?.status || 'pending',
+          uploadedAt: documents.profilePhoto?.uploadedAt || new Date(),
+          verified: documents.profilePhoto?.verified || false
+        }
+      },
       status: 'pending',
       requestedAt: new Date(),
       reviewedAt: null,

@@ -936,8 +936,37 @@ router.get('/drivers/:driverId/documents', requireRole(['admin']), async (req, r
       // Use verification request data (most recent)
       const verificationData = verificationQuery.docs[0].data();
       console.log(`📄 Found verification request for driver ${driverId}:`, verificationData);
-      documents = verificationData.documents || {};
-      source = 'verification_request';
+      const verificationDocs = verificationData.documents || {};
+      
+      // Merge verification request documents with user collection documents
+      // This ensures we get ALL documents, not just the ones in verification request
+      const userDocs = driverData.driver?.documents || driverData.documents || {};
+      
+      // Start with user collection documents (complete set)
+      documents = { ...userDocs };
+      
+      // Override with verification request data where available (more recent)
+      Object.entries(verificationDocs).forEach(([key, verificationDoc]) => {
+        if (verificationDoc.downloadURL) {
+          // Map verification request key to user collection key
+          const userKey = key === 'bike_insurance' ? 'bikeInsurance' :
+                         key === 'driving_license' ? 'drivingLicense' :
+                         key === 'aadhaar_card' ? 'aadhaarCard' :
+                         key === 'rc_book' ? 'rcBook' :
+                         key === 'profile_photo' ? 'profilePhoto' : key;
+          
+          documents[userKey] = {
+            ...documents[userKey],
+            url: verificationDoc.downloadURL,
+            verificationStatus: verificationDoc.verificationStatus || 'pending',
+            status: verificationDoc.status || 'uploaded',
+            filename: verificationDoc.filename,
+            uploadedAt: verificationDoc.uploadedAt
+          };
+        }
+      });
+      
+      source = 'merged_verification_and_user';
     } else {
       // Fallback to user collection
       console.log(`📄 No verification request found, using user collection for driver ${driverId}`);
@@ -953,6 +982,13 @@ router.get('/drivers/:driverId/documents', requireRole(['admin']), async (req, r
       for (const key of allKeys) {
         const doc = documents[key];
         if (doc && (doc.downloadURL || doc.url)) {
+          console.log(`📄 Found document ${key}:`, {
+            url: doc.url || 'MISSING',
+            downloadURL: doc.downloadURL || 'MISSING',
+            status: doc.status || 'MISSING',
+            verificationStatus: doc.verificationStatus || 'MISSING'
+          });
+          
           return {
             url: doc.downloadURL || doc.url || '',
             status: doc.verificationStatus || doc.status || 'pending',
@@ -963,6 +999,7 @@ router.get('/drivers/:driverId/documents', requireRole(['admin']), async (req, r
         }
       }
       
+      console.log(`⚠️ No document found for keys: ${allKeys.join(', ')}`);
       return {
         url: '',
         status: 'pending',
@@ -973,13 +1010,62 @@ router.get('/drivers/:driverId/documents', requireRole(['admin']), async (req, r
     };
 
     // Normalize document structure for admin dashboard
-    const normalizedDocuments = {
+    let normalizedDocuments = {
       drivingLicense: getDocumentData(documents, 'drivingLicense', ['driving_license']),
       aadhaar: getDocumentData(documents, 'aadhaarCard', ['aadhaar_card', 'aadhaar']),
       insurance: getDocumentData(documents, 'bikeInsurance', ['bike_insurance', 'insurance']),
       rcBook: getDocumentData(documents, 'rcBook', ['rc_book']),
       profilePhoto: getDocumentData(documents, 'profilePhoto', ['profile_photo'])
     };
+    
+    // Check if any documents are missing URLs and try to get them from driverDocuments collection
+    const missingDocuments = Object.entries(normalizedDocuments).filter(([key, doc]) => !doc.url);
+    
+    if (missingDocuments.length > 0) {
+      console.log(`⚠️ Missing documents found: ${missingDocuments.map(([key]) => key).join(', ')}`);
+      console.log('🔍 Attempting to fetch from driverDocuments collection...');
+      
+      try {
+        const driverDocsQuery = await db.collection('driverDocuments')
+          .where('driverId', '==', driverId)
+          .get();
+        
+        if (!driverDocsQuery.empty) {
+          const driverDocs = {};
+          driverDocsQuery.docs.forEach(doc => {
+            const data = doc.data();
+            driverDocs[data.documentType] = data;
+          });
+          
+          // Update missing documents with data from driverDocuments collection
+          missingDocuments.forEach(([key, doc]) => {
+            const docTypeMap = {
+              'drivingLicense': 'driving_license',
+              'aadhaar': 'aadhaar_card',
+              'insurance': 'bike_insurance',
+              'rcBook': 'rc_book',
+              'profilePhoto': 'profile_photo'
+            };
+            
+            const docType = docTypeMap[key];
+            const driverDoc = driverDocs[docType];
+            
+            if (driverDoc && driverDoc.downloadURL) {
+              console.log(`✅ Found missing document ${key} in driverDocuments collection`);
+              normalizedDocuments[key] = {
+                url: driverDoc.downloadURL,
+                status: driverDoc.status || 'uploaded',
+                uploadedAt: driverDoc.uploadedAt || '',
+                verified: false,
+                rejectionReason: null
+              };
+            }
+          });
+        }
+      } catch (error) {
+        console.warn('⚠️ Error fetching from driverDocuments collection:', error.message);
+      }
+    }
     
     console.log(`📄 Normalized documents for driver ${driverId}:`, normalizedDocuments);
 

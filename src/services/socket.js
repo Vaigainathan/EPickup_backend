@@ -297,16 +297,33 @@ const getEventHandler = () => {
  */
 const sendToUser = (userId, event, data) => {
   try {
-    if (!io) return false;
+    if (!io) {
+      console.error('❌ Socket.IO not initialized');
+      return false;
+    }
     
-    io.to(`user:${userId}`).emit(event, {
+    const room = `user:${userId}`;
+    const payload = {
       ...data,
       timestamp: new Date().toISOString()
-    });
+    };
     
+    console.log(`📡 Sending ${event} to user ${userId} in room ${room}`);
+    console.log(`📡 Payload:`, JSON.stringify(payload, null, 2));
+    
+    io.to(room).emit(event, payload);
+    
+    // Check if user is in the room
+    const roomSockets = io.sockets.adapter.rooms.get(room);
+    if (!roomSockets || roomSockets.size === 0) {
+      console.warn(`⚠️ User ${userId} not found in room ${room}`);
+      return false;
+    }
+    
+    console.log(`✅ Message sent to ${roomSockets.size} socket(s) in room ${room}`);
     return true;
   } catch (error) {
-    console.error('Socket sendToUser error:', error);
+    console.error('❌ Socket sendToUser error:', error);
     return false;
   }
 };

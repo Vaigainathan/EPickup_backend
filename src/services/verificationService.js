@@ -448,6 +448,9 @@ class VerificationService {
       const verificationStatus = this.calculateVerificationStatus(normalizedDocuments);
       await this.updateDriverVerificationStatus(driverId, verificationStatus);
       
+      // Send WebSocket notification to driver
+      await this.sendVerificationNotification(driverId, documentType, status, verificationStatus);
+      
       console.log(`✅ Document ${documentType} ${status} for driver: ${driverId}`);
       
       return {
@@ -477,6 +480,61 @@ class VerificationService {
   }
 
   /**
+   * Send verification notification to driver via WebSocket
+   */
+  async sendVerificationNotification(driverId, documentType, status, verificationStatus) {
+    try {
+      console.log(`📡 Attempting to send verification notification to driver: ${driverId}`);
+      const { sendToUser } = require('./socket');
+      
+      if (!sendToUser) {
+        console.error('❌ sendToUser function not available');
+        return;
+      }
+      
+      // Send document-specific notification
+      const notificationSent = sendToUser(driverId, 'document_verification_update', {
+        type: 'document_verification',
+        documentType,
+        status: status === 'verified' ? 'verified' : 'rejected',
+        verificationStatus: verificationStatus.status,
+        isVerified: verificationStatus.status === 'verified',
+        documentSummary: {
+          total: verificationStatus.totalWithDocuments,
+          verified: verificationStatus.verifiedCount,
+          rejected: verificationStatus.rejectedCount,
+          pending: verificationStatus.totalWithDocuments - verificationStatus.verifiedCount - verificationStatus.rejectedCount
+        },
+        message: `Your ${documentType} has been ${status === 'verified' ? 'verified' : 'rejected'}`,
+        timestamp: new Date().toISOString()
+      });
+
+      console.log(`📡 Document notification sent: ${notificationSent}`);
+
+      // If all documents are verified, send completion notification
+      if (verificationStatus.status === 'verified') {
+        const completionSent = sendToUser(driverId, 'verification_complete', {
+          type: 'verification_status',
+          status: 'verified',
+          message: 'All your documents have been verified successfully! You can now start taking orders.',
+          documentSummary: {
+            total: verificationStatus.totalWithDocuments,
+            verified: verificationStatus.verifiedCount,
+            rejected: verificationStatus.rejectedCount,
+            pending: 0
+          },
+          timestamp: new Date().toISOString()
+        });
+        console.log(`📡 Completion notification sent: ${completionSent}`);
+      }
+
+      console.log(`📡 Verification notification sent to driver ${driverId}: ${status}`);
+    } catch (error) {
+      console.error('❌ Failed to send verification notification:', error);
+    }
+  }
+
+  /**
    * Approve a driver
    */
   async approveDriver(driverId, adminNotes, adminId) {
@@ -488,11 +546,11 @@ class VerificationService {
       
       // Update driver status
       batch.update(driverRef, {
-        'driver.verificationStatus': 'approved',
+        'driver.verificationStatus': 'verified',
         'driver.isVerified': true,
         'isVerified': true,
-        'driver.approvedAt': new Date(),
-        'driver.approvedBy': adminId,
+        'driver.verifiedAt': new Date(),
+        'driver.verifiedBy': adminId,
         'driver.adminNotes': adminNotes || null,
         updatedAt: new Date()
       });
@@ -507,7 +565,7 @@ class VerificationService {
       if (!verificationQuery.empty) {
         const verificationDoc = verificationQuery.docs[0];
         batch.update(verificationDoc.ref, {
-          status: 'approved',
+          status: 'verified',
           reviewedAt: new Date(),
           reviewedBy: adminId,
           reviewNotes: adminNotes || null,
@@ -539,9 +597,9 @@ class VerificationService {
         message: 'Driver approved successfully',
         data: {
           driverId,
-          status: 'approved',
-          approvedAt: new Date(),
-          approvedBy: adminId
+          status: 'verified',
+          verifiedAt: new Date(),
+          verifiedBy: adminId
         }
       };
 

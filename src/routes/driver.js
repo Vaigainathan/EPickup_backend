@@ -199,6 +199,63 @@ router.put('/profile', [
 });
 
 /**
+ * @route   GET /api/driver/profile
+ * @desc    Get driver profile data
+ * @access  Private (Driver only)
+ */
+router.get('/profile', requireDriver, async (req, res) => {
+  try {
+    const { uid } = req.user;
+    const db = getFirestore();
+    
+    const userDoc = await db.collection('users').doc(uid).get();
+    
+    if (!userDoc.exists) {
+      return res.status(404).json({
+        success: false,
+        error: {
+          code: 'DRIVER_NOT_FOUND',
+          message: 'Driver not found',
+          details: 'Driver profile does not exist'
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    const userData = userDoc.data();
+    
+    res.status(200).json({
+      success: true,
+      message: 'Driver profile retrieved successfully',
+      data: {
+        driver: {
+          id: userData.id,
+          name: userData.name,
+          email: userData.email,
+          phone: userData.phone,
+          profilePicture: userData.profilePicture,
+          verificationStatus: userData.driver?.verificationStatus || 'pending',
+          isVerified: userData.driver?.isVerified || false,
+          driver: userData.driver
+        }
+      },
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('Error getting driver profile:', error);
+    res.status(500).json({
+      success: false,
+      error: {
+        code: 'PROFILE_RETRIEVAL_ERROR',
+        message: 'Failed to retrieve driver profile',
+        details: 'An error occurred while retrieving driver profile'
+      },
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+/**
  * @route   GET /api/driver/documents
  * @desc    Get driver documents
  * @access  Private (Driver only)

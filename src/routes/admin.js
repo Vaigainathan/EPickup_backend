@@ -1087,7 +1087,7 @@ router.post('/test-verification-flow/:driverId', requireRole(['admin']), async (
       
       const overallResult = await overallResponse.json();
       overallVerificationTest = overallResult.success ? 'PASS' : 'FAIL';
-    } catch (error) {
+    } catch {
       overallVerificationTest = 'ERROR';
     }
     
@@ -1104,7 +1104,7 @@ router.post('/test-verification-flow/:driverId', requireRole(['admin']), async (
       
       const syncResult = await syncResponse.json();
       statusSyncTest = syncResult.success ? 'PASS' : 'FAIL';
-    } catch (error) {
+    } catch {
       statusSyncTest = 'ERROR';
     }
     
@@ -1150,7 +1150,6 @@ router.get('/test-document-access/:driverId', requireRole(['admin']), async (req
   try {
     const { driverId } = req.params;
     const db = getFirestore();
-    const storage = require('../services/firebase').getStorage();
     
     console.log(`🔍 Testing document access for driver: ${driverId}`);
     
@@ -1312,6 +1311,29 @@ router.post('/drivers/:driverId/documents/:documentType/verify', requireRole(['a
     const { status, comments, rejectionReason } = req.body;
     const adminId = req.user.uid;
 
+    // Input validation
+    if (!driverId || typeof driverId !== 'string' || driverId.trim() === '') {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'INVALID_DRIVER_ID',
+          message: 'Valid driver ID is required'
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    if (!documentType || typeof documentType !== 'string' || documentType.trim() === '') {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'INVALID_DOCUMENT_TYPE',
+          message: 'Valid document type is required'
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
     if (!status || !['approved', 'rejected'].includes(status)) {
       return res.status(400).json({
         success: false,
@@ -1323,12 +1345,25 @@ router.post('/drivers/:driverId/documents/:documentType/verify', requireRole(['a
       });
     }
 
-    if (status === 'rejected' && !rejectionReason) {
+    if (status === 'rejected' && (!rejectionReason || rejectionReason.trim() === '')) {
       return res.status(400).json({
         success: false,
         error: {
           code: 'REJECTION_REASON_REQUIRED',
           message: 'Rejection reason is required when rejecting a document'
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    // Validate document type against allowed types
+    const allowedDocumentTypes = ['drivingLicense', 'aadhaar', 'insurance', 'rc', 'profile', 'aadhaarCard', 'bikeInsurance', 'rcBook', 'profilePhoto'];
+    if (!allowedDocumentTypes.includes(documentType)) {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'INVALID_DOCUMENT_TYPE',
+          message: `Document type must be one of: ${allowedDocumentTypes.join(', ')}`
         },
         timestamp: new Date().toISOString()
       });
@@ -1501,8 +1536,8 @@ router.post('/sync-all-drivers-status', requireRole(['admin']), async (req, res)
     let errorCount = 0;
     
     for (const driverDoc of driversSnapshot.docs) {
+      const driverData = driverDoc.data();
       try {
-        const driverData = driverDoc.data();
         const documents = driverData.driver?.documents || driverData.documents || {};
         
         // Count verified documents

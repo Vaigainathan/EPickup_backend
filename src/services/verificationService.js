@@ -240,6 +240,111 @@ class VerificationService {
   }
 
   /**
+   * Verify a driver document
+   */
+  async verifyDriverDocument(driverId, documentType, status, comments, rejectionReason, adminId) {
+    try {
+      console.log(`📄 Verifying document ${documentType} for driver: ${driverId}`);
+      
+      const batch = this.db.batch();
+      const driverRef = this.db.collection('users').doc(driverId);
+      
+      // Get current driver data
+      const driverDoc = await driverRef.get();
+      if (!driverDoc.exists) {
+        throw new Error('Driver not found');
+      }
+      
+      const driverData = driverDoc.data();
+      const documents = driverData.driver?.documents || driverData.documents || {};
+      
+      // Normalize document type
+      const normalizedDocType = this.normalizeDocumentField(documentType);
+      
+      // Update specific document
+      if (documents[normalizedDocType]) {
+        documents[normalizedDocType] = {
+          ...documents[normalizedDocType],
+          status: status === 'verified' ? 'verified' : 'rejected',
+          verified: status === 'verified',
+          verifiedAt: new Date(),
+          verifiedBy: adminId,
+          verificationComments: comments || null,
+          rejectionReason: status === 'rejected' ? rejectionReason : null
+        };
+        
+        // Update driver's documents
+        batch.update(driverRef, {
+          'driver.documents': documents,
+          updatedAt: new Date()
+        });
+      }
+      
+      // Update verification request if exists
+      const verificationQuery = await this.db.collection('documentVerificationRequests')
+        .where('driverId', '==', driverId)
+        .where('status', '==', 'pending')
+        .limit(1)
+        .get();
+
+      if (!verificationQuery.empty) {
+        const verificationDoc = verificationQuery.docs[0];
+        const verificationData = verificationDoc.data();
+        
+        if (verificationData.documents && verificationData.documents[normalizedDocType]) {
+          verificationData.documents[normalizedDocType] = {
+            ...verificationData.documents[normalizedDocType],
+            verificationStatus: status === 'verified' ? 'verified' : 'rejected',
+            verified: status === 'verified',
+            verifiedAt: new Date(),
+            verifiedBy: adminId,
+            verificationComments: comments || null,
+            rejectionReason: status === 'rejected' ? rejectionReason : null
+          };
+          
+          batch.update(verificationDoc.ref, {
+            documents: verificationData.documents,
+            updatedAt: new Date()
+          });
+        }
+      }
+      
+      await batch.commit();
+      
+      // Recalculate overall verification status
+      const normalizedDocuments = this.normalizeDocuments(documents);
+      const verificationStatus = this.calculateVerificationStatus(normalizedDocuments);
+      await this.updateDriverVerificationStatus(driverId, verificationStatus);
+      
+      console.log(`✅ Document ${documentType} ${status} for driver: ${driverId}`);
+      
+      return {
+        success: true,
+        message: `Document ${status} successfully`,
+        data: {
+          driverId,
+          documentType: normalizedDocType,
+          status,
+          verificationStatus: verificationStatus.status,
+          isVerified: verificationStatus.status === 'verified',
+          documentSummary: {
+            total: verificationStatus.totalWithDocuments,
+            verified: verificationStatus.verifiedCount,
+            rejected: verificationStatus.rejectedCount,
+            pending: verificationStatus.totalWithDocuments - verificationStatus.verifiedCount - verificationStatus.rejectedCount
+          },
+          verifiedAt: new Date(),
+          verifiedBy: adminId
+        }
+      };
+
+    } catch (error) {
+      console.error('❌ Error verifying document:', error);
+      throw error;
+    }
+  }
+
+  /**
    * Approve a driver
    */
   async approveDriver(driverId, adminNotes, adminId) {

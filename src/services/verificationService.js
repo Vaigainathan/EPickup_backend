@@ -18,7 +18,9 @@ class VerificationService {
       'bike_insurance': 'bikeInsurance',
       'insurance': 'bikeInsurance',
       'rc_book': 'rcBook',
+      'rc': 'rcBook',
       'profile_photo': 'profilePhoto',
+      'profile': 'profilePhoto',
       // Already camelCase (pass through)
       'drivingLicense': 'drivingLicense',
       'aadhaarCard': 'aadhaarCard',
@@ -36,9 +38,13 @@ class VerificationService {
     const fieldMap = {
       'drivingLicense': 'driving_license',
       'aadhaarCard': 'aadhaar_card',
+      'aadhaar': 'aadhaar_card',
       'bikeInsurance': 'bike_insurance',
+      'insurance': 'bike_insurance',
       'rcBook': 'rc_book',
-      'profilePhoto': 'profile_photo'
+      'rc': 'rc_book',
+      'profilePhoto': 'profile_photo',
+      'profile': 'profile_photo'
     };
     return fieldMap[fieldName] || fieldName;
   }
@@ -309,11 +315,11 @@ class VerificationService {
       // Update user collection
       const driverRef = this.db.collection('users').doc(driverId);
       batch.update(driverRef, {
-        'driver.verificationStatus': verificationData.verificationStatus,
-        'driver.isVerified': verificationData.isVerified,
-        'isVerified': verificationData.isVerified,
-        'driver.verifiedDocumentsCount': verificationData.documentSummary.verified,
-        'driver.totalDocumentsCount': verificationData.documentSummary.total,
+        'driver.verificationStatus': verificationData.status,
+        'driver.isVerified': verificationData.status === 'verified',
+        'isVerified': verificationData.status === 'verified',
+        'driver.verifiedDocumentsCount': verificationData.verifiedCount,
+        'driver.totalDocumentsCount': verificationData.totalWithDocuments,
         updatedAt: new Date()
       });
 
@@ -327,13 +333,13 @@ class VerificationService {
       if (!verificationQuery.empty) {
         const verificationDoc = verificationQuery.docs[0];
         batch.update(verificationDoc.ref, {
-          status: verificationData.verificationStatus,
+          status: verificationData.status,
           updatedAt: new Date()
         });
       }
 
       await batch.commit();
-      console.log(`✅ Verification status updated for driver: ${driverId} - ${verificationData.verificationStatus} (${verificationData.documentSummary.verified}/${verificationData.documentSummary.total})`);
+      console.log(`✅ Verification status updated for driver: ${driverId} - ${verificationData.status} (${verificationData.verifiedCount}/${verificationData.totalWithDocuments})`);
 
     } catch (error) {
       console.error('❌ Error updating verification status:', error);

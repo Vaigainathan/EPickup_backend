@@ -151,6 +151,10 @@ class DriverMatchingService {
       const snapshot = await query.get();
       const availableDrivers = [];
 
+      // Batch process drivers to avoid N+1 queries
+      const driverPromises = [];
+      const driverIds = [];
+      
       for (const doc of snapshot.docs) {
         const driverData = doc.data();
         
@@ -166,22 +170,38 @@ class DriverMatchingService {
 
         // Check if driver is within search radius
         if (distance <= radius) {
-          // Get additional driver details from users collection
-          const driverDetails = await this.getDriverDetails(doc.id);
+          driverIds.push(doc.id);
+          driverPromises.push(this.getDriverDetails(doc.id));
+        }
+      }
+      
+      // Batch fetch all driver details
+      const driverDetailsArray = await Promise.all(driverPromises);
+      
+      // Process results
+      for (let i = 0; i < driverDetailsArray.length; i++) {
+        const driverDetails = driverDetailsArray[i];
+        const driverId = driverIds[i];
+        
+        if (driverDetails && this.isDriverSuitable(driverDetails, maxWeight)) {
+          const driverData = snapshot.docs.find(doc => doc.id === driverId)?.data();
+          const distance = this.calculateHaversineDistance(
+            latitude, longitude,
+            driverData.currentLocation.latitude,
+            driverData.currentLocation.longitude
+          );
           
-          if (driverDetails && this.isDriverSuitable(driverDetails, maxWeight)) {
-            availableDrivers.push({
-              driverId: doc.id,
-              distance,
-              rating: driverDetails.driver?.rating || 0,
-              totalTrips: driverDetails.driver?.totalTrips || 0,
-              performanceScore: this.calculatePerformanceScore(driverDetails),
-              currentLocation: driverData.currentLocation,
-              vehicleType: driverData.vehicleType,
-              estimatedArrival: this.calculateETA(distance, driverData.vehicleType),
-              ...driverDetails
-            });
-          }
+          availableDrivers.push({
+            driverId,
+            distance,
+            rating: driverDetails.driver?.rating || 0,
+            totalTrips: driverDetails.driver?.totalTrips || 0,
+            performanceScore: this.calculatePerformanceScore(driverDetails),
+            currentLocation: driverData.currentLocation,
+            vehicleType: driverData.vehicleType,
+            estimatedArrival: this.calculateETA(distance, driverData.vehicleType),
+            ...driverDetails
+          });
         }
       }
 

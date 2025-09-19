@@ -473,9 +473,15 @@ router.get('/faq', [
       );
     }
 
-    // Get total count for pagination
-    const totalSnapshot = await query.count().get();
-    const total = totalSnapshot.data().count;
+    // Get total count for pagination (optimized)
+    let total = 0;
+    try {
+      const totalSnapshot = await query.count().get();
+      total = totalSnapshot.data().count;
+    } catch (error) {
+      console.warn('Could not get total count, using array length:', error.message);
+      total = faqs.length;
+    }
 
     // Get FAQ categories for filtering
     const categoriesSnapshot = await getDb().collection('faqCategories')

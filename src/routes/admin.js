@@ -178,36 +178,11 @@ router.get('/drivers', requireRole(['admin']), async (req, res) => {
 
     for (const doc of snapshot.docs) {
       const data = doc.data();
-      
-      // Get comprehensive verification data for each driver
-      try {
-        const verificationData = await verificationService.getDriverVerificationData(doc.id);
-        
-        drivers.push({
-          id: doc.id,
-          ...data,
-          // Override with normalized verification data
-          driver: {
-            ...data.driver,
-            verificationStatus: verificationData.verificationStatus,
-            isVerified: verificationData.isVerified,
-            verifiedDocumentsCount: verificationData.documentSummary.verified,
-            totalDocumentsCount: verificationData.documentSummary.total
-          },
-          isVerified: verificationData.isVerified,
-          status: verificationData.verificationStatus,
-          documents: verificationData.documents,
-          createdAt: data.createdAt?.toDate?.() || data.createdAt
-        });
-      } catch (verificationError) {
-        console.warn(`⚠️ Failed to get verification data for driver ${doc.id}:`, verificationError.message);
-        // Fallback to original data
-        drivers.push({
-          id: doc.id,
-          ...data,
-          createdAt: data.createdAt?.toDate?.() || data.createdAt
-        });
-      }
+      drivers.push({
+        id: doc.id,
+        ...data,
+        createdAt: data.createdAt?.toDate?.() || data.createdAt
+      });
     }
 
     res.json({
@@ -870,35 +845,17 @@ router.get('/drivers/pending', requireRole(['admin']), async (req, res) => {
     for (const doc of driversSnapshot.docs) {
       if (processedCount >= parseInt(limit)) break;
       
-      try {
-        const verificationData = await verificationService.getDriverVerificationData(doc.id);
-        
-        // Only include drivers with pending verification
-        if (verificationData.verificationStatus === 'pending' || 
-            verificationData.verificationStatus === 'pending_verification') {
-          
-          const driverData = doc.data();
-          pendingDrivers.push({
-            id: doc.id,
-            ...driverData,
-            // Override with normalized verification data
-            driver: {
-              ...driverData.driver,
-              verificationStatus: verificationData.verificationStatus,
-              isVerified: verificationData.isVerified,
-              verifiedDocumentsCount: verificationData.documentSummary.verified,
-              totalDocumentsCount: verificationData.documentSummary.total
-            },
-            isVerified: verificationData.isVerified,
-            status: verificationData.verificationStatus,
-            documents: verificationData.documents,
-            createdAt: driverData.createdAt?.toDate?.() || driverData.createdAt
-          });
-          
-          processedCount++;
-        }
-      } catch (verificationError) {
-        console.warn(`⚠️ Failed to get verification data for driver ${doc.id}:`, verificationError.message);
+      const driverData = doc.data();
+      const verificationStatus = driverData.driver?.verificationStatus || 'pending';
+      
+      // Only include drivers with pending verification
+      if (verificationStatus === 'pending' || verificationStatus === 'pending_verification') {
+        pendingDrivers.push({
+          id: doc.id,
+          ...driverData,
+          createdAt: driverData.createdAt?.toDate?.() || driverData.createdAt
+        });
+        processedCount++;
       }
     }
 
@@ -935,23 +892,36 @@ router.get('/drivers/pending', requireRole(['admin']), async (req, res) => {
 router.get('/drivers/:driverId/documents', requireRole(['admin']), async (req, res) => {
   try {
     const { driverId } = req.params;
+    const db = getFirestore();
     
-    // Use centralized verification service
-    const verificationData = await verificationService.getDriverVerificationData(driverId);
-    
-    // Update driver verification status if needed
-    await verificationService.updateDriverVerificationStatus(driverId, verificationData);
+    // Get driver data
+    const driverDoc = await db.collection('users').doc(driverId).get();
+    if (!driverDoc.exists) {
+      return res.status(404).json({
+        success: false,
+        error: { 
+          code: 'DRIVER_NOT_FOUND', 
+          message: 'Driver not found' 
+        }
+      });
+    }
 
+    const driverData = driverDoc.data();
+    const documents = driverData.driver?.documents || {};
+    
     res.json({
       success: true,
       data: {
-        documents: verificationData.documents,
-        source: verificationData.source,
-        driverId: verificationData.driverId,
-        driverName: verificationData.driverName,
-        verificationStatus: verificationData.verificationStatus,
-        isVerified: verificationData.isVerified,
-        documentSummary: verificationData.documentSummary
+        documents: {
+          drivingLicense: documents.drivingLicense || null,
+          aadhaarCard: documents.aadhaarCard || null,
+          bikeInsurance: documents.bikeInsurance || null,
+          rcBook: documents.rcBook || null,
+          profilePhoto: documents.profilePhoto || null
+        },
+        driverId,
+        driverName: driverData.name,
+        verificationStatus: driverData.driver?.verificationStatus || 'pending'
       },
       timestamp: new Date().toISOString()
     });
@@ -960,9 +930,9 @@ router.get('/drivers/:driverId/documents', requireRole(['admin']), async (req, r
     console.error('Error fetching driver documents:', error);
     res.status(500).json({
       success: false,
-      error: {
-        code: 'DOCUMENTS_FETCH_ERROR',
-        message: 'Failed to fetch driver documents',
+      error: { 
+        code: 'DOCUMENTS_FETCH_ERROR', 
+        message: 'Failed to fetch documents',
         details: error.message
       },
       timestamp: new Date().toISOString()

@@ -1,6 +1,7 @@
 const express = require('express');
 const { getFirestore } = require('firebase-admin/firestore');
 const { requireRole } = require('../middleware/auth');
+const verificationService = require('../services/verificationService');
 const router = express.Router();
 
 /**
@@ -175,14 +176,39 @@ router.get('/drivers', requireRole(['admin']), async (req, res) => {
     const snapshot = await query.get();
     const drivers = [];
 
-    snapshot.forEach(doc => {
+    for (const doc of snapshot.docs) {
       const data = doc.data();
-      drivers.push({
-        id: doc.id,
-        ...data,
-        createdAt: data.createdAt?.toDate?.() || data.createdAt
-      });
-    });
+      
+      // Get comprehensive verification data for each driver
+      try {
+        const verificationData = await verificationService.getDriverVerificationData(doc.id);
+        
+        drivers.push({
+          id: doc.id,
+          ...data,
+          // Override with normalized verification data
+          driver: {
+            ...data.driver,
+            verificationStatus: verificationData.verificationStatus,
+            isVerified: verificationData.isVerified,
+            verifiedDocumentsCount: verificationData.documentSummary.verified,
+            totalDocumentsCount: verificationData.documentSummary.total
+          },
+          isVerified: verificationData.isVerified,
+          status: verificationData.verificationStatus,
+          documents: verificationData.documents,
+          createdAt: data.createdAt?.toDate?.() || data.createdAt
+        });
+      } catch (verificationError) {
+        console.warn(`⚠️ Failed to get verification data for driver ${doc.id}:`, verificationError.message);
+        // Fallback to original data
+        drivers.push({
+          id: doc.id,
+          ...data,
+          createdAt: data.createdAt?.toDate?.() || data.createdAt
+        });
+      }
+    }
 
     res.json({
       success: true,
@@ -832,32 +858,47 @@ router.get('/drivers/pending', requireRole(['admin']), async (req, res) => {
     const db = getFirestore();
     const { limit = 20, offset = 0 } = req.query;
 
-    // Get pending verification requests
-    const verificationRequestsRef = db.collection('documentVerificationRequests')
-      .where('status', '==', 'pending')
-      .orderBy('requestedAt', 'desc')
-      .limit(parseInt(limit))
-      .offset(parseInt(offset));
+    // Get all drivers and filter for pending verification
+    const driversSnapshot = await db.collection('users')
+      .where('userType', '==', 'driver')
+      .orderBy('createdAt', 'desc')
+      .get();
 
-    const snapshot = await verificationRequestsRef.get();
     const pendingDrivers = [];
+    let processedCount = 0;
 
-    for (const doc of snapshot.docs) {
-      const requestData = doc.data();
+    for (const doc of driversSnapshot.docs) {
+      if (processedCount >= parseInt(limit)) break;
       
-      // Get driver details
-      const driverDoc = await db.collection('users').doc(requestData.driverId).get();
-      if (driverDoc.exists) {
-        const driverData = driverDoc.data();
-        pendingDrivers.push({
-          id: requestData.driverId,
-          verificationRequestId: doc.id,
-          name: requestData.driverName,
-          phone: requestData.driverPhone,
-          documents: requestData.documents,
-          requestedAt: requestData.requestedAt,
-          ...driverData
-        });
+      try {
+        const verificationData = await verificationService.getDriverVerificationData(doc.id);
+        
+        // Only include drivers with pending verification
+        if (verificationData.verificationStatus === 'pending' || 
+            verificationData.verificationStatus === 'pending_verification') {
+          
+          const driverData = doc.data();
+          pendingDrivers.push({
+            id: doc.id,
+            ...driverData,
+            // Override with normalized verification data
+            driver: {
+              ...driverData.driver,
+              verificationStatus: verificationData.verificationStatus,
+              isVerified: verificationData.isVerified,
+              verifiedDocumentsCount: verificationData.documentSummary.verified,
+              totalDocumentsCount: verificationData.documentSummary.total
+            },
+            isVerified: verificationData.isVerified,
+            status: verificationData.verificationStatus,
+            documents: verificationData.documents,
+            createdAt: driverData.createdAt?.toDate?.() || driverData.createdAt
+          });
+          
+          processedCount++;
+        }
+      } catch (verificationError) {
+        console.warn(`⚠️ Failed to get verification data for driver ${doc.id}:`, verificationError.message);
       }
     }
 
@@ -894,233 +935,23 @@ router.get('/drivers/pending', requireRole(['admin']), async (req, res) => {
 router.get('/drivers/:driverId/documents', requireRole(['admin']), async (req, res) => {
   try {
     const { driverId } = req.params;
-    const db = getFirestore();
     
-    // Get driver information
-    const driverDoc = await db.collection('users').doc(driverId).get();
-    if (!driverDoc.exists) {
-      return res.status(404).json({
-        success: false,
-        error: {
-          code: 'DRIVER_NOT_FOUND',
-          message: 'Driver not found'
-        },
-        timestamp: new Date().toISOString()
-      });
-    }
-
-    const driverData = driverDoc.data();
+    // Use centralized verification service
+    const verificationData = await verificationService.getDriverVerificationData(driverId);
     
-    // Get verification request if exists (try without status filter first to avoid index issues)
-    let verificationQuery;
-    try {
-      verificationQuery = await db.collection('documentVerificationRequests')
-        .where('driverId', '==', driverId)
-        .where('status', '==', 'pending')
-        .limit(1)
-        .get();
-    } catch (indexError) {
-      console.warn('Index error with status filter, trying without:', indexError.message);
-      // Fallback: query without status filter
-      verificationQuery = await db.collection('documentVerificationRequests')
-        .where('driverId', '==', driverId)
-        .orderBy('requestedAt', 'desc')
-        .limit(1)
-        .get();
-    }
-
-    let documents = {};
-    let source = 'user_collection';
-
-    if (!verificationQuery.empty) {
-      // Use verification request data (most recent)
-      const verificationData = verificationQuery.docs[0].data();
-      console.log(`📄 Found verification request for driver ${driverId}:`, verificationData);
-      const verificationDocs = verificationData.documents || {};
-      
-      // Merge verification request documents with user collection documents
-      // This ensures we get ALL documents, not just the ones in verification request
-      const userDocs = driverData.driver?.documents || driverData.documents || {};
-      
-      // Start with user collection documents (complete set)
-      documents = { ...userDocs };
-      
-      // Override with verification request data where available (more recent)
-      Object.entries(verificationDocs).forEach(([key, verificationDoc]) => {
-        if (verificationDoc.downloadURL) {
-          // Map verification request key to user collection key
-          const userKey = key === 'bike_insurance' ? 'bikeInsurance' :
-                         key === 'driving_license' ? 'drivingLicense' :
-                         key === 'aadhaar_card' ? 'aadhaarCard' :
-                         key === 'rc_book' ? 'rcBook' :
-                         key === 'profile_photo' ? 'profilePhoto' : key;
-          
-          documents[userKey] = {
-            ...documents[userKey],
-            url: verificationDoc.downloadURL,
-            verificationStatus: verificationDoc.verificationStatus || 'pending',
-            status: verificationDoc.status || 'uploaded',
-            filename: verificationDoc.filename,
-            uploadedAt: verificationDoc.uploadedAt
-          };
-        }
-      });
-      
-      source = 'merged_verification_and_user';
-    } else {
-      // Fallback to user collection
-      console.log(`📄 No verification request found, using user collection for driver ${driverId}`);
-      documents = driverData.driver?.documents || driverData.documents || {};
-    }
-    
-    console.log(`📄 Documents found for driver ${driverId} from ${source}:`, documents);
-
-    // Helper function to get document data with multiple naming conventions
-    const getDocumentData = (documents, primaryKey, alternativeKeys = []) => {
-      const allKeys = [primaryKey, ...alternativeKeys];
-      
-      for (const key of allKeys) {
-        const doc = documents[key];
-        if (doc && (doc.downloadURL || doc.url)) {
-          console.log(`📄 Found document ${key}:`, {
-            url: doc.url || 'MISSING',
-            downloadURL: doc.downloadURL || 'MISSING',
-            status: doc.status || 'MISSING',
-            verificationStatus: doc.verificationStatus || 'MISSING'
-          });
-          
-          return {
-            url: doc.downloadURL || doc.url || '',
-            status: doc.verificationStatus || doc.status || 'pending',
-            uploadedAt: doc.uploadedAt || '',
-            verified: doc.verified || false,
-            rejectionReason: doc.rejectionReason || null
-          };
-        }
-      }
-      
-      console.log(`⚠️ No document found for keys: ${allKeys.join(', ')}`);
-      return {
-        url: '',
-        status: 'pending',
-        uploadedAt: '',
-        verified: false,
-        rejectionReason: null
-      };
-    };
-
-    // Normalize document structure for admin dashboard
-    let normalizedDocuments = {
-      drivingLicense: getDocumentData(documents, 'drivingLicense', ['driving_license']),
-      aadhaar: getDocumentData(documents, 'aadhaarCard', ['aadhaar_card', 'aadhaar']),
-      insurance: getDocumentData(documents, 'bikeInsurance', ['bike_insurance', 'insurance']),
-      rcBook: getDocumentData(documents, 'rcBook', ['rc_book']),
-      profilePhoto: getDocumentData(documents, 'profilePhoto', ['profile_photo'])
-    };
-    
-    // Check if any documents are missing URLs and try to get them from driverDocuments collection
-    const missingDocuments = Object.entries(normalizedDocuments).filter(([key, doc]) => !doc.url);
-    
-    if (missingDocuments.length > 0) {
-      console.log(`⚠️ Missing documents found: ${missingDocuments.map(([key]) => key).join(', ')}`);
-      console.log('🔍 Attempting to fetch from driverDocuments collection...');
-      
-      try {
-        const driverDocsQuery = await db.collection('driverDocuments')
-          .where('driverId', '==', driverId)
-          .get();
-        
-        if (!driverDocsQuery.empty) {
-          const driverDocs = {};
-          driverDocsQuery.docs.forEach(doc => {
-            const data = doc.data();
-            driverDocs[data.documentType] = data;
-          });
-          
-          // Update missing documents with data from driverDocuments collection
-          missingDocuments.forEach(([key, doc]) => {
-            const docTypeMap = {
-              'drivingLicense': 'driving_license',
-              'aadhaar': 'aadhaar_card',
-              'insurance': 'bike_insurance',
-              'rcBook': 'rc_book',
-              'profilePhoto': 'profile_photo'
-            };
-            
-            const docType = docTypeMap[key];
-            const driverDoc = driverDocs[docType];
-            
-            if (driverDoc && driverDoc.downloadURL) {
-              console.log(`✅ Found missing document ${key} in driverDocuments collection`);
-              normalizedDocuments[key] = {
-                url: driverDoc.downloadURL,
-                status: driverDoc.status || 'uploaded',
-                uploadedAt: driverDoc.uploadedAt || '',
-                verified: false,
-                rejectionReason: null
-              };
-            }
-          });
-        }
-      } catch (error) {
-        console.warn('⚠️ Error fetching from driverDocuments collection:', error.message);
-      }
-    }
-    
-    // Calculate and update driver verification status based on document statuses
-    console.log('🔄 Calculating driver verification status...');
-    const documentStatuses = Object.values(normalizedDocuments);
-    const verifiedDocs = documentStatuses.filter(doc => doc.verified || doc.status === 'verified').length;
-    const rejectedDocs = documentStatuses.filter(doc => doc.status === 'rejected').length;
-    const totalDocs = documentStatuses.length;
-    
-    let calculatedVerificationStatus = 'pending';
-    if (verifiedDocs === totalDocs && totalDocs > 0) {
-      calculatedVerificationStatus = 'verified';
-    } else if (rejectedDocs > 0) {
-      calculatedVerificationStatus = 'rejected';
-    } else if (verifiedDocs > 0 || totalDocs > 0) {
-      calculatedVerificationStatus = 'pending_verification';
-    }
-    
-    console.log(`📊 Document verification summary: ${verifiedDocs}/${totalDocs} verified, ${rejectedDocs} rejected`);
-    console.log(`🎯 Calculated verification status: ${calculatedVerificationStatus}`);
-    
-    // Update driver verification status if it's incorrect
-    const currentStatus = driverData.driver?.verificationStatus || 'pending';
-    if (calculatedVerificationStatus !== currentStatus) {
-      console.log(`⚠️ Updating driver verification status: ${currentStatus} → ${calculatedVerificationStatus}`);
-      
-      try {
-        await db.collection('users').doc(driverId).update({
-          'driver.verificationStatus': calculatedVerificationStatus,
-          'driver.isVerified': calculatedVerificationStatus === 'verified',
-          'isVerified': calculatedVerificationStatus === 'verified',
-          updatedAt: new Date()
-        });
-        console.log('✅ Driver verification status updated successfully');
-      } catch (updateError) {
-        console.warn('⚠️ Failed to update driver verification status:', updateError.message);
-      }
-    }
-    
-    console.log(`📄 Normalized documents for driver ${driverId}:`, normalizedDocuments);
+    // Update driver verification status if needed
+    await verificationService.updateDriverVerificationStatus(driverId, verificationData);
 
     res.json({
       success: true,
       data: {
-        documents: normalizedDocuments,
-        source,
-        driverId,
-        driverName: driverData.name || 'Unknown',
-        verificationStatus: calculatedVerificationStatus,
-        isVerified: calculatedVerificationStatus === 'verified',
-        documentSummary: {
-          total: totalDocs,
-          verified: verifiedDocs,
-          rejected: rejectedDocs,
-          pending: totalDocs - verifiedDocs - rejectedDocs
-        }
+        documents: verificationData.documents,
+        source: verificationData.source,
+        driverId: verificationData.driverId,
+        driverName: verificationData.driverName,
+        verificationStatus: verificationData.verificationStatus,
+        isVerified: verificationData.isVerified,
+        documentSummary: verificationData.documentSummary
       },
       timestamp: new Date().toISOString()
     });
@@ -1504,150 +1335,22 @@ router.post('/drivers/:driverId/documents/:documentType/verify', requireRole(['a
       });
     }
 
-    // Validate document type against allowed types
-    const allowedDocumentTypes = ['drivingLicense', 'aadhaar', 'insurance', 'rc', 'profile', 'aadhaarCard', 'bikeInsurance', 'rcBook', 'profilePhoto'];
-    if (!allowedDocumentTypes.includes(documentType)) {
-      return res.status(400).json({
-        success: false,
-        error: {
-          code: 'INVALID_DOCUMENT_TYPE',
-          message: `Document type must be one of: ${allowedDocumentTypes.join(', ')}`
-        },
-        timestamp: new Date().toISOString()
-      });
-    }
+    // Use centralized verification service
+    const result = await verificationService.verifyDriverDocument(
+      driverId, 
+      documentType, 
+      status === 'approved' ? 'verified' : 'rejected', 
+      comments, 
+      rejectionReason, 
+      adminId
+    );
 
-    const db = getFirestore();
-    const batch = db.batch();
-
-    // Get driver information
-    const driverRef = db.collection('users').doc(driverId);
-    const driverDoc = await driverRef.get();
-
-    if (!driverDoc.exists) {
-      return res.status(404).json({
-        success: false,
-        error: {
-          code: 'DRIVER_NOT_FOUND',
-          message: 'Driver not found'
-        },
-        timestamp: new Date().toISOString()
-      });
-    }
-
-    const driverData = driverDoc.data();
-    const documents = driverData.driver?.documents || driverData.documents || {};
-
-    // Update specific document status with comprehensive mapping
-    const documentKey = documentType === 'aadhaar' ? 'aadhaarCard' : 
-                       documentType === 'insurance' ? 'bikeInsurance' : 
-                       documentType === 'rc' ? 'rcBook' : 
-                       documentType === 'profile' ? 'profilePhoto' : 
-                       documentType === 'drivingLicense' ? 'drivingLicense' :
-                       documentType === 'aadhaarCard' ? 'aadhaarCard' :
-                       documentType === 'bikeInsurance' ? 'bikeInsurance' :
-                       documentType === 'rcBook' ? 'rcBook' :
-                       documentType === 'profilePhoto' ? 'profilePhoto' : documentType;
-
-    if (documents[documentKey]) {
-      documents[documentKey] = {
-        ...documents[documentKey],
-        status: status === 'approved' ? 'verified' : 'rejected',
-        verified: status === 'approved',
-        verifiedAt: new Date(),
-        verifiedBy: adminId,
-        verificationComments: comments || null,
-        rejectionReason: status === 'rejected' ? rejectionReason : null
-      };
-
-      // Update driver's documents
-      batch.update(driverRef, {
-        'driver.documents': documents,
-        updatedAt: new Date()
-      });
-
-      // Check if all documents are verified
-      const allDocuments = ['drivingLicense', 'aadhaarCard', 'bikeInsurance', 'rcBook', 'profilePhoto'];
-      const verifiedDocuments = allDocuments.filter(doc => 
-        documents[doc]?.status === 'verified' || documents[doc]?.verified === true
-      );
-
-      // Update overall verification status
-      let overallStatus = 'pending';
-      if (verifiedDocuments.length === allDocuments.length) {
-        overallStatus = 'approved';
-      } else if (documents[documentKey]?.status === 'rejected') {
-        overallStatus = 'rejected';
-      } else {
-        overallStatus = 'pending_verification';
-      }
-
-      batch.update(driverRef, {
-        'driver.verificationStatus': overallStatus,
-        'driver.lastDocumentVerified': documentType,
-        'driver.lastDocumentVerifiedAt': new Date(),
-        updatedAt: new Date()
-      });
-
-      // Update verification request if exists
-      const verificationQuery = await db.collection('documentVerificationRequests')
-        .where('driverId', '==', driverId)
-        .where('status', '==', 'pending')
-        .limit(1)
-        .get();
-
-      if (!verificationQuery.empty) {
-        const verificationDoc = verificationQuery.docs[0];
-        const verificationData = verificationDoc.data();
-        
-        // Update document in verification request
-        if (verificationData.documents && verificationData.documents[documentKey]) {
-          verificationData.documents[documentKey] = {
-            ...verificationData.documents[documentKey],
-            verificationStatus: status === 'approved' ? 'verified' : 'rejected',
-            verified: status === 'approved',
-            verifiedAt: new Date(),
-            verifiedBy: adminId,
-            verificationComments: comments || null,
-            rejectionReason: status === 'rejected' ? rejectionReason : null
-          };
-
-          batch.update(verificationDoc.ref, {
-            documents: verificationData.documents,
-            status: overallStatus,
-            updatedAt: new Date()
-          });
-        }
-      }
-
-      await batch.commit();
-
-      res.json({
-        success: true,
-        message: `Document ${status} successfully`,
-        data: {
-          driverId,
-          documentType,
-          status,
-          overallStatus,
-          verifiedDocuments: verifiedDocuments.length,
-          totalDocuments: allDocuments.length,
-          verifiedAt: new Date(),
-          verifiedBy: adminId
-        },
-        timestamp: new Date().toISOString()
-      });
-
-    } else {
-      res.status(404).json({
-        success: false,
-        error: {
-          code: 'DOCUMENT_NOT_FOUND',
-          message: 'Document not found for this driver'
-        },
-        timestamp: new Date().toISOString()
-      });
-    }
+    res.json({
+      success: true,
+      message: `Document ${status} successfully`,
+      data: result,
+      timestamp: new Date().toISOString()
+    });
 
   } catch (error) {
     console.error('Error verifying document:', error);
@@ -1670,106 +1373,15 @@ router.post('/drivers/:driverId/documents/:documentType/verify', requireRole(['a
  */
 router.post('/sync-all-drivers-status', requireRole(['admin']), async (req, res) => {
   try {
-    const db = getFirestore();
-    
     console.log('🔄 Syncing verification status for all drivers...');
     
-    // Get all drivers
-    const driversSnapshot = await db.collection('users')
-      .where('userType', '==', 'driver')
-      .get();
-    
-    const syncResults = [];
-    let successCount = 0;
-    let errorCount = 0;
-    
-    for (const driverDoc of driversSnapshot.docs) {
-      const driverData = driverDoc.data();
-      try {
-        const documents = driverData.driver?.documents || driverData.documents || {};
-        
-        // Count document statuses
-        const allDocuments = ['drivingLicense', 'aadhaarCard', 'bikeInsurance', 'rcBook', 'profilePhoto'];
-        let verifiedCount = 0;
-        let rejectedCount = 0;
-        let pendingCount = 0;
-        let totalWithDocuments = 0;
-        
-        allDocuments.forEach(docType => {
-          const doc = documents[docType];
-          if (doc && (doc.url || doc.downloadURL)) {
-            totalWithDocuments++;
-            const status = doc.verificationStatus || doc.status || 'pending';
-            const verified = doc.verified || false;
-            
-            if (verified || status === 'verified') {
-              verifiedCount++;
-            } else if (status === 'rejected') {
-              rejectedCount++;
-            } else {
-              pendingCount++;
-            }
-          }
-        });
-        
-        // Determine overall status based on document verification
-        let overallStatus = 'pending';
-        if (totalWithDocuments === 0) {
-          overallStatus = 'pending'; // No documents uploaded
-        } else if (verifiedCount === totalWithDocuments) {
-          overallStatus = 'verified'; // All documents verified
-        } else if (rejectedCount > 0) {
-          overallStatus = 'rejected'; // Some documents rejected
-        } else if (verifiedCount > 0 || pendingCount > 0) {
-          overallStatus = 'pending_verification'; // Some verified, some pending
-        }
-        
-        console.log(`Driver ${driverData.name}: ${verifiedCount}/${totalWithDocuments} verified, ${rejectedCount} rejected, ${pendingCount} pending → ${overallStatus}`);
-        
-        // Update driver status
-        await driverDoc.ref.update({
-          'driver.verificationStatus': overallStatus,
-          'driver.isVerified': overallStatus === 'verified',
-          'isVerified': overallStatus === 'verified',
-          'driver.verifiedDocumentsCount': verifiedCount,
-          'driver.totalDocumentsCount': totalWithDocuments,
-          updatedAt: new Date()
-        });
-        
-        syncResults.push({
-          driverId: driverDoc.id,
-          driverName: driverData.name,
-          oldStatus: driverData.driver?.verificationStatus || 'unknown',
-          newStatus: overallStatus,
-          verifiedDocuments: verifiedDocuments.length,
-          totalDocuments: allDocuments.length,
-          success: true
-        });
-        
-        successCount++;
-        
-      } catch (error) {
-        syncResults.push({
-          driverId: driverDoc.id,
-          driverName: driverData.name || 'Unknown',
-          error: error.message,
-          success: false
-        });
-        errorCount++;
-      }
-    }
-    
-    console.log(`✅ Status sync completed: ${successCount} successful, ${errorCount} errors`);
+    // Use centralized verification service
+    const syncResults = await verificationService.syncAllDriversVerificationStatus();
     
     res.json({
       success: true,
       message: 'Status synchronization completed',
-      data: {
-        totalDrivers: driversSnapshot.size,
-        successCount,
-        errorCount,
-        results: syncResults
-      },
+      data: syncResults,
       timestamp: new Date().toISOString()
     });
     
@@ -1795,64 +1407,22 @@ router.post('/sync-all-drivers-status', requireRole(['admin']), async (req, res)
 router.post('/drivers/:driverId/sync-status', requireRole(['admin']), async (req, res) => {
   try {
     const { driverId } = req.params;
-    const db = getFirestore();
     
-    // Get driver information
-    const driverRef = db.collection('users').doc(driverId);
-    const driverDoc = await driverRef.get();
-
-    if (!driverDoc.exists) {
-      return res.status(404).json({
-        success: false,
-        error: {
-          code: 'DRIVER_NOT_FOUND',
-          message: 'Driver not found'
-        },
-        timestamp: new Date().toISOString()
-      });
-    }
-
-    const driverData = driverDoc.data();
-    const documents = driverData.driver?.documents || driverData.documents || {};
+    // Use centralized verification service
+    const verificationData = await verificationService.getDriverVerificationData(driverId);
+    await verificationService.updateDriverVerificationStatus(driverId, verificationData);
     
-    // Count verified documents
-    const allDocuments = ['drivingLicense', 'aadhaarCard', 'bikeInsurance', 'rcBook', 'profilePhoto'];
-    const verifiedDocuments = allDocuments.filter(doc => 
-      documents[doc]?.status === 'verified' || documents[doc]?.verified === true
-    );
-    
-    // Determine overall status
-    let overallStatus = 'pending';
-    if (verifiedDocuments.length === allDocuments.length) {
-      overallStatus = 'approved';
-    } else if (verifiedDocuments.length === 0) {
-      overallStatus = 'pending';
-    } else if (allDocuments.some(doc => documents[doc]?.status === 'rejected')) {
-      overallStatus = 'rejected';
-    } else {
-      overallStatus = 'pending_verification';
-    }
-    
-    // Update driver status
-    await driverRef.update({
-      'driver.verificationStatus': overallStatus,
-      'driver.isVerified': overallStatus === 'approved',
-      'driver.verifiedDocumentsCount': verifiedDocuments.length,
-      'driver.totalDocumentsCount': allDocuments.length,
-      updatedAt: new Date()
-    });
-    
-    console.log(`✅ Status synced for driver ${driverId}: ${overallStatus} (${verifiedDocuments.length}/${allDocuments.length} documents verified)`);
+    console.log(`✅ Status synced for driver ${driverId}: ${verificationData.verificationStatus} (${verificationData.documentSummary.verified}/${verificationData.documentSummary.total} documents verified)`);
     
     res.json({
       success: true,
       message: 'Status synchronized successfully',
       data: {
         driverId,
-        overallStatus,
-        verifiedDocuments: verifiedDocuments.length,
-        totalDocuments: allDocuments.length,
-        isVerified: overallStatus === 'approved',
+        driverName: verificationData.driverName,
+        verificationStatus: verificationData.verificationStatus,
+        isVerified: verificationData.isVerified,
+        documentSummary: verificationData.documentSummary,
         syncedAt: new Date()
       },
       timestamp: new Date().toISOString()
@@ -1905,93 +1475,18 @@ router.post('/drivers/:driverId/verify', requireRole(['admin']), async (req, res
       });
     }
 
-    const db = getFirestore();
-    const batch = db.batch();
-
-    // Update driver verification status
-    const driverRef = db.collection('users').doc(driverId);
-    const driverDoc = await driverRef.get();
-
-    if (!driverDoc.exists) {
-      return res.status(404).json({
-        success: false,
-        error: {
-          code: 'DRIVER_NOT_FOUND',
-          message: 'Driver not found'
-        },
-        timestamp: new Date().toISOString()
-      });
-    }
-
-    const driverData = driverDoc.data();
-    
-    // Update driver status
-    batch.update(driverRef, {
-      'driver.verificationStatus': status === 'approved' ? 'approved' : 'rejected',
-      'driver.verifiedAt': new Date(),
-      'driver.verifiedBy': adminId,
-      'driver.verificationComments': comments || null,
-      'driver.rejectionReason': status === 'rejected' ? reason : null,
-      updatedAt: new Date()
-    });
-
-    // Update verification request
-    const verificationRequestsRef = db.collection('documentVerificationRequests')
-      .where('driverId', '==', driverId)
-      .where('status', '==', 'pending')
-      .limit(1);
-
-    const verificationSnapshot = await verificationRequestsRef.get();
-    if (!verificationSnapshot.empty) {
-      const verificationDoc = verificationSnapshot.docs[0];
-      batch.update(verificationDoc.ref, {
-        status: status === 'approved' ? 'approved' : 'rejected',
-        reviewedAt: new Date(),
-        reviewedBy: adminId,
-        reviewNotes: comments || null,
-        rejectionReason: status === 'rejected' ? reason : null,
-        updatedAt: new Date()
-      });
-    }
-
-    // If approved, set up initial wallet with ₹500
+    // Use centralized verification service
+    let result;
     if (status === 'approved') {
-      batch.update(driverRef, {
-        'driver.wallet': {
-          balance: 500,
-          currency: 'INR',
-          transactions: [{
-            id: `initial_${Date.now()}`,
-            type: 'credit',
-            amount: 500,
-            description: 'Initial driver bonus',
-            timestamp: new Date(),
-            status: 'completed'
-          }]
-        }
-      });
-    }
-
-    await batch.commit();
-
-    // Send notification to driver (if notification service is available)
-    try {
-      console.log(`Driver verification ${status} for driver: ${driverData.name} (${driverId})`);
-      // This would integrate with your notification service
-    } catch (error) {
-      console.warn('Failed to send driver notification:', error);
+      result = await verificationService.approveDriver(driverId, comments, adminId);
+    } else {
+      result = await verificationService.rejectDriver(driverId, reason, adminId);
     }
 
     res.json({
       success: true,
       message: `Driver verification ${status} successfully`,
-      data: {
-        driverId,
-        status,
-        verifiedAt: new Date(),
-        verifiedBy: adminId,
-        initialWallet: status === 'approved' ? 500 : null
-      },
+      data: result.data,
       timestamp: new Date().toISOString()
     });
 

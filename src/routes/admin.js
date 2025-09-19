@@ -1067,6 +1067,43 @@ router.get('/drivers/:driverId/documents', requireRole(['admin']), async (req, r
       }
     }
     
+    // Calculate and update driver verification status based on document statuses
+    console.log('🔄 Calculating driver verification status...');
+    const documentStatuses = Object.values(normalizedDocuments);
+    const verifiedDocs = documentStatuses.filter(doc => doc.verified || doc.status === 'verified').length;
+    const rejectedDocs = documentStatuses.filter(doc => doc.status === 'rejected').length;
+    const totalDocs = documentStatuses.length;
+    
+    let calculatedVerificationStatus = 'pending';
+    if (verifiedDocs === totalDocs && totalDocs > 0) {
+      calculatedVerificationStatus = 'verified';
+    } else if (rejectedDocs > 0) {
+      calculatedVerificationStatus = 'rejected';
+    } else if (verifiedDocs > 0 || totalDocs > 0) {
+      calculatedVerificationStatus = 'pending_verification';
+    }
+    
+    console.log(`📊 Document verification summary: ${verifiedDocs}/${totalDocs} verified, ${rejectedDocs} rejected`);
+    console.log(`🎯 Calculated verification status: ${calculatedVerificationStatus}`);
+    
+    // Update driver verification status if it's incorrect
+    const currentStatus = driverData.driver?.verificationStatus || 'pending';
+    if (calculatedVerificationStatus !== currentStatus) {
+      console.log(`⚠️ Updating driver verification status: ${currentStatus} → ${calculatedVerificationStatus}`);
+      
+      try {
+        await db.collection('users').doc(driverId).update({
+          'driver.verificationStatus': calculatedVerificationStatus,
+          'driver.isVerified': calculatedVerificationStatus === 'verified',
+          'isVerified': calculatedVerificationStatus === 'verified',
+          updatedAt: new Date()
+        });
+        console.log('✅ Driver verification status updated successfully');
+      } catch (updateError) {
+        console.warn('⚠️ Failed to update driver verification status:', updateError.message);
+      }
+    }
+    
     console.log(`📄 Normalized documents for driver ${driverId}:`, normalizedDocuments);
 
     res.json({
@@ -1076,7 +1113,14 @@ router.get('/drivers/:driverId/documents', requireRole(['admin']), async (req, r
         source,
         driverId,
         driverName: driverData.name || 'Unknown',
-        verificationStatus: driverData.driver?.verificationStatus || 'pending'
+        verificationStatus: calculatedVerificationStatus,
+        isVerified: calculatedVerificationStatus === 'verified',
+        documentSummary: {
+          total: totalDocs,
+          verified: verifiedDocs,
+          rejected: rejectedDocs,
+          pending: totalDocs - verifiedDocs - rejectedDocs
+        }
       },
       timestamp: new Date().toISOString()
     });
@@ -1621,7 +1665,7 @@ router.post('/drivers/:driverId/documents/:documentType/verify', requireRole(['a
 
 /**
  * @route   POST /api/admin/sync-all-drivers-status
- * @desc    Sync verification status for all drivers
+ * @desc    Sync verification status for all drivers based on document status
  * @access  Private (Admin only)
  */
 router.post('/sync-all-drivers-status', requireRole(['admin']), async (req, res) => {
@@ -1644,30 +1688,51 @@ router.post('/sync-all-drivers-status', requireRole(['admin']), async (req, res)
       try {
         const documents = driverData.driver?.documents || driverData.documents || {};
         
-        // Count verified documents
+        // Count document statuses
         const allDocuments = ['drivingLicense', 'aadhaarCard', 'bikeInsurance', 'rcBook', 'profilePhoto'];
-        const verifiedDocuments = allDocuments.filter(doc => 
-          documents[doc]?.status === 'verified' || documents[doc]?.verified === true
-        );
+        let verifiedCount = 0;
+        let rejectedCount = 0;
+        let pendingCount = 0;
+        let totalWithDocuments = 0;
         
-        // Determine overall status
+        allDocuments.forEach(docType => {
+          const doc = documents[docType];
+          if (doc && (doc.url || doc.downloadURL)) {
+            totalWithDocuments++;
+            const status = doc.verificationStatus || doc.status || 'pending';
+            const verified = doc.verified || false;
+            
+            if (verified || status === 'verified') {
+              verifiedCount++;
+            } else if (status === 'rejected') {
+              rejectedCount++;
+            } else {
+              pendingCount++;
+            }
+          }
+        });
+        
+        // Determine overall status based on document verification
         let overallStatus = 'pending';
-        if (verifiedDocuments.length === allDocuments.length) {
-          overallStatus = 'approved';
-        } else if (verifiedDocuments.length === 0) {
-          overallStatus = 'pending';
-        } else if (allDocuments.some(doc => documents[doc]?.status === 'rejected')) {
-          overallStatus = 'rejected';
-        } else {
-          overallStatus = 'pending_verification';
+        if (totalWithDocuments === 0) {
+          overallStatus = 'pending'; // No documents uploaded
+        } else if (verifiedCount === totalWithDocuments) {
+          overallStatus = 'verified'; // All documents verified
+        } else if (rejectedCount > 0) {
+          overallStatus = 'rejected'; // Some documents rejected
+        } else if (verifiedCount > 0 || pendingCount > 0) {
+          overallStatus = 'pending_verification'; // Some verified, some pending
         }
+        
+        console.log(`Driver ${driverData.name}: ${verifiedCount}/${totalWithDocuments} verified, ${rejectedCount} rejected, ${pendingCount} pending → ${overallStatus}`);
         
         // Update driver status
         await driverDoc.ref.update({
           'driver.verificationStatus': overallStatus,
-          'driver.isVerified': overallStatus === 'approved',
-          'driver.verifiedDocumentsCount': verifiedDocuments.length,
-          'driver.totalDocumentsCount': allDocuments.length,
+          'driver.isVerified': overallStatus === 'verified',
+          'isVerified': overallStatus === 'verified',
+          'driver.verifiedDocumentsCount': verifiedCount,
+          'driver.totalDocumentsCount': totalWithDocuments,
           updatedAt: new Date()
         });
         

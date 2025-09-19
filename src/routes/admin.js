@@ -911,12 +911,23 @@ router.get('/drivers/:driverId/documents', requireRole(['admin']), async (req, r
 
     const driverData = driverDoc.data();
     
-    // Get verification request if exists
-    const verificationQuery = await db.collection('documentVerificationRequests')
-      .where('driverId', '==', driverId)
-      .where('status', '==', 'pending')
-      .limit(1)
-      .get();
+    // Get verification request if exists (try without status filter first to avoid index issues)
+    let verificationQuery;
+    try {
+      verificationQuery = await db.collection('documentVerificationRequests')
+        .where('driverId', '==', driverId)
+        .where('status', '==', 'pending')
+        .limit(1)
+        .get();
+    } catch (indexError) {
+      console.warn('Index error with status filter, trying without:', indexError.message);
+      // Fallback: query without status filter
+      verificationQuery = await db.collection('documentVerificationRequests')
+        .where('driverId', '==', driverId)
+        .orderBy('requestedAt', 'desc')
+        .limit(1)
+        .get();
+    }
 
     let documents = {};
     let source = 'user_collection';
@@ -924,46 +935,53 @@ router.get('/drivers/:driverId/documents', requireRole(['admin']), async (req, r
     if (!verificationQuery.empty) {
       // Use verification request data (most recent)
       const verificationData = verificationQuery.docs[0].data();
+      console.log(`📄 Found verification request for driver ${driverId}:`, verificationData);
       documents = verificationData.documents || {};
       source = 'verification_request';
     } else {
       // Fallback to user collection
+      console.log(`📄 No verification request found, using user collection for driver ${driverId}`);
       documents = driverData.driver?.documents || driverData.documents || {};
     }
+    
+    console.log(`📄 Documents found for driver ${driverId} from ${source}:`, documents);
+
+    // Helper function to get document data with multiple naming conventions
+    const getDocumentData = (documents, primaryKey, alternativeKeys = []) => {
+      const allKeys = [primaryKey, ...alternativeKeys];
+      
+      for (const key of allKeys) {
+        const doc = documents[key];
+        if (doc && (doc.downloadURL || doc.url)) {
+          return {
+            url: doc.downloadURL || doc.url || '',
+            status: doc.verificationStatus || doc.status || 'pending',
+            uploadedAt: doc.uploadedAt || '',
+            verified: doc.verified || false,
+            rejectionReason: doc.rejectionReason || null
+          };
+        }
+      }
+      
+      return {
+        url: '',
+        status: 'pending',
+        uploadedAt: '',
+        verified: false,
+        rejectionReason: null
+      };
+    };
 
     // Normalize document structure for admin dashboard
     const normalizedDocuments = {
-      drivingLicense: {
-        url: documents.drivingLicense?.downloadURL || documents.driving_license?.downloadURL || documents.drivingLicense?.url || '',
-        status: documents.drivingLicense?.verificationStatus || documents.driving_license?.verificationStatus || documents.drivingLicense?.status || 'pending',
-        uploadedAt: documents.drivingLicense?.uploadedAt || documents.driving_license?.uploadedAt || '',
-        verified: documents.drivingLicense?.verified || false
-      },
-      aadhaar: {
-        url: documents.aadhaarCard?.downloadURL || documents.aadhaar_card?.downloadURL || documents.aadhaar?.url || documents.aadhaarCard?.url || '',
-        status: documents.aadhaarCard?.verificationStatus || documents.aadhaar_card?.verificationStatus || documents.aadhaar?.status || documents.aadhaarCard?.status || 'pending',
-        uploadedAt: documents.aadhaarCard?.uploadedAt || documents.aadhaar_card?.uploadedAt || documents.aadhaar?.uploadedAt || documents.aadhaarCard?.uploadedAt || '',
-        verified: documents.aadhaar?.verified || documents.aadhaarCard?.verified || false
-      },
-      insurance: {
-        url: documents.bikeInsurance?.downloadURL || documents.bike_insurance?.downloadURL || documents.insurance?.url || documents.bikeInsurance?.url || '',
-        status: documents.bikeInsurance?.verificationStatus || documents.bike_insurance?.verificationStatus || documents.insurance?.status || documents.bikeInsurance?.status || 'pending',
-        uploadedAt: documents.bikeInsurance?.uploadedAt || documents.bike_insurance?.uploadedAt || documents.insurance?.uploadedAt || documents.bikeInsurance?.uploadedAt || '',
-        verified: documents.insurance?.verified || documents.bikeInsurance?.verified || false
-      },
-      rcBook: {
-        url: documents.rcBook?.downloadURL || documents.rc_book?.downloadURL || documents.rcBook?.url || '',
-        status: documents.rcBook?.verificationStatus || documents.rc_book?.verificationStatus || documents.rcBook?.status || 'pending',
-        uploadedAt: documents.rcBook?.uploadedAt || documents.rc_book?.uploadedAt || documents.rcBook?.uploadedAt || '',
-        verified: documents.rcBook?.verified || false
-      },
-      profilePhoto: {
-        url: documents.profilePhoto?.downloadURL || documents.profile_photo?.downloadURL || documents.profilePhoto?.url || '',
-        status: documents.profilePhoto?.verificationStatus || documents.profile_photo?.verificationStatus || documents.profilePhoto?.status || 'pending',
-        uploadedAt: documents.profilePhoto?.uploadedAt || documents.profile_photo?.uploadedAt || documents.profilePhoto?.uploadedAt || '',
-        verified: documents.profilePhoto?.verified || false
-      }
+      drivingLicense: getDocumentData(documents, 'drivingLicense', ['driving_license']),
+      aadhaar: getDocumentData(documents, 'aadhaarCard', ['aadhaar_card', 'aadhaar']),
+      insurance: getDocumentData(documents, 'bikeInsurance', ['bike_insurance', 'insurance']),
+      rcBook: getDocumentData(documents, 'rcBook', ['rc_book']),
+      profilePhoto: getDocumentData(documents, 'profilePhoto', ['profile_photo'])
     };
+    
+    console.log(`📄 Normalized documents for driver ${driverId}:`, normalizedDocuments);
 
     res.json({
       success: true,
@@ -1833,108 +1851,6 @@ router.post('/drivers/:driverId/verify', requireRole(['admin']), async (req, res
       error: {
         code: 'VERIFICATION_ERROR',
         message: 'Failed to verify driver',
-        details: error.message
-      },
-      timestamp: new Date().toISOString()
-    });
-  }
-});
-
-/**
- * @route   GET /api/admin/drivers/:driverId/documents
- * @desc    Get driver documents for review
- * @access  Private (Admin only)
- */
-router.get('/drivers/:driverId/documents', requireRole(['admin']), async (req, res) => {
-  try {
-    const { driverId } = req.params;
-    const db = getFirestore();
-
-    const driverDoc = await db.collection('users').doc(driverId).get();
-    
-    if (!driverDoc.exists) {
-      return res.status(404).json({
-        success: false,
-        error: {
-          code: 'DRIVER_NOT_FOUND',
-          message: 'Driver not found'
-        },
-        timestamp: new Date().toISOString()
-      });
-    }
-
-    const driverData = driverDoc.data();
-    const documents = driverData.driver?.documents || driverData.documents || {};
-
-    // Normalize document structure for admin dashboard
-    const normalizedDocuments = {
-      drivingLicense: {
-        url: documents.drivingLicense?.url || documents.driving_license?.url || '',
-        status: documents.drivingLicense?.status || documents.driving_license?.status || 'pending',
-        uploadedAt: documents.drivingLicense?.uploadedAt || documents.driving_license?.uploadedAt || '',
-        verified: documents.drivingLicense?.verified || false
-      },
-      aadhaar: {
-        url: documents.aadhaarCard?.url || documents.aadhaar?.url || documents.aadhaar_card?.url || '',
-        status: documents.aadhaarCard?.status || documents.aadhaar?.status || documents.aadhaar_card?.status || 'pending',
-        uploadedAt: documents.aadhaarCard?.uploadedAt || documents.aadhaar?.uploadedAt || documents.aadhaar_card?.uploadedAt || '',
-        verified: documents.aadhaarCard?.verified || documents.aadhaar?.verified || false
-      },
-      insurance: {
-        url: documents.bikeInsurance?.url || documents.insurance?.url || documents.bike_insurance?.url || '',
-        status: documents.bikeInsurance?.status || documents.insurance?.status || documents.bike_insurance?.status || 'pending',
-        uploadedAt: documents.bikeInsurance?.uploadedAt || documents.insurance?.uploadedAt || documents.bike_insurance?.uploadedAt || '',
-        verified: documents.bikeInsurance?.verified || documents.insurance?.verified || false
-      },
-      rcBook: {
-        url: documents.rcBook?.url || documents.rc_book?.url || '',
-        status: documents.rcBook?.status || documents.rc_book?.status || 'pending',
-        uploadedAt: documents.rcBook?.uploadedAt || documents.rc_book?.uploadedAt || '',
-        verified: documents.rcBook?.verified || false
-      },
-      profilePhoto: {
-        url: documents.profilePhoto?.url || documents.profile_photo?.url || '',
-        status: documents.profilePhoto?.status || documents.profile_photo?.status || 'pending',
-        uploadedAt: documents.profilePhoto?.uploadedAt || documents.profile_photo?.uploadedAt || '',
-        verified: documents.profilePhoto?.verified || false
-      }
-    };
-
-    res.json({
-      success: true,
-      data: {
-        driverId,
-        driverName: driverData.name,
-        driverPhone: driverData.phone,
-        documents: normalizedDocuments,
-        verificationStatus: driverData.driver?.verificationStatus || 'pending',
-        verificationRequestedAt: driverData.driver?.verificationRequestedAt || null
-      },
-      timestamp: new Date().toISOString()
-    });
-
-  } catch (error) {
-    console.error('Error fetching driver documents:', error);
-    
-    // Handle specific Firestore index errors
-    if (error.code === 9) {
-      return res.status(500).json({
-        success: false,
-        error: {
-          code: 'FIRESTORE_INDEX_REQUIRED',
-          message: 'Firestore index required for document verification requests',
-          details: 'Please create the required Firestore index. Check the console logs for the index creation URL.',
-          indexUrl: error.details || 'https://console.firebase.google.com/v1/r/project/epickup-app/firestore/indexes'
-        },
-        timestamp: new Date().toISOString()
-      });
-    }
-    
-    res.status(500).json({
-      success: false,
-      error: {
-        code: 'FETCH_DOCUMENTS_ERROR',
-        message: 'Failed to fetch driver documents',
         details: error.message
       },
       timestamp: new Date().toISOString()

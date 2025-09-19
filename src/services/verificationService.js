@@ -7,14 +7,38 @@ class VerificationService {
 
   /**
    * Normalize document field names to ensure consistency
+   * Maps from various formats to the standard camelCase format used in users collection
    */
   normalizeDocumentField(fieldName) {
     const fieldMap = {
+      // Snake case to camelCase (from driverDocuments collection)
       'driving_license': 'drivingLicense',
       'aadhaar_card': 'aadhaarCard',
+      'aadhaar': 'aadhaarCard',
       'bike_insurance': 'bikeInsurance',
+      'insurance': 'bikeInsurance',
       'rc_book': 'rcBook',
-      'profile_photo': 'profilePhoto'
+      'profile_photo': 'profilePhoto',
+      // Already camelCase (pass through)
+      'drivingLicense': 'drivingLicense',
+      'aadhaarCard': 'aadhaarCard',
+      'bikeInsurance': 'bikeInsurance',
+      'rcBook': 'rcBook',
+      'profilePhoto': 'profilePhoto'
+    };
+    return fieldMap[fieldName] || fieldName;
+  }
+
+  /**
+   * Convert camelCase document type to snake_case for driverDocuments collection queries
+   */
+  toSnakeCase(fieldName) {
+    const fieldMap = {
+      'drivingLicense': 'driving_license',
+      'aadhaarCard': 'aadhaar_card',
+      'bikeInsurance': 'bike_insurance',
+      'rcBook': 'rc_book',
+      'profilePhoto': 'profile_photo'
     };
     return fieldMap[fieldName] || fieldName;
   }
@@ -135,44 +159,122 @@ class VerificationService {
         .limit(1)
         .get();
 
-      let documents = {};
-      let source = 'user_collection';
+      // Get driver documents collection
+      const driverDocsQuery = await this.db.collection('driverDocuments')
+        .where('driverId', '==', driverId)
+        .get();
 
-      if (!verificationQuery.empty) {
-        // Use verification request data (most recent)
-        const verificationData = verificationQuery.docs[0].data();
-        const verificationDocs = verificationData.documents || {};
-        
-        // Merge with user collection documents
-        const userDocs = driverData.driver?.documents || driverData.documents || {};
-        documents = { ...userDocs };
+      console.log(`📊 Found ${driverDocsQuery.docs.length} documents in driverDocuments collection`);
+      console.log(`📊 Found ${verificationQuery.docs.length} verification requests`);
 
-        // Override with verification request data where available
-        Object.entries(verificationDocs).forEach(([key, verificationDoc]) => {
-          if (verificationDoc.downloadURL) {
-            const normalizedKey = this.normalizeDocumentField(key);
+      // Initialize documents with all required types
+      const requiredDocs = this.getRequiredDocumentTypes();
+      const documents = {};
+      requiredDocs.forEach(docType => {
+        documents[docType] = {
+          url: '',
+          status: 'pending',
+          verificationStatus: 'pending',
+          uploadedAt: '',
+          verified: false,
+          rejectionReason: null,
+          verifiedAt: null,
+          verifiedBy: null,
+          comments: null
+        };
+      });
+
+      let source = 'empty';
+
+      // 1. Start with user collection documents (baseline)
+      const userDocs = driverData.driver?.documents || driverData.documents || {};
+      if (Object.keys(userDocs).length > 0) {
+        Object.entries(userDocs).forEach(([key, doc]) => {
+          const normalizedKey = this.normalizeDocumentField(key);
+          if (documents[normalizedKey]) {
             documents[normalizedKey] = {
               ...documents[normalizedKey],
-              url: verificationDoc.downloadURL,
-              verificationStatus: verificationDoc.verificationStatus || 'pending',
-              status: verificationDoc.status || 'uploaded',
-              filename: verificationDoc.filename,
-              uploadedAt: verificationDoc.uploadedAt
+              url: doc.url || doc.downloadURL || '',
+              status: doc.status || 'pending',
+              verificationStatus: doc.verificationStatus || doc.status || 'pending',
+              uploadedAt: doc.uploadedAt || '',
+              verified: doc.verified || false,
+              rejectionReason: doc.rejectionReason || null,
+              verifiedAt: doc.verifiedAt || null,
+              verifiedBy: doc.verifiedBy || null,
+              comments: doc.comments || null
             };
           }
         });
-        
-        source = 'merged_verification_and_user';
-      } else {
-        // Use user collection documents
-        documents = driverData.driver?.documents || driverData.documents || {};
+        source = 'user_collection';
       }
 
-      // Normalize documents
+      // 2. Override with driverDocuments collection data (most recent and detailed)
+      if (!driverDocsQuery.empty) {
+        console.log(`📄 Processing ${driverDocsQuery.docs.length} documents from driverDocuments collection`);
+        driverDocsQuery.docs.forEach(doc => {
+          const docData = doc.data();
+          const docType = this.normalizeDocumentField(docData.documentType || doc.id);
+          
+          console.log(`📄 Processing document: ${docData.documentType} → ${docType}`);
+          
+          if (documents[docType] && (docData.uploadDetails?.downloadURL || docData.downloadURL || docData.url)) {
+            documents[docType] = {
+              ...documents[docType],
+              url: docData.uploadDetails?.downloadURL || docData.downloadURL || docData.url,
+              status: docData.status || 'uploaded',
+              verificationStatus: docData.verification?.status || docData.verificationStatus || 'pending',
+              uploadedAt: docData.uploadedAt || docData.createdAt || '',
+              verified: docData.verification?.status === 'verified' || docData.verified || false,
+              filename: docData.filename || docData.originalName || '',
+              rejectionReason: docData.verification?.rejectionReason || docData.rejectionReason || null,
+              verifiedAt: docData.verification?.verifiedAt || docData.verifiedAt || null,
+              verifiedBy: docData.verification?.verifiedBy || docData.verifiedBy || null,
+              comments: docData.verification?.comments || null
+            };
+            console.log(`✅ Updated ${docType}: ${documents[docType].url ? 'Has URL' : 'No URL'} (${documents[docType].verificationStatus})`);
+          }
+        });
+        source = 'driverDocuments_collection';
+      }
+
+      // 3. Override with verification request data where available (admin verification status)
+      if (!verificationQuery.empty) {
+        console.log(`📋 Processing verification request data`);
+        const verificationData = verificationQuery.docs[0].data();
+        const verificationDocs = verificationData.documents || {};
+        
+        Object.entries(verificationDocs).forEach(([key, verificationDoc]) => {
+          const normalizedKey = this.normalizeDocumentField(key);
+          console.log(`📋 Processing verification doc: ${key} → ${normalizedKey}`);
+          if (documents[normalizedKey] && verificationDoc.downloadURL) {
+            documents[normalizedKey] = {
+              ...documents[normalizedKey],
+              url: verificationDoc.downloadURL,
+              status: verificationDoc.status || 'uploaded',
+              verificationStatus: verificationDoc.verificationStatus || 'pending',
+              uploadedAt: verificationDoc.uploadedAt || '',
+              verified: verificationDoc.verified || false,
+              filename: verificationDoc.filename || '',
+              rejectionReason: verificationDoc.rejectionReason || null,
+              verifiedAt: verificationDoc.verifiedAt || null,
+              verifiedBy: verificationDoc.verifiedBy || null,
+              comments: verificationDoc.comments || null
+            };
+            console.log(`✅ Updated from verification request: ${normalizedKey} (${documents[normalizedKey].verificationStatus})`);
+          }
+        });
+        
+        source = 'merged_all_sources';
+      }
+
+      // Normalize documents (ensure consistent structure)
       const normalizedDocuments = this.normalizeDocuments(documents);
       
       // Calculate verification status
       const verificationStatus = this.calculateVerificationStatus(normalizedDocuments);
+      
+      console.log(`📊 Final verification status: ${verificationStatus.status} (${verificationStatus.verifiedCount}/${verificationStatus.totalWithDocuments} verified)`);
       
       return {
         driverId,
@@ -207,11 +309,11 @@ class VerificationService {
       // Update user collection
       const driverRef = this.db.collection('users').doc(driverId);
       batch.update(driverRef, {
-        'driver.verificationStatus': verificationData.status,
-        'driver.isVerified': verificationData.status === 'verified',
-        'isVerified': verificationData.status === 'verified',
-        'driver.verifiedDocumentsCount': verificationData.verifiedCount,
-        'driver.totalDocumentsCount': verificationData.totalWithDocuments,
+        'driver.verificationStatus': verificationData.verificationStatus,
+        'driver.isVerified': verificationData.isVerified,
+        'isVerified': verificationData.isVerified,
+        'driver.verifiedDocumentsCount': verificationData.documentSummary.verified,
+        'driver.totalDocumentsCount': verificationData.documentSummary.total,
         updatedAt: new Date()
       });
 
@@ -225,13 +327,13 @@ class VerificationService {
       if (!verificationQuery.empty) {
         const verificationDoc = verificationQuery.docs[0];
         batch.update(verificationDoc.ref, {
-          status: verificationData.status,
+          status: verificationData.verificationStatus,
           updatedAt: new Date()
         });
       }
 
       await batch.commit();
-      console.log(`✅ Verification status updated for driver: ${driverId}`);
+      console.log(`✅ Verification status updated for driver: ${driverId} - ${verificationData.verificationStatus} (${verificationData.documentSummary.verified}/${verificationData.documentSummary.total})`);
 
     } catch (error) {
       console.error('❌ Error updating verification status:', error);
@@ -261,7 +363,7 @@ class VerificationService {
       // Normalize document type
       const normalizedDocType = this.normalizeDocumentField(documentType);
       
-      // Update specific document
+      // Update specific document in users collection
       if (documents[normalizedDocType]) {
         documents[normalizedDocType] = {
           ...documents[normalizedDocType],
@@ -277,6 +379,30 @@ class VerificationService {
         batch.update(driverRef, {
           'driver.documents': documents,
           updatedAt: new Date()
+        });
+      }
+
+      // Update driverDocuments collection (use snake_case for query)
+      const snakeCaseDocType = this.toSnakeCase(documentType);
+      const driverDocsQuery = await this.db.collection('driverDocuments')
+        .where('driverId', '==', driverId)
+        .where('documentType', '==', snakeCaseDocType)
+        .get();
+
+      if (!driverDocsQuery.empty) {
+        driverDocsQuery.docs.forEach(doc => {
+          batch.update(doc.ref, {
+            'verification.status': status === 'verified' ? 'verified' : 'rejected',
+            'verification.verifiedBy': adminId,
+            'verification.verifiedAt': new Date(),
+            'verification.comments': comments || null,
+            'verification.rejectionReason': status === 'rejected' ? rejectionReason : null,
+            verificationStatus: status === 'verified' ? 'verified' : 'rejected',
+            verified: status === 'verified',
+            verifiedAt: new Date(),
+            verifiedBy: adminId,
+            updatedAt: new Date()
+          });
         });
       }
       

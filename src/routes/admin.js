@@ -915,7 +915,6 @@ router.get('/drivers/:driverId/documents', requireRole(['admin']), async (req, r
     const verificationQuery = await db.collection('documentVerificationRequests')
       .where('driverId', '==', driverId)
       .where('status', '==', 'pending')
-      .orderBy('requestedAt', 'desc')
       .limit(1)
       .get();
 
@@ -1881,6 +1880,21 @@ router.get('/drivers/:driverId/documents', requireRole(['admin']), async (req, r
 
   } catch (error) {
     console.error('Error fetching driver documents:', error);
+    
+    // Handle specific Firestore index errors
+    if (error.code === 9) {
+      return res.status(500).json({
+        success: false,
+        error: {
+          code: 'FIRESTORE_INDEX_REQUIRED',
+          message: 'Firestore index required for document verification requests',
+          details: 'Please create the required Firestore index. Check the console logs for the index creation URL.',
+          indexUrl: error.details || 'https://console.firebase.google.com/v1/r/project/epickup-app/firestore/indexes'
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+    
     res.status(500).json({
       success: false,
       error: {

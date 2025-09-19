@@ -796,7 +796,7 @@ class FileUploadService {
           comments,
           rejectionReason
         },
-        status: status === 'approved' ? 'verified' : 'rejected',
+        status: status === 'verified' ? 'verified' : 'rejected',
         updatedAt: new Date()
       };
 
@@ -807,11 +807,11 @@ class FileUploadService {
       await this.updateDriverDocumentStatus(
         documentData.driverId,
         documentData.documentType,
-        status === 'approved' ? 'verified' : 'rejected'
+        status === 'verified' ? 'verified' : 'rejected'
       );
 
       // Check if all required documents are verified
-      if (status === 'approved') {
+      if (status === 'verified') {
         await this.checkDriverVerificationStatus(documentData.driverId);
       }
 

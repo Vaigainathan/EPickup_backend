@@ -988,7 +988,7 @@ router.post('/test-verification-flow/:driverId', requireRole(['admin']), async (
               'Authorization': req.headers.authorization
             },
             body: JSON.stringify({
-              status: 'approved',
+              status: 'verified',
               comments: 'Test verification',
               rejectionReason: null
             })
@@ -1283,12 +1283,12 @@ router.post('/drivers/:driverId/documents/:documentType/verify', requireRole(['a
       });
     }
 
-    if (!status || !['approved', 'rejected'].includes(status)) {
+    if (!status || !['verified', 'rejected'].includes(status)) {
       return res.status(400).json({
         success: false,
         error: {
           code: 'INVALID_STATUS',
-          message: 'Status must be either "approved" or "rejected"'
+          message: 'Status must be either "verified" or "rejected"'
         },
         timestamp: new Date().toISOString()
       });
@@ -1309,7 +1309,7 @@ router.post('/drivers/:driverId/documents/:documentType/verify', requireRole(['a
     const result = await verificationService.verifyDriverDocument(
       driverId, 
       documentType, 
-      status === 'approved' ? 'verified' : 'rejected', 
+      status, 
       comments, 
       rejectionReason, 
       adminId

@@ -549,8 +549,8 @@ class VerificationService {
         'driver.verificationStatus': 'verified',
         'driver.isVerified': true,
         'isVerified': true,
-        'driver.verifiedAt': new Date(),
-        'driver.verifiedBy': adminId,
+        'driver.approvedAt': new Date(),
+        'driver.approvedBy': adminId,
         'driver.adminNotes': adminNotes || null,
         updatedAt: new Date()
       });
@@ -565,7 +565,7 @@ class VerificationService {
       if (!verificationQuery.empty) {
         const verificationDoc = verificationQuery.docs[0];
         batch.update(verificationDoc.ref, {
-          status: 'verified',
+          status: 'approved',
           reviewedAt: new Date(),
           reviewedBy: adminId,
           reviewNotes: adminNotes || null,
@@ -598,8 +598,8 @@ class VerificationService {
         data: {
           driverId,
           status: 'verified',
-          verifiedAt: new Date(),
-          verifiedBy: adminId
+          approvedAt: new Date(),
+          approvedBy: adminId
         }
       };
 

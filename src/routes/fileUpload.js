@@ -206,12 +206,12 @@ router.post('/verify/:documentId',
       const { status, comments, rejectionReason } = req.body;
       const adminId = req.user.uid;
 
-      if (!status || !['approved', 'rejected'].includes(status)) {
+      if (!status || !['verified', 'rejected'].includes(status)) {
         return res.status(400).json({
           success: false,
           error: {
             code: 'INVALID_STATUS',
-            message: 'Status must be either "approved" or "rejected"'
+            message: 'Status must be either "verified" or "rejected"'
           }
         });
       }

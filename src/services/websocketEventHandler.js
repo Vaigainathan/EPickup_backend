@@ -42,6 +42,15 @@ class WebSocketEventHandler {
   }
 
   /**
+   * Set the Socket.IO instance
+   * @param {Object} io - Socket.IO instance
+   */
+  setIO(io) {
+    this.io = io;
+    console.log('✅ Socket.IO instance set in WebSocket event handler');
+  }
+
+  /**
    * Handle user connection
    * @param {Socket} socket - Socket instance
    */

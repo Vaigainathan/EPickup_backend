@@ -323,6 +323,23 @@ class VerificationService {
         updatedAt: new Date()
       });
 
+      // Update real-time verification status collection for live updates
+      const verificationStatusRef = this.db.collection('driverVerificationStatus').doc(driverId);
+      batch.set(verificationStatusRef, {
+        driverId,
+        verificationStatus: verificationData.status,
+        isVerified: verificationData.status === 'verified',
+        documentSummary: {
+          total: verificationData.totalWithDocuments,
+          verified: verificationData.verifiedCount,
+          rejected: verificationData.rejectedCount,
+          pending: verificationData.totalWithDocuments - verificationData.verifiedCount - verificationData.rejectedCount
+        },
+        lastUpdated: new Date(),
+        canStartWorking: verificationData.status === 'verified',
+        welcomeBonusEligible: verificationData.status === 'verified'
+      }, { merge: true });
+
       // Update verification request if exists
       const verificationQuery = await this.db.collection('documentVerificationRequests')
         .where('driverId', '==', driverId)
@@ -492,7 +509,7 @@ class VerificationService {
         return;
       }
       
-      // Send document-specific notification
+      // Send enhanced document-specific notification
       const notificationSent = sendToUser(driverId, 'document_verification_update', {
         type: 'document_verification',
         documentType,
@@ -505,7 +522,17 @@ class VerificationService {
           rejected: verificationStatus.rejectedCount,
           pending: verificationStatus.totalWithDocuments - verificationStatus.verifiedCount - verificationStatus.rejectedCount
         },
-        message: `Your ${documentType} has been ${status === 'verified' ? 'verified' : 'rejected'}`,
+        message: status === 'verified' 
+          ? `✅ Your ${documentType} has been verified successfully!`
+          : `❌ Your ${documentType} was rejected. Please check the reason and re-upload.`,
+        title: status === 'verified' ? 'Document Verified' : 'Document Rejected',
+        priority: 'high',
+        actionRequired: status === 'rejected',
+        nextSteps: status === 'rejected' 
+          ? ['Review rejection reason', 'Re-upload document with improvements']
+          : verificationStatus.status === 'verified' 
+            ? ['All documents verified!', 'You can now start working']
+            : ['Continue uploading remaining documents'],
         timestamp: new Date().toISOString()
       });
 
@@ -516,7 +543,21 @@ class VerificationService {
         const completionSent = sendToUser(driverId, 'verification_complete', {
           type: 'verification_status',
           status: 'verified',
-          message: 'All your documents have been verified successfully! You can now start taking orders.',
+          message: '🎉 Congratulations! All your documents have been verified successfully! You can now start taking orders and earn money.',
+          title: 'Verification Complete!',
+          priority: 'high',
+          actionRequired: false,
+          nextSteps: [
+            'Start accepting ride requests',
+            'Complete your first ride to earn welcome bonus',
+            'Check your earnings in the wallet section'
+          ],
+          welcomeBonus: {
+            amount: 500,
+            currency: 'INR',
+            eligible: true,
+            message: 'You\'ve earned ₹500 welcome bonus!'
+          },
           documentSummary: {
             total: verificationStatus.totalWithDocuments,
             verified: verificationStatus.verifiedCount,

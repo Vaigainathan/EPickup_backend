@@ -2820,7 +2820,7 @@ router.get('/documents/status', requireDriver, async (req, res) => {
     const documents = userData.driver?.documents || {};
     const verificationStatus = userData.driver?.verificationStatus || 'pending';
 
-    // Calculate document completion status
+    // Calculate document completion status with enhanced data
     const requiredDocuments = ['drivingLicense', 'profilePhoto', 'aadhaarCard', 'bikeInsurance', 'rcBook'];
     const uploadedDocuments = requiredDocuments.filter(doc => documents[doc]?.url);
     const verifiedDocuments = requiredDocuments.filter(doc => documents[doc]?.status === 'verified');
@@ -2833,6 +2833,87 @@ router.get('/documents/status', requireDriver, async (req, res) => {
       rejected: rejectedDocuments.length,
       pending: uploadedDocuments.length - verifiedDocuments.length - rejectedDocuments.length
     };
+
+    // Calculate overall progress
+    const overallProgress = documentStatus.total > 0 
+      ? Math.round((documentStatus.verified / documentStatus.total) * 100)
+      : 0;
+
+    // Determine next steps based on status
+    const nextSteps = [];
+    if (verificationStatus === 'pending') {
+      nextSteps.push('Upload all required documents');
+      nextSteps.push('Ensure documents are clear and readable');
+    } else if (verificationStatus === 'pending_verification') {
+      nextSteps.push('Wait for admin review (24-48 hours)');
+      nextSteps.push('Check back regularly for updates');
+    } else if (verificationStatus === 'rejected') {
+      nextSteps.push('Review rejection reasons for each document');
+      nextSteps.push('Re-upload rejected documents with improvements');
+    } else if (verificationStatus === 'approved') {
+      nextSteps.push('Start accepting ride requests');
+      nextSteps.push('Complete your first ride to earn welcome bonus');
+    }
+
+    // Enhanced document details with better UX data
+    const documentConfig = {
+      drivingLicense: { 
+        displayName: 'Driving License', 
+        description: 'Valid driving license with clear photo',
+        icon: 'card',
+        tips: 'Ensure all text is clearly visible and photo is recent'
+      },
+      aadhaarCard: { 
+        displayName: 'Aadhaar Card', 
+        description: 'Government issued Aadhaar card',
+        icon: 'id-card',
+        tips: 'Front and back side in separate images'
+      },
+      bikeInsurance: { 
+        displayName: 'Bike Insurance', 
+        description: 'Valid vehicle insurance document',
+        icon: 'shield-checkmark',
+        tips: 'Must be current and cover the vehicle you\'ll use'
+      },
+      rcBook: { 
+        displayName: 'RC Book', 
+        description: 'Vehicle Registration Certificate',
+        icon: 'document-text',
+        tips: 'Ensure vehicle details match your bike'
+      },
+      profilePhoto: { 
+        displayName: 'Profile Photo', 
+        description: 'Clear photo of yourself',
+        icon: 'person',
+        tips: 'Professional looking photo, face clearly visible'
+      }
+    };
+
+    const enhancedDocuments = requiredDocuments.map(docType => {
+      const doc = documents[docType] || {};
+      const config = documentConfig[docType];
+
+      return {
+        type: docType,
+        name: config?.displayName || docType,
+        displayName: config?.displayName || docType,
+        description: config?.description || '',
+        status: doc.status || 'not_uploaded',
+        url: doc.url || '',
+        number: doc.number || '',
+        uploadedAt: doc.uploadedAt || '',
+        verifiedAt: doc.verifiedAt || '',
+        rejectedAt: doc.rejectedAt || '',
+        rejectionReason: doc.rejectionReason || '',
+        verifiedBy: doc.verifiedBy || '',
+        isRequired: true,
+        fileSize: doc.fileSize,
+        lastModified: doc.lastModified || doc.uploadedAt,
+        // Enhanced UX fields
+        icon: config?.icon || 'document',
+        tips: config?.tips || 'Ensure document is clear and readable'
+      };
+    });
 
     // Get detailed status for each document
     const documentDetails = requiredDocuments.map(docType => {
@@ -2857,10 +2938,16 @@ router.get('/documents/status', requireDriver, async (req, res) => {
       data: {
         verificationStatus,
         documentStatus,
-        documents: documentDetails,
+        documents: enhancedDocuments,
         isComplete: uploadedDocuments.length === requiredDocuments.length,
-        isVerified: verificationStatus === 'approved',
-        canStartWorking: verificationStatus === 'approved'
+        isVerified: verificationStatus === 'approved' || verificationStatus === 'verified',
+        canStartWorking: verificationStatus === 'approved' || verificationStatus === 'verified',
+        // Enhanced UX data
+        overallProgress,
+        estimatedReviewTime: verificationStatus === 'pending_verification' ? '24-48 hours' : null,
+        lastStatusUpdate: userData.updatedAt?.toDate?.()?.toISOString() || new Date().toISOString(),
+        nextSteps,
+        welcomeBonusEligible: verificationStatus === 'verified' || verificationStatus === 'approved'
       },
       timestamp: new Date().toISOString()
     });

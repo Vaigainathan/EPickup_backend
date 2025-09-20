@@ -1,9 +1,13 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    // Users collection - allow admin access only
+    // Users collection - allow users to read their own data, admin access for all
     match /users/{userId} {
-      allow read, write: if request.auth != null && 
+      allow read: if request.auth != null && 
+        (request.auth.uid == userId || 
+         request.auth.token.role == 'admin' || 
+         request.auth.token.userType == 'admin');
+      allow write: if request.auth != null && 
         (request.auth.token.role == 'admin' || request.auth.token.userType == 'admin');
     }
     
@@ -13,9 +17,13 @@ service cloud.firestore {
         (request.auth.token.role == 'admin' || request.auth.token.userType == 'admin');
     }
     
-    // Driver documents collection - allow admin access only
+    // Driver documents collection - allow drivers to read their own documents, admin access for all
     match /driverDocuments/{documentId} {
-      allow read, write: if request.auth != null && 
+      allow read: if request.auth != null && 
+        (resource.data.driverId == request.auth.uid || 
+         request.auth.token.role == 'admin' || 
+         request.auth.token.userType == 'admin');
+      allow write: if request.auth != null && 
         (request.auth.token.role == 'admin' || request.auth.token.userType == 'admin');
     }
     
@@ -52,6 +60,16 @@ service cloud.firestore {
     // File uploads - allow admin access only
     match /fileUploads/{uploadId} {
       allow read, write: if request.auth != null && 
+        (request.auth.token.role == 'admin' || request.auth.token.userType == 'admin');
+    }
+    
+    // Driver verification status - allow drivers to read their own status, admin access for all
+    match /driverVerificationStatus/{driverId} {
+      allow read: if request.auth != null && 
+        (request.auth.uid == driverId || 
+         request.auth.token.role == 'admin' || 
+         request.auth.token.userType == 'admin');
+      allow write: if request.auth != null && 
         (request.auth.token.role == 'admin' || request.auth.token.userType == 'admin');
     }
     

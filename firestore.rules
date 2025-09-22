@@ -90,6 +90,26 @@ service cloud.firestore {
       allow write: if request.auth != null && 
         (request.auth.token.role == 'admin' || request.auth.token.userType == 'admin');
     }
+
+    // Driver documents rejections collection - allow drivers to read their own rejections, admin access for all
+    match /driverDocumentsRejections/{rejectionId} {
+      allow read: if request.auth != null && 
+        (resource.data.driverId == request.auth.uid || 
+         request.auth.token.role == 'admin' || 
+         request.auth.token.userType == 'admin');
+      allow write: if request.auth != null && 
+        (request.auth.token.role == 'admin' || request.auth.token.userType == 'admin');
+    }
+
+    // Driver wallet transactions collection - allow drivers to read their own transactions, admin access for all
+    match /driverWalletTransactions/{transactionId} {
+      allow read: if request.auth != null && 
+        (resource.data.driverId == request.auth.uid || 
+         request.auth.token.role == 'admin' || 
+         request.auth.token.userType == 'admin');
+      allow write: if request.auth != null && 
+        (request.auth.token.role == 'admin' || request.auth.token.userType == 'admin');
+    }
     
     // Emergency alerts - allow admin access only
     match /emergencyAlerts/{alertId} {

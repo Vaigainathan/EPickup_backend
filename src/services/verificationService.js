@@ -468,6 +468,11 @@ class VerificationService {
       // Send WebSocket notification to driver
       await this.sendVerificationNotification(driverId, documentType, status, verificationStatus);
       
+      // Send specific rejection notification if document was rejected
+      if (status === 'rejected') {
+        await this.sendDocumentRejectionNotification(driverId, documentType, rejectionReason, verificationStatus);
+      }
+      
       console.log(`✅ Document ${documentType} ${status} for driver: ${driverId}`);
       
       return {
@@ -576,6 +581,143 @@ class VerificationService {
   }
 
   /**
+   * Send welcome bonus notification to driver
+   */
+  async sendWelcomeBonusNotification(driverId, amount) {
+    try {
+      console.log(`🎁 Sending welcome bonus notification to driver: ${driverId}`);
+      const { sendToUser } = require('./socket');
+      
+      if (!sendToUser) {
+        console.error('❌ sendToUser function not available');
+        return;
+      }
+      
+      // Send welcome bonus notification
+      const notificationSent = sendToUser(driverId, 'welcome_bonus_credited', {
+        type: 'welcome_bonus',
+        amount: amount,
+        currency: 'INR',
+        message: `🎉 Congratulations! You've received ₹${amount} welcome bonus for completing verification!`,
+        title: 'Welcome Bonus Credited!',
+        priority: 'high',
+        actionRequired: false,
+        nextSteps: ['Check your wallet balance', 'Start accepting rides'],
+        timestamp: new Date().toISOString()
+      });
+
+      console.log(`🎁 Welcome bonus notification sent: ${notificationSent}`);
+
+      // Also send push notification
+      await this.sendPushNotification(driverId, {
+        title: 'Welcome Bonus Credited!',
+        body: `You've received ₹${amount} welcome bonus for completing verification!`,
+        data: {
+          type: 'welcome_bonus',
+          amount: amount.toString(),
+          driverId: driverId
+        }
+      });
+
+    } catch (error) {
+      console.error('❌ Failed to send welcome bonus notification:', error);
+    }
+  }
+
+  /**
+   * Send document rejection notification to driver
+   */
+  async sendDocumentRejectionNotification(driverId, documentType, rejectionReason, verificationStatus) {
+    try {
+      console.log(`❌ Sending document rejection notification to driver: ${driverId}`);
+      const { sendToUser } = require('./socket');
+      
+      if (!sendToUser) {
+        console.error('❌ sendToUser function not available');
+        return;
+      }
+      
+      // Send document rejection notification
+      const notificationSent = sendToUser(driverId, 'document_rejected', {
+        type: 'document_rejection',
+        documentType: documentType,
+        rejectionReason: rejectionReason,
+        message: `❌ Your ${documentType} was rejected. Reason: ${rejectionReason || 'Please check the document quality and re-upload.'}`,
+        title: 'Document Rejected',
+        priority: 'high',
+        actionRequired: true,
+        nextSteps: [
+          'Review the rejection reason',
+          'Check document quality and clarity',
+          'Re-upload the document with improvements',
+          'Ensure all information is clearly visible'
+        ],
+        documentSummary: {
+          total: verificationStatus.totalWithDocuments,
+          verified: verificationStatus.verifiedCount,
+          rejected: verificationStatus.rejectedCount,
+          pending: verificationStatus.totalWithDocuments - verificationStatus.verifiedCount - verificationStatus.rejectedCount
+        },
+        timestamp: new Date().toISOString()
+      });
+
+      console.log(`❌ Document rejection notification sent: ${notificationSent}`);
+
+      // Also send push notification
+      await this.sendPushNotification(driverId, {
+        title: 'Document Rejected',
+        body: `Your ${documentType} was rejected. Tap to view details and re-upload.`,
+        data: {
+          type: 'document_rejection',
+          documentType: documentType,
+          rejectionReason: rejectionReason,
+          driverId: driverId
+        }
+      });
+
+      // Store rejection history
+      await this.storeRejectionHistory(driverId, documentType, rejectionReason);
+
+    } catch (error) {
+      console.error('❌ Failed to send document rejection notification:', error);
+    }
+  }
+
+  /**
+   * Store document rejection history
+   */
+  async storeRejectionHistory(driverId, documentType, rejectionReason) {
+    try {
+      const rejectionRef = this.db.collection('driverDocumentsRejections').doc();
+      await rejectionRef.set({
+        id: rejectionRef.id,
+        driverId: driverId,
+        documentType: documentType,
+        rejectionReason: rejectionReason,
+        rejectedAt: new Date(),
+        status: 'pending_reupload',
+        createdAt: new Date()
+      });
+      
+      console.log(`📝 Rejection history stored for driver: ${driverId}, document: ${documentType}`);
+    } catch (error) {
+      console.error('❌ Failed to store rejection history:', error);
+    }
+  }
+
+  /**
+   * Send push notification to driver
+   */
+  async sendPushNotification(driverId, notification) {
+    try {
+      const pushNotificationService = require('./pushNotificationService');
+      await pushNotificationService.sendToDriver(driverId, notification);
+    } catch (error) {
+      console.error('❌ Failed to send push notification:', error);
+    }
+  }
+
+  /**
    * Approve a driver
    */
   async approveDriver(driverId, adminNotes, adminId) {
@@ -585,9 +727,16 @@ class VerificationService {
       const batch = this.db.batch();
       const driverRef = this.db.collection('users').doc(driverId);
       
+      // Get current driver data to check welcome bonus eligibility
+      const driverDoc = await driverRef.get();
+      const driverData = driverDoc.data();
+      
+      // Check if welcome bonus has already been given
+      const welcomeBonusGiven = driverData.driver?.welcomeBonusGiven || false;
+      
       // Update driver status
       batch.update(driverRef, {
-        'driver.verificationStatus': 'verified',
+        'driver.verificationStatus': 'approved',
         'driver.isVerified': true,
         'isVerified': true,
         'driver.approvedAt': new Date(),
@@ -616,31 +765,62 @@ class VerificationService {
 
       await batch.commit();
       
-      // Initialize wallet if needed
-      const driverDoc = await driverRef.get();
-      const driverData = driverDoc.data();
+      // Initialize wallet and give welcome bonus if eligible
+      const currentBalance = driverData.driver?.wallet?.balance || 0;
+      const newBalance = currentBalance + (welcomeBonusGiven ? 0 : 500);
       
-      if (!driverData.driver?.wallet) {
-        await driverRef.update({
-          'driver.wallet': {
-            balance: 500,
-            currency: 'INR',
-            lastUpdated: new Date(),
-            transactions: []
-          }
+      // Update wallet with welcome bonus
+      await driverRef.update({
+        'driver.wallet': {
+          balance: newBalance,
+          currency: 'INR',
+          lastUpdated: new Date(),
+          transactions: driverData.driver?.wallet?.transactions || []
+        },
+        'driver.welcomeBonusGiven': true,
+        'driver.welcomeBonusAmount': welcomeBonusGiven ? (driverData.driver?.welcomeBonusAmount || 0) : 500,
+        'driver.welcomeBonusGivenAt': welcomeBonusGiven ? (driverData.driver?.welcomeBonusGivenAt || null) : new Date()
+      });
+
+      // Create welcome bonus transaction record
+      if (!welcomeBonusGiven) {
+        const transactionRef = this.db.collection('driverWalletTransactions').doc();
+        await transactionRef.set({
+          id: transactionRef.id,
+          driverId: driverId,
+          type: 'credit',
+          amount: 500,
+          previousBalance: currentBalance,
+          newBalance: newBalance,
+          paymentMethod: 'welcome_bonus',
+          status: 'completed',
+          metadata: {
+            source: 'welcome_bonus',
+            description: 'Welcome bonus for completing verification',
+            adminId: adminId
+          },
+          createdAt: new Date(),
+          updatedAt: new Date()
         });
       }
 
-      console.log(`✅ Driver approved: ${driverId}`);
+      // Send welcome bonus notification
+      if (!welcomeBonusGiven) {
+        await this.sendWelcomeBonusNotification(driverId, 500);
+      }
+
+      console.log(`✅ Driver approved: ${driverId}${welcomeBonusGiven ? ' (welcome bonus already given)' : ' (welcome bonus credited)'}`);
       
       return {
         success: true,
         message: 'Driver approved successfully',
         data: {
           driverId,
-          status: 'verified',
+          status: 'approved',
           approvedAt: new Date(),
-          approvedBy: adminId
+          approvedBy: adminId,
+          welcomeBonusGiven: !welcomeBonusGiven,
+          welcomeBonusAmount: welcomeBonusGiven ? 0 : 500
         }
       };
 

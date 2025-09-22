@@ -2520,7 +2520,7 @@ router.get('/analytics/bookings', requireRole(['admin']), async (req, res) => {
     const peakHours = Object.entries(hourlyBookings)
       .sort(([,a], [,b]) => b - a)
       .slice(0, 3)
-      .map(([hour, count]) => `${hour}:00-${parseInt(hour) + 1}:00`);
+      .map(([hour]) => `${hour}:00-${parseInt(hour) + 1}:00`);
 
     res.json({
       success: true,

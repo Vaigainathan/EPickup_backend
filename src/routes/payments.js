@@ -33,7 +33,6 @@ router.post('/create',
     try {
       const { amount, bookingId, customerPhone, customerEmail, customerName } = req.body;
       const userId = req.user.id;
-      const userType = req.user.userType;
 
       // Generate unique transaction ID
       const transactionId = `TXN_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;

@@ -57,9 +57,7 @@ class PhonePeService {
         amount,
         customerId,
         bookingId,
-        customerPhone,
-        customerEmail,
-        customerName
+        customerPhone
       } = paymentData;
 
       // Validate required fields

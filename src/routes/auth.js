@@ -61,6 +61,7 @@ router.post('/check-user',
         message: userExists ? (isCorrectUserType ? 'User exists with correct type' : 'User exists but wrong type') : 'User not found',
         data: {
           exists: userExists,
+          userId: userData?.id || null,
           userType: userData?.userType || null,
           isCorrectUserType: isCorrectUserType,
           phoneNumber
@@ -273,8 +274,8 @@ router.post('/verify-otp',
         isNewUser = true;
       }
 
-      // Generate JWT token
-      const token = jwtService.generateAccessToken({
+      // Generate JWT token pair
+      const tokenData = jwtService.generateTokenPair({
         userId: user.id,
         phone: user.phone,
         userType: user.userType
@@ -305,10 +306,12 @@ router.post('/verify-otp',
             createdAt: user.createdAt,
             updatedAt: user.updatedAt
           },
-          token: token,
-          accessToken: token, // Keep both for backward compatibility
+          token: tokenData.accessToken,
+          accessToken: tokenData.accessToken,
+          refreshToken: tokenData.refreshToken,
           isNewUser: isNewUser,
-          expiresIn: '7d'
+          expiresIn: '7d',
+          refreshExpiresIn: '30d'
         },
         timestamp: new Date().toISOString()
       });

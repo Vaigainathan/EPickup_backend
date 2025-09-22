@@ -259,34 +259,14 @@ router.post('/verify-otp',
         
       } else {
         // User doesn't exist - handle signup
-        if (!name) {
-          console.log(`❌ Login attempt for non-existent user: ${phoneNumber}`);
-          
-          await authService.logAuthAttempt({
-            phoneNumber,
-            action: 'login',
-            success: false,
-            error: 'User not found',
-            ip: req.ip,
-            userAgent: req.get('User-Agent')
-          });
-
-          return res.status(404).json({
-            success: false,
-            message: 'No account found with this phone number. Please sign up first.',
-            error: {
-              code: 'USER_NOT_FOUND',
-              message: 'No account found with this phone number'
-            },
-            timestamp: new Date().toISOString()
-          });
-        }
+        // For new users, generate a default name if not provided
+        const userName = name || `User_${phoneNumber.slice(-4)}`;
         
         console.log(`📝 New signup attempt: ${phoneNumber}`);
         
         // Create new user
         const result = await authService.getOrCreateUser(phoneNumber, {
-          name: name,
+          name: userName,
           userType: userType
         });
         user = result.user;
@@ -446,34 +426,14 @@ router.post('/verify-widget-otp',
         
       } else {
         // User doesn't exist - handle signup
-        if (!name) {
-          console.log(`❌ Login attempt for non-existent user: ${phoneNumber}`);
-          
-          await authService.logAuthAttempt({
-            phoneNumber,
-            action: 'login',
-            success: false,
-            error: 'User not found',
-            ip: req.ip,
-            userAgent: req.get('User-Agent')
-          });
-
-          return res.status(404).json({
-            success: false,
-            message: 'No account found with this phone number. Please sign up first.',
-            error: {
-              code: 'USER_NOT_FOUND',
-              message: 'No account found with this phone number'
-            },
-            timestamp: new Date().toISOString()
-          });
-        }
+        // For new users, generate a default name if not provided
+        const userName = name || `User_${phoneNumber.slice(-4)}`;
         
         console.log(`📝 New signup attempt: ${phoneNumber}`);
         
         // Create new user
         const result = await authService.getOrCreateUser(phoneNumber, {
-          name: name,
+          name: userName,
           userType: userType
         });
         user = result.user;

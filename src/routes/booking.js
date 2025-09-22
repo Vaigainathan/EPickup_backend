@@ -1,6 +1,8 @@
 const express = require('express');
 const { body, validationResult, query } = require('express-validator');
 const bookingService = require('../services/bookingService');
+const driverAssignmentService = require('../services/driverAssignmentService');
+const WebSocketEventHandler = require('../services/websocketEventHandler');
 const { requireRole, requireCustomer, requireDriver } = require('../middleware/auth');
 const { userRateLimit } = require('../middleware/auth');
 const { getFirestore } = require('../services/firebase');
@@ -86,6 +88,47 @@ router.post('/', [
 
     // Create booking
     const result = await bookingService.createBooking(bookingData);
+
+    // Add booking to driver assignment queue for automatic assignment
+    if (result.success && result.data.booking) {
+      try {
+        console.log(`🚗 Adding booking ${result.data.booking.id} to driver assignment queue`);
+        driverAssignmentService.addBooking(result.data.booking);
+        
+        // Notify available drivers of new booking
+        const wsEventHandler = new WebSocketEventHandler();
+        await wsEventHandler.initialize();
+        await wsEventHandler.notifyDriversOfNewBooking(result.data.booking);
+        
+        // Also try immediate auto-assignment
+        const assignmentResult = await driverAssignmentService.autoAssignDriver(
+          result.data.booking.id, 
+          result.data.booking.pickup.coordinates
+        );
+        
+        if (assignmentResult.success) {
+          console.log(`✅ Driver ${assignmentResult.data.driverId} auto-assigned to booking ${result.data.booking.id}`);
+          
+          // Notify customer of driver assignment
+          await wsEventHandler.notifyCustomerOfDriverAssignment(
+            result.data.booking.customerId,
+            {
+              bookingId: result.data.booking.id,
+              driverId: assignmentResult.data.driverId,
+              driverName: assignmentResult.data.driverName,
+              driverPhone: assignmentResult.data.driverPhone,
+              vehicleInfo: assignmentResult.data.vehicleInfo,
+              estimatedArrival: assignmentResult.data.estimatedArrival
+            }
+          );
+        } else {
+          console.log(`⏳ No driver immediately available for booking ${result.data.booking.id}, added to queue`);
+        }
+      } catch (assignmentError) {
+        console.error('❌ Error in driver assignment:', assignmentError);
+        // Don't fail the booking creation if assignment fails
+      }
+    }
 
     res.status(201).json({
       success: true,

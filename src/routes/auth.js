@@ -274,6 +274,18 @@ router.post('/verify-otp',
         isNewUser = true;
       }
 
+      // Mark user as verified after successful OTP verification
+      if (!user.isVerified) {
+        console.log(`🔐 Marking user as verified: ${phoneNumber}`);
+        await authService.updateUser(user.id, {
+          isVerified: true,
+          phoneVerified: true,
+          updatedAt: new Date()
+        });
+        user.isVerified = true;
+        user.phoneVerified = true;
+      }
+
       // Generate JWT token pair
       const tokenData = jwtService.generateTokenPair({
         userId: user.id,
@@ -291,7 +303,7 @@ router.post('/verify-otp',
         userAgent: req.get('User-Agent')
       });
 
-      console.log(`✅ OTP verification successful for ${phoneNumber} - ${isNewUser ? 'New user' : 'Existing user'}`);
+      console.log(`✅ OTP verification successful for ${phoneNumber} - ${isNewUser ? 'New user' : 'Existing user'} - Verified: ${user.isVerified}`);
 
       return res.json({
         success: true,
@@ -303,6 +315,7 @@ router.post('/verify-otp',
             phone: user.phone,
             userType: user.userType,
             isVerified: user.isVerified,
+            phoneVerified: user.phoneVerified,
             createdAt: user.createdAt,
             updatedAt: user.updatedAt
           },
@@ -443,6 +456,18 @@ router.post('/verify-widget-otp',
         isNewUser = true;
       }
 
+      // Mark user as verified after successful OTP verification
+      if (!user.isVerified) {
+        console.log(`🔐 Marking user as verified (widget): ${phoneNumber}`);
+        await authService.updateUser(user.id, {
+          isVerified: true,
+          phoneVerified: true,
+          updatedAt: new Date()
+        });
+        user.isVerified = true;
+        user.phoneVerified = true;
+      }
+
       // Generate JWT token
       const token = jwtService.generateAccessToken({
         userId: user.id,
@@ -460,7 +485,7 @@ router.post('/verify-widget-otp',
         userAgent: req.get('User-Agent')
       });
 
-      console.log(`✅ Widget-verified OTP authentication successful for ${phoneNumber} - ${isNewUser ? 'New user' : 'Existing user'}`);
+      console.log(`✅ Widget-verified OTP authentication successful for ${phoneNumber} - ${isNewUser ? 'New user' : 'Existing user'} - Verified: ${user.isVerified}`);
 
       return res.json({
         success: true,
@@ -472,6 +497,7 @@ router.post('/verify-widget-otp',
             phone: user.phone,
             userType: user.userType,
             isVerified: user.isVerified,
+            phoneVerified: user.phoneVerified,
             createdAt: user.createdAt,
             updatedAt: user.updatedAt
           },

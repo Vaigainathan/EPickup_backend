@@ -1,0 +1,490 @@
+const crypto = require('crypto');
+const axios = require('axios');
+const { getFirestore } = require('./firebase');
+const errorHandlingService = require('./errorHandlingService');
+const monitoringService = require('./monitoringService');
+
+/**
+ * PhonePe Payment Service for EPickup
+ * Handles payment creation, confirmation, and webhook processing
+ */
+class PhonePeService {
+  constructor() {
+    this.db = getFirestore();
+    
+    // PhonePe Sandbox Configuration
+    this.config = {
+      merchantId: process.env.PHONEPE_MERCHANT_ID || 'EPICKUP',
+      saltKey: process.env.PHONEPE_SALT_KEY || '099eb0cd-02cf-4e2a-8aca-3c6faf0c5f3d',
+      saltIndex: process.env.PHONEPE_SALT_INDEX || '1',
+      baseUrl: process.env.PHONEPE_BASE_URL || 'https://api-preprod.phonepe.com/apis/pg-sandbox',
+      redirectUrl: process.env.PHONEPE_REDIRECT_URL || 'https://epickup.com/payment/callback',
+      callbackUrl: process.env.PHONEPE_CALLBACK_URL || 'https://epickup.com/api/payments/phonepe/callback'
+    };
+  }
+
+  /**
+   * Generate PhonePe checksum
+   * @param {string} payload - Payload to hash
+   * @returns {string} Checksum
+   */
+  generateChecksum(payload) {
+    const hash = crypto.createHash('sha256');
+    hash.update(payload + this.config.saltKey);
+    return hash.digest('hex');
+  }
+
+  /**
+   * Verify PhonePe checksum
+   * @param {string} payload - Payload to verify
+   * @param {string} checksum - Checksum to verify
+   * @returns {boolean} Verification result
+   */
+  verifyChecksum(payload, checksum) {
+    const expectedChecksum = this.generateChecksum(payload);
+    return expectedChecksum === checksum;
+  }
+
+  /**
+   * Create payment request
+   * @param {Object} paymentData - Payment data
+   * @returns {Object} Payment creation result
+   */
+  async createPayment(paymentData) {
+    return errorHandlingService.executeWithRetry(async () => {
+      const {
+        transactionId,
+        amount,
+        customerId,
+        bookingId,
+        customerPhone,
+        customerEmail,
+        customerName
+      } = paymentData;
+
+      // Validate required fields
+      if (!transactionId || !amount || !customerId || !bookingId) {
+        throw new Error('Missing required payment fields');
+      }
+
+      // Convert amount to paise (PhonePe expects amount in paise)
+      const amountInPaise = Math.round(amount * 100);
+
+      // Create payment payload
+      const payload = {
+        merchantId: this.config.merchantId,
+        merchantTransactionId: transactionId,
+        merchantUserId: customerId,
+        amount: amountInPaise,
+        redirectUrl: this.config.redirectUrl,
+        redirectMode: 'POST',
+        callbackUrl: this.config.callbackUrl,
+        mobileNumber: customerPhone,
+        paymentInstrument: {
+          type: 'PAY_PAGE'
+        }
+      };
+
+      // Generate checksum
+      const payloadString = JSON.stringify(payload);
+      const checksum = this.generateChecksum(payloadString);
+
+      // Create request payload
+      const requestPayload = {
+        request: Buffer.from(payloadString).toString('base64')
+      };
+
+      // Make API call to PhonePe
+      const response = await axios.post(
+        `${this.config.baseUrl}/pg/v1/pay`,
+        requestPayload,
+        {
+          headers: {
+            'Content-Type': 'application/json',
+            'X-VERIFY': `${checksum}###${this.config.saltIndex}`,
+            'accept': 'application/json'
+          }
+        }
+      );
+
+      if (response.data.success) {
+        // Store payment record in Firestore
+        await this.storePaymentRecord({
+          transactionId,
+          bookingId,
+          customerId,
+          amount,
+          amountInPaise,
+          status: 'PENDING',
+          paymentGateway: 'PHONEPE',
+          paymentUrl: response.data.data.instrumentResponse.redirectInfo.url,
+          createdAt: new Date(),
+          updatedAt: new Date()
+        });
+
+        await monitoringService.logPayment('payment_created', {
+          transactionId,
+          bookingId,
+          amount,
+          customerId
+        });
+
+        return {
+          success: true,
+          data: {
+            transactionId,
+            paymentUrl: response.data.data.instrumentResponse.redirectInfo.url,
+            merchantId: this.config.merchantId,
+            amount: amountInPaise
+          }
+        };
+      } else {
+        throw new Error(response.data.message || 'Payment creation failed');
+      }
+    }, {
+      context: 'Create PhonePe payment',
+      maxRetries: 2
+    });
+  }
+
+  /**
+   * Verify payment status
+   * @param {string} transactionId - Transaction ID
+   * @returns {Object} Payment verification result
+   */
+  async verifyPayment(transactionId) {
+    return errorHandlingService.executeWithRetry(async () => {
+      const payload = {
+        merchantId: this.config.merchantId,
+        merchantTransactionId: transactionId
+      };
+
+      const payloadString = JSON.stringify(payload);
+      const checksum = this.generateChecksum(payloadString);
+
+      const response = await axios.get(
+        `${this.config.baseUrl}/pg/v1/status/${this.config.merchantId}/${transactionId}`,
+        {
+          headers: {
+            'Content-Type': 'application/json',
+            'X-VERIFY': `${checksum}###${this.config.saltIndex}`,
+            'accept': 'application/json'
+          }
+        }
+      );
+
+      if (response.data.success) {
+        const paymentData = response.data.data;
+        
+        // Update payment record in Firestore
+        await this.updatePaymentStatus(transactionId, {
+          status: paymentData.state,
+          paymentId: paymentData.paymentId,
+          responseCode: paymentData.responseCode,
+          responseMessage: paymentData.responseMessage,
+          updatedAt: new Date()
+        });
+
+        return {
+          success: true,
+          data: {
+            transactionId,
+            status: paymentData.state,
+            paymentId: paymentData.paymentId,
+            responseCode: paymentData.responseCode,
+            responseMessage: paymentData.responseMessage
+          }
+        };
+      } else {
+        throw new Error(response.data.message || 'Payment verification failed');
+      }
+    }, {
+      context: 'Verify PhonePe payment',
+      maxRetries: 2
+    });
+  }
+
+  /**
+   * Handle payment callback/webhook
+   * @param {Object} callbackData - Callback data from PhonePe
+   * @returns {Object} Callback processing result
+   */
+  async handlePaymentCallback(callbackData) {
+    try {
+      const { response } = callbackData;
+      const decodedResponse = JSON.parse(Buffer.from(response, 'base64').toString());
+      
+      const {
+        merchantId,
+        merchantTransactionId,
+        transactionId,
+        amount,
+        state,
+        responseCode,
+        responseMessage
+      } = decodedResponse;
+
+      // Verify the callback
+      if (merchantId !== this.config.merchantId) {
+        throw new Error('Invalid merchant ID in callback');
+      }
+
+      // Update payment record
+      await this.updatePaymentStatus(merchantTransactionId, {
+        status: state,
+        paymentId: transactionId,
+        responseCode,
+        responseMessage,
+        updatedAt: new Date()
+      });
+
+      // Update booking status based on payment status
+      if (state === 'COMPLETED') {
+        await this.updateBookingPaymentStatus(merchantTransactionId, 'PAID');
+      } else if (state === 'FAILED') {
+        await this.updateBookingPaymentStatus(merchantTransactionId, 'FAILED');
+      }
+
+      await monitoringService.logPayment('payment_callback_processed', {
+        transactionId: merchantTransactionId,
+        status: state,
+        amount
+      });
+
+      return {
+        success: true,
+        message: 'Payment callback processed successfully'
+      };
+    } catch (error) {
+      console.error('Payment callback error:', error);
+      return {
+        success: false,
+        error: {
+          code: 'CALLBACK_ERROR',
+          message: 'Failed to process payment callback',
+          details: error.message
+        }
+      };
+    }
+  }
+
+  /**
+   * Process refund
+   * @param {Object} refundData - Refund data
+   * @returns {Object} Refund processing result
+   */
+  async processRefund(refundData) {
+    return errorHandlingService.executeWithRetry(async () => {
+      const {
+        transactionId,
+        refundAmount,
+        refundReason,
+        refundedBy
+      } = refundData;
+
+      const amountInPaise = Math.round(refundAmount * 100);
+
+      const payload = {
+        merchantId: this.config.merchantId,
+        merchantUserId: refundedBy,
+        originalTransactionId: transactionId,
+        merchantRefundId: `REF_${transactionId}_${Date.now()}`,
+        amount: amountInPaise,
+        callbackUrl: this.config.callbackUrl
+      };
+
+      const payloadString = JSON.stringify(payload);
+      const checksum = this.generateChecksum(payloadString);
+
+      const response = await axios.post(
+        `${this.config.baseUrl}/pg/v1/refund`,
+        {
+          request: Buffer.from(payloadString).toString('base64')
+        },
+        {
+          headers: {
+            'Content-Type': 'application/json',
+            'X-VERIFY': `${checksum}###${this.config.saltIndex}`,
+            'accept': 'application/json'
+          }
+        }
+      );
+
+      if (response.data.success) {
+        // Store refund record
+        await this.storeRefundRecord({
+          originalTransactionId: transactionId,
+          refundTransactionId: response.data.data.merchantRefundId,
+          amount: refundAmount,
+          reason: refundReason,
+          refundedBy,
+          status: 'PENDING',
+          createdAt: new Date()
+        });
+
+        return {
+          success: true,
+          data: {
+            refundTransactionId: response.data.data.merchantRefundId,
+            amount: refundAmount
+          }
+        };
+      } else {
+        throw new Error(response.data.message || 'Refund processing failed');
+      }
+    }, {
+      context: 'Process PhonePe refund',
+      maxRetries: 2
+    });
+  }
+
+  /**
+   * Store payment record in Firestore
+   * @param {Object} paymentData - Payment data
+   */
+  async storePaymentRecord(paymentData) {
+    try {
+      await this.db.collection('payments').doc(paymentData.transactionId).set(paymentData);
+    } catch (error) {
+      console.error('Store payment record error:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Update payment status in Firestore
+   * @param {string} transactionId - Transaction ID
+   * @param {Object} updateData - Update data
+   */
+  async updatePaymentStatus(transactionId, updateData) {
+    try {
+      await this.db.collection('payments').doc(transactionId).update(updateData);
+    } catch (error) {
+      console.error('Update payment status error:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Update booking payment status
+   * @param {string} transactionId - Transaction ID
+   * @param {string} paymentStatus - Payment status
+   */
+  async updateBookingPaymentStatus(transactionId, paymentStatus) {
+    try {
+      // Find booking by transaction ID
+      const paymentDoc = await this.db.collection('payments').doc(transactionId).get();
+      if (!paymentDoc.exists) {
+        throw new Error('Payment record not found');
+      }
+
+      const paymentData = paymentDoc.data();
+      const bookingId = paymentData.bookingId;
+
+      // Update booking payment status
+      await this.db.collection('bookings').doc(bookingId).update({
+        paymentStatus,
+        paymentUpdatedAt: new Date(),
+        updatedAt: new Date()
+      });
+    } catch (error) {
+      console.error('Update booking payment status error:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Store refund record in Firestore
+   * @param {Object} refundData - Refund data
+   */
+  async storeRefundRecord(refundData) {
+    try {
+      await this.db.collection('refunds').doc(refundData.refundTransactionId).set(refundData);
+    } catch (error) {
+      console.error('Store refund record error:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Get payment by transaction ID
+   * @param {string} transactionId - Transaction ID
+   * @returns {Object|null} Payment data
+   */
+  async getPayment(transactionId) {
+    try {
+      const doc = await this.db.collection('payments').doc(transactionId).get();
+      return doc.exists ? { id: doc.id, ...doc.data() } : null;
+    } catch (error) {
+      console.error('Get payment error:', error);
+      return null;
+    }
+  }
+
+  /**
+   * Get payments by customer ID
+   * @param {string} customerId - Customer ID
+   * @param {number} limit - Limit
+   * @returns {Array} Payments array
+   */
+  async getCustomerPayments(customerId, limit = 20) {
+    try {
+      const snapshot = await this.db.collection('payments')
+        .where('customerId', '==', customerId)
+        .orderBy('createdAt', 'desc')
+        .limit(limit)
+        .get();
+
+      return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+    } catch (error) {
+      console.error('Get customer payments error:', error);
+      return [];
+    }
+  }
+
+  /**
+   * Get payment statistics
+   * @param {string} startDate - Start date
+   * @param {string} endDate - End date
+   * @returns {Object} Payment statistics
+   */
+  async getPaymentStatistics(startDate, endDate) {
+    try {
+      const start = new Date(startDate);
+      const end = new Date(endDate);
+
+      const snapshot = await this.db.collection('payments')
+        .where('createdAt', '>=', start)
+        .where('createdAt', '<=', end)
+        .get();
+
+      const payments = snapshot.docs.map(doc => doc.data());
+      
+      const stats = {
+        totalPayments: payments.length,
+        totalAmount: payments.reduce((sum, payment) => sum + payment.amount, 0),
+        successfulPayments: payments.filter(p => p.status === 'COMPLETED').length,
+        failedPayments: payments.filter(p => p.status === 'FAILED').length,
+        pendingPayments: payments.filter(p => p.status === 'PENDING').length,
+        averageAmount: payments.length > 0 ? payments.reduce((sum, payment) => sum + payment.amount, 0) / payments.length : 0
+      };
+
+      return {
+        success: true,
+        data: stats
+      };
+    } catch (error) {
+      console.error('Get payment statistics error:', error);
+      return {
+        success: false,
+        error: {
+          code: 'STATISTICS_ERROR',
+          message: 'Failed to get payment statistics',
+          details: error.message
+        }
+      };
+    }
+  }
+}
+
+module.exports = new PhonePeService();

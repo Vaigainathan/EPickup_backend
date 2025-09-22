@@ -2291,4 +2291,505 @@ router.get('/system/backups', requireRole(['admin']), async (req, res) => {
   }
 });
 
+/**
+ * @route   GET /api/admin/analytics/revenue
+ * @desc    Get revenue analytics
+ * @access  Private (Admin)
+ */
+router.get('/analytics/revenue', requireRole(['admin']), async (req, res) => {
+  try {
+    const { startDate, endDate } = req.query;
+    
+    if (!startDate || !endDate) {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'MISSING_DATES',
+          message: 'Start date and end date are required'
+        }
+      });
+    }
+
+    const db = getFirestore();
+    const start = new Date(startDate);
+    const end = new Date(endDate);
+
+    // Get revenue data from payments collection
+    const paymentsSnapshot = await db.collection('payments')
+      .where('createdAt', '>=', start)
+      .where('createdAt', '<=', end)
+      .where('status', '==', 'COMPLETED')
+      .get();
+
+    const payments = paymentsSnapshot.docs.map(doc => doc.data());
+    
+    // Calculate revenue metrics
+    const totalRevenue = payments.reduce((sum, payment) => sum + payment.amount, 0);
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    
+    const todayRevenue = payments
+      .filter(payment => payment.createdAt.toDate() >= today)
+      .reduce((sum, payment) => sum + payment.amount, 0);
+
+    // Generate time series data
+    const timeSeriesData = [];
+    const currentDate = new Date(start);
+    
+    while (currentDate <= end) {
+      const dayStart = new Date(currentDate);
+      dayStart.setHours(0, 0, 0, 0);
+      const dayEnd = new Date(currentDate);
+      dayEnd.setHours(23, 59, 59, 999);
+      
+      const dayRevenue = payments
+        .filter(payment => {
+          const paymentDate = payment.createdAt.toDate();
+          return paymentDate >= dayStart && paymentDate <= dayEnd;
+        })
+        .reduce((sum, payment) => sum + payment.amount, 0);
+
+      timeSeriesData.push({
+        date: currentDate.toISOString().split('T')[0],
+        value: dayRevenue,
+        label: currentDate.toLocaleDateString()
+      });
+
+      currentDate.setDate(currentDate.getDate() + 1);
+    }
+
+    res.json({
+      success: true,
+      data: {
+        totalRevenue,
+        todayRevenue,
+        timeSeriesData,
+        averageDailyRevenue: totalRevenue / timeSeriesData.length
+      }
+    });
+
+  } catch (error) {
+    console.error('Get revenue analytics error:', error);
+    res.status(500).json({
+      success: false,
+      error: {
+        code: 'ANALYTICS_ERROR',
+        message: 'Failed to get revenue analytics',
+        details: error.message
+      }
+    });
+  }
+});
+
+/**
+ * @route   GET /api/admin/analytics/drivers
+ * @desc    Get driver analytics
+ * @access  Private (Admin)
+ */
+router.get('/analytics/drivers', requireRole(['admin']), async (req, res) => {
+  try {
+    const { startDate, endDate } = req.query;
+    
+    if (!startDate || !endDate) {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'MISSING_DATES',
+          message: 'Start date and end date are required'
+        }
+      });
+    }
+
+    const db = getFirestore();
+    const start = new Date(startDate);
+    const end = new Date(endDate);
+
+    // Get driver data
+    const driversSnapshot = await db.collection('drivers').get();
+    const drivers = driversSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+
+    // Get driver assignments in date range
+    const assignmentsSnapshot = await db.collection('driverAssignments')
+      .where('assignedAt', '>=', start)
+      .where('assignedAt', '<=', end)
+      .get();
+
+    const assignments = assignmentsSnapshot.docs.map(doc => doc.data());
+
+    // Calculate driver metrics
+    const totalDrivers = drivers.length;
+    const activeDrivers = drivers.filter(driver => driver.isOnline && driver.isAvailable).length;
+    const verifiedDrivers = drivers.filter(driver => driver.verificationStatus === 'verified').length;
+    const pendingVerification = drivers.filter(driver => driver.verificationStatus === 'pending').length;
+    
+    const averageRating = drivers.length > 0 
+      ? drivers.reduce((sum, driver) => sum + (driver.rating || 0), 0) / drivers.length 
+      : 0;
+
+    // Top performing drivers
+    const driverPerformance = drivers.map(driver => {
+      const driverAssignments = assignments.filter(assignment => assignment.driverId === driver.id);
+      return {
+        driverId: driver.id,
+        name: driver.name,
+        totalTrips: driverAssignments.length,
+        rating: driver.rating || 0,
+        isOnline: driver.isOnline
+      };
+    }).sort((a, b) => b.totalTrips - a.totalTrips);
+
+    res.json({
+      success: true,
+      data: {
+        totalDrivers,
+        activeDrivers,
+        verifiedDrivers,
+        pendingVerification,
+        averageRating: Math.round(averageRating * 10) / 10,
+        topPerformers: driverPerformance.slice(0, 10),
+        onlinePercentage: totalDrivers > 0 ? Math.round((activeDrivers / totalDrivers) * 100) : 0
+      }
+    });
+
+  } catch (error) {
+    console.error('Get driver analytics error:', error);
+    res.status(500).json({
+      success: false,
+      error: {
+        code: 'ANALYTICS_ERROR',
+        message: 'Failed to get driver analytics',
+        details: error.message
+      }
+    });
+  }
+});
+
+/**
+ * @route   GET /api/admin/analytics/bookings
+ * @desc    Get booking analytics
+ * @access  Private (Admin)
+ */
+router.get('/analytics/bookings', requireRole(['admin']), async (req, res) => {
+  try {
+    const { startDate, endDate } = req.query;
+    
+    if (!startDate || !endDate) {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'MISSING_DATES',
+          message: 'Start date and end date are required'
+        }
+      });
+    }
+
+    const db = getFirestore();
+    const start = new Date(startDate);
+    const end = new Date(endDate);
+
+    // Get booking data
+    const bookingsSnapshot = await db.collection('bookings')
+      .where('createdAt', '>=', start)
+      .where('createdAt', '<=', end)
+      .get();
+
+    const bookings = bookingsSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+
+    // Calculate booking metrics
+    const totalBookings = bookings.length;
+    const completedBookings = bookings.filter(booking => booking.bookingStatus === 'completed').length;
+    const cancelledBookings = bookings.filter(booking => booking.bookingStatus === 'cancelled').length;
+    const activeBookings = bookings.filter(booking => 
+      ['pending', 'assigned', 'accepted', 'picked_up', 'in_transit'].includes(booking.bookingStatus)
+    ).length;
+
+    const completionRate = totalBookings > 0 ? Math.round((completedBookings / totalBookings) * 100) : 0;
+    const cancellationRate = totalBookings > 0 ? Math.round((cancelledBookings / totalBookings) * 100) : 0;
+
+    // Average booking value
+    const totalValue = bookings.reduce((sum, booking) => sum + (booking.fare || 0), 0);
+    const averageBookingValue = totalBookings > 0 ? totalValue / totalBookings : 0;
+
+    // Peak hours analysis
+    const hourlyBookings = {};
+    bookings.forEach(booking => {
+      const hour = new Date(booking.createdAt.toDate()).getHours();
+      hourlyBookings[hour] = (hourlyBookings[hour] || 0) + 1;
+    });
+
+    const peakHours = Object.entries(hourlyBookings)
+      .sort(([,a], [,b]) => b - a)
+      .slice(0, 3)
+      .map(([hour, count]) => `${hour}:00-${parseInt(hour) + 1}:00`);
+
+    res.json({
+      success: true,
+      data: {
+        totalBookings,
+        completedBookings,
+        cancelledBookings,
+        activeBookings,
+        completionRate,
+        cancellationRate,
+        averageBookingValue: Math.round(averageBookingValue * 100) / 100,
+        peakHours,
+        totalValue: Math.round(totalValue * 100) / 100
+      }
+    });
+
+  } catch (error) {
+    console.error('Get booking analytics error:', error);
+    res.status(500).json({
+      success: false,
+      error: {
+        code: 'ANALYTICS_ERROR',
+        message: 'Failed to get booking analytics',
+        details: error.message
+      }
+    });
+  }
+});
+
+/**
+ * @route   GET /api/admin/analytics/system
+ * @desc    Get system analytics
+ * @access  Private (Admin)
+ */
+router.get('/analytics/system', requireRole(['admin']), async (req, res) => {
+  try {
+    const { startDate, endDate } = req.query;
+    
+    if (!startDate || !endDate) {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'MISSING_DATES',
+          message: 'Start date and end date are required'
+        }
+      });
+    }
+
+    const db = getFirestore();
+    const start = new Date(startDate);
+    const end = new Date(endDate);
+
+    // Get system health data
+    const systemHealthSnapshot = await db.collection('systemHealth')
+      .where('timestamp', '>=', start)
+      .where('timestamp', '<=', end)
+      .orderBy('timestamp', 'desc')
+      .limit(100)
+      .get();
+
+    const systemHealthData = systemHealthSnapshot.docs.map(doc => doc.data());
+
+    // Calculate system metrics
+    const averageResponseTime = systemHealthData.length > 0 
+      ? systemHealthData.reduce((sum, data) => sum + (data.responseTime || 0), 0) / systemHealthData.length 
+      : 0;
+
+    const averageUptime = systemHealthData.length > 0 
+      ? systemHealthData.reduce((sum, data) => sum + (data.uptime || 0), 0) / systemHealthData.length 
+      : 0;
+
+    const errorRate = systemHealthData.length > 0 
+      ? systemHealthData.filter(data => data.status === 'error').length / systemHealthData.length 
+      : 0;
+
+    // Get recent errors
+    const recentErrors = systemHealthData
+      .filter(data => data.status === 'error')
+      .slice(0, 10)
+      .map(data => ({
+        timestamp: data.timestamp,
+        message: data.message,
+        severity: data.severity || 'medium'
+      }));
+
+    res.json({
+      success: true,
+      data: {
+        averageResponseTime: Math.round(averageResponseTime * 100) / 100,
+        averageUptime: Math.round(averageUptime * 100) / 100,
+        errorRate: Math.round(errorRate * 100) / 100,
+        recentErrors,
+        systemStatus: errorRate < 0.05 ? 'healthy' : errorRate < 0.15 ? 'warning' : 'critical'
+      }
+    });
+
+  } catch (error) {
+    console.error('Get system analytics error:', error);
+    res.status(500).json({
+      success: false,
+      error: {
+        code: 'ANALYTICS_ERROR',
+        message: 'Failed to get system analytics',
+        details: error.message
+      }
+    });
+  }
+});
+
+/**
+ * @route   GET /api/admin/analytics/emergency
+ * @desc    Get emergency analytics
+ * @access  Private (Admin)
+ */
+router.get('/analytics/emergency', requireRole(['admin']), async (req, res) => {
+  try {
+    const { startDate, endDate } = req.query;
+    
+    if (!startDate || !endDate) {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'MISSING_DATES',
+          message: 'Start date and end date are required'
+        }
+      });
+    }
+
+    const db = getFirestore();
+    const start = new Date(startDate);
+    const end = new Date(endDate);
+
+    // Get emergency alerts data
+    const emergencySnapshot = await db.collection('emergencyAlerts')
+      .where('createdAt', '>=', start)
+      .where('createdAt', '<=', end)
+      .get();
+
+    const emergencyAlerts = emergencySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+
+    // Calculate emergency metrics
+    const totalAlerts = emergencyAlerts.length;
+    const resolvedAlerts = emergencyAlerts.filter(alert => alert.status === 'resolved').length;
+    const activeAlerts = emergencyAlerts.filter(alert => alert.status === 'active').length;
+    const criticalAlerts = emergencyAlerts.filter(alert => alert.severity === 'critical').length;
+
+    const resolutionRate = totalAlerts > 0 ? Math.round((resolvedAlerts / totalAlerts) * 100) : 0;
+    const averageResponseTime = emergencyAlerts.length > 0 
+      ? emergencyAlerts.reduce((sum, alert) => {
+          if (alert.resolvedAt && alert.createdAt) {
+            const responseTime = alert.resolvedAt.toDate() - alert.createdAt.toDate();
+            return sum + (responseTime / (1000 * 60)); // Convert to minutes
+          }
+          return sum;
+        }, 0) / emergencyAlerts.length 
+      : 0;
+
+    res.json({
+      success: true,
+      data: {
+        totalAlerts,
+        resolvedAlerts,
+        activeAlerts,
+        criticalAlerts,
+        resolutionRate,
+        averageResponseTime: Math.round(averageResponseTime * 100) / 100,
+        alertTypes: emergencyAlerts.reduce((acc, alert) => {
+          acc[alert.type] = (acc[alert.type] || 0) + 1;
+          return acc;
+        }, {})
+      }
+    });
+
+  } catch (error) {
+    console.error('Get emergency analytics error:', error);
+    res.status(500).json({
+      success: false,
+      error: {
+        code: 'ANALYTICS_ERROR',
+        message: 'Failed to get emergency analytics',
+        details: error.message
+      }
+    });
+  }
+});
+
+/**
+ * @route   GET /api/admin/analytics/support
+ * @desc    Get support analytics
+ * @access  Private (Admin)
+ */
+router.get('/analytics/support', requireRole(['admin']), async (req, res) => {
+  try {
+    const { startDate, endDate } = req.query;
+    
+    if (!startDate || !endDate) {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'MISSING_DATES',
+          message: 'Start date and end date are required'
+        }
+      });
+    }
+
+    const db = getFirestore();
+    const start = new Date(startDate);
+    const end = new Date(endDate);
+
+    // Get support tickets data
+    const supportSnapshot = await db.collection('supportTickets')
+      .where('createdAt', '>=', start)
+      .where('createdAt', '<=', end)
+      .get();
+
+    const supportTickets = supportSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+
+    // Calculate support metrics
+    const totalTickets = supportTickets.length;
+    const resolvedTickets = supportTickets.filter(ticket => ticket.status === 'resolved').length;
+    const openTickets = supportTickets.filter(ticket => ticket.status === 'open').length;
+    const inProgressTickets = supportTickets.filter(ticket => ticket.status === 'in_progress').length;
+
+    const resolutionRate = totalTickets > 0 ? Math.round((resolvedTickets / totalTickets) * 100) : 0;
+    const averageResolutionTime = supportTickets.length > 0 
+      ? supportTickets.reduce((sum, ticket) => {
+          if (ticket.resolvedAt && ticket.createdAt) {
+            const resolutionTime = ticket.resolvedAt.toDate() - ticket.createdAt.toDate();
+            return sum + (resolutionTime / (1000 * 60 * 60)); // Convert to hours
+          }
+          return sum;
+        }, 0) / supportTickets.length 
+      : 0;
+
+    // Ticket categories
+    const ticketCategories = supportTickets.reduce((acc, ticket) => {
+      acc[ticket.category] = (acc[ticket.category] || 0) + 1;
+      return acc;
+    }, {});
+
+    res.json({
+      success: true,
+      data: {
+        totalTickets,
+        resolvedTickets,
+        openTickets,
+        inProgressTickets,
+        resolutionRate,
+        averageResolutionTime: Math.round(averageResolutionTime * 100) / 100,
+        ticketCategories,
+        priorityDistribution: {
+          high: supportTickets.filter(t => t.priority === 'high').length,
+          medium: supportTickets.filter(t => t.priority === 'medium').length,
+          low: supportTickets.filter(t => t.priority === 'low').length
+        }
+      }
+    });
+
+  } catch (error) {
+    console.error('Get support analytics error:', error);
+    res.status(500).json({
+      success: false,
+      error: {
+        code: 'ANALYTICS_ERROR',
+        message: 'Failed to get support analytics',
+        details: error.message
+      }
+    });
+  }
+});
+
 module.exports = router;

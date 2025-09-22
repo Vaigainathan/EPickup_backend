@@ -1383,6 +1383,581 @@ class WebSocketEventHandler {
   }
 
   /**
+   * Send new booking notification to available drivers
+   * @param {Object} bookingData - Booking data
+   */
+  async notifyDriversOfNewBooking(bookingData) {
+    try {
+      if (!this.io || !this.db) return;
+
+      console.log(`🔔 Notifying drivers of new booking: ${bookingData.id}`);
+
+      // Get available drivers in the area
+      const driversQuery = this.db.collection('users')
+        .where('userType', '==', 'driver')
+        .where('driver.isOnline', '==', true)
+        .where('driver.isAvailable', '==', true);
+
+      const driversSnapshot = await driversQuery.get();
+      
+      const notificationData = {
+        type: 'new_booking',
+        booking: {
+          id: bookingData.id,
+          pickup: bookingData.pickup,
+          drop: bookingData.drop,
+          fare: bookingData.fare,
+          distance: bookingData.distance,
+          estimatedDuration: bookingData.estimatedDuration,
+          createdAt: bookingData.createdAt,
+          customer: {
+            name: bookingData.customer?.name || 'Customer',
+            phone: bookingData.customer?.phone
+          }
+        },
+        timestamp: new Date().toISOString()
+      };
+
+      // Send to all available drivers
+      driversSnapshot.forEach(doc => {
+        const driverData = doc.data();
+        if (driverData.driver?.currentLocation) {
+          // Calculate distance to pickup location
+          const distance = this.calculateDistance(
+            driverData.driver.currentLocation.latitude,
+            driverData.driver.currentLocation.longitude,
+            bookingData.pickup.coordinates.latitude,
+            bookingData.pickup.coordinates.longitude
+          );
+
+          // Only notify drivers within reasonable distance (e.g., 10km)
+          if (distance <= 10000) {
+            this.io.to(`user:${doc.id}`).emit('new_booking_available', {
+              ...notificationData,
+              distanceFromDriver: Math.round(distance / 1000 * 100) / 100
+            });
+          }
+        }
+      });
+
+      console.log(`✅ New booking notification sent to ${driversSnapshot.size} drivers`);
+
+    } catch (error) {
+      console.error('Error notifying drivers of new booking:', error);
+    }
+  }
+
+  /**
+   * Send driver assignment notification to customer
+   * @param {string} customerId - Customer ID
+   * @param {Object} assignmentData - Assignment data
+   */
+  async notifyCustomerOfDriverAssignment(customerId, assignmentData) {
+    try {
+      if (!this.io) return;
+
+      console.log(`🔔 Notifying customer ${customerId} of driver assignment`);
+
+      const notificationData = {
+        type: 'driver_assigned',
+        bookingId: assignmentData.bookingId,
+        driver: {
+          id: assignmentData.driverId,
+          name: assignmentData.driverName,
+          phone: assignmentData.driverPhone,
+          vehicleInfo: assignmentData.vehicleInfo,
+          rating: assignmentData.driverRating || 0
+        },
+        estimatedArrival: assignmentData.estimatedArrival,
+        timestamp: new Date().toISOString()
+      };
+
+      this.io.to(`user:${customerId}`).emit('driver_assigned', notificationData);
+      console.log(`✅ Driver assignment notification sent to customer ${customerId}`);
+
+    } catch (error) {
+      console.error('Error notifying customer of driver assignment:', error);
+    }
+  }
+
+  /**
+   * Send booking status update to relevant parties
+   * @param {string} bookingId - Booking ID
+   * @param {string} status - New status
+   * @param {Object} updateData - Additional update data
+   */
+  async notifyBookingStatusUpdate(bookingId, status, updateData = {}) {
+    try {
+      if (!this.io || !this.db) return;
+
+      console.log(`🔔 Notifying booking status update: ${bookingId} -> ${status}`);
+
+      // Get booking data
+      const bookingDoc = await this.db.collection('bookings').doc(bookingId).get();
+      if (!bookingDoc.exists) return;
+
+      const bookingData = bookingDoc.data();
+
+      const notificationData = {
+        type: 'booking_status_update',
+        bookingId,
+        status,
+        ...updateData,
+        timestamp: new Date().toISOString()
+      };
+
+      // Notify customer
+      if (bookingData.customerId) {
+        this.io.to(`user:${bookingData.customerId}`).emit('booking_status_update', notificationData);
+      }
+
+      // Notify driver
+      if (bookingData.driverId) {
+        this.io.to(`user:${bookingData.driverId}`).emit('booking_status_update', notificationData);
+      }
+
+      // Notify admin
+      this.io.to(`type:admin`).emit('booking_status_update', notificationData);
+
+      console.log(`✅ Booking status update notification sent`);
+
+    } catch (error) {
+      console.error('Error notifying booking status update:', error);
+    }
+  }
+
+  /**
+   * Send driver location update to customer
+   * @param {string} customerId - Customer ID
+   * @param {string} bookingId - Booking ID
+   * @param {Object} locationData - Location data
+   */
+  async notifyDriverLocationUpdate(customerId, bookingId, locationData) {
+    try {
+      if (!this.io) return;
+
+      const notificationData = {
+        type: 'driver_location_update',
+        bookingId,
+        location: locationData,
+        timestamp: new Date().toISOString()
+      };
+
+      this.io.to(`user:${customerId}`).emit('driver_location_update', notificationData);
+
+    } catch (error) {
+      console.error('Error notifying driver location update:', error);
+    }
+  }
+
+  /**
+   * Calculate distance between two coordinates
+   * @param {number} lat1 - Latitude 1
+   * @param {number} lon1 - Longitude 1
+   * @param {number} lat2 - Latitude 2
+   * @param {number} lon2 - Longitude 2
+   * @returns {number} Distance in meters
+   */
+  calculateDistance(lat1, lon1, lat2, lon2) {
+    const R = 6371e3; // Earth's radius in meters
+    const φ1 = lat1 * Math.PI / 180;
+    const φ2 = lat2 * Math.PI / 180;
+    const Δφ = (lat2 - lat1) * Math.PI / 180;
+    const Δλ = (lon2 - lon1) * Math.PI / 180;
+
+    const a = Math.sin(Δφ / 2) * Math.sin(Δφ / 2) +
+      Math.cos(φ1) * Math.cos(φ2) *
+      Math.sin(Δλ / 2) * Math.sin(Δλ / 2);
+    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+
+    return R * c; // Distance in meters
+  }
+
+  /**
+   * Verify user has access to booking
+   * @param {string} userId - User ID
+   * @param {string} bookingId - Booking ID
+   * @returns {boolean} Access verification result
+   */
+  async verifyBookingAccess(userId, bookingId) {
+    try {
+      if (!this.db) return false;
+
+      const bookingDoc = await this.db.collection('bookings').doc(bookingId).get();
+      if (!bookingDoc.exists) return false;
+
+      const bookingData = bookingDoc.data();
+      return bookingData.customerId === userId || bookingData.driverId === userId;
+
+    } catch (error) {
+      console.error('Error verifying booking access:', error);
+      return false;
+    }
+  }
+
+  /**
+   * Handle payment events
+   * @param {Socket} socket - Socket instance
+   * @param {Object} data - Payment data
+   */
+  async handlePaymentEvent(socket, data) {
+    try {
+      const { eventType, transactionId, bookingId, amount, status } = data;
+      const { userId, userType } = socket;
+
+      console.log(`💳 Payment event: ${eventType} for transaction ${transactionId}`);
+
+      // Update payment status in Firestore
+      await this.updatePaymentStatus(transactionId, {
+        status,
+        updatedAt: new Date(),
+        updatedBy: userId
+      });
+
+      // Notify relevant users based on event type
+      switch (eventType) {
+        case 'payment_created':
+          await this.notifyPaymentCreated(socket, data);
+          break;
+        case 'payment_completed':
+          await this.notifyPaymentCompleted(socket, data);
+          break;
+        case 'payment_failed':
+          await this.notifyPaymentFailed(socket, data);
+          break;
+        case 'payment_refunded':
+          await this.notifyPaymentRefunded(socket, data);
+          break;
+        default:
+          console.log(`Unknown payment event type: ${eventType}`);
+      }
+
+      // Notify admin dashboard
+      this.io.to('role:admin').emit('payment_update', {
+        eventType,
+        transactionId,
+        bookingId,
+        amount,
+        status,
+        userId,
+        userType,
+        timestamp: new Date().toISOString()
+      });
+
+    } catch (error) {
+      console.error('Error handling payment event:', error);
+      socket.emit('error', {
+        code: 'PAYMENT_EVENT_ERROR',
+        message: 'Failed to process payment event'
+      });
+    }
+  }
+
+  /**
+   * Notify payment created
+   */
+  async notifyPaymentCreated(socket, data) {
+    const { transactionId, bookingId, amount } = data;
+    
+    // Notify customer
+    socket.emit('payment_created', {
+      success: true,
+      message: 'Payment request created successfully',
+      data: {
+        transactionId,
+        bookingId,
+        amount,
+        status: 'PENDING',
+        timestamp: new Date().toISOString()
+      }
+    });
+
+    // Notify admin dashboard
+    this.io.to('role:admin').emit('payment_created', {
+      transactionId,
+      bookingId,
+      amount,
+      customerId: socket.userId,
+      timestamp: new Date().toISOString()
+    });
+  }
+
+  /**
+   * Notify payment completed
+   */
+  async notifyPaymentCompleted(socket, data) {
+    const { transactionId, bookingId, amount } = data;
+    
+    // Notify customer
+    socket.emit('payment_completed', {
+      success: true,
+      message: 'Payment completed successfully',
+      data: {
+        transactionId,
+        bookingId,
+        amount,
+        status: 'COMPLETED',
+        timestamp: new Date().toISOString()
+      }
+    });
+
+    // Notify driver if assigned
+    const booking = await this.getBooking(bookingId);
+    if (booking && booking.driverId) {
+      this.io.to(`user:${booking.driverId}`).emit('payment_completed', {
+        transactionId,
+        bookingId,
+        amount,
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    // Notify admin dashboard
+    this.io.to('role:admin').emit('payment_completed', {
+      transactionId,
+      bookingId,
+      amount,
+      customerId: socket.userId,
+      timestamp: new Date().toISOString()
+    });
+  }
+
+  /**
+   * Notify payment failed
+   */
+  async notifyPaymentFailed(socket, data) {
+    const { transactionId, bookingId, amount, reason } = data;
+    
+    // Notify customer
+    socket.emit('payment_failed', {
+      success: false,
+      message: 'Payment failed',
+      data: {
+        transactionId,
+        bookingId,
+        amount,
+        status: 'FAILED',
+        reason: reason || 'Payment processing failed',
+        timestamp: new Date().toISOString()
+      }
+    });
+
+    // Notify admin dashboard
+    this.io.to('role:admin').emit('payment_failed', {
+      transactionId,
+      bookingId,
+      amount,
+      reason,
+      customerId: socket.userId,
+      timestamp: new Date().toISOString()
+    });
+  }
+
+  /**
+   * Notify payment refunded
+   */
+  async notifyPaymentRefunded(socket, data) {
+    const { transactionId, bookingId, refundAmount, reason } = data;
+    
+    // Notify customer
+    socket.emit('payment_refunded', {
+      success: true,
+      message: 'Payment refunded successfully',
+      data: {
+        transactionId,
+        bookingId,
+        refundAmount,
+        reason: reason || 'Refund processed',
+        timestamp: new Date().toISOString()
+      }
+    });
+
+    // Notify admin dashboard
+    this.io.to('role:admin').emit('payment_refunded', {
+      transactionId,
+      bookingId,
+      refundAmount,
+      reason,
+      customerId: socket.userId,
+      timestamp: new Date().toISOString()
+    });
+  }
+
+  /**
+   * Handle driver assignment events
+   * @param {Socket} socket - Socket instance
+   * @param {Object} data - Assignment data
+   */
+  async handleDriverAssignment(socket, data) {
+    try {
+      const { bookingId, driverId, assignmentType, status } = data;
+      const { userId, userType } = socket;
+
+      console.log(`🚗 Driver assignment: ${assignmentType} for booking ${bookingId}`);
+
+      // Update assignment status in Firestore
+      await this.updateDriverAssignment(bookingId, {
+        driverId,
+        assignmentType,
+        status,
+        updatedAt: new Date(),
+        updatedBy: userId
+      });
+
+      // Notify relevant users
+      switch (assignmentType) {
+        case 'auto_assigned':
+          await this.notifyAutoAssignment(socket, data);
+          break;
+        case 'manual_assigned':
+          await this.notifyManualAssignment(socket, data);
+          break;
+        case 'unassigned':
+          await this.notifyDriverUnassigned(socket, data);
+          break;
+        default:
+          console.log(`Unknown assignment type: ${assignmentType}`);
+      }
+
+      // Notify admin dashboard
+      this.io.to('role:admin').emit('driver_assignment_update', {
+        bookingId,
+        driverId,
+        assignmentType,
+        status,
+        updatedBy: userId,
+        userType,
+        timestamp: new Date().toISOString()
+      });
+
+    } catch (error) {
+      console.error('Error handling driver assignment:', error);
+      socket.emit('error', {
+        code: 'ASSIGNMENT_ERROR',
+        message: 'Failed to process driver assignment'
+      });
+    }
+  }
+
+  /**
+   * Notify auto assignment
+   */
+  async notifyAutoAssignment(socket, data) {
+    const { bookingId, driverId, driverName, estimatedDistance } = data;
+    
+    // Notify customer
+    socket.emit('driver_auto_assigned', {
+      success: true,
+      message: 'Driver automatically assigned to your booking',
+      data: {
+        bookingId,
+        driverId,
+        driverName,
+        estimatedDistance,
+        timestamp: new Date().toISOString()
+      }
+    });
+
+    // Notify driver
+    this.io.to(`user:${driverId}`).emit('booking_assigned', {
+      bookingId,
+      assignmentType: 'auto',
+      timestamp: new Date().toISOString()
+    });
+  }
+
+  /**
+   * Notify manual assignment
+   */
+  async notifyManualAssignment(socket, data) {
+    const { bookingId, driverId, driverName, assignedBy } = data;
+    
+    // Notify customer
+    socket.emit('driver_manually_assigned', {
+      success: true,
+      message: 'Driver manually assigned to your booking',
+      data: {
+        bookingId,
+        driverId,
+        driverName,
+        assignedBy,
+        timestamp: new Date().toISOString()
+      }
+    });
+
+    // Notify driver
+    this.io.to(`user:${driverId}`).emit('booking_assigned', {
+      bookingId,
+      assignmentType: 'manual',
+      assignedBy,
+      timestamp: new Date().toISOString()
+    });
+  }
+
+  /**
+   * Notify driver unassigned
+   */
+  async notifyDriverUnassigned(socket, data) {
+    const { bookingId, driverId, unassignedBy, reason } = data;
+    
+    // Notify customer
+    socket.emit('driver_unassigned', {
+      success: true,
+      message: 'Driver has been unassigned from your booking',
+      data: {
+        bookingId,
+        driverId,
+        unassignedBy,
+        reason: reason || 'Driver unassigned',
+        timestamp: new Date().toISOString()
+      }
+    });
+
+    // Notify driver
+    this.io.to(`user:${driverId}`).emit('booking_unassigned', {
+      bookingId,
+      unassignedBy,
+      reason,
+      timestamp: new Date().toISOString()
+    });
+  }
+
+  /**
+   * Update payment status in Firestore
+   */
+  async updatePaymentStatus(transactionId, updateData) {
+    try {
+      await this.db.collection('payments').doc(transactionId).update(updateData);
+    } catch (error) {
+      console.error('Error updating payment status:', error);
+    }
+  }
+
+  /**
+   * Update driver assignment in Firestore
+   */
+  async updateDriverAssignment(bookingId, updateData) {
+    try {
+      await this.db.collection('driverAssignments').doc(bookingId).update(updateData);
+    } catch (error) {
+      console.error('Error updating driver assignment:', error);
+    }
+  }
+
+  /**
+   * Get booking from Firestore
+   */
+  async getBooking(bookingId) {
+    try {
+      const doc = await this.db.collection('bookings').doc(bookingId).get();
+      return doc.exists ? { id: doc.id, ...doc.data() } : null;
+    } catch (error) {
+      console.error('Error getting booking:', error);
+      return null;
+    }
+  }
+
+  /**
    * Health check
    * @returns {Object} Health status
    */

@@ -1,6 +1,10 @@
 const { getFirestore } = require('./firebase');
 const socketService = require('./socket');
 const serviceAreaValidation = require('./serviceAreaValidation');
+const errorHandlingService = require('./errorHandlingService');
+const monitoringService = require('./monitoringService');
+const locationService = require('./locationService');
+const bookingStateMachine = require('./bookingStateMachine');
 
 /**
  * Driver Assignment Service for EPickup
@@ -20,79 +24,37 @@ class DriverAssignmentService {
    * @returns {Array} Array of available drivers
    */
   async findNearbyDrivers(pickupLocation, maxDistance = this.maxDistance) {
-    try {
+    return errorHandlingService.executeWithRetry(async () => {
       const { lat, lng } = pickupLocation;
       
       // Validate pickup location is within service area
       const locationValidation = serviceAreaValidation.validateLocation(lat, lng);
       if (!locationValidation.isValid) {
-        return {
-          success: false,
-          error: {
-            code: 'LOCATION_OUTSIDE_SERVICE_AREA',
-            message: locationValidation.message
-          }
-        };
+        throw new Error(`LOCATION_OUTSIDE_SERVICE_AREA: ${locationValidation.message}`);
       }
       
-      // Get all available drivers
-      const driversSnapshot = await this.db.collection('drivers')
-        .where('isAvailable', '==', true)
-        .where('isOnline', '==', true)
-        .get();
+      // Use enhanced location service for driver search
+      const nearbyDrivers = await locationService.findNearbyDrivers(
+        pickupLocation, 
+        maxDistance,
+        { limit: 50, includeOffline: false }
+      );
 
-      const nearbyDrivers = [];
-
-      for (const doc of driversSnapshot.docs) {
-        const driver = { id: doc.id, ...doc.data() };
-        
-        if (driver.currentLocation) {
-          // Validate driver location is within service area
-          const driverLocationValidation = serviceAreaValidation.validateLocation(
-            driver.currentLocation.lat,
-            driver.currentLocation.lng
-          );
-          
-          if (!driverLocationValidation.isValid) {
-            console.warn(`Driver ${driver.id} is outside service area:`, driverLocationValidation.message);
-            continue; // Skip drivers outside service area
-          }
-
-          const distance = this.calculateDistance(
-            lat, lng,
-            driver.currentLocation.lat,
-            driver.currentLocation.lng
-          );
-
-          if (distance <= maxDistance) {
-            nearbyDrivers.push({
-              ...driver,
-              distance: Math.round(distance),
-              serviceAreaValidation: driverLocationValidation
-            });
-          }
-        }
-      }
-
-      // Sort by distance (closest first)
-      nearbyDrivers.sort((a, b) => a.distance - b.distance);
+      await monitoringService.logDriverAssignment('nearby_drivers_found', {
+        pickupLocation,
+        maxDistance,
+        driversFound: nearbyDrivers.length
+      });
 
       return {
         success: true,
         data: nearbyDrivers,
         total: nearbyDrivers.length
       };
-    } catch (error) {
-      console.error('Find nearby drivers error:', error);
-      return {
-        success: false,
-        error: {
-          code: 'DRIVER_SEARCH_ERROR',
-          message: 'Failed to find nearby drivers',
-          details: error.message
-        }
-      };
-    }
+    }, {
+      context: 'Find nearby drivers',
+      maxRetries: 2
+    });
   }
 
   /**
@@ -141,16 +103,28 @@ class DriverAssignmentService {
         };
       }
 
-      // Assign driver to booking
-      const assignmentResult = await this.assignDriverToBooking(bookingId, bestDriver.id);
-      
+      // Use booking state machine to assign driver
+      const assignmentResult = await bookingStateMachine.transitionBooking(
+        bookingId,
+        'driver_assigned',
+        {
+          driverId: bestDriver.id,
+          assignedAt: new Date()
+        },
+        {
+          userId: 'system',
+          userType: 'system',
+          driverId: bestDriver.id
+        }
+      );
+
       if (assignmentResult.success) {
         // Notify driver via WebSocket
         socketService.sendToUser(bestDriver.id, 'new-booking-assigned', {
           bookingId,
           booking: booking,
           pickupLocation,
-          estimatedDistance: bestDriver.distance,
+          estimatedDistance: bestDriver.distanceFromPickup,
           timestamp: new Date().toISOString()
         });
 
@@ -159,8 +133,26 @@ class DriverAssignmentService {
           bookingId,
           driverId: bestDriver.id,
           driverName: bestDriver.name,
-          estimatedDistance: bestDriver.distance,
+          estimatedDistance: bestDriver.distanceFromPickup,
           timestamp: new Date().toISOString()
+        });
+
+        // Emit driver assignment event for real-time updates
+        socketService.emitToRoom('role:admin', 'driver_assignment', {
+          bookingId,
+          driverId: bestDriver.id,
+          assignmentType: 'auto_assigned',
+          status: 'active',
+          driverName: bestDriver.name,
+          estimatedDistance: bestDriver.distanceFromPickup,
+          timestamp: new Date().toISOString()
+        });
+
+        await monitoringService.logDriverAssignment('driver_assigned', {
+          bookingId,
+          driverId: bestDriver.id,
+          driverName: bestDriver.name,
+          distance: bestDriver.distanceFromPickup
         });
       }
 
@@ -249,6 +241,17 @@ class DriverAssignmentService {
         socketService.sendToUser(booking.customerId, 'driver-assigned', {
           bookingId,
           driverId: driverId,
+          driverName: driver.name,
+          assignedBy,
+          timestamp: new Date().toISOString()
+        });
+
+        // Emit driver assignment event for real-time updates
+        socketService.emitToRoom('role:admin', 'driver_assignment', {
+          bookingId,
+          driverId: driverId,
+          assignmentType: 'manual_assigned',
+          status: 'active',
           driverName: driver.name,
           assignedBy,
           timestamp: new Date().toISOString()
@@ -478,6 +481,16 @@ class DriverAssignmentService {
       socketService.sendToUser(booking.customerId, 'driver-unassigned', {
         bookingId,
         driverId: booking.driverId,
+        unassignedBy,
+        timestamp: new Date().toISOString()
+      });
+
+      // Emit driver unassignment event for real-time updates
+      socketService.emitToRoom('role:admin', 'driver_assignment', {
+        bookingId,
+        driverId: booking.driverId,
+        assignmentType: 'unassigned',
+        status: 'cancelled',
         unassignedBy,
         timestamp: new Date().toISOString()
       });

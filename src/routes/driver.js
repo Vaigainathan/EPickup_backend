@@ -1283,6 +1283,409 @@ router.get('/bookings', requireDriver, async (req, res) => {
 });
 
 /**
+ * @route   POST /api/driver/register-availability
+ * @desc    Register driver as available with location
+ * @access  Private (Driver only)
+ */
+router.post('/register-availability', [
+  requireDriver,
+  body('location.latitude')
+    .isFloat({ min: -90, max: 90 })
+    .withMessage('Latitude must be between -90 and 90'),
+  body('location.longitude')
+    .isFloat({ min: -180, max: 180 })
+    .withMessage('Longitude must be between -180 and 180'),
+  body('location.address')
+    .optional()
+    .isLength({ min: 5, max: 200 })
+    .withMessage('Address must be between 5 and 200 characters'),
+  body('vehicleType')
+    .optional()
+    .isIn(['2_wheeler', '4_wheeler'])
+    .withMessage('Vehicle type must be 2_wheeler or 4_wheeler')
+], async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'VALIDATION_ERROR',
+          message: 'Validation failed',
+          details: errors.array()
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    const { uid } = req.user;
+    const { location, vehicleType = '2_wheeler' } = req.body;
+    const db = getFirestore();
+
+    // Update driver availability and location
+    const driverRef = db.collection('users').doc(uid);
+    const driverDoc = await driverRef.get();
+    
+    if (!driverDoc.exists) {
+      return res.status(404).json({
+        success: false,
+        error: {
+          code: 'DRIVER_NOT_FOUND',
+          message: 'Driver not found',
+          details: 'Driver profile does not exist'
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    const updateData = {
+      'driver.isOnline': true,
+      'driver.isAvailable': true,
+      'driver.currentLocation': {
+        latitude: location.latitude,
+        longitude: location.longitude,
+        address: location.address || 'Current Location',
+        timestamp: new Date()
+      },
+      'driver.lastSeen': new Date(),
+      'driver.vehicleType': vehicleType,
+      updatedAt: new Date()
+    };
+
+    await driverRef.update(updateData);
+
+    // Also update driverLocations collection for real-time tracking
+    await db.collection('driverLocations').doc(uid).set({
+      driverId: uid,
+      currentLocation: {
+        latitude: location.latitude,
+        longitude: location.longitude,
+        address: location.address || 'Current Location',
+        timestamp: new Date()
+      },
+      isOnline: true,
+      isAvailable: true,
+      lastUpdated: new Date()
+    }, { merge: true });
+
+    res.status(200).json({
+      success: true,
+      message: 'Driver availability registered successfully',
+      data: {
+        driverId: uid,
+        isOnline: true,
+        isAvailable: true,
+        location: updateData['driver.currentLocation'],
+        vehicleType: vehicleType,
+        registeredAt: new Date().toISOString()
+      },
+      timestamp: new Date().toISOString()
+    });
+
+  } catch (error) {
+    console.error('Error registering driver availability:', error);
+    res.status(500).json({
+      success: false,
+      error: {
+        code: 'AVAILABILITY_REGISTRATION_ERROR',
+        message: 'Failed to register driver availability',
+        details: 'An error occurred while registering driver availability'
+      },
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+/**
+ * @route   POST /api/driver/update-location
+ * @desc    Update driver's current location
+ * @access  Private (Driver only)
+ */
+router.post('/update-location', [
+  requireDriver,
+  body('location.latitude')
+    .isFloat({ min: -90, max: 90 })
+    .withMessage('Latitude must be between -90 and 90'),
+  body('location.longitude')
+    .isFloat({ min: -180, max: 180 })
+    .withMessage('Longitude must be between -180 and 180'),
+  body('location.address')
+    .optional()
+    .isLength({ min: 5, max: 200 })
+    .withMessage('Address must be between 5 and 200 characters')
+], async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'VALIDATION_ERROR',
+          message: 'Validation failed',
+          details: errors.array()
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    const { uid } = req.user;
+    const { location } = req.body;
+    const db = getFirestore();
+
+    const locationData = {
+      latitude: location.latitude,
+      longitude: location.longitude,
+      address: location.address || 'Current Location',
+      timestamp: new Date()
+    };
+
+    // Update driver's location in users collection
+    await db.collection('users').doc(uid).update({
+      'driver.currentLocation': locationData,
+      'driver.lastSeen': new Date(),
+      updatedAt: new Date()
+    });
+
+    // Update driverLocations collection for real-time tracking
+    await db.collection('driverLocations').doc(uid).set({
+      driverId: uid,
+      currentLocation: locationData,
+      lastUpdated: new Date()
+    }, { merge: true });
+
+    res.status(200).json({
+      success: true,
+      message: 'Driver location updated successfully',
+      data: {
+        driverId: uid,
+        location: locationData,
+        updatedAt: new Date().toISOString()
+      },
+      timestamp: new Date().toISOString()
+    });
+
+  } catch (error) {
+    console.error('Error updating driver location:', error);
+    res.status(500).json({
+      success: false,
+      error: {
+        code: 'LOCATION_UPDATE_ERROR',
+        message: 'Failed to update driver location',
+        details: 'An error occurred while updating driver location'
+      },
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+/**
+ * @route   POST /api/driver/set-availability
+ * @desc    Set driver availability status
+ * @access  Private (Driver only)
+ */
+router.post('/set-availability', [
+  requireDriver,
+  body('isAvailable')
+    .isBoolean()
+    .withMessage('isAvailable must be a boolean'),
+  body('reason')
+    .optional()
+    .isLength({ min: 5, max: 100 })
+    .withMessage('Reason must be between 5 and 100 characters')
+], async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'VALIDATION_ERROR',
+          message: 'Validation failed',
+          details: errors.array()
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    const { uid } = req.user;
+    const { isAvailable, reason } = req.body;
+    const db = getFirestore();
+
+    const updateData = {
+      'driver.isAvailable': isAvailable,
+      'driver.lastSeen': new Date(),
+      updatedAt: new Date()
+    };
+
+    if (reason) {
+      updateData['driver.availabilityReason'] = reason;
+    }
+
+    // Update driver availability
+    await db.collection('users').doc(uid).update(updateData);
+
+    // Update driverLocations collection
+    await db.collection('driverLocations').doc(uid).update({
+      isAvailable: isAvailable,
+      lastUpdated: new Date()
+    });
+
+    res.status(200).json({
+      success: true,
+      message: `Driver availability set to ${isAvailable ? 'available' : 'unavailable'}`,
+      data: {
+        driverId: uid,
+        isAvailable: isAvailable,
+        reason: reason || null,
+        updatedAt: new Date().toISOString()
+      },
+      timestamp: new Date().toISOString()
+    });
+
+  } catch (error) {
+    console.error('Error setting driver availability:', error);
+    res.status(500).json({
+      success: false,
+      error: {
+        code: 'AVAILABILITY_UPDATE_ERROR',
+        message: 'Failed to update driver availability',
+        details: 'An error occurred while updating driver availability'
+      },
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+/**
+ * @route   GET /api/driver/bookings/available
+ * @desc    Get available bookings for driver
+ * @access  Private (Driver only)
+ */
+router.get('/bookings/available', requireDriver, async (req, res) => {
+  try {
+    const { uid } = req.user;
+    const { limit = 10, offset = 0, radius = 5 } = req.query;
+    const db = getFirestore();
+    
+    // Get driver's current location and availability status
+    const driverDoc = await db.collection('users').doc(uid).get();
+    if (!driverDoc.exists) {
+      return res.status(404).json({
+        success: false,
+        error: {
+          code: 'DRIVER_NOT_FOUND',
+          message: 'Driver not found',
+          details: 'Driver profile does not exist'
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    const driverData = driverDoc.data();
+    const driverLocation = driverData.driver?.currentLocation;
+    
+    if (!driverLocation) {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'LOCATION_NOT_FOUND',
+          message: 'Location not found',
+          details: 'Driver location is not available. Please update your location first.'
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    // Check if driver is available
+    if (!driverData.driver?.isAvailable || !driverData.driver?.isOnline) {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'DRIVER_NOT_AVAILABLE',
+          message: 'Driver not available',
+          details: 'Driver must be online and available to see bookings'
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    // Get available bookings (pending status, not assigned to any driver)
+    const query = db.collection('bookings')
+      .where('status', '==', 'pending')
+      .where('driverId', '==', null)
+      .orderBy('createdAt', 'desc')
+      .limit(parseInt(limit) + parseInt(offset));
+    
+    const snapshot = await query.get();
+    const allBookings = [];
+    
+    snapshot.forEach(doc => {
+      const bookingData = doc.data();
+      
+      // Calculate distance from driver to pickup location
+      if (bookingData.pickup?.coordinates) {
+        const distance = calculateDistance(
+          driverLocation.latitude,
+          driverLocation.longitude,
+          bookingData.pickup.coordinates.latitude,
+          bookingData.pickup.coordinates.longitude
+        );
+        
+        // Only include bookings within radius (convert km to meters)
+        if (distance <= (parseFloat(radius) * 1000)) {
+          allBookings.push({
+            id: doc.id,
+            ...bookingData,
+            distanceFromDriver: Math.round(distance / 1000 * 100) / 100, // Convert to km with 2 decimal places
+            estimatedPickupTime: bookingData.estimatedPickupTime || new Date(Date.now() + 15 * 60 * 1000).toISOString()
+          });
+        }
+      }
+    });
+
+    // Sort by distance (closest first)
+    allBookings.sort((a, b) => a.distanceFromDriver - b.distanceFromDriver);
+
+    // Apply pagination
+    const bookings = allBookings.slice(parseInt(offset), parseInt(offset) + parseInt(limit));
+
+    res.status(200).json({
+      success: true,
+      message: 'Available bookings retrieved successfully',
+      data: {
+        bookings,
+        pagination: {
+          limit: parseInt(limit),
+          offset: parseInt(offset),
+          total: allBookings.length,
+          hasMore: (parseInt(offset) + parseInt(limit)) < allBookings.length
+        },
+        driverLocation: {
+          latitude: driverLocation.latitude,
+          longitude: driverLocation.longitude,
+          address: driverLocation.address || 'Current Location',
+          timestamp: driverLocation.timestamp || new Date().toISOString()
+        },
+        searchRadius: parseFloat(radius)
+      },
+      timestamp: new Date().toISOString()
+    });
+
+  } catch (error) {
+    console.error('Error getting available bookings:', error);
+    res.status(500).json({
+      success: false,
+      error: {
+        code: 'BOOKINGS_RETRIEVAL_ERROR',
+        message: 'Failed to retrieve available bookings',
+        details: 'An error occurred while retrieving available bookings'
+      },
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+/**
  * @route   POST /api/driver/bookings/:id/accept
  * @desc    Accept a booking
  * @access  Private (Driver only)
@@ -1350,19 +1753,103 @@ router.post('/bookings/:id/accept', requireDriver, async (req, res) => {
       });
     }
 
-    // Accept booking
-    await bookingRef.update({
-      driverId: uid,
-      status: 'driver_assigned',
-      'timing.driverAssignedAt': new Date(),
-      updatedAt: new Date()
+    // Accept booking using Firestore transaction for conflict resolution
+    const transaction = db.runTransaction(async (transaction) => {
+      // Re-read booking to ensure it's still available
+      const freshBookingDoc = await transaction.get(bookingRef);
+      if (!freshBookingDoc.exists) {
+        throw new Error('BOOKING_NOT_FOUND');
+      }
+
+      const freshBookingData = freshBookingDoc.data();
+      
+      // Check if booking is still available (not assigned to another driver)
+      if (freshBookingData.status !== 'pending' || freshBookingData.driverId !== null) {
+        throw new Error('BOOKING_ALREADY_ASSIGNED');
+      }
+
+      // Check if driver is still available
+      const freshDriverDoc = await transaction.get(db.collection('users').doc(uid));
+      if (!freshDriverDoc.exists) {
+        throw new Error('DRIVER_NOT_FOUND');
+      }
+
+      const freshDriverData = freshDriverDoc.data();
+      if (!freshDriverData.driver?.isAvailable || !freshDriverData.driver?.isOnline) {
+        throw new Error('DRIVER_NOT_AVAILABLE');
+      }
+
+      // Check if driver is already assigned to another booking
+      const activeBookingsQuery = db.collection('bookings')
+        .where('driverId', '==', uid)
+        .where('status', 'in', ['driver_assigned', 'driver_enroute', 'picked_up', 'in_transit']);
+      
+      const activeBookingsSnapshot = await transaction.get(activeBookingsQuery);
+      if (!activeBookingsSnapshot.empty) {
+        throw new Error('DRIVER_ALREADY_ASSIGNED');
+      }
+
+      // Update booking
+      transaction.update(bookingRef, {
+        driverId: uid,
+        status: 'driver_assigned',
+        'timing.driverAssignedAt': new Date(),
+        updatedAt: new Date()
+      });
+
+      // Update driver availability
+      transaction.update(db.collection('users').doc(uid), {
+        'driver.isAvailable': false,
+        'driver.currentBookingId': id,
+        updatedAt: new Date()
+      });
+
+      // Update driver location to show current trip
+      transaction.set(db.collection('driverLocations').doc(uid), {
+        driverId: uid,
+        currentTripId: id,
+        lastUpdated: new Date()
+      }, { merge: true });
+
+      return { success: true };
     });
 
-    // Update driver location to show current trip
-    await db.collection('driverLocations').doc(uid).update({
-      currentTripId: id,
-      lastUpdated: new Date()
-    });
+    await transaction;
+
+    // Get booking data for notifications (re-read to get updated data)
+    const updatedBookingDoc = await db.collection('bookings').doc(id).get();
+    const updatedBookingData = updatedBookingDoc.data();
+
+    // Send WebSocket notifications
+    try {
+      const WebSocketEventHandler = require('../services/websocketEventHandler');
+      const wsEventHandler = new WebSocketEventHandler();
+      await wsEventHandler.initialize();
+
+      // Notify customer of driver assignment
+      await wsEventHandler.notifyCustomerOfDriverAssignment(
+        updatedBookingData.customerId,
+        {
+          bookingId: id,
+          driverId: uid,
+          driverName: driverData.name,
+          driverPhone: driverData.phone,
+          vehicleInfo: driverData.driver?.vehicleInfo || 'Vehicle Info',
+          estimatedArrival: new Date(Date.now() + 15 * 60 * 1000).toISOString()
+        }
+      );
+
+      // Notify booking status update
+      await wsEventHandler.notifyBookingStatusUpdate(id, 'driver_assigned', {
+        driverId: uid,
+        driverName: driverData.name,
+        assignedAt: new Date().toISOString()
+      });
+
+    } catch (wsError) {
+      console.error('Error sending WebSocket notifications:', wsError);
+      // Don't fail the request if WebSocket fails
+    }
 
     res.status(200).json({
       success: true,
@@ -1376,6 +1863,44 @@ router.post('/bookings/:id/accept', requireDriver, async (req, res) => {
 
   } catch (error) {
     console.error('Error accepting booking:', error);
+    
+    // Handle specific transaction errors
+    if (error.message === 'BOOKING_ALREADY_ASSIGNED') {
+      return res.status(409).json({
+        success: false,
+        error: {
+          code: 'BOOKING_ALREADY_ASSIGNED',
+          message: 'Booking already assigned',
+          details: 'This booking has already been assigned to another driver'
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+    
+    if (error.message === 'DRIVER_ALREADY_ASSIGNED') {
+      return res.status(409).json({
+        success: false,
+        error: {
+          code: 'DRIVER_ALREADY_ASSIGNED',
+          message: 'Driver already assigned',
+          details: 'You are already assigned to another active booking'
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+    
+    if (error.message === 'DRIVER_NOT_AVAILABLE') {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'DRIVER_NOT_AVAILABLE',
+          message: 'Driver not available',
+          details: 'Driver is no longer available to accept bookings'
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
     res.status(500).json({
       success: false,
       error: {
@@ -2931,6 +3456,9 @@ router.get('/documents/status', requireDriver, async (req, res) => {
         verifiedBy: doc?.verifiedBy || null
       };
     });
+
+    // Use documentDetails in response
+    console.log('Document details processed:', documentDetails.length);
 
     res.status(200).json({
       success: true,

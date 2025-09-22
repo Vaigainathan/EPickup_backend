@@ -149,6 +149,21 @@ const initializeSocketIO = async (server) => {
         eventHandler.handleTripStatusUpdate(socket, data);
       });
 
+      // Handle payment events
+      socket.on('payment_event', (data) => {
+        eventHandler.handlePaymentEvent(socket, data);
+      });
+
+      // Handle driver assignment events
+      socket.on('driver_assignment', (data) => {
+        eventHandler.handleDriverAssignment(socket, data);
+      });
+
+      // Handle booking status updates
+      socket.on('booking_status_update', (data) => {
+        eventHandler.handleBookingStatusUpdate(socket, data);
+      });
+
       // Handle authentication events
       socket.on('session_expired', (data) => {
         eventHandler.handleSessionExpiration(socket, data);

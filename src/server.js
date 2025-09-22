@@ -16,7 +16,7 @@ const authRoutes = require('./routes/auth');
 const customerRoutes = require('./routes/customer');
 const driverRoutes = require('./routes/driver');
 const bookingRoutes = require('./routes/booking');
-const paymentRoutes = require('./routes/payment');
+const paymentRoutes = require('./routes/payments');
 const trackingRoutes = require('./routes/tracking');
 const notificationRoutes = require('./routes/notification');
 const fileUploadRoutes = require('./routes/fileUpload');
@@ -42,6 +42,7 @@ const { initializeFirebase } = require('./services/firebase');
 // It's used by other services that import it directly
 const socketService = require('./services/socket');
 const msg91Service = require('./services/msg91Service');
+const monitoringService = require('./services/monitoringService');
 
 const app = express();
 const PORT = env.getServerPort();
@@ -429,17 +430,40 @@ try {
   console.error('Socket.IO Error:', error.message);
 }
 
+// Initialize monitoring service
+async function initializeServices() {
+  try {
+    console.log('🔧 Initializing services...');
+    
+    // Initialize monitoring service
+    await monitoringService.initialize();
+    console.log('✅ Monitoring service initialized');
+    
+    console.log('✅ All services initialized successfully');
+  } catch (error) {
+    console.error('❌ Failed to initialize services:', error);
+    throw error;
+  }
+}
+
 // Start server
 try {
-  server.listen(PORT, () => {
-    console.log(`🚀 EPickup Backend Server running on port ${PORT}`);
-    console.log(`📱 Environment: ${process.env.NODE_ENV || 'development'}`);
-    console.log(`🔗 Health Check: http://localhost:${PORT}/health`);
-    console.log(`📚 API Docs: http://localhost:${PORT}/api-docs`);
-    
-    if (process.env.NODE_ENV === 'development') {
-      console.log(`🔄 Auto-reload enabled with nodemon`);
-    }
+  // Initialize services first
+  initializeServices().then(() => {
+    server.listen(PORT, () => {
+      console.log(`🚀 EPickup Backend Server running on port ${PORT}`);
+      console.log(`📱 Environment: ${process.env.NODE_ENV || 'development'}`);
+      console.log(`🔗 Health Check: http://localhost:${PORT}/api/health`);
+      console.log(`📈 Metrics: http://localhost:${PORT}/api/health/metrics`);
+      console.log(`📚 API Docs: http://localhost:${PORT}/api-docs`);
+      
+      if (process.env.NODE_ENV === 'development') {
+        console.log(`🔄 Auto-reload enabled with nodemon`);
+      }
+    });
+  }).catch(error => {
+    console.error('❌ Failed to initialize services:', error);
+    process.exit(1);
   });
 
   server.on('error', (error) => {

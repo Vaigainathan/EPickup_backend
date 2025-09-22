@@ -1,14 +1,78 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    // Users collection - allow users to read their own data, admin access for all
+    // Helper functions for security validation
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+    
+    function isOwner(userId) {
+      return request.auth.uid == userId;
+    }
+    
+    function isAdmin() {
+      return request.auth.token.role == 'admin' || request.auth.token.userType == 'admin';
+    }
+    
+    function isDriver() {
+      return request.auth.token.userType == 'driver';
+    }
+    
+    function isCustomer() {
+      return request.auth.token.userType == 'customer';
+    }
+    
+    function isValidUserType() {
+      return request.auth.token.userType in ['customer', 'driver', 'admin'];
+    }
+    
+    function isWithinServiceArea(location) {
+      // Basic service area validation (Tirupattur area)
+      return location.latitude >= 12.0 && location.latitude <= 13.0 &&
+             location.longitude >= 78.0 && location.longitude <= 79.0;
+    }
+    
+    function isValidPhoneNumber(phone) {
+      return phone.matches('^\\+91[6-9][0-9]{9}$');
+    }
+    
+    function isValidBookingStatus(status) {
+      return status in ['pending', 'driver_assigned', 'accepted', 'driver_enroute', 
+                       'driver_arrived', 'picked_up', 'in_transit', 'delivered', 
+                       'completed', 'cancelled', 'rejected'];
+    }
+    
+    function isValidDriverStatus(status) {
+      return status in ['available', 'busy', 'offline', 'enroute', 'arrived'];
+    }
+    
+    // Users collection - enhanced security with field validation
     match /users/{userId} {
-      allow read: if request.auth != null && 
-        (request.auth.uid == userId || 
-         request.auth.token.role == 'admin' || 
-         request.auth.token.userType == 'admin');
-      allow write: if request.auth != null && 
-        (request.auth.token.role == 'admin' || request.auth.token.userType == 'admin');
+      allow read: if isAuthenticated() && 
+        (isOwner(userId) || isAdmin());
+      
+      allow create: if isAuthenticated() && 
+        isValidUserType() &&
+        isOwner(userId) &&
+        request.resource.data.keys().hasAll(['name', 'phone', 'userType', 'createdAt']) &&
+        isValidPhoneNumber(request.resource.data.phone) &&
+        request.resource.data.userType in ['customer', 'driver'];
+      
+      allow update: if isAuthenticated() && (
+        // Admin can update anything
+        isAdmin() ||
+        // Users can update their own basic info
+        (isOwner(userId) && 
+         request.writeFields.hasOnly(['name', 'phone', 'updatedAt', 'lastSeen']) &&
+         isValidPhoneNumber(request.resource.data.phone)) ||
+        // Drivers can update their driver-specific fields
+        (isOwner(userId) && isDriver() &&
+         request.writeFields.hasOnly(['driver', 'updatedAt', 'lastSeen']) &&
+         request.resource.data.driver.keys().hasOnly(['isOnline', 'isAvailable', 'currentLocation', 'vehicleInfo', 'status']) &&
+         isValidDriverStatus(request.resource.data.driver.status))
+      );
+      
+      allow delete: if isAuthenticated() && isAdmin();
     }
     
     // Document verification requests - allow admin access only
@@ -33,10 +97,69 @@ service cloud.firestore {
         (request.auth.token.role == 'admin' || request.auth.token.userType == 'admin');
     }
     
-    // Bookings - allow admin access only
+    // Bookings collection - enhanced security with status validation
     match /bookings/{bookingId} {
+      allow read: if isAuthenticated() && (
+        resource.data.customerId == request.auth.uid || 
+        resource.data.driverId == request.auth.uid ||
+        isAdmin()
+      );
+      
+      allow create: if isAuthenticated() && 
+        isCustomer() &&
+        request.resource.data.customerId == request.auth.uid &&
+        request.resource.data.keys().hasAll(['customerId', 'pickup', 'drop', 'status', 'createdAt']) &&
+        isValidBookingStatus(request.resource.data.status) &&
+        isWithinServiceArea(request.resource.data.pickup.coordinates) &&
+        isWithinServiceArea(request.resource.data.drop.coordinates);
+      
+      allow update: if isAuthenticated() && (
+        // Admin can update anything
+        isAdmin() ||
+        // Drivers can update specific fields for their assigned bookings
+        (resource.data.driverId == request.auth.uid && isDriver() &&
+         request.writeFields.hasOnly(['status', 'timing', 'driver', 'updatedAt']) &&
+         isValidBookingStatus(request.resource.data.status)) ||
+        // Customers can cancel their own bookings
+        (resource.data.customerId == request.auth.uid && isCustomer() &&
+         request.writeFields.hasOnly(['status', 'cancellationReason', 'updatedAt']) &&
+         request.resource.data.status == 'cancelled')
+      );
+      
+      allow delete: if isAuthenticated() && isAdmin();
+    }
+    
+    // Driver locations - allow drivers to read/write their own location, admins full access
+    match /driverLocations/{driverId} {
       allow read, write: if request.auth != null && 
+        (request.auth.uid == driverId || 
+         request.auth.token.role == 'admin' || 
+         request.auth.token.userType == 'admin');
+    }
+    
+    // Driver assignments - allow drivers to read their own assignments, admins full access
+    match /driverAssignments/{assignmentId} {
+      allow read: if request.auth != null && 
+        (resource.data.driverId == request.auth.uid || 
+         request.auth.token.role == 'admin' || 
+         request.auth.token.userType == 'admin');
+      allow write: if request.auth != null && 
         (request.auth.token.role == 'admin' || request.auth.token.userType == 'admin');
+    }
+    
+    // Trip tracking - allow drivers and customers to read their own trips, admins full access
+    match /tripTracking/{tripId} {
+      allow read: if request.auth != null && 
+        (resource.data.driverId == request.auth.uid || 
+         resource.data.customerId == request.auth.uid ||
+         request.auth.token.role == 'admin' || 
+         request.auth.token.userType == 'admin');
+      allow write: if request.auth != null && 
+        (request.auth.token.role == 'admin' || request.auth.token.userType == 'admin');
+      // Allow drivers to update trip status
+      allow update: if request.auth != null && 
+        (resource.data.driverId == request.auth.uid && 
+         request.auth.token.userType == 'driver');
     }
     
     // Support tickets - allow admin access only
@@ -70,6 +193,46 @@ service cloud.firestore {
          request.auth.token.role == 'admin' || 
          request.auth.token.userType == 'admin');
       allow write: if request.auth != null && 
+        (request.auth.token.role == 'admin' || request.auth.token.userType == 'admin');
+    }
+    
+    // Payments collection - secure payment data access
+    match /payments/{paymentId} {
+      allow read, write: if request.auth != null && 
+        (request.auth.uid == resource.data.customerId || 
+         request.auth.token.role == 'admin' || 
+         request.auth.token.userType == 'admin');
+      allow create: if request.auth != null && 
+        (request.auth.uid == request.resource.data.customerId || 
+         request.auth.token.role == 'admin' || 
+         request.auth.token.userType == 'admin');
+    }
+
+    // Refunds collection - secure refund data access
+    match /refunds/{refundId} {
+      allow read, write: if request.auth != null && 
+        (request.auth.uid == resource.data.refundedBy || 
+         request.auth.token.role == 'admin' || 
+         request.auth.token.userType == 'admin');
+      allow create: if request.auth != null && 
+        (request.auth.uid == request.resource.data.refundedBy || 
+         request.auth.token.role == 'admin' || 
+         request.auth.token.userType == 'admin');
+    }
+
+    // Driver assignments collection - secure assignment data access
+    match /driverAssignments/{assignmentId} {
+      allow read: if request.auth != null && 
+        (request.auth.token.userType == 'driver' || 
+         request.auth.token.role == 'admin' || 
+         request.auth.token.userType == 'admin');
+      allow write: if request.auth != null && 
+        (request.auth.token.role == 'admin' || request.auth.token.userType == 'admin');
+    }
+
+    // System health collection - admin only
+    match /systemHealth/{healthId} {
+      allow read, write: if request.auth != null && 
         (request.auth.token.role == 'admin' || request.auth.token.userType == 'admin');
     }
     

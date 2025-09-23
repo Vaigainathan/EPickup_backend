@@ -6,25 +6,36 @@
  */
 
 const rateLimit = require('express-rate-limit');
-const RedisStore = require('rate-limit-redis');
-const Redis = require('redis');
+
+// Optional Redis support - only use if available
+let RedisStore = null;
+let Redis = null;
+
+try {
+  RedisStore = require('rate-limit-redis');
+  Redis = require('redis');
+} catch {
+  console.log('Redis packages not available, using memory store only');
+}
 
 // Create Redis client for rate limiting (optional)
 let redisClient = null;
-try {
-  redisClient = Redis.createClient({
-    host: process.env.REDIS_HOST || 'localhost',
-    port: process.env.REDIS_PORT || 6379,
-    password: process.env.REDIS_PASSWORD || undefined,
-    retry_strategy: () => 1000
-  });
-  
-  redisClient.on('error', (err) => {
-    console.warn('Redis connection failed, using memory store for rate limiting:', err.message);
-    redisClient = null;
-  });
-} catch {
-  console.warn('Redis not available, using memory store for rate limiting');
+if (Redis) {
+  try {
+    redisClient = Redis.createClient({
+      host: process.env.REDIS_HOST || 'localhost',
+      port: process.env.REDIS_PORT || 6379,
+      password: process.env.REDIS_PASSWORD || undefined,
+      retry_strategy: () => 1000
+    });
+    
+    redisClient.on('error', (err) => {
+      console.warn('Redis connection failed, using memory store for rate limiting:', err.message);
+      redisClient = null;
+    });
+  } catch {
+    console.warn('Redis not available, using memory store for rate limiting');
+  }
 }
 
 /**
@@ -56,7 +67,7 @@ function createRateLimiter(options = {}) {
     ...options
   };
 
-  if (redisClient) {
+  if (redisClient && RedisStore) {
     defaultOptions.store = new RedisStore({
       sendCommand: (...args) => redisClient.sendCommand(args),
     });

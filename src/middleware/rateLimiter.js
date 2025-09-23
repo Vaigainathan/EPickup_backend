@@ -1,52 +1,163 @@
+/**
+ * Rate Limiting Middleware
+ * 
+ * Prevents API abuse by limiting requests per user/IP
+ * with configurable windows and limits.
+ */
+
 const rateLimit = require('express-rate-limit');
+const RedisStore = require('rate-limit-redis');
+const Redis = require('redis');
 
-// Rate limiting for document verification
-const documentVerificationLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 100, // Limit each IP to 100 requests per windowMs
+// Create Redis client for rate limiting (optional)
+let redisClient = null;
+try {
+  redisClient = Redis.createClient({
+    host: process.env.REDIS_HOST || 'localhost',
+    port: process.env.REDIS_PORT || 6379,
+    password: process.env.REDIS_PASSWORD || undefined,
+    retry_strategy: () => 1000
+  });
+  
+  redisClient.on('error', (err) => {
+    console.warn('Redis connection failed, using memory store for rate limiting:', err.message);
+    redisClient = null;
+  });
+} catch (error) {
+  console.warn('Redis not available, using memory store for rate limiting');
+}
+
+/**
+ * Create rate limiter with Redis store if available, memory store otherwise
+ */
+function createRateLimiter(options = {}) {
+  const defaultOptions = {
+    windowMs: 15 * 60 * 1000, // 15 minutes
+    max: 100, // limit each IP to 100 requests per windowMs
+    message: {
+      success: false,
+      error: {
+        code: 'RATE_LIMIT_EXCEEDED',
+        message: 'Too many requests from this IP, please try again later.',
+        details: 'Rate limit exceeded. Please wait before making more requests.'
+      },
+      timestamp: new Date().toISOString()
+    },
+    standardHeaders: true,
+    legacyHeaders: false,
+    skip: (req) => {
+      // Skip rate limiting for health checks
+      return req.path === '/health' || req.path === '/api/health';
+    },
+    keyGenerator: (req) => {
+      // Use user ID if authenticated, otherwise IP
+      return req.user?.uid || req.ip;
+    },
+    ...options
+  };
+
+  if (redisClient) {
+    defaultOptions.store = new RedisStore({
+      sendCommand: (...args) => redisClient.sendCommand(args),
+    });
+  }
+
+  return rateLimit(defaultOptions);
+}
+
+/**
+ * Strict rate limiter for sensitive endpoints
+ */
+const strictRateLimit = createRateLimiter({
+  windowMs: 1 * 60 * 1000, // 1 minute
+  max: 10, // 10 requests per minute
   message: {
     success: false,
     error: {
-      code: 'RATE_LIMIT_EXCEEDED',
-      message: 'Too many document verification requests, please try again later.'
-    }
-  },
-  standardHeaders: true,
-  legacyHeaders: false,
+      code: 'STRICT_RATE_LIMIT_EXCEEDED',
+      message: 'Too many requests. Please slow down.',
+      details: 'This endpoint has strict rate limiting. Please wait before retrying.'
+    },
+    timestamp: new Date().toISOString()
+  }
 });
 
-// Rate limiting for admin operations
-const adminOperationsLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 200, // Limit each IP to 200 requests per windowMs
-  message: {
-    success: false,
-    error: {
-      code: 'RATE_LIMIT_EXCEEDED',
-      message: 'Too many admin requests, please try again later.'
-    }
-  },
-  standardHeaders: true,
-  legacyHeaders: false,
-});
-
-// Rate limiting for document access
-const documentAccessLimiter = rateLimit({
+/**
+ * Moderate rate limiter for regular endpoints
+ */
+const moderateRateLimit = createRateLimiter({
   windowMs: 5 * 60 * 1000, // 5 minutes
-  max: 50, // Limit each IP to 50 document access requests per windowMs
+  max: 50, // 50 requests per 5 minutes
   message: {
     success: false,
     error: {
-      code: 'RATE_LIMIT_EXCEEDED',
-      message: 'Too many document access requests, please try again later.'
-    }
-  },
-  standardHeaders: true,
-  legacyHeaders: false,
+      code: 'MODERATE_RATE_LIMIT_EXCEEDED',
+      message: 'Too many requests. Please try again in a few minutes.',
+      details: 'Rate limit exceeded. Please wait before making more requests.'
+    },
+    timestamp: new Date().toISOString()
+  }
 });
+
+/**
+ * Light rate limiter for frequently accessed endpoints
+ */
+const lightRateLimit = createRateLimiter({
+  windowMs: 1 * 60 * 1000, // 1 minute
+  max: 30, // 30 requests per minute
+  message: {
+    success: false,
+    error: {
+      code: 'LIGHT_RATE_LIMIT_EXCEEDED',
+      message: 'Too many requests. Please slow down slightly.',
+      details: 'Rate limit exceeded. Please wait a moment before retrying.'
+    },
+    timestamp: new Date().toISOString()
+  }
+});
+
+/**
+ * Document status specific rate limiter
+ * More lenient since it's polled frequently
+ */
+const documentStatusRateLimit = createRateLimiter({
+  windowMs: 1 * 60 * 1000, // 1 minute
+  max: 20, // 20 requests per minute (allows polling every 3 seconds)
+  message: {
+    success: false,
+    error: {
+      code: 'DOCUMENT_STATUS_RATE_LIMIT_EXCEEDED',
+      message: 'Too many document status requests. Please wait before checking again.',
+      details: 'Document status endpoint has rate limiting. Please wait before retrying.'
+    },
+    timestamp: new Date().toISOString()
+  }
+});
+
+/**
+ * Custom rate limiter for specific endpoints
+ */
+function customRateLimit(windowMs, max, message) {
+  return createRateLimiter({
+    windowMs,
+    max,
+    message: {
+      success: false,
+      error: {
+        code: 'CUSTOM_RATE_LIMIT_EXCEEDED',
+        message: message || 'Rate limit exceeded',
+        details: 'Custom rate limit exceeded. Please wait before retrying.'
+      },
+      timestamp: new Date().toISOString()
+    }
+  });
+}
 
 module.exports = {
-  documentVerificationLimiter,
-  adminOperationsLimiter,
-  documentAccessLimiter
+  createRateLimiter,
+  strictRateLimit,
+  moderateRateLimit,
+  lightRateLimit,
+  documentStatusRateLimit,
+  customRateLimit
 };

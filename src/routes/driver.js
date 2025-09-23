@@ -2,6 +2,8 @@ const express = require('express');
 const { body, validationResult } = require('express-validator');
 const { getFirestore } = require('../services/firebase');
 const { requireDriver } = require('../middleware/auth');
+const { documentStatusRateLimit } = require('../middleware/rateLimiter');
+const { documentStatusCache, invalidateUserCache } = require('../middleware/cache');
 
 const router = express.Router();
 
@@ -387,6 +389,9 @@ router.post('/documents', [
       'driver.verificationStatus': verificationStatus,
       updatedAt: new Date()
     });
+
+    // Invalidate cache for this user's document status
+    invalidateUserCache(uid);
 
     res.status(200).json({
       success: true,
@@ -3322,7 +3327,7 @@ router.post('/availability/toggle-slot', [
  * @desc    Get driver document verification status
  * @access  Private (Driver only)
  */
-router.get('/documents/status', requireDriver, async (req, res) => {
+router.get('/documents/status', requireDriver, documentStatusRateLimit, documentStatusCache, async (req, res) => {
   try {
     const { uid } = req.user;
     const db = getFirestore();

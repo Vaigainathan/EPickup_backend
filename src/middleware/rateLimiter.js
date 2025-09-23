@@ -23,7 +23,7 @@ try {
     console.warn('Redis connection failed, using memory store for rate limiting:', err.message);
     redisClient = null;
   });
-} catch (error) {
+} catch {
   console.warn('Redis not available, using memory store for rate limiting');
 }
 

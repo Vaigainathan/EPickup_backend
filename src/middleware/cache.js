@@ -141,7 +141,7 @@ function createCacheMiddleware(options = {}) {
       const endpoint = req.path;
       return cacheManager.generateUserKey(userId, endpoint);
     },
-    skip = (req) => false, // Don't skip by default
+    skip = () => false, // Don't skip by default
     skipOnError = true // Skip caching on errors
   } = options;
 

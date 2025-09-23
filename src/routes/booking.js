@@ -955,6 +955,139 @@ router.post('/:id/complete-trip', [
 });
 
 /**
+ * @route   GET /api/bookings/:id/driver
+ * @desc    Get driver assignment for a booking
+ * @access  Private (Customer, Driver, Admin)
+ */
+router.get('/:id/driver', [
+  requireRole(['customer', 'driver', 'admin']),
+], async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { uid, userType } = req.user;
+    const db = getFirestore();
+    
+    // Get booking details
+    const bookingRef = db.collection('bookings').doc(id);
+    const bookingDoc = await bookingRef.get();
+    
+    if (!bookingDoc.exists) {
+      return res.status(404).json({
+        success: false,
+        error: {
+          code: 'BOOKING_NOT_FOUND',
+          message: 'Booking not found',
+          details: 'Booking with this ID does not exist'
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    const bookingData = bookingDoc.data();
+    
+    // Check access permissions
+    if (userType === 'customer' && bookingData.customerId !== uid) {
+      return res.status(403).json({
+        success: false,
+        error: {
+          code: 'ACCESS_DENIED',
+          message: 'Access denied',
+          details: 'You can only view driver assignments for your own bookings'
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+    
+    if (userType === 'driver' && bookingData.driverId !== uid) {
+      return res.status(403).json({
+        success: false,
+        error: {
+          code: 'ACCESS_DENIED',
+          message: 'Access denied',
+          details: 'You can only view driver assignments for bookings assigned to you'
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    // If no driver assigned, return appropriate response
+    if (!bookingData.driverId) {
+      return res.status(200).json({
+        success: true,
+        message: 'No driver assigned yet',
+        data: {
+          assignment: null,
+          bookingStatus: bookingData.status,
+          searchingForDriver: bookingData.status === 'pending'
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    // Get driver details
+    const driverRef = db.collection('users').doc(bookingData.driverId);
+    const driverDoc = await driverRef.get();
+    
+    if (!driverDoc.exists) {
+      return res.status(404).json({
+        success: false,
+        error: {
+          code: 'DRIVER_NOT_FOUND',
+          message: 'Driver not found',
+          details: 'Assigned driver does not exist'
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    const driverData = driverDoc.data();
+    
+    // Prepare driver assignment response
+    const assignment = {
+      bookingId: id,
+      driverId: bookingData.driverId,
+      driver: {
+        id: bookingData.driverId,
+        name: driverData.name || driverData.driver?.name || 'Driver',
+        phone: driverData.phone || driverData.driver?.phone || '',
+        rating: driverData.driver?.rating || 4.5,
+        vehicleType: driverData.driver?.vehicleType || '2 Wheeler',
+        vehicleNumber: driverData.driver?.vehicleNumber || 'KA-XX-XX-XXXX',
+        profileImage: driverData.driver?.profileImage,
+        isOnline: driverData.driver?.isOnline || false,
+        isAvailable: driverData.driver?.isAvailable || false
+      },
+      status: bookingData.status,
+      assignedAt: bookingData.timing?.driverAssignedAt || bookingData.createdAt,
+      estimatedArrival: bookingData.timing?.estimatedPickupTime ? 
+        Math.ceil((new Date(bookingData.timing.estimatedPickupTime) - new Date()) / (1000 * 60)) : 5
+    };
+
+    res.status(200).json({
+      success: true,
+      message: 'Driver assignment retrieved successfully',
+      data: {
+        assignment,
+        bookingStatus: bookingData.status
+      },
+      timestamp: new Date().toISOString()
+    });
+
+  } catch (error) {
+    console.error('Error getting driver assignment:', error);
+    res.status(500).json({
+      success: false,
+      error: {
+        code: 'DRIVER_ASSIGNMENT_ERROR',
+        message: 'Failed to get driver assignment',
+        details: error.message
+      },
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+/**
  * @route   GET /api/bookings/:id/available-drivers
  * @desc    Get available drivers for a booking
  * @access  Private (Admin only)

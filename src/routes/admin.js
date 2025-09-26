@@ -211,6 +211,232 @@ router.get('/drivers', requireRole(['admin']), async (req, res) => {
 });
 
 /**
+ * @route   DELETE /api/admin/drivers/:id
+ * @desc    Permanently delete a driver and cascade delete related data
+ * @access  Private (Admin only)
+ */
+router.delete('/drivers/:id', requireRole(['admin']), async (req, res) => {
+  try {
+    const { id } = req.params;
+    const adminId = req.user.uid;
+    const db = getFirestore();
+    const batch = db.batch();
+
+    // Get driver data first
+    const driverRef = db.collection('users').doc(id);
+    const driverDoc = await driverRef.get();
+    
+    if (!driverDoc.exists) {
+      return res.status(404).json({
+        success: false,
+        error: {
+          code: 'DRIVER_NOT_FOUND',
+          message: 'Driver not found'
+        }
+      });
+    }
+
+    const driverData = driverDoc.data();
+    if (driverData.userType !== 'driver') {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'INVALID_USER_TYPE',
+          message: 'User is not a driver'
+        }
+      });
+    }
+
+    // Delete driver from users collection
+    batch.delete(driverRef);
+
+    // Delete driver documents
+    const driverDocsSnapshot = await db.collection('driverDocuments')
+      .where('driverId', '==', id)
+      .get();
+    
+    driverDocsSnapshot.forEach(doc => {
+      batch.delete(doc.ref);
+    });
+
+    // Delete document verification requests
+    const verificationSnapshot = await db.collection('documentVerificationRequests')
+      .where('driverId', '==', id)
+      .get();
+    
+    verificationSnapshot.forEach(doc => {
+      batch.delete(doc.ref);
+    });
+
+    // Update bookings to remove driver reference
+    const bookingsSnapshot = await db.collection('bookings')
+      .where('driverId', '==', id)
+      .get();
+    
+    bookingsSnapshot.forEach(doc => {
+      batch.update(doc.ref, {
+        driverId: null,
+        driverName: null,
+        status: 'cancelled',
+        cancellationReason: 'Driver account deleted',
+        updatedAt: new Date()
+      });
+    });
+
+    // Log the deletion action
+    const auditLogRef = db.collection('adminLogs').doc();
+    batch.set(auditLogRef, {
+      action: 'driver_deleted',
+      adminId,
+      targetUserId: id,
+      targetUserType: 'driver',
+      details: {
+        driverName: driverData.name || driverData.personalInfo?.name,
+        driverEmail: driverData.email || driverData.personalInfo?.email,
+        deletedAt: new Date()
+      },
+      timestamp: new Date()
+    });
+
+    await batch.commit();
+
+    res.json({
+      success: true,
+      message: 'Driver deleted successfully',
+      data: {
+        driverId: id,
+        deletedAt: new Date().toISOString()
+      }
+    });
+
+  } catch (error) {
+    console.error('Error deleting driver:', error);
+    res.status(500).json({
+      success: false,
+      error: {
+        code: 'DELETE_DRIVER_ERROR',
+        message: 'Failed to delete driver',
+        details: error.message
+      }
+    });
+  }
+});
+
+/**
+ * @route   PUT /api/admin/drivers/:id/ban
+ * @desc    Ban a driver (irreversible action)
+ * @access  Private (Admin only)
+ */
+router.put('/drivers/:id/ban', requireRole(['admin']), async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { reason } = req.body;
+    const adminId = req.user.uid;
+    const db = getFirestore();
+    const batch = db.batch();
+
+    // Get driver data
+    const driverRef = db.collection('users').doc(id);
+    const driverDoc = await driverRef.get();
+    
+    if (!driverDoc.exists) {
+      return res.status(404).json({
+        success: false,
+        error: {
+          code: 'DRIVER_NOT_FOUND',
+          message: 'Driver not found'
+        }
+      });
+    }
+
+    const driverData = driverDoc.data();
+    if (driverData.userType !== 'driver') {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'INVALID_USER_TYPE',
+          message: 'User is not a driver'
+        }
+      });
+    }
+
+    if (driverData.accountStatus === 'banned') {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'ALREADY_BANNED',
+          message: 'Driver is already banned'
+        }
+      });
+    }
+
+    // Update driver status to banned
+    batch.update(driverRef, {
+      accountStatus: 'banned',
+      bannedAt: new Date(),
+      bannedBy: adminId,
+      banReason: reason || 'Violation of terms of service',
+      updatedAt: new Date()
+    });
+
+    // Cancel all active bookings
+    const activeBookingsSnapshot = await db.collection('bookings')
+      .where('driverId', '==', id)
+      .where('status', 'in', ['pending', 'accepted', 'in_progress'])
+      .get();
+    
+    activeBookingsSnapshot.forEach(doc => {
+      batch.update(doc.ref, {
+        status: 'cancelled',
+        cancellationReason: 'Driver account banned',
+        cancelledAt: new Date(),
+        updatedAt: new Date()
+      });
+    });
+
+    // Log the ban action
+    const auditLogRef = db.collection('adminLogs').doc();
+    batch.set(auditLogRef, {
+      action: 'driver_banned',
+      adminId,
+      targetUserId: id,
+      targetUserType: 'driver',
+      details: {
+        driverName: driverData.name || driverData.personalInfo?.name,
+        driverEmail: driverData.email || driverData.personalInfo?.email,
+        banReason: reason || 'Violation of terms of service',
+        bannedAt: new Date()
+      },
+      timestamp: new Date()
+    });
+
+    await batch.commit();
+
+    res.json({
+      success: true,
+      message: 'Driver banned successfully',
+      data: {
+        driverId: id,
+        accountStatus: 'banned',
+        bannedAt: new Date().toISOString(),
+        banReason: reason || 'Violation of terms of service'
+      }
+    });
+
+  } catch (error) {
+    console.error('Error banning driver:', error);
+    res.status(500).json({
+      success: false,
+      error: {
+        code: 'BAN_DRIVER_ERROR',
+        message: 'Failed to ban driver',
+        details: error.message
+      }
+    });
+  }
+});
+
+/**
  * @route   GET /api/admin/bookings
  * @desc    Get all bookings with pagination and filters
  * @access  Private (Admin only)
@@ -2817,6 +3043,649 @@ router.get('/analytics/support', requireRole(['admin']), async (req, res) => {
       error: {
         code: 'ANALYTICS_ERROR',
         message: 'Failed to get support analytics',
+        details: error.message
+      }
+    });
+  }
+});
+
+/**
+ * @route   GET /api/admin/customers
+ * @desc    Get all customers with pagination and filters
+ * @access  Private (Admin only)
+ */
+router.get('/customers', requireRole(['admin']), async (req, res) => {
+  try {
+    const db = getFirestore();
+    const { limit = 20, offset = 0, status, search } = req.query;
+
+    let query = db.collection('users').where('userType', '==', 'customer');
+
+    // Apply status filter
+    if (status) {
+      query = query.where('accountStatus', '==', status);
+    }
+
+    // Apply pagination and ordering
+    query = query.orderBy('createdAt', 'desc').limit(parseInt(limit)).offset(parseInt(offset));
+
+    const snapshot = await query.get();
+    const customers = [];
+
+    snapshot.forEach(doc => {
+      const data = doc.data();
+      customers.push({
+        id: doc.id,
+        ...data,
+        createdAt: data.createdAt?.toDate?.() || data.createdAt,
+        updatedAt: data.updatedAt?.toDate?.() || data.updatedAt
+      });
+    });
+
+    res.json({
+      success: true,
+      data: customers,
+      pagination: {
+        limit: parseInt(limit),
+        offset: parseInt(offset),
+        total: customers.length
+      }
+    });
+
+  } catch (error) {
+    console.error('Error fetching customers:', error);
+    res.status(500).json({
+      success: false,
+      error: {
+        code: 'FETCH_CUSTOMERS_ERROR',
+        message: 'Failed to fetch customers',
+        details: error.message
+      }
+    });
+  }
+});
+
+/**
+ * @route   GET /api/admin/customers/:id
+ * @desc    Get single customer profile
+ * @access  Private (Admin only)
+ */
+router.get('/customers/:id', requireRole(['admin']), async (req, res) => {
+  try {
+    const { id } = req.params;
+    const db = getFirestore();
+
+    const customerRef = db.collection('users').doc(id);
+    const customerDoc = await customerRef.get();
+
+    if (!customerDoc.exists) {
+      return res.status(404).json({
+        success: false,
+        error: {
+          code: 'CUSTOMER_NOT_FOUND',
+          message: 'Customer not found'
+        }
+      });
+    }
+
+    const customerData = customerDoc.data();
+    if (customerData.userType !== 'customer') {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'INVALID_USER_TYPE',
+          message: 'User is not a customer'
+        }
+      });
+    }
+
+    // Get customer bookings count
+    const bookingsSnapshot = await db.collection('bookings')
+      .where('customerId', '==', id)
+      .get();
+
+    // Get wallet data
+    const walletDoc = await db.collection('wallets').doc(id).get();
+    const walletData = walletDoc.exists ? walletDoc.data() : null;
+
+    res.json({
+      success: true,
+      data: {
+        ...customerData,
+        id: customerDoc.id,
+        bookingsCount: bookingsSnapshot.size,
+        wallet: walletData
+      }
+    });
+
+  } catch (error) {
+    console.error('Error fetching customer:', error);
+    res.status(500).json({
+      success: false,
+      error: {
+        code: 'FETCH_CUSTOMER_ERROR',
+        message: 'Failed to fetch customer',
+        details: error.message
+      }
+    });
+  }
+});
+
+/**
+ * @route   PUT /api/admin/customers/:id/status
+ * @desc    Suspend/Unsuspend customer
+ * @access  Private (Admin only)
+ */
+router.put('/customers/:id/status', requireRole(['admin']), async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { status, reason } = req.body;
+    const adminId = req.user.uid;
+    const db = getFirestore();
+
+    if (!status || !['active', 'suspended'].includes(status)) {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'INVALID_STATUS',
+          message: 'Status must be either active or suspended'
+        }
+      });
+    }
+
+    const customerRef = db.collection('users').doc(id);
+    const customerDoc = await customerRef.get();
+
+    if (!customerDoc.exists) {
+      return res.status(404).json({
+        success: false,
+        error: {
+          code: 'CUSTOMER_NOT_FOUND',
+          message: 'Customer not found'
+        }
+      });
+    }
+
+    const customerData = customerDoc.data();
+    if (customerData.userType !== 'customer') {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'INVALID_USER_TYPE',
+          message: 'User is not a customer'
+        }
+      });
+    }
+
+    const updateData = {
+      accountStatus: status,
+      updatedAt: new Date()
+    };
+
+    if (status === 'suspended') {
+      updateData.suspendedAt = new Date();
+      updateData.suspendedBy = adminId;
+      updateData.suspensionReason = reason || 'Violation of terms of service';
+    } else if (status === 'active') {
+      updateData.suspendedAt = null;
+      updateData.suspendedBy = null;
+      updateData.suspensionReason = null;
+    }
+
+    await customerRef.update(updateData);
+
+    // Log the action
+    const auditLogRef = db.collection('adminLogs').doc();
+    await auditLogRef.set({
+      action: `customer_${status}`,
+      adminId,
+      targetUserId: id,
+      targetUserType: 'customer',
+      details: {
+        customerName: customerData.name || customerData.personalInfo?.name,
+        customerEmail: customerData.email || customerData.personalInfo?.email,
+        reason: reason || 'No reason provided',
+        status,
+        timestamp: new Date()
+      },
+      timestamp: new Date()
+    });
+
+    res.json({
+      success: true,
+      message: `Customer ${status} successfully`,
+      data: {
+        customerId: id,
+        accountStatus: status,
+        updatedAt: new Date().toISOString()
+      }
+    });
+
+  } catch (error) {
+    console.error('Error updating customer status:', error);
+    res.status(500).json({
+      success: false,
+      error: {
+        code: 'UPDATE_CUSTOMER_STATUS_ERROR',
+        message: 'Failed to update customer status',
+        details: error.message
+      }
+    });
+  }
+});
+
+/**
+ * @route   PUT /api/admin/customers/:id/ban
+ * @desc    Ban customer (cannot log back in)
+ * @access  Private (Admin only)
+ */
+router.put('/customers/:id/ban', requireRole(['admin']), async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { reason } = req.body;
+    const adminId = req.user.uid;
+    const db = getFirestore();
+    const batch = db.batch();
+
+    const customerRef = db.collection('users').doc(id);
+    const customerDoc = await customerRef.get();
+
+    if (!customerDoc.exists) {
+      return res.status(404).json({
+        success: false,
+        error: {
+          code: 'CUSTOMER_NOT_FOUND',
+          message: 'Customer not found'
+        }
+      });
+    }
+
+    const customerData = customerDoc.data();
+    if (customerData.userType !== 'customer') {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'INVALID_USER_TYPE',
+          message: 'User is not a customer'
+        }
+      });
+    }
+
+    if (customerData.accountStatus === 'banned') {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'ALREADY_BANNED',
+          message: 'Customer is already banned'
+        }
+      });
+    }
+
+    // Update customer status to banned
+    batch.update(customerRef, {
+      accountStatus: 'banned',
+      bannedAt: new Date(),
+      bannedBy: adminId,
+      banReason: reason || 'Violation of terms of service',
+      updatedAt: new Date()
+    });
+
+    // Cancel all active bookings
+    const activeBookingsSnapshot = await db.collection('bookings')
+      .where('customerId', '==', id)
+      .where('status', 'in', ['pending', 'accepted', 'in_progress'])
+      .get();
+    
+    activeBookingsSnapshot.forEach(doc => {
+      batch.update(doc.ref, {
+        status: 'cancelled',
+        cancellationReason: 'Customer account banned',
+        cancelledAt: new Date(),
+        updatedAt: new Date()
+      });
+    });
+
+    // Log the ban action
+    const auditLogRef = db.collection('adminLogs').doc();
+    batch.set(auditLogRef, {
+      action: 'customer_banned',
+      adminId,
+      targetUserId: id,
+      targetUserType: 'customer',
+      details: {
+        customerName: customerData.name || customerData.personalInfo?.name,
+        customerEmail: customerData.email || customerData.personalInfo?.email,
+        banReason: reason || 'Violation of terms of service',
+        bannedAt: new Date()
+      },
+      timestamp: new Date()
+    });
+
+    await batch.commit();
+
+    res.json({
+      success: true,
+      message: 'Customer banned successfully',
+      data: {
+        customerId: id,
+        accountStatus: 'banned',
+        bannedAt: new Date().toISOString(),
+        banReason: reason || 'Violation of terms of service'
+      }
+    });
+
+  } catch (error) {
+    console.error('Error banning customer:', error);
+    res.status(500).json({
+      success: false,
+      error: {
+        code: 'BAN_CUSTOMER_ERROR',
+        message: 'Failed to ban customer',
+        details: error.message
+      }
+    });
+  }
+});
+
+/**
+ * @route   DELETE /api/admin/customers/:id
+ * @desc    Delete customer completely
+ * @access  Private (Admin only)
+ */
+router.delete('/customers/:id', requireRole(['admin']), async (req, res) => {
+  try {
+    const { id } = req.params;
+    const adminId = req.user.uid;
+    const db = getFirestore();
+    const batch = db.batch();
+
+    const customerRef = db.collection('users').doc(id);
+    const customerDoc = await customerRef.get();
+
+    if (!customerDoc.exists) {
+      return res.status(404).json({
+        success: false,
+        error: {
+          code: 'CUSTOMER_NOT_FOUND',
+          message: 'Customer not found'
+        }
+      });
+    }
+
+    const customerData = customerDoc.data();
+    if (customerData.userType !== 'customer') {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'INVALID_USER_TYPE',
+          message: 'User is not a customer'
+        }
+      });
+    }
+
+    // Delete customer from users collection
+    batch.delete(customerRef);
+
+    // Delete customer wallet
+    const walletRef = db.collection('wallets').doc(id);
+    batch.delete(walletRef);
+
+    // Update bookings to remove customer reference
+    const bookingsSnapshot = await db.collection('bookings')
+      .where('customerId', '==', id)
+      .get();
+    
+    bookingsSnapshot.forEach(doc => {
+      batch.update(doc.ref, {
+        customerId: null,
+        customerName: null,
+        status: 'cancelled',
+        cancellationReason: 'Customer account deleted',
+        updatedAt: new Date()
+      });
+    });
+
+    // Log the deletion action
+    const auditLogRef = db.collection('adminLogs').doc();
+    batch.set(auditLogRef, {
+      action: 'customer_deleted',
+      adminId,
+      targetUserId: id,
+      targetUserType: 'customer',
+      details: {
+        customerName: customerData.name || customerData.personalInfo?.name,
+        customerEmail: customerData.email || customerData.personalInfo?.email,
+        deletedAt: new Date()
+      },
+      timestamp: new Date()
+    });
+
+    await batch.commit();
+
+    res.json({
+      success: true,
+      message: 'Customer deleted successfully',
+      data: {
+        customerId: id,
+        deletedAt: new Date().toISOString()
+      }
+    });
+
+  } catch (error) {
+    console.error('Error deleting customer:', error);
+    res.status(500).json({
+      success: false,
+      error: {
+        code: 'DELETE_CUSTOMER_ERROR',
+        message: 'Failed to delete customer',
+        details: error.message
+      }
+    });
+  }
+});
+
+/**
+ * @route   GET /api/admin/customers/:id/bookings
+ * @desc    Fetch customer bookings
+ * @access  Private (Admin only)
+ */
+router.get('/customers/:id/bookings', requireRole(['admin']), async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { limit = 20, offset = 0, status } = req.query;
+    const db = getFirestore();
+
+    let query = db.collection('bookings').where('customerId', '==', id);
+
+    if (status) {
+      query = query.where('status', '==', status);
+    }
+
+    query = query.orderBy('createdAt', 'desc').limit(parseInt(limit)).offset(parseInt(offset));
+
+    const snapshot = await query.get();
+    const bookings = [];
+
+    snapshot.forEach(doc => {
+      const data = doc.data();
+      bookings.push({
+        id: doc.id,
+        ...data,
+        createdAt: data.createdAt?.toDate?.() || data.createdAt,
+        updatedAt: data.updatedAt?.toDate?.() || data.updatedAt
+      });
+    });
+
+    res.json({
+      success: true,
+      data: bookings,
+      pagination: {
+        limit: parseInt(limit),
+        offset: parseInt(offset),
+        total: bookings.length
+      }
+    });
+
+  } catch (error) {
+    console.error('Error fetching customer bookings:', error);
+    res.status(500).json({
+      success: false,
+      error: {
+        code: 'FETCH_CUSTOMER_BOOKINGS_ERROR',
+        message: 'Failed to fetch customer bookings',
+        details: error.message
+      }
+    });
+  }
+});
+
+/**
+ * @route   GET /api/admin/customers/:id/wallet
+ * @desc    Fetch wallet details
+ * @access  Private (Admin only)
+ */
+router.get('/customers/:id/wallet', requireRole(['admin']), async (req, res) => {
+  try {
+    const { id } = req.params;
+    const db = getFirestore();
+
+    const walletDoc = await db.collection('wallets').doc(id).get();
+
+    if (!walletDoc.exists) {
+      return res.status(404).json({
+        success: false,
+        error: {
+          code: 'WALLET_NOT_FOUND',
+          message: 'Wallet not found for this customer'
+        }
+      });
+    }
+
+    const walletData = walletDoc.data();
+
+    res.json({
+      success: true,
+      data: walletData
+    });
+
+  } catch (error) {
+    console.error('Error fetching customer wallet:', error);
+    res.status(500).json({
+      success: false,
+      error: {
+        code: 'FETCH_WALLET_ERROR',
+        message: 'Failed to fetch wallet details',
+        details: error.message
+      }
+    });
+  }
+});
+
+/**
+ * @route   PUT /api/admin/customers/:id/wallet
+ * @desc    Adjust wallet balance (credit/debit by admin)
+ * @access  Private (Admin only)
+ */
+router.put('/customers/:id/wallet', requireRole(['admin']), async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { amount, type, reason } = req.body; // type: 'credit' or 'debit'
+    const adminId = req.user.uid;
+    const db = getFirestore();
+
+    if (!amount || !type || !['credit', 'debit'].includes(type)) {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'INVALID_PARAMETERS',
+          message: 'Amount and type (credit/debit) are required'
+        }
+      });
+    }
+
+    const walletRef = db.collection('wallets').doc(id);
+    const walletDoc = await walletRef.get();
+
+    if (!walletDoc.exists) {
+      return res.status(404).json({
+        success: false,
+        error: {
+          code: 'WALLET_NOT_FOUND',
+          message: 'Wallet not found for this customer'
+        }
+      });
+    }
+
+    const walletData = walletDoc.data();
+    const currentBalance = walletData.balance || 0;
+    const newBalance = type === 'credit' 
+      ? currentBalance + parseFloat(amount)
+      : currentBalance - parseFloat(amount);
+
+    if (newBalance < 0) {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'INSUFFICIENT_BALANCE',
+          message: 'Insufficient balance for debit operation'
+        }
+      });
+    }
+
+    const transaction = {
+      id: Date.now().toString(),
+      type: type === 'credit' ? 'admin_credit' : 'admin_debit',
+      amount: parseFloat(amount),
+      balance: newBalance,
+      reason: reason || 'Admin adjustment',
+      adminId,
+      timestamp: new Date()
+    };
+
+    await walletRef.update({
+      balance: newBalance,
+      transactions: [...(walletData.transactions || []), transaction],
+      updatedAt: new Date()
+    });
+
+    // Log the wallet adjustment
+    const auditLogRef = db.collection('adminLogs').doc();
+    await auditLogRef.set({
+      action: 'wallet_adjustment',
+      adminId,
+      targetUserId: id,
+      targetUserType: 'customer',
+      details: {
+        amount: parseFloat(amount),
+        type,
+        reason: reason || 'Admin adjustment',
+        previousBalance: currentBalance,
+        newBalance,
+        timestamp: new Date()
+      },
+      timestamp: new Date()
+    });
+
+    res.json({
+      success: true,
+      message: `Wallet ${type} successful`,
+      data: {
+        customerId: id,
+        amount: parseFloat(amount),
+        type,
+        previousBalance: currentBalance,
+        newBalance,
+        transaction
+      }
+    });
+
+  } catch (error) {
+    console.error('Error adjusting wallet:', error);
+    res.status(500).json({
+      success: false,
+      error: {
+        code: 'WALLET_ADJUSTMENT_ERROR',
+        message: 'Failed to adjust wallet',
         details: error.message
       }
     });

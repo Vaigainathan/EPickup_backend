@@ -430,15 +430,20 @@ class VerificationService {
         updatedAt: new Date()
       });
 
-      // Update driverDocuments collection (use snake_case for query)
+      // Update driverDocuments collection (avoid composite index by filtering in memory)
       const snakeCaseDocType = this.toSnakeCase(documentType);
       const driverDocsQuery = await this.db.collection('driverDocuments')
         .where('driverId', '==', driverId)
-        .where('documentType', '==', snakeCaseDocType)
         .get();
 
       if (!driverDocsQuery.empty) {
-        driverDocsQuery.docs.forEach(doc => {
+        // Filter by documentType in memory to avoid composite index requirement
+        const matchingDocs = driverDocsQuery.docs.filter(doc => {
+          const docData = doc.data();
+          return docData.documentType === snakeCaseDocType;
+        });
+
+        matchingDocs.forEach(doc => {
           batch.update(doc.ref, {
             'verification.status': status === 'verified' ? 'verified' : 'rejected',
             'verification.verifiedBy': adminId,
@@ -457,12 +462,17 @@ class VerificationService {
       // Update verification request if exists (get most recent request regardless of status)
       const verificationQuery = await this.db.collection('documentVerificationRequests')
         .where('driverId', '==', driverId)
-        .orderBy('requestedAt', 'desc')
-        .limit(1)
         .get();
 
       if (!verificationQuery.empty) {
-        const verificationDoc = verificationQuery.docs[0];
+        // Find the most recent verification request in memory
+        const sortedDocs = verificationQuery.docs.sort((a, b) => {
+          const aTime = a.data().requestedAt?.toDate?.() || new Date(0);
+          const bTime = b.data().requestedAt?.toDate?.() || new Date(0);
+          return bTime - aTime; // Descending order (most recent first)
+        });
+        
+        const verificationDoc = sortedDocs[0];
         const verificationData = verificationDoc.data();
         
         if (verificationData.documents && verificationData.documents[normalizedDocType]) {

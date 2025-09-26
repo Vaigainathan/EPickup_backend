@@ -181,5 +181,6 @@ module.exports = {
   getFirestore,
   getStorage,
   uploadFile,
-  deleteFile
+  deleteFile,
+  Timestamp: admin.firestore.Timestamp
 };

@@ -3362,8 +3362,38 @@ router.get('/documents/status', requireDriver, documentStatusRateLimit, document
     }
 
     // Use comprehensive data if available, otherwise fall back to basic data
-    const finalDocuments = comprehensiveVerificationData?.documents || documents;
-    const finalVerificationStatus = comprehensiveVerificationData?.verificationStatus || verificationStatus;
+    let finalDocuments = comprehensiveVerificationData?.documents || documents;
+    let finalVerificationStatus = comprehensiveVerificationData?.verificationStatus || verificationStatus;
+    
+    // CRITICAL FIX: If comprehensive data failed, ensure we have proper document structure
+    if (!comprehensiveVerificationData) {
+      console.log('📊 Using basic data from users collection');
+      console.log('📊 Raw documents from users:', JSON.stringify(documents, null, 2));
+      
+      // Ensure all required documents have proper structure
+      const requiredDocuments = ['drivingLicense', 'profilePhoto', 'aadhaarCard', 'bikeInsurance', 'rcBook'];
+      finalDocuments = {};
+      
+      requiredDocuments.forEach(docType => {
+        const doc = documents[docType] || {};
+        finalDocuments[docType] = {
+          url: doc.url || doc.downloadURL || '',
+          status: doc.status || doc.verificationStatus || 'not_uploaded',
+          verificationStatus: doc.verificationStatus || doc.status || 'not_uploaded',
+          uploadedAt: doc.uploadedAt || '',
+          verified: doc.verified || false,
+          rejectionReason: doc.rejectionReason || null,
+          verifiedAt: doc.verifiedAt || null,
+          verifiedBy: doc.verifiedBy || null,
+          comments: doc.comments || null,
+          number: doc.number || null,
+          fileSize: doc.fileSize || null,
+          lastModified: doc.lastModified || doc.uploadedAt || null
+        };
+      });
+      
+      console.log('📊 Processed final documents:', JSON.stringify(finalDocuments, null, 2));
+    }
 
     // Calculate document completion status with enhanced data
     const requiredDocuments = ['drivingLicense', 'profilePhoto', 'aadhaarCard', 'bikeInsurance', 'rcBook'];

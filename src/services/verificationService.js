@@ -158,12 +158,26 @@ class VerificationService {
 
       const driverData = driverDoc.data();
       
-      // Get verification request
-      const verificationQuery = await this.db.collection('documentVerificationRequests')
-        .where('driverId', '==', driverId)
-        .orderBy('requestedAt', 'desc')
-        .limit(1)
-        .get();
+      // Get verification request (simplified query to avoid index issues)
+      let verificationQuery;
+      try {
+        verificationQuery = await this.db.collection('documentVerificationRequests')
+          .where('driverId', '==', driverId)
+          .get();
+        
+        // Sort by requestedAt in memory to avoid index requirement
+        if (!verificationQuery.empty) {
+          const sortedDocs = verificationQuery.docs.sort((a, b) => {
+            const aTime = a.data().requestedAt?.toDate?.() || new Date(0);
+            const bTime = b.data().requestedAt?.toDate?.() || new Date(0);
+            return bTime - aTime; // Descending order
+          });
+          verificationQuery = { docs: sortedDocs.slice(0, 1), empty: false };
+        }
+      } catch (indexError) {
+        console.warn('⚠️ Firestore index error for verification requests, skipping:', indexError.message);
+        verificationQuery = { docs: [], empty: true };
+      }
 
       // Get driver documents collection
       const driverDocsQuery = await this.db.collection('driverDocuments')

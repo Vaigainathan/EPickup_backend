@@ -271,10 +271,11 @@ class VerificationService {
             documents[normalizedKey] = {
               ...documents[normalizedKey],
               url: verificationDoc.downloadURL,
-              status: verificationDoc.status || 'uploaded',
-              verificationStatus: verificationDoc.verificationStatus || 'pending',
+              // CRITICAL FIX: Preserve verification status from verification request
+              status: verificationDoc.verificationStatus || verificationDoc.status || 'uploaded',
+              verificationStatus: verificationDoc.verificationStatus || verificationDoc.status || 'pending',
               uploadedAt: verificationDoc.uploadedAt || '',
-              verified: verificationDoc.verified || false,
+              verified: verificationDoc.verified || verificationDoc.verificationStatus === 'verified' || false,
               filename: verificationDoc.filename || '',
               rejectionReason: verificationDoc.rejectionReason || null,
               verifiedAt: verificationDoc.verifiedAt || null,
@@ -453,10 +454,10 @@ class VerificationService {
         });
       }
       
-      // Update verification request if exists
+      // Update verification request if exists (get most recent request regardless of status)
       const verificationQuery = await this.db.collection('documentVerificationRequests')
         .where('driverId', '==', driverId)
-        .where('status', '==', 'pending')
+        .orderBy('requestedAt', 'desc')
         .limit(1)
         .get();
 

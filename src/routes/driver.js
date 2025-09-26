@@ -259,7 +259,10 @@ router.get('/profile', requireDriver, async (req, res) => {
           profilePicture: userData.profilePicture,
           verificationStatus: normalizedDriver.verificationStatus || 'pending',
           isVerified: normalizedDriver.isVerified || false,
-          driver: normalizedDriver
+          wallet: normalizedDriver.wallet,
+          welcomeBonusGiven: normalizedDriver.welcomeBonusGiven,
+          welcomeBonusAmount: normalizedDriver.welcomeBonusAmount,
+          welcomeBonusGivenAt: normalizedDriver.welcomeBonusGivenAt
         }
       },
       timestamp: new Date().toISOString()
@@ -2251,13 +2254,11 @@ router.get('/wallet', requireDriver, async (req, res) => {
       success: true,
       message: 'Wallet information retrieved successfully',
       data: {
-        wallet: {
-          balance: walletBalance,
-          currency: walletCurrency,
-          welcomeBonusGiven: welcomeBonusGiven,
-          welcomeBonusAmount: welcomeBonusAmount,
-          lastUpdated: walletData.lastUpdated || new Date()
-        },
+        balance: walletBalance,
+        currency: walletCurrency,
+        welcomeBonusGiven: welcomeBonusGiven,
+        welcomeBonusAmount: welcomeBonusAmount,
+        lastUpdated: walletData.lastUpdated || new Date(),
         transactions,
         pagination: {
           limit: parseInt(limit),

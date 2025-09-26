@@ -226,6 +226,17 @@ router.get('/profile', requireDriver, async (req, res) => {
 
     const userData = userDoc.data();
     
+    // CRITICAL FIX: Get verification data from verification service for comprehensive status
+    const verificationService = require('../services/verificationService');
+    let comprehensiveVerificationData;
+    
+    try {
+      comprehensiveVerificationData = await verificationService.getDriverVerificationData(uid);
+      console.log('📊 [PROFILE] Comprehensive verification data:', comprehensiveVerificationData);
+    } catch (verificationError) {
+      console.warn('⚠️ [PROFILE] Failed to get comprehensive verification data, using basic data:', verificationError.message);
+    }
+    
     // Ensure wallet structure exists and is properly formatted
     const driverData = userData.driver || {};
     const walletData = driverData.wallet || {};
@@ -238,10 +249,16 @@ router.get('/profile', requireDriver, async (req, res) => {
       transactions: walletData.transactions || []
     };
     
-    // Normalize driver data with proper wallet structure
+    // Use comprehensive verification data if available, otherwise fall back to basic data
+    const finalVerificationStatus = comprehensiveVerificationData?.verificationStatus || driverData.verificationStatus || 'pending';
+    const finalIsVerified = comprehensiveVerificationData?.verificationStatus === 'verified' || comprehensiveVerificationData?.verificationStatus === 'approved' || driverData.isVerified || false;
+    
+    // Normalize driver data with proper wallet structure and updated verification status
     const normalizedDriver = {
       ...driverData,
       wallet: normalizedWallet,
+      verificationStatus: finalVerificationStatus,
+      isVerified: finalIsVerified,
       welcomeBonusGiven: driverData.welcomeBonusGiven || false,
       welcomeBonusAmount: driverData.welcomeBonusAmount || 0,
       welcomeBonusGivenAt: driverData.welcomeBonusGivenAt || null
@@ -256,8 +273,8 @@ router.get('/profile', requireDriver, async (req, res) => {
         email: userData.email,
         phone: userData.phone,
         profilePicture: userData.profilePicture,
-        verificationStatus: normalizedDriver.verificationStatus || 'pending',
-        isVerified: normalizedDriver.isVerified || false,
+        verificationStatus: finalVerificationStatus,
+        isVerified: finalIsVerified,
         wallet: normalizedDriver.wallet,
         welcomeBonusGiven: normalizedDriver.welcomeBonusGiven,
         welcomeBonusAmount: normalizedDriver.welcomeBonusAmount,
@@ -269,7 +286,7 @@ router.get('/profile', requireDriver, async (req, res) => {
             number: '',
             color: ''
           },
-          verificationStatus: normalizedDriver.verificationStatus || 'pending',
+          verificationStatus: finalVerificationStatus,
           isOnline: normalizedDriver.isOnline || false,
           isAvailable: normalizedDriver.isAvailable || false,
           rating: normalizedDriver.rating || 0,
@@ -2351,15 +2368,28 @@ router.post('/wallet/ensure-welcome-bonus', requireDriver, async (req, res) => {
     const userData = userDoc.data();
     const driverData = userData.driver || {};
     
-    // Check if driver is verified
-    const isVerified = driverData.verificationStatus === 'verified' || driverData.verificationStatus === 'approved';
+    // CRITICAL FIX: Get verification data from verification service for comprehensive status
+    const verificationService = require('../services/verificationService');
+    let comprehensiveVerificationData;
+    
+    try {
+      comprehensiveVerificationData = await verificationService.getDriverVerificationData(uid);
+      console.log('📊 [WALLET_API] Comprehensive verification data:', comprehensiveVerificationData);
+    } catch (verificationError) {
+      console.warn('⚠️ [WALLET_API] Failed to get comprehensive verification data, using basic data:', verificationError.message);
+    }
+    
+    // Use comprehensive verification data if available, otherwise fall back to basic data
+    const finalVerificationStatus = comprehensiveVerificationData?.verificationStatus || driverData.verificationStatus || 'pending';
+    const isVerified = finalVerificationStatus === 'verified' || finalVerificationStatus === 'approved';
     const welcomeBonusGiven = driverData.welcomeBonusGiven || false;
     const currentBalance = driverData.wallet?.balance || 0;
     
     console.log('🔍 [WALLET_API] Driver status check:', {
       uid,
       isVerified,
-      verificationStatus: driverData.verificationStatus,
+      verificationStatus: finalVerificationStatus,
+      originalVerificationStatus: driverData.verificationStatus,
       welcomeBonusGiven,
       currentBalance
     });

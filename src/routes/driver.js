@@ -251,15 +251,36 @@ router.get('/profile', requireDriver, async (req, res) => {
       success: true,
       message: 'Driver profile retrieved successfully',
       data: {
+        id: userData.id,
+        name: userData.name,
+        email: userData.email,
+        phone: userData.phone,
+        profilePicture: userData.profilePicture,
+        verificationStatus: normalizedDriver.verificationStatus || 'pending',
+        isVerified: normalizedDriver.isVerified || false,
+        wallet: normalizedDriver.wallet,
+        welcomeBonusGiven: normalizedDriver.welcomeBonusGiven,
+        welcomeBonusAmount: normalizedDriver.welcomeBonusAmount,
+        welcomeBonusGivenAt: normalizedDriver.welcomeBonusGivenAt,
         driver: {
-          id: userData.id,
-          name: userData.name,
-          email: userData.email,
-          phone: userData.phone,
-          profilePicture: userData.profilePicture,
+          vehicleDetails: normalizedDriver.vehicleDetails || {
+            type: 'motorcycle',
+            model: '',
+            number: '',
+            color: ''
+          },
           verificationStatus: normalizedDriver.verificationStatus || 'pending',
-          isVerified: normalizedDriver.isVerified || false,
+          isOnline: normalizedDriver.isOnline || false,
+          isAvailable: normalizedDriver.isAvailable || false,
+          rating: normalizedDriver.rating || 0,
+          totalTrips: normalizedDriver.totalTrips || 0,
+          earnings: normalizedDriver.earnings || {
+            total: 0,
+            thisMonth: 0,
+            thisWeek: 0
+          },
           wallet: normalizedDriver.wallet,
+          currentLocation: normalizedDriver.currentLocation || null,
           welcomeBonusGiven: normalizedDriver.welcomeBonusGiven,
           welcomeBonusAmount: normalizedDriver.welcomeBonusAmount,
           welcomeBonusGivenAt: normalizedDriver.welcomeBonusGivenAt

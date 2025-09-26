@@ -3589,4 +3589,94 @@ router.get('/customers/:id/bookings', requireRole(['admin']), async (req, res) =
 
 // Wallet adjustment endpoint removed - no wallet system for customers
 
+/**
+ * @route   PUT /api/admin/customers/:id/name
+ * @desc    Update customer name
+ * @access  Private (Admin only)
+ */
+router.put('/customers/:id/name', requireRole(['admin']), async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { name } = req.body;
+    const adminId = req.user.uid;
+    const db = getFirestore();
+
+    if (!name || name.trim().length < 2) {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'INVALID_NAME',
+          message: 'Name must be at least 2 characters long'
+        }
+      });
+    }
+
+    const customerRef = db.collection('users').doc(id);
+    const customerDoc = await customerRef.get();
+
+    if (!customerDoc.exists) {
+      return res.status(404).json({
+        success: false,
+        error: {
+          code: 'CUSTOMER_NOT_FOUND',
+          message: 'Customer not found'
+        }
+      });
+    }
+
+    const customerData = customerDoc.data();
+    if (customerData.userType !== 'customer') {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'INVALID_USER_TYPE',
+          message: 'User is not a customer'
+        }
+      });
+    }
+
+    // Update customer name
+    await customerRef.update({
+      name: name.trim(),
+      updatedAt: new Date()
+    });
+
+    // Log the name update action
+    const auditLogRef = db.collection('adminLogs').doc();
+    await auditLogRef.set({
+      action: 'customer_name_updated',
+      adminId,
+      targetUserId: id,
+      targetUserType: 'customer',
+      details: {
+        oldName: customerData.name,
+        newName: name.trim(),
+        timestamp: new Date()
+      },
+      timestamp: new Date()
+    });
+
+    res.json({
+      success: true,
+      message: 'Customer name updated successfully',
+      data: {
+        customerId: id,
+        oldName: customerData.name,
+        newName: name.trim()
+      }
+    });
+
+  } catch (error) {
+    console.error('Error updating customer name:', error);
+    res.status(500).json({
+      success: false,
+      error: {
+        code: 'UPDATE_NAME_ERROR',
+        message: 'Failed to update customer name',
+        details: error.message
+      }
+    });
+  }
+});
+
 module.exports = router;

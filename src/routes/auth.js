@@ -261,7 +261,31 @@ router.post('/verify-otp',
       } else {
         // User doesn't exist - handle signup
         // For new users, generate a default name if not provided
-        const userName = name || `User_${phoneNumber.slice(-4)}`;
+        // Require proper name for signup
+        if (!name || name.trim().length < 2) {
+          console.log(`❌ Signup attempt without proper name: ${phoneNumber}`);
+          
+          await authService.logAuthAttempt({
+            phoneNumber,
+            action: 'signup_failed',
+            success: false,
+            error: 'Name is required for signup',
+            ip: req.ip,
+            userAgent: req.get('User-Agent')
+          });
+
+          return res.status(400).json({
+            success: false,
+            message: 'Name is required for signup',
+            error: {
+              code: 'NAME_REQUIRED',
+              message: 'Please provide your full name to create an account'
+            },
+            timestamp: new Date().toISOString()
+          });
+        }
+        
+        const userName = name.trim();
         
         console.log(`📝 New signup attempt: ${phoneNumber}`);
         
@@ -443,7 +467,31 @@ router.post('/verify-widget-otp',
       } else {
         // User doesn't exist - handle signup
         // For new users, generate a default name if not provided
-        const userName = name || `User_${phoneNumber.slice(-4)}`;
+        // Require proper name for signup
+        if (!name || name.trim().length < 2) {
+          console.log(`❌ Signup attempt without proper name: ${phoneNumber}`);
+          
+          await authService.logAuthAttempt({
+            phoneNumber,
+            action: 'signup_failed',
+            success: false,
+            error: 'Name is required for signup',
+            ip: req.ip,
+            userAgent: req.get('User-Agent')
+          });
+
+          return res.status(400).json({
+            success: false,
+            message: 'Name is required for signup',
+            error: {
+              code: 'NAME_REQUIRED',
+              message: 'Please provide your full name to create an account'
+            },
+            timestamp: new Date().toISOString()
+          });
+        }
+        
+        const userName = name.trim();
         
         console.log(`📝 New signup attempt: ${phoneNumber}`);
         

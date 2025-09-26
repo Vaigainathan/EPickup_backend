@@ -2212,6 +2212,18 @@ router.get('/wallet', requireDriver, async (req, res) => {
     const driverData = userData.driver || {};
     const walletData = driverData.wallet || {};
     
+    // Debug logging
+    console.log('🔍 [WALLET_API] Debug wallet data:', {
+      userId: uid,
+      hasDriverData: !!driverData,
+      driverKeys: Object.keys(driverData),
+      hasWalletData: !!walletData,
+      walletKeys: Object.keys(walletData),
+      walletBalance: walletData.balance,
+      welcomeBonusGiven: driverData.welcomeBonusGiven,
+      welcomeBonusAmount: driverData.welcomeBonusAmount
+    });
+    
     // Ensure wallet structure exists
     const walletBalance = walletData.balance || 0;
     const walletCurrency = walletData.currency || 'INR';
@@ -2250,22 +2262,26 @@ router.get('/wallet', requireDriver, async (req, res) => {
       totalCount = 0;
     }
 
+    const responseData = {
+      balance: walletBalance,
+      currency: walletCurrency,
+      welcomeBonusGiven: welcomeBonusGiven,
+      welcomeBonusAmount: welcomeBonusAmount,
+      lastUpdated: walletData.lastUpdated || new Date(),
+      transactions,
+      pagination: {
+        limit: parseInt(limit),
+        offset: parseInt(offset),
+        total: totalCount
+      }
+    };
+    
+    console.log('🔍 [WALLET_API] Response data:', responseData);
+    
     res.status(200).json({
       success: true,
       message: 'Wallet information retrieved successfully',
-      data: {
-        balance: walletBalance,
-        currency: walletCurrency,
-        welcomeBonusGiven: welcomeBonusGiven,
-        welcomeBonusAmount: welcomeBonusAmount,
-        lastUpdated: walletData.lastUpdated || new Date(),
-        transactions,
-        pagination: {
-          limit: parseInt(limit),
-          offset: parseInt(offset),
-          total: totalCount
-        }
-      },
+      data: responseData,
       timestamp: new Date().toISOString()
     });
 

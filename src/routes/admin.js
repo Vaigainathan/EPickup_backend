@@ -892,9 +892,20 @@ router.get('/drivers/pending', requireRole(['admin']), async (req, res) => {
 router.get('/drivers/:driverId/documents', requireRole(['admin']), async (req, res) => {
   try {
     const { driverId } = req.params;
-    const db = getFirestore();
     
-    // Get driver data
+    // Use the same comprehensive verification service that the driver app uses
+    const verificationService = require('../services/verificationService');
+    let comprehensiveVerificationData;
+    
+    try {
+      comprehensiveVerificationData = await verificationService.getDriverVerificationData(driverId);
+      console.log('📊 Admin fetching comprehensive verification data:', comprehensiveVerificationData);
+    } catch (verificationError) {
+      console.warn('⚠️ Failed to get comprehensive verification data for admin:', verificationError.message);
+    }
+
+    // Get driver basic info
+    const db = getFirestore();
     const driverDoc = await db.collection('users').doc(driverId).get();
     if (!driverDoc.exists) {
       return res.status(404).json({
@@ -907,21 +918,41 @@ router.get('/drivers/:driverId/documents', requireRole(['admin']), async (req, r
     }
 
     const driverData = driverDoc.data();
-    const documents = driverData.driver?.documents || {};
+    
+    // Use comprehensive data if available, otherwise fall back to basic data
+    const finalDocuments = comprehensiveVerificationData?.documents || driverData.driver?.documents || {};
+    const finalVerificationStatus = comprehensiveVerificationData?.verificationStatus || driverData.driver?.verificationStatus || 'pending';
+    
+    // Process documents to ensure proper verification status
+    const processedDocuments = {};
+    const documentTypes = ['drivingLicense', 'aadhaarCard', 'bikeInsurance', 'rcBook', 'profilePhoto'];
+    
+    documentTypes.forEach(docType => {
+      const doc = finalDocuments[docType];
+      if (doc) {
+        processedDocuments[docType] = {
+          ...doc,
+          verified: doc.verificationStatus === 'verified' || doc.status === 'verified' || doc.verified === true,
+          status: doc.verificationStatus || doc.status || 'pending'
+        };
+      } else {
+        processedDocuments[docType] = null;
+      }
+    });
     
     res.json({
       success: true,
       data: {
-        documents: {
-          drivingLicense: documents.drivingLicense || null,
-          aadhaarCard: documents.aadhaarCard || null,
-          bikeInsurance: documents.bikeInsurance || null,
-          rcBook: documents.rcBook || null,
-          profilePhoto: documents.profilePhoto || null
-        },
+        documents: processedDocuments,
         driverId,
         driverName: driverData.name,
-        verificationStatus: driverData.driver?.verificationStatus || 'pending'
+        verificationStatus: finalVerificationStatus,
+        // Add comprehensive data source info
+        dataSource: comprehensiveVerificationData ? 'comprehensive' : 'basic',
+        comprehensiveData: comprehensiveVerificationData ? {
+          source: comprehensiveVerificationData.source,
+          documentSummary: comprehensiveVerificationData.documentSummary
+        } : null
       },
       timestamp: new Date().toISOString()
     });

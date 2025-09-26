@@ -34,7 +34,7 @@ const adminAuthRoutes = require('./routes/adminAuth');
 
 // Import middleware
 const { errorHandler } = require('./middleware/errorHandler');
-const { authMiddleware } = require('./middleware/auth');
+const { authMiddleware, adminAuthMiddleware } = require('./middleware/auth');
 
 // Import services
 const { initializeFirebase } = require('./services/firebase');
@@ -307,7 +307,7 @@ app.use('/service-area', serviceAreaRoutes); // Alternative path for service are
 app.use('/api/wallet', walletRoutes);
 app.use('/api/fare', fareCalculationRoutes);
 app.use('/api/admin/auth', adminAuthRoutes); // No auth required for admin login
-app.use('/api/admin', authMiddleware, adminRoutes);
+app.use('/api/admin', adminAuthMiddleware, adminRoutes); // Admin routes use admin auth middleware
 
 // Health check routes (for keepalive script) - No auth required
 app.use('/health', healthRoutes);

@@ -3070,7 +3070,7 @@ router.get('/customers', requireRole(['admin']), async (req, res) => {
     query = query.orderBy('createdAt', 'desc').limit(parseInt(limit)).offset(parseInt(offset));
 
     const snapshot = await query.get();
-    const customers = [];
+    let customers = [];
 
     snapshot.forEach(doc => {
       const data = doc.data();
@@ -3081,6 +3081,20 @@ router.get('/customers', requireRole(['admin']), async (req, res) => {
         updatedAt: data.updatedAt?.toDate?.() || data.updatedAt
       });
     });
+
+    // Apply search filter if provided
+    if (search) {
+      const searchTerm = search.toLowerCase();
+      customers = customers.filter(customer => {
+        const name = (customer.name || customer.personalInfo?.name || '').toLowerCase();
+        const email = (customer.email || customer.personalInfo?.email || '').toLowerCase();
+        const phone = (customer.phone || customer.personalInfo?.phone || '').toLowerCase();
+        
+        return name.includes(searchTerm) || 
+               email.includes(searchTerm) || 
+               phone.includes(searchTerm);
+      });
+    }
 
     res.json({
       success: true,

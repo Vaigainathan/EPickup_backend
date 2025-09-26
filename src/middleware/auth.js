@@ -199,6 +199,128 @@ const authMiddleware = async (req, res, next) => {
 };
 
 /**
+ * Admin authentication middleware
+ * Handles admin JWT token authentication
+ */
+const adminAuthMiddleware = async (req, res, next) => {
+  try {
+    // Get token from Authorization header
+    const authHeader = req.headers.authorization;
+    
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({
+        success: false,
+        error: {
+          code: 'UNAUTHORIZED',
+          message: 'Access token required',
+          details: 'Please provide a valid Bearer token in the Authorization header'
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    // Extract token
+    const token = authHeader.substring(7); // Remove 'Bearer ' prefix
+
+    // Verify JWT token
+    const secret = process.env.JWT_SECRET || 'your-secret-key';
+    let decodedToken;
+    
+    try {
+      decodedToken = jwt.verify(token, secret, {
+        issuer: 'epickup-app',
+        audience: 'epickup-users'
+      });
+    } catch (verifyError) {
+      // If verification fails with issuer/audience, try without them
+      try {
+        decodedToken = jwt.verify(token, secret);
+      } catch (fallbackError) {
+        console.error('Admin JWT verification failed:', verifyError.message, 'Fallback failed:', fallbackError.message);
+        
+        // Handle specific JWT errors
+        if (verifyError.name === 'TokenExpiredError') {
+          return res.status(401).json({
+            success: false,
+            error: {
+              code: 'TOKEN_EXPIRED',
+              message: 'Token has expired. Please login again.'
+            },
+            timestamp: new Date().toISOString()
+          });
+        } else if (verifyError.name === 'JsonWebTokenError') {
+          return res.status(401).json({
+            success: false,
+            error: {
+              code: 'INVALID_TOKEN',
+              message: 'Invalid token format'
+            },
+            timestamp: new Date().toISOString()
+          });
+        }
+        
+        return res.status(401).json({
+          success: false,
+          error: {
+            code: 'AUTHENTICATION_FAILED',
+            message: 'Authentication failed'
+          },
+          timestamp: new Date().toISOString()
+        });
+      }
+    }
+    
+    if (!decodedToken) {
+      return res.status(401).json({
+        success: false,
+        error: {
+          code: 'INVALID_TOKEN',
+          message: 'Invalid access token',
+          details: 'The provided token is invalid or has expired'
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    // Check if this is an admin token
+    if (decodedToken.userType !== 'admin') {
+      return res.status(403).json({
+        success: false,
+        error: {
+          code: 'FORBIDDEN',
+          message: 'Access denied',
+          details: 'This resource requires admin privileges'
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    // Set user info in request
+    req.user = {
+      uid: decodedToken.userId,
+      id: decodedToken.userId,
+      userType: decodedToken.userType,
+      role: decodedToken.role,
+      email: decodedToken.email,
+      name: decodedToken.name || 'Admin User',
+      permissions: ['all']
+    };
+
+    next();
+  } catch (error) {
+    console.error('Admin auth middleware error:', error);
+    return res.status(500).json({
+      success: false,
+      error: {
+        code: 'AUTHENTICATION_ERROR',
+        message: 'Authentication failed'
+      },
+      timestamp: new Date().toISOString()
+    });
+  }
+};
+
+/**
  * Role-based authorization middleware
  * @param {Array<string>} allowedRoles - Array of allowed user types
  */
@@ -425,6 +547,7 @@ const userRateLimit = (maxAttempts = 5, windowMs = 15 * 60 * 1000) => {
 module.exports = {
   authenticateToken: authMiddleware,
   authMiddleware,
+  adminAuthMiddleware,
   requireRole,
   requireCustomer,
   requireDriver,

@@ -2188,27 +2188,37 @@ router.get('/wallet', requireDriver, async (req, res) => {
     const walletBalance = userData.driver?.wallet?.balance || 0;
     const walletCurrency = userData.driver?.wallet?.currency || 'INR';
 
-    // Get wallet transactions
-    const transactionsQuery = db.collection('driverWalletTransactions')
-      .where('driverId', '==', uid)
-      .orderBy('createdAt', 'desc')
-      .limit(parseInt(limit))
-      .offset(parseInt(offset));
+    // Get wallet transactions with error handling
+    let transactions = [];
+    let totalCount = 0;
+    
+    try {
+      const transactionsQuery = db.collection('driverWalletTransactions')
+        .where('driverId', '==', uid)
+        .orderBy('createdAt', 'desc')
+        .limit(parseInt(limit))
+        .offset(parseInt(offset));
 
-    const transactionsSnapshot = await transactionsQuery.get();
-    const transactions = [];
+      const transactionsSnapshot = await transactionsQuery.get();
 
-    transactionsSnapshot.forEach(doc => {
-      transactions.push({
-        id: doc.id,
-        ...doc.data()
+      transactionsSnapshot.forEach(doc => {
+        transactions.push({
+          id: doc.id,
+          ...doc.data()
+        });
       });
-    });
 
-    // Get total transaction count
-    const totalQuery = db.collection('driverWalletTransactions')
-      .where('driverId', '==', uid);
-    const totalSnapshot = await totalQuery.get();
+      // Get total transaction count
+      const totalQuery = db.collection('driverWalletTransactions')
+        .where('driverId', '==', uid);
+      const totalSnapshot = await totalQuery.get();
+      totalCount = totalSnapshot.size;
+    } catch (error) {
+      console.error('Error getting wallet transactions:', error);
+      // If index is not ready, return empty transactions but still return wallet balance
+      transactions = [];
+      totalCount = 0;
+    }
 
     res.status(200).json({
       success: true,
@@ -2222,7 +2232,7 @@ router.get('/wallet', requireDriver, async (req, res) => {
         pagination: {
           limit: parseInt(limit),
           offset: parseInt(offset),
-          total: totalSnapshot.size
+          total: totalCount
         }
       },
       timestamp: new Date().toISOString()

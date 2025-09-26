@@ -386,24 +386,34 @@ class VerificationService {
       // Normalize document type
       const normalizedDocType = this.normalizeDocumentField(documentType);
       
-      // Update specific document in users collection
-      if (documents[normalizedDocType]) {
+      // CRITICAL FIX: Always update documents in users collection, even if not present
+      // This ensures the Driver App can read the verification status
+      if (!documents[normalizedDocType]) {
         documents[normalizedDocType] = {
-          ...documents[normalizedDocType],
-          status: status === 'verified' ? 'verified' : 'rejected',
-          verified: status === 'verified',
-          verifiedAt: new Date(),
-          verifiedBy: adminId,
-          verificationComments: comments || null,
-          rejectionReason: status === 'rejected' ? rejectionReason : null
+          url: '', // Will be populated from other sources
+          status: 'pending',
+          uploadedAt: '',
+          verified: false
         };
-        
-        // Update driver's documents
-        batch.update(driverRef, {
-          'driver.documents': documents,
-          updatedAt: new Date()
-        });
       }
+      
+      // Update specific document in users collection with BOTH field names for compatibility
+      documents[normalizedDocType] = {
+        ...documents[normalizedDocType],
+        status: status === 'verified' ? 'verified' : 'rejected',
+        verificationStatus: status === 'verified' ? 'verified' : 'rejected', // Admin App field
+        verified: status === 'verified',
+        verifiedAt: new Date(),
+        verifiedBy: adminId,
+        verificationComments: comments || null,
+        rejectionReason: status === 'rejected' ? rejectionReason : null
+      };
+      
+      // Update driver's documents
+      batch.update(driverRef, {
+        'driver.documents': documents,
+        updatedAt: new Date()
+      });
 
       // Update driverDocuments collection (use snake_case for query)
       const snakeCaseDocType = this.toSnakeCase(documentType);

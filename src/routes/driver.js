@@ -3350,11 +3350,33 @@ router.get('/documents/status', requireDriver, documentStatusRateLimit, document
     const documents = userData.driver?.documents || {};
     const verificationStatus = userData.driver?.verificationStatus || 'pending';
 
+    // CRITICAL FIX: Get verification data from verification service for comprehensive status
+    const verificationService = require('../services/verificationService');
+    let comprehensiveVerificationData;
+    
+    try {
+      comprehensiveVerificationData = await verificationService.getDriverVerificationData(uid);
+      console.log('📊 Comprehensive verification data:', comprehensiveVerificationData);
+    } catch (verificationError) {
+      console.warn('⚠️ Failed to get comprehensive verification data, using basic data:', verificationError.message);
+    }
+
+    // Use comprehensive data if available, otherwise fall back to basic data
+    const finalDocuments = comprehensiveVerificationData?.documents || documents;
+    const finalVerificationStatus = comprehensiveVerificationData?.verificationStatus || verificationStatus;
+
     // Calculate document completion status with enhanced data
     const requiredDocuments = ['drivingLicense', 'profilePhoto', 'aadhaarCard', 'bikeInsurance', 'rcBook'];
-    const uploadedDocuments = requiredDocuments.filter(doc => documents[doc]?.url);
-    const verifiedDocuments = requiredDocuments.filter(doc => documents[doc]?.status === 'verified');
-    const rejectedDocuments = requiredDocuments.filter(doc => documents[doc]?.status === 'rejected');
+    const uploadedDocuments = requiredDocuments.filter(doc => finalDocuments[doc]?.url);
+    const verifiedDocuments = requiredDocuments.filter(doc => 
+      finalDocuments[doc]?.status === 'verified' || 
+      finalDocuments[doc]?.verificationStatus === 'verified' ||
+      finalDocuments[doc]?.verified === true
+    );
+    const rejectedDocuments = requiredDocuments.filter(doc => 
+      finalDocuments[doc]?.status === 'rejected' || 
+      finalDocuments[doc]?.verificationStatus === 'rejected'
+    );
 
     const documentStatus = {
       total: requiredDocuments.length,
@@ -3369,18 +3391,18 @@ router.get('/documents/status', requireDriver, documentStatusRateLimit, document
       ? Math.round((documentStatus.verified / documentStatus.total) * 100)
       : 0;
 
-    // Determine next steps based on status
+    // Determine next steps based on final verification status
     const nextSteps = [];
-    if (verificationStatus === 'pending') {
+    if (finalVerificationStatus === 'pending') {
       nextSteps.push('Upload all required documents');
       nextSteps.push('Ensure documents are clear and readable');
-    } else if (verificationStatus === 'pending_verification') {
+    } else if (finalVerificationStatus === 'pending_verification') {
       nextSteps.push('Wait for admin review (24-48 hours)');
       nextSteps.push('Check back regularly for updates');
-    } else if (verificationStatus === 'rejected') {
+    } else if (finalVerificationStatus === 'rejected') {
       nextSteps.push('Review rejection reasons for each document');
       nextSteps.push('Re-upload rejected documents with improvements');
-    } else if (verificationStatus === 'approved') {
+    } else if (finalVerificationStatus === 'approved') {
       nextSteps.push('Start accepting ride requests');
       nextSteps.push('Complete your first ride to earn welcome bonus');
     }
@@ -3420,7 +3442,7 @@ router.get('/documents/status', requireDriver, documentStatusRateLimit, document
     };
 
     const enhancedDocuments = requiredDocuments.map(docType => {
-      const doc = documents[docType] || {};
+      const doc = finalDocuments[docType] || {};
       const config = documentConfig[docType];
 
       return {
@@ -3428,7 +3450,7 @@ router.get('/documents/status', requireDriver, documentStatusRateLimit, document
         name: config?.displayName || docType,
         displayName: config?.displayName || docType,
         description: config?.description || '',
-        status: doc.status || 'not_uploaded',
+        status: doc.status || doc.verificationStatus || 'not_uploaded',
         url: doc.url || '',
         number: doc.number || '',
         uploadedAt: doc.uploadedAt || '',
@@ -3445,13 +3467,13 @@ router.get('/documents/status', requireDriver, documentStatusRateLimit, document
       };
     });
 
-    // Get detailed status for each document
+    // Get detailed status for each document using comprehensive data
     const documentDetails = requiredDocuments.map(docType => {
-      const doc = documents[docType];
+      const doc = finalDocuments[docType];
       return {
         type: docType,
         name: getDocumentDisplayName(docType),
-        status: doc?.status || 'not_uploaded',
+        status: doc?.status || doc?.verificationStatus || 'not_uploaded',
         url: doc?.url || null,
         number: doc?.number || null,
         uploadedAt: doc?.uploadedAt || null,
@@ -3469,18 +3491,24 @@ router.get('/documents/status', requireDriver, documentStatusRateLimit, document
       success: true,
       message: 'Document status retrieved successfully',
       data: {
-        verificationStatus,
+        verificationStatus: finalVerificationStatus,
         documentStatus,
         documents: enhancedDocuments,
         isComplete: uploadedDocuments.length === requiredDocuments.length,
-        isVerified: verificationStatus === 'approved' || verificationStatus === 'verified',
-        canStartWorking: verificationStatus === 'approved' || verificationStatus === 'verified',
+        isVerified: finalVerificationStatus === 'approved' || finalVerificationStatus === 'verified',
+        canStartWorking: finalVerificationStatus === 'approved' || finalVerificationStatus === 'verified',
         // Enhanced UX data
         overallProgress,
-        estimatedReviewTime: verificationStatus === 'pending_verification' ? '24-48 hours' : null,
+        estimatedReviewTime: finalVerificationStatus === 'pending_verification' ? '24-48 hours' : null,
         lastStatusUpdate: userData.updatedAt?.toDate?.()?.toISOString() || new Date().toISOString(),
         nextSteps,
-        welcomeBonusEligible: verificationStatus === 'verified' || verificationStatus === 'approved'
+        welcomeBonusEligible: finalVerificationStatus === 'verified' || finalVerificationStatus === 'approved',
+        // Add comprehensive data source info
+        dataSource: comprehensiveVerificationData ? 'comprehensive' : 'basic',
+        comprehensiveData: comprehensiveVerificationData ? {
+          source: comprehensiveVerificationData.source,
+          documentSummary: comprehensiveVerificationData.documentSummary
+        } : null
       },
       timestamp: new Date().toISOString()
     });

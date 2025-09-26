@@ -2,7 +2,7 @@ const express = require('express');
 const { body, validationResult, query } = require('express-validator');
 const router = express.Router();
 const workSlotsService = require('../services/workSlotsService');
-const { requireAuth, requireDriver, requireAdmin } = require('../middleware/auth');
+const { authMiddleware, requireDriver, requireAdmin } = require('../middleware/auth');
 
 /**
  * @route   GET /api/slots
@@ -243,7 +243,7 @@ router.put('/:slotId/status', [
  * @access  Private (Customer only)
  */
 router.post('/:slotId/book', [
-  requireAuth,
+  authMiddleware,
   body('customerId').isString().withMessage('Customer ID is required')
 ], async (req, res) => {
   try {

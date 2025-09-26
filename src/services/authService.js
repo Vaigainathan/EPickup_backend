@@ -198,6 +198,7 @@ class AuthService {
           phone: normalizedPhone,
           name: userData.name,
           userType: userType,
+          accountStatus: 'active', // Set default account status
           isVerified: false, // New users should be unverified until admin approval
           isActive: true,
           createdAt: new Date(),
@@ -263,10 +264,6 @@ class AuthService {
     switch (userType) {
       case 'customer':
         baseData.customer = {
-          wallet: {
-            balance: 0,
-            currency: 'INR'
-          },
           savedAddresses: [],
           preferences: {
             vehicleType: '2_wheeler',

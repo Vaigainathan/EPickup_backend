@@ -3074,12 +3074,31 @@ router.get('/customers', requireRole(['admin']), async (req, res) => {
 
     snapshot.forEach(doc => {
       const data = doc.data();
-      customers.push({
+      
+      // Ensure proper data structure for customer display
+      const customerData = {
         id: doc.id,
-        ...data,
-        createdAt: data.createdAt?.toDate?.() || data.createdAt,
-        updatedAt: data.updatedAt?.toDate?.() || data.updatedAt
-      });
+        name: data.name || 'Unknown Customer',
+        email: data.email || 'Not provided',
+        phone: data.phone || 'Not provided',
+        personalInfo: {
+          name: data.name || 'Unknown Customer',
+          email: data.email || 'Not provided',
+          phone: data.phone || 'Not provided',
+          dateOfBirth: data.personalInfo?.dateOfBirth || 'Not provided',
+          address: data.personalInfo?.address || 'Not provided'
+        },
+        accountStatus: data.accountStatus || 'active',
+        createdAt: data.createdAt?.toDate?.() || data.createdAt || new Date(),
+        updatedAt: data.updatedAt?.toDate?.() || data.updatedAt || new Date(),
+        userType: data.userType || 'customer',
+        isActive: data.isActive !== false,
+        isVerified: data.isVerified || false,
+        // No wallet system for customers
+        bookingsCount: 0 // Will be calculated separately
+      };
+      
+      customers.push(customerData);
     });
 
     // Apply search filter if provided
@@ -3158,18 +3177,33 @@ router.get('/customers/:id', requireRole(['admin']), async (req, res) => {
       .where('customerId', '==', id)
       .get();
 
-    // Get wallet data
-    const walletDoc = await db.collection('wallets').doc(id).get();
-    const walletData = walletDoc.exists ? walletDoc.data() : null;
+    // No wallet system for customers
+
+    // Format customer data properly
+    const formattedCustomerData = {
+      id: customerDoc.id,
+      name: customerData.name || 'Unknown Customer',
+      email: customerData.email || 'Not provided',
+      phone: customerData.phone || 'Not provided',
+      personalInfo: {
+        name: customerData.name || 'Unknown Customer',
+        email: customerData.email || 'Not provided',
+        phone: customerData.phone || 'Not provided',
+        dateOfBirth: customerData.personalInfo?.dateOfBirth || 'Not provided',
+        address: customerData.personalInfo?.address || 'Not provided'
+      },
+      accountStatus: customerData.accountStatus || 'active',
+      createdAt: customerData.createdAt?.toDate?.() || customerData.createdAt || new Date(),
+      updatedAt: customerData.updatedAt?.toDate?.() || customerData.updatedAt || new Date(),
+      userType: customerData.userType || 'customer',
+      isActive: customerData.isActive !== false,
+      isVerified: customerData.isVerified || false,
+      bookingsCount: bookingsSnapshot.size
+    };
 
     res.json({
       success: true,
-      data: {
-        ...customerData,
-        id: customerDoc.id,
-        bookingsCount: bookingsSnapshot.size,
-        wallet: walletData
-      }
+      data: formattedCustomerData
     });
 
   } catch (error) {
@@ -3440,9 +3474,7 @@ router.delete('/customers/:id', requireRole(['admin']), async (req, res) => {
     // Delete customer from users collection
     batch.delete(customerRef);
 
-    // Delete customer wallet
-    const walletRef = db.collection('wallets').doc(id);
-    batch.delete(walletRef);
+    // No wallet system for customers - wallet deletion removed
 
     // Update bookings to remove customer reference
     const bookingsSnapshot = await db.collection('bookings')
@@ -3553,157 +3585,8 @@ router.get('/customers/:id/bookings', requireRole(['admin']), async (req, res) =
   }
 });
 
-/**
- * @route   GET /api/admin/customers/:id/wallet
- * @desc    Fetch wallet details
- * @access  Private (Admin only)
- */
-router.get('/customers/:id/wallet', requireRole(['admin']), async (req, res) => {
-  try {
-    const { id } = req.params;
-    const db = getFirestore();
+// Wallet endpoints removed - no wallet system for customers
 
-    const walletDoc = await db.collection('wallets').doc(id).get();
-
-    if (!walletDoc.exists) {
-      return res.status(404).json({
-        success: false,
-        error: {
-          code: 'WALLET_NOT_FOUND',
-          message: 'Wallet not found for this customer'
-        }
-      });
-    }
-
-    const walletData = walletDoc.data();
-
-    res.json({
-      success: true,
-      data: walletData
-    });
-
-  } catch (error) {
-    console.error('Error fetching customer wallet:', error);
-    res.status(500).json({
-      success: false,
-      error: {
-        code: 'FETCH_WALLET_ERROR',
-        message: 'Failed to fetch wallet details',
-        details: error.message
-      }
-    });
-  }
-});
-
-/**
- * @route   PUT /api/admin/customers/:id/wallet
- * @desc    Adjust wallet balance (credit/debit by admin)
- * @access  Private (Admin only)
- */
-router.put('/customers/:id/wallet', requireRole(['admin']), async (req, res) => {
-  try {
-    const { id } = req.params;
-    const { amount, type, reason } = req.body; // type: 'credit' or 'debit'
-    const adminId = req.user.uid;
-    const db = getFirestore();
-
-    if (!amount || !type || !['credit', 'debit'].includes(type)) {
-      return res.status(400).json({
-        success: false,
-        error: {
-          code: 'INVALID_PARAMETERS',
-          message: 'Amount and type (credit/debit) are required'
-        }
-      });
-    }
-
-    const walletRef = db.collection('wallets').doc(id);
-    const walletDoc = await walletRef.get();
-
-    if (!walletDoc.exists) {
-      return res.status(404).json({
-        success: false,
-        error: {
-          code: 'WALLET_NOT_FOUND',
-          message: 'Wallet not found for this customer'
-        }
-      });
-    }
-
-    const walletData = walletDoc.data();
-    const currentBalance = walletData.balance || 0;
-    const newBalance = type === 'credit' 
-      ? currentBalance + parseFloat(amount)
-      : currentBalance - parseFloat(amount);
-
-    if (newBalance < 0) {
-      return res.status(400).json({
-        success: false,
-        error: {
-          code: 'INSUFFICIENT_BALANCE',
-          message: 'Insufficient balance for debit operation'
-        }
-      });
-    }
-
-    const transaction = {
-      id: Date.now().toString(),
-      type: type === 'credit' ? 'admin_credit' : 'admin_debit',
-      amount: parseFloat(amount),
-      balance: newBalance,
-      reason: reason || 'Admin adjustment',
-      adminId,
-      timestamp: new Date()
-    };
-
-    await walletRef.update({
-      balance: newBalance,
-      transactions: [...(walletData.transactions || []), transaction],
-      updatedAt: new Date()
-    });
-
-    // Log the wallet adjustment
-    const auditLogRef = db.collection('adminLogs').doc();
-    await auditLogRef.set({
-      action: 'wallet_adjustment',
-      adminId,
-      targetUserId: id,
-      targetUserType: 'customer',
-      details: {
-        amount: parseFloat(amount),
-        type,
-        reason: reason || 'Admin adjustment',
-        previousBalance: currentBalance,
-        newBalance,
-        timestamp: new Date()
-      },
-      timestamp: new Date()
-    });
-
-    res.json({
-      success: true,
-      message: `Wallet ${type} successful`,
-      data: {
-        customerId: id,
-        amount: parseFloat(amount),
-        type,
-        previousBalance: currentBalance,
-        newBalance,
-        transaction
-      }
-    });
-
-  } catch (error) {
-    console.error('Error adjusting wallet:', error);
-    res.status(500).json({
-      success: false,
-      error: {
-        code: 'WALLET_ADJUSTMENT_ERROR',
-        message: 'Failed to adjust wallet',
-        details: error.message
-      }
-    });
-  }
-});
+// Wallet adjustment endpoint removed - no wallet system for customers
 
 module.exports = router;

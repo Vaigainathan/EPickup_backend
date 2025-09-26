@@ -2309,10 +2309,13 @@ router.post('/wallet/ensure-welcome-bonus', requireDriver, async (req, res) => {
     const { uid } = req.user;
     const db = getFirestore();
     
+    console.log('🎁 [WALLET_API] Processing welcome bonus for driver:', uid);
+    
     const userRef = db.collection('users').doc(uid);
     const userDoc = await userRef.get();
     
     if (!userDoc.exists) {
+      console.log('❌ [WALLET_API] User not found:', uid);
       return res.status(404).json({
         success: false,
         error: {
@@ -2332,7 +2335,16 @@ router.post('/wallet/ensure-welcome-bonus', requireDriver, async (req, res) => {
     const welcomeBonusGiven = driverData.welcomeBonusGiven || false;
     const currentBalance = driverData.wallet?.balance || 0;
     
+    console.log('🔍 [WALLET_API] Driver status check:', {
+      uid,
+      isVerified,
+      verificationStatus: driverData.verificationStatus,
+      welcomeBonusGiven,
+      currentBalance
+    });
+    
     if (!isVerified) {
+      console.log('❌ [WALLET_API] Driver not verified:', uid);
       return res.status(400).json({
         success: false,
         error: {
@@ -2345,6 +2357,7 @@ router.post('/wallet/ensure-welcome-bonus', requireDriver, async (req, res) => {
     }
     
     if (welcomeBonusGiven) {
+      console.log('✅ [WALLET_API] Welcome bonus already given:', uid);
       return res.status(200).json({
         success: true,
         message: 'Welcome bonus already given',
@@ -2359,9 +2372,18 @@ router.post('/wallet/ensure-welcome-bonus', requireDriver, async (req, res) => {
     
     // Give welcome bonus
     const newBalance = currentBalance + 500;
+    console.log('💰 [WALLET_API] Processing welcome bonus:', {
+      uid,
+      previousBalance: currentBalance,
+      newBalance,
+      bonusAmount: 500
+    });
+    
+    // Use transaction to ensure atomicity
+    const batch = db.batch();
     
     // Update wallet with welcome bonus
-    await userRef.update({
+    batch.update(userRef, {
       'driver.wallet': {
         balance: newBalance,
         currency: 'INR',
@@ -2376,7 +2398,7 @@ router.post('/wallet/ensure-welcome-bonus', requireDriver, async (req, res) => {
 
     // Create welcome bonus transaction record
     const transactionRef = db.collection('driverWalletTransactions').doc();
-    await transactionRef.set({
+    batch.set(transactionRef, {
       id: transactionRef.id,
       driverId: uid,
       type: 'credit',
@@ -2394,6 +2416,15 @@ router.post('/wallet/ensure-welcome-bonus', requireDriver, async (req, res) => {
       updatedAt: new Date()
     });
 
+    // Commit the transaction
+    await batch.commit();
+    
+    console.log('✅ [WALLET_API] Welcome bonus processed successfully:', {
+      uid,
+      transactionId: transactionRef.id,
+      newBalance
+    });
+
     res.status(200).json({
       success: true,
       message: 'Welcome bonus processed successfully',
@@ -2408,13 +2439,33 @@ router.post('/wallet/ensure-welcome-bonus', requireDriver, async (req, res) => {
     });
 
   } catch (error) {
-    console.error('Error processing welcome bonus:', error);
+    console.error('❌ [WALLET_API] Error processing welcome bonus:', error);
+    
+    // Provide more specific error details
+    let errorCode = 'WELCOME_BONUS_ERROR';
+    let errorMessage = 'Failed to process welcome bonus';
+    let errorDetails = 'An error occurred while processing welcome bonus';
+    
+    if (error.code === 'permission-denied') {
+      errorCode = 'PERMISSION_DENIED';
+      errorMessage = 'Permission denied';
+      errorDetails = 'Insufficient permissions to update wallet';
+    } else if (error.code === 'unavailable') {
+      errorCode = 'SERVICE_UNAVAILABLE';
+      errorMessage = 'Service temporarily unavailable';
+      errorDetails = 'Database service is temporarily unavailable';
+    } else if (error.message && error.message.includes('transaction')) {
+      errorCode = 'TRANSACTION_ERROR';
+      errorMessage = 'Transaction failed';
+      errorDetails = 'Failed to create wallet transaction';
+    }
+    
     res.status(500).json({
       success: false,
       error: {
-        code: 'WELCOME_BONUS_ERROR',
-        message: 'Failed to process welcome bonus',
-        details: 'An error occurred while processing welcome bonus'
+        code: errorCode,
+        message: errorMessage,
+        details: errorDetails
       },
       timestamp: new Date().toISOString()
     });
@@ -3711,7 +3762,7 @@ router.get('/documents/status', requireDriver, documentStatusRateLimit, document
         estimatedReviewTime: finalVerificationStatus === 'pending_verification' ? '24-48 hours' : null,
         lastStatusUpdate: userData.updatedAt?.toDate?.()?.toISOString() || new Date().toISOString(),
         nextSteps,
-        welcomeBonusEligible: finalVerificationStatus === 'verified' || finalVerificationStatus === 'approved',
+        welcomeBonusEligible: (finalVerificationStatus === 'verified' || finalVerificationStatus === 'approved') && !userData.driver?.welcomeBonusGiven,
         // Add comprehensive data source info
         dataSource: comprehensiveVerificationData ? 'comprehensive' : 'basic',
         comprehensiveData: comprehensiveVerificationData ? {

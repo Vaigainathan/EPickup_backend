@@ -67,6 +67,7 @@ router.get('/', [
  * @access  Private (Driver only)
  */
 router.get('/driver', [
+  authMiddleware,
   requireDriver,
   query('date').optional().isISO8601().withMessage('Date must be in ISO format')
 ], async (req, res) => {
@@ -125,6 +126,7 @@ router.get('/driver', [
  * @access  Private (Driver only)
  */
 router.post('/generate', [
+  authMiddleware,
   requireDriver,
   body('date').optional().isISO8601().withMessage('Date must be in ISO format')
 ], async (req, res) => {
@@ -183,6 +185,7 @@ router.post('/generate', [
  * @access  Private (Driver only)
  */
 router.put('/:slotId/status', [
+  authMiddleware,
   requireDriver,
   body('status')
     .isIn(['available', 'booked', 'completed'])
@@ -300,6 +303,7 @@ router.post('/:slotId/book', [
  * @access  Private (Admin only)
  */
 router.post('/admin/generate-all', [
+  authMiddleware,
   requireAdmin,
   body('date').optional().isISO8601().withMessage('Date must be in ISO format')
 ], async (req, res) => {
@@ -357,6 +361,7 @@ router.post('/admin/generate-all', [
  * @access  Private (Admin only)
  */
 router.delete('/admin/cleanup', [
+  authMiddleware,
   requireAdmin,
   query('daysOld').optional().isInt({ min: 1, max: 30 }).withMessage('Days old must be between 1 and 30')
 ], async (req, res) => {

@@ -256,6 +256,30 @@ service cloud.firestore {
         (request.auth.token.role == 'admin' || request.auth.token.userType == 'admin');
     }
     
+    // Work slots collection - new gig slot system
+    match /workSlots/{slotId} {
+      allow read: if isAuthenticated() && (
+        resource.data.driverId == request.auth.uid || 
+        isAdmin()
+      );
+      
+      allow create: if isAuthenticated() && (
+        isAdmin() ||
+        (isDriver() && request.resource.data.driverId == request.auth.uid &&
+         request.resource.data.keys().hasAll(['slotId', 'startTime', 'endTime', 'label', 'status', 'driverId', 'createdAt', 'updatedAt']) &&
+         request.resource.data.status in ['available', 'booked', 'completed'])
+      );
+      
+      allow update: if isAuthenticated() && (
+        isAdmin() ||
+        (resource.data.driverId == request.auth.uid && isDriver() &&
+         request.writeFields.hasOnly(['status', 'updatedAt']) &&
+         request.resource.data.status in ['available', 'booked', 'completed'])
+      );
+      
+      allow delete: if isAuthenticated() && isAdmin();
+    }
+
     // Default rule - deny all other access
     match /{document=**} {
       allow read, write: if false;

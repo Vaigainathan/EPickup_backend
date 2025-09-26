@@ -29,6 +29,7 @@ const serviceAreaRoutes = require('./routes/serviceArea');
 const healthRoutes = require('./routes/health');
 const walletRoutes = require('./routes/wallet');
 const fareCalculationRoutes = require('./routes/fareCalculation');
+const workSlotsRoutes = require('./routes/workSlots');
 const adminRoutes = require('./routes/admin');
 const adminAuthRoutes = require('./routes/adminAuth');
 
@@ -189,18 +190,19 @@ app.get('/', (req, res) => {
     version: '1.0.0',
     status: 'running',
     timestamp: new Date().toISOString(),
-    endpoints: {
-      health: '/health',
-      metrics: '/metrics',
-      apiDocs: '/api-docs',
-      auth: '/api/auth',
-      customer: '/api/customer',
-      driver: '/api/driver',
-      bookings: '/api/bookings',
-      payments: '/api/payments',
-      tracking: '/api/tracking',
-      notifications: '/api/notifications'
-    }
+      endpoints: {
+        health: '/health',
+        metrics: '/metrics',
+        apiDocs: '/api-docs',
+        auth: '/api/auth',
+        customer: '/api/customer',
+        driver: '/api/driver',
+        bookings: '/api/bookings',
+        payments: '/api/payments',
+        tracking: '/api/tracking',
+        notifications: '/api/notifications',
+        slots: '/api/slots'
+      }
   });
 });
 
@@ -306,6 +308,7 @@ app.use('/api/service-area', serviceAreaRoutes); // No auth required for service
 app.use('/service-area', serviceAreaRoutes); // Alternative path for service area validation
 app.use('/api/wallet', walletRoutes);
 app.use('/api/fare', fareCalculationRoutes);
+app.use('/api/slots', workSlotsRoutes);
 app.use('/api/admin/auth', adminAuthRoutes); // No auth required for admin login
 app.use('/api/admin', adminAuthMiddleware, adminRoutes); // Admin routes use admin auth middleware
 

@@ -337,6 +337,11 @@ class VerificationService {
         updatedAt: new Date()
       });
 
+      // Get current driver data to check welcome bonus status
+      const driverDoc = await driverRef.get();
+      const driverData = driverDoc.exists ? driverDoc.data() : {};
+      const welcomeBonusGiven = driverData?.driver?.welcomeBonusGiven || false;
+      
       // Update real-time verification status collection for live updates
       const verificationStatusRef = this.db.collection('driverVerificationStatus').doc(driverId);
       batch.set(verificationStatusRef, {
@@ -351,7 +356,7 @@ class VerificationService {
         },
         lastUpdated: new Date(),
         canStartWorking: verificationData.status === 'verified',
-        welcomeBonusEligible: verificationData.status === 'verified'
+        welcomeBonusEligible: verificationData.status === 'verified' && !welcomeBonusGiven
       }, { merge: true });
 
       // Update verification request if exists

@@ -3363,7 +3363,7 @@ router.get('/documents/status', requireDriver, documentStatusRateLimit, document
 
     // Use comprehensive data if available, otherwise fall back to basic data
     let finalDocuments = comprehensiveVerificationData?.documents || documents;
-    let finalVerificationStatus = comprehensiveVerificationData?.verificationStatus || verificationStatus;
+    const finalVerificationStatus = comprehensiveVerificationData?.verificationStatus || verificationStatus;
     
     // CRITICAL FIX: If comprehensive data failed, ensure we have proper document structure
     if (!comprehensiveVerificationData) {

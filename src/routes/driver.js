@@ -226,6 +226,27 @@ router.get('/profile', requireDriver, async (req, res) => {
 
     const userData = userDoc.data();
     
+    // Ensure wallet structure exists and is properly formatted
+    const driverData = userData.driver || {};
+    const walletData = driverData.wallet || {};
+    
+    // Normalize wallet data
+    const normalizedWallet = {
+      balance: walletData.balance || 0,
+      currency: walletData.currency || 'INR',
+      lastUpdated: walletData.lastUpdated || new Date(),
+      transactions: walletData.transactions || []
+    };
+    
+    // Normalize driver data with proper wallet structure
+    const normalizedDriver = {
+      ...driverData,
+      wallet: normalizedWallet,
+      welcomeBonusGiven: driverData.welcomeBonusGiven || false,
+      welcomeBonusAmount: driverData.welcomeBonusAmount || 0,
+      welcomeBonusGivenAt: driverData.welcomeBonusGivenAt || null
+    };
+    
     res.status(200).json({
       success: true,
       message: 'Driver profile retrieved successfully',
@@ -236,9 +257,9 @@ router.get('/profile', requireDriver, async (req, res) => {
           email: userData.email,
           phone: userData.phone,
           profilePicture: userData.profilePicture,
-          verificationStatus: userData.driver?.verificationStatus || 'pending',
-          isVerified: userData.driver?.isVerified || false,
-          driver: userData.driver
+          verificationStatus: normalizedDriver.verificationStatus || 'pending',
+          isVerified: normalizedDriver.isVerified || false,
+          driver: normalizedDriver
         }
       },
       timestamp: new Date().toISOString()
@@ -2185,8 +2206,14 @@ router.get('/wallet', requireDriver, async (req, res) => {
     }
 
     const userData = userDoc.data();
-    const walletBalance = userData.driver?.wallet?.balance || 0;
-    const walletCurrency = userData.driver?.wallet?.currency || 'INR';
+    const driverData = userData.driver || {};
+    const walletData = driverData.wallet || {};
+    
+    // Ensure wallet structure exists
+    const walletBalance = walletData.balance || 0;
+    const walletCurrency = walletData.currency || 'INR';
+    const welcomeBonusGiven = driverData.welcomeBonusGiven || false;
+    const welcomeBonusAmount = driverData.welcomeBonusAmount || 0;
 
     // Get wallet transactions with error handling
     let transactions = [];
@@ -2226,7 +2253,10 @@ router.get('/wallet', requireDriver, async (req, res) => {
       data: {
         wallet: {
           balance: walletBalance,
-          currency: walletCurrency
+          currency: walletCurrency,
+          welcomeBonusGiven: welcomeBonusGiven,
+          welcomeBonusAmount: welcomeBonusAmount,
+          lastUpdated: walletData.lastUpdated || new Date()
         },
         transactions,
         pagination: {
@@ -2246,6 +2276,128 @@ router.get('/wallet', requireDriver, async (req, res) => {
         code: 'WALLET_RETRIEVAL_ERROR',
         message: 'Failed to retrieve wallet information',
         details: 'An error occurred while retrieving wallet information'
+      },
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+/**
+ * @route   POST /api/driver/wallet/ensure-welcome-bonus
+ * @desc    Ensure welcome bonus is given to verified drivers
+ * @access  Private (Driver only)
+ */
+router.post('/wallet/ensure-welcome-bonus', requireDriver, async (req, res) => {
+  try {
+    const { uid } = req.user;
+    const db = getFirestore();
+    
+    const userRef = db.collection('users').doc(uid);
+    const userDoc = await userRef.get();
+    
+    if (!userDoc.exists) {
+      return res.status(404).json({
+        success: false,
+        error: {
+          code: 'USER_NOT_FOUND',
+          message: 'User not found',
+          details: 'Driver does not exist'
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    const userData = userDoc.data();
+    const driverData = userData.driver || {};
+    
+    // Check if driver is verified
+    const isVerified = driverData.verificationStatus === 'verified' || driverData.verificationStatus === 'approved';
+    const welcomeBonusGiven = driverData.welcomeBonusGiven || false;
+    const currentBalance = driverData.wallet?.balance || 0;
+    
+    if (!isVerified) {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'NOT_VERIFIED',
+          message: 'Driver not verified',
+          details: 'Welcome bonus can only be given to verified drivers'
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+    
+    if (welcomeBonusGiven) {
+      return res.status(200).json({
+        success: true,
+        message: 'Welcome bonus already given',
+        data: {
+          welcomeBonusGiven: true,
+          welcomeBonusAmount: driverData.welcomeBonusAmount || 0,
+          currentBalance: currentBalance
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+    
+    // Give welcome bonus
+    const newBalance = currentBalance + 500;
+    
+    // Update wallet with welcome bonus
+    await userRef.update({
+      'driver.wallet': {
+        balance: newBalance,
+        currency: 'INR',
+        lastUpdated: new Date(),
+        transactions: driverData.wallet?.transactions || []
+      },
+      'driver.welcomeBonusGiven': true,
+      'driver.welcomeBonusAmount': 500,
+      'driver.welcomeBonusGivenAt': new Date(),
+      updatedAt: new Date()
+    });
+
+    // Create welcome bonus transaction record
+    const transactionRef = db.collection('driverWalletTransactions').doc();
+    await transactionRef.set({
+      id: transactionRef.id,
+      driverId: uid,
+      type: 'credit',
+      amount: 500,
+      previousBalance: currentBalance,
+      newBalance: newBalance,
+      paymentMethod: 'welcome_bonus',
+      status: 'completed',
+      metadata: {
+        source: 'welcome_bonus',
+        description: 'Welcome bonus for completing verification',
+        triggeredBy: 'api_call'
+      },
+      createdAt: new Date(),
+      updatedAt: new Date()
+    });
+
+    res.status(200).json({
+      success: true,
+      message: 'Welcome bonus processed successfully',
+      data: {
+        welcomeBonusGiven: true,
+        welcomeBonusAmount: 500,
+        previousBalance: currentBalance,
+        newBalance: newBalance,
+        transactionId: transactionRef.id
+      },
+      timestamp: new Date().toISOString()
+    });
+
+  } catch (error) {
+    console.error('Error processing welcome bonus:', error);
+    res.status(500).json({
+      success: false,
+      error: {
+        code: 'WELCOME_BONUS_ERROR',
+        message: 'Failed to process welcome bonus',
+        details: 'An error occurred while processing welcome bonus'
       },
       timestamp: new Date().toISOString()
     });

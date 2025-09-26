@@ -334,7 +334,7 @@ const sendToUser = (userId, event, data) => {
     // Check if user is in the room
     const roomSockets = io.sockets.adapter.rooms.get(room);
     if (!roomSockets || roomSockets.size === 0) {
-      console.warn(`⚠️ User ${userId} not found in room ${room}`);
+      console.log(`📡 User ${userId} offline (not in room ${room})`);
       return false;
     }
     

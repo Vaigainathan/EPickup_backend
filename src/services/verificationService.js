@@ -266,7 +266,6 @@ class VerificationService {
         
         Object.entries(verificationDocs).forEach(([key, verificationDoc]) => {
           const normalizedKey = this.normalizeDocumentField(key);
-          console.log(`📋 Processing verification doc: ${key} → ${normalizedKey}`);
           if (documents[normalizedKey] && verificationDoc.downloadURL) {
             documents[normalizedKey] = {
               ...documents[normalizedKey],

@@ -233,8 +233,11 @@ router.get('/profile', requireDriver, async (req, res) => {
     try {
       comprehensiveVerificationData = await verificationService.getDriverVerificationData(uid);
       console.log('📊 [PROFILE] Comprehensive verification data:', comprehensiveVerificationData);
+      console.log('🔍 [PROFILE] Verification status from service:', comprehensiveVerificationData?.verificationStatus);
+      console.log('🔍 [PROFILE] Driver data verification status:', driverData.verificationStatus);
     } catch (verificationError) {
       console.warn('⚠️ [PROFILE] Failed to get comprehensive verification data, using basic data:', verificationError.message);
+      console.error('❌ [PROFILE] Verification service error details:', verificationError);
     }
     
     // Ensure wallet structure exists and is properly formatted
@@ -252,6 +255,14 @@ router.get('/profile', requireDriver, async (req, res) => {
     // Use comprehensive verification data if available, otherwise fall back to basic data
     const finalVerificationStatus = comprehensiveVerificationData?.verificationStatus || driverData.verificationStatus || 'pending';
     const finalIsVerified = comprehensiveVerificationData?.verificationStatus === 'verified' || comprehensiveVerificationData?.verificationStatus === 'approved' || driverData.isVerified || false;
+    
+    console.log('🔍 [PROFILE] Final verification calculation:', {
+      comprehensiveStatus: comprehensiveVerificationData?.verificationStatus,
+      driverDataStatus: driverData.verificationStatus,
+      finalStatus: finalVerificationStatus,
+      finalIsVerified: finalIsVerified,
+      hasComprehensiveData: !!comprehensiveVerificationData
+    });
     
     // Normalize driver data with proper wallet structure and updated verification status
     const normalizedDriver = {
@@ -2331,6 +2342,153 @@ router.get('/wallet', requireDriver, async (req, res) => {
         code: 'WALLET_RETRIEVAL_ERROR',
         message: 'Failed to retrieve wallet information',
         details: 'An error occurred while retrieving wallet information'
+      },
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+/**
+ * @route   POST /api/driver/wallet/process-welcome-bonus-direct
+ * @desc    Process welcome bonus directly using verification service data
+ * @access  Private (Driver only)
+ */
+router.post('/wallet/process-welcome-bonus-direct', requireDriver, async (req, res) => {
+  try {
+    const { uid } = req.user;
+    const db = getFirestore();
+    
+    console.log('🎁 [WALLET_API] Processing welcome bonus directly for driver:', uid);
+    
+    // Get verification data directly from verification service
+    const verificationService = require('../services/verificationService');
+    let comprehensiveVerificationData;
+    
+    try {
+      comprehensiveVerificationData = await verificationService.getDriverVerificationData(uid);
+      console.log('📊 [WALLET_API] Direct verification data:', comprehensiveVerificationData);
+    } catch (verificationError) {
+      console.error('❌ [WALLET_API] Failed to get verification data:', verificationError);
+      return res.status(500).json({
+        success: false,
+        error: {
+          code: 'VERIFICATION_SERVICE_ERROR',
+          message: 'Failed to get verification data',
+          details: verificationError.message
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+    
+    // Check if driver is verified using comprehensive data
+    const isVerified = comprehensiveVerificationData?.verificationStatus === 'verified' || comprehensiveVerificationData?.verificationStatus === 'approved';
+    
+    if (!isVerified) {
+      console.log('❌ [WALLET_API] Driver not verified (direct check):', {
+        uid,
+        verificationStatus: comprehensiveVerificationData?.verificationStatus,
+        isVerified
+      });
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'NOT_VERIFIED',
+          message: 'Driver not verified',
+          details: 'Welcome bonus can only be given to verified drivers'
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+    
+    // Get user data to check if welcome bonus already given
+    const userRef = db.collection('users').doc(uid);
+    const userDoc = await userRef.get();
+    
+    if (!userDoc.exists) {
+      return res.status(404).json({
+        success: false,
+        error: {
+          code: 'USER_NOT_FOUND',
+          message: 'User not found'
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+    
+    const userData = userDoc.data();
+    const driverData = userData.driver || {};
+    const welcomeBonusGiven = driverData.welcomeBonusGiven || false;
+    const currentBalance = driverData.wallet?.balance || 0;
+    
+    if (welcomeBonusGiven) {
+      console.log('✅ [WALLET_API] Welcome bonus already given (direct check):', uid);
+      return res.status(200).json({
+        success: true,
+        message: 'Welcome bonus already given',
+        data: {
+          welcomeBonusGiven: true,
+          welcomeBonusAmount: driverData.welcomeBonusAmount || 0,
+          currentBalance: currentBalance
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+    
+    // Give welcome bonus using atomic transaction
+    const newBalance = currentBalance + 500;
+    const batch = db.batch();
+    
+    // Update user document
+    batch.update(userRef, {
+      'driver.welcomeBonusGiven': true,
+      'driver.welcomeBonusAmount': 500,
+      'driver.welcomeBonusGivenAt': new Date(),
+      'driver.wallet.balance': newBalance,
+      'driver.wallet.lastUpdated': new Date(),
+      'driver.wallet.transactions': [
+        ...(driverData.wallet?.transactions || []),
+        {
+          id: `welcome_bonus_${Date.now()}`,
+          type: 'credit',
+          amount: 500,
+          description: 'Welcome Bonus - Driver Verification',
+          timestamp: new Date(),
+          status: 'completed',
+          reference: 'WELCOME_BONUS'
+        }
+      ]
+    });
+    
+    await batch.commit();
+    
+    console.log('✅ [WALLET_API] Welcome bonus processed successfully (direct):', {
+      uid,
+      previousBalance: currentBalance,
+      newBalance,
+      bonusAmount: 500
+    });
+    
+    res.status(200).json({
+      success: true,
+      message: 'Welcome bonus processed successfully',
+      data: {
+        welcomeBonusGiven: true,
+        welcomeBonusAmount: 500,
+        previousBalance: currentBalance,
+        newBalance: newBalance,
+        bonusProcessed: true
+      },
+      timestamp: new Date().toISOString()
+    });
+    
+  } catch (error) {
+    console.error('❌ [WALLET_API] Error processing welcome bonus (direct):', error);
+    res.status(500).json({
+      success: false,
+      error: {
+        code: 'WELCOME_BONUS_ERROR',
+        message: 'Failed to process welcome bonus',
+        details: error.message
       },
       timestamp: new Date().toISOString()
     });

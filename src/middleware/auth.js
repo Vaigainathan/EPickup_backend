@@ -365,6 +365,11 @@ const requireCustomer = requireRole(['customer']);
 const requireDriver = requireRole(['driver']);
 
 /**
+ * Admin-only middleware
+ */
+const requireAdmin = requireRole(['admin']);
+
+/**
  * Optional authentication middleware
  * Similar to authMiddleware but doesn't fail if no token is provided
  */
@@ -551,6 +556,7 @@ module.exports = {
   requireRole,
   requireCustomer,
   requireDriver,
+  requireAdmin,
   optionalAuth,
   requireOwnership,
   userRateLimit

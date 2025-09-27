@@ -1683,6 +1683,62 @@ router.post('/set-availability', [
 });
 
 /**
+ * @route   GET /api/driver/bookings/test-backdoor
+ * @desc    TESTING BACKDOOR - Get all bookings without any restrictions
+ * @access  Private (Driver only) - FOR TESTING ONLY
+ */
+router.get('/bookings/test-backdoor', requireDriver, async (req, res) => {
+  try {
+    console.log('🚪 [TEST_BACKDOOR] Testing backdoor accessed - bypassing all restrictions');
+    
+    const db = getFirestore();
+    
+    // Get ALL pending bookings without any filtering
+    const query = db.collection('bookings')
+      .where('status', '==', 'pending')
+      .orderBy('createdAt', 'desc')
+      .limit(20);
+    
+    const snapshot = await query.get();
+    const allBookings = [];
+    
+    console.log('🔍 [TEST_BACKDOOR] Found bookings in database:', snapshot.size);
+    
+    snapshot.forEach(doc => {
+      const bookingData = doc.data();
+      allBookings.push({
+        id: doc.id,
+        ...bookingData,
+        distanceFromDriver: 0, // Set to 0 for testing
+        estimatedPickupTime: bookingData.estimatedPickupTime || new Date(Date.now() + 15 * 60 * 1000).toISOString()
+      });
+    });
+
+    console.log('✅ [TEST_BACKDOOR] Returning bookings:', allBookings.length);
+
+    res.status(200).json({
+      success: true,
+      message: 'TEST BACKDOOR - All bookings retrieved without restrictions',
+      data: allBookings, // Return bookings directly as array
+      timestamp: new Date().toISOString(),
+      debug: {
+        totalBookings: allBookings.length,
+        bypassedFilters: ['distance', 'availability', 'online_status'],
+        testingMode: true
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ [TEST_BACKDOOR] Error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'TEST BACKDOOR - Failed to retrieve bookings',
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+/**
  * @route   GET /api/driver/bookings/available
  * @desc    Get available bookings for driver
  * @access  Private (Driver only)

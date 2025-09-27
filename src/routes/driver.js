@@ -1731,8 +1731,22 @@ router.get('/bookings/available', requireDriver, async (req, res) => {
     const snapshot = await query.get();
     const allBookings = [];
     
+    console.log('🔍 [DRIVER_API] Query snapshot:', {
+      size: snapshot.size,
+      empty: snapshot.empty,
+      driverLocation,
+      radius: parseFloat(radius)
+    });
+    
     snapshot.forEach(doc => {
       const bookingData = doc.data();
+      console.log('🔍 [DRIVER_API] Processing booking:', {
+        id: doc.id,
+        status: bookingData.status,
+        hasPickup: !!bookingData.pickup,
+        hasCoordinates: !!bookingData.pickup?.coordinates,
+        pickupCoords: bookingData.pickup?.coordinates
+      });
       
       // Calculate distance from driver to pickup location
       if (bookingData.pickup?.coordinates) {
@@ -1743,10 +1757,26 @@ router.get('/bookings/available', requireDriver, async (req, res) => {
           bookingData.pickup.coordinates.longitude
         );
         
+        console.log('🔍 [DRIVER_API] Distance calculation:', {
+          driverLat: driverLocation.latitude,
+          driverLng: driverLocation.longitude,
+          pickupLat: bookingData.pickup.coordinates.latitude,
+          pickupLng: bookingData.pickup.coordinates.longitude,
+          distanceKm: distance,
+          radiusKm: parseFloat(radius),
+          isWithinRadius: distance <= parseFloat(radius)
+        });
+        
         // For testing: bypass radius check, include all bookings
         // TODO: Re-enable radius check in production
-        const isWithinRadius = distance <= (parseFloat(radius) * 1000);
+        const isWithinRadius = distance <= parseFloat(radius);
         const isTestingMode = process.env.NODE_ENV === 'development' || process.env.TESTING_MODE === 'true';
+        
+        console.log('🔍 [DRIVER_API] Filtering decision:', {
+          isWithinRadius,
+          isTestingMode,
+          willInclude: isWithinRadius || isTestingMode
+        });
         
         if (isWithinRadius || isTestingMode) {
           allBookings.push({
@@ -1756,6 +1786,8 @@ router.get('/bookings/available', requireDriver, async (req, res) => {
             estimatedPickupTime: bookingData.estimatedPickupTime || new Date(Date.now() + 15 * 60 * 1000).toISOString()
           });
         }
+      } else {
+        console.log('⚠️ [DRIVER_API] Booking has no pickup coordinates:', doc.id);
       }
     });
 
@@ -1764,6 +1796,14 @@ router.get('/bookings/available', requireDriver, async (req, res) => {
 
     // Apply pagination
     const bookings = allBookings.slice(parseInt(offset), parseInt(offset) + parseInt(limit));
+
+    console.log('🔍 [DRIVER_API] Final response:', {
+      allBookingsCount: allBookings.length,
+      paginatedBookingsCount: bookings.length,
+      offset: parseInt(offset),
+      limit: parseInt(limit),
+      firstBooking: bookings[0] || null
+    });
 
     res.status(200).json({
       success: true,

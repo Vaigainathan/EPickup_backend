@@ -267,7 +267,8 @@ service cloud.firestore {
     match /workSlots/{slotId} {
       allow read: if isAuthenticated() && (
         resource.data.driverId == request.auth.uid || 
-        isAdmin()
+        isAdmin() ||
+        (isDriver() && resource.data.status in ['available', 'booked'])
       );
       
       allow create: if isAuthenticated() && (

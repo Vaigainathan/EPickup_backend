@@ -444,6 +444,69 @@ if (process.env.NODE_ENV === 'development' || process.env.ENABLE_TEST_ENDPOINTS 
     });
   });
 
+  // Create test booking in database
+  app.post('/api/test/create-booking', async (req, res) => {
+    try {
+      const { db } = require('./database/firebase');
+      
+      const testBooking = {
+        customerId: 'test-customer-123',
+        driverId: null, // Available for drivers
+        status: 'pending',
+        pickup: {
+          name: 'Test Customer',
+          address: '123 Main St, Chennai',
+          coordinates: {
+            latitude: 13.0827,
+            longitude: 80.2707
+          },
+          contactName: 'Test Customer',
+          contactPhone: '+919876543210'
+        },
+        dropoff: {
+          name: 'Test Recipient',
+          address: '456 Park Ave, Chennai',
+          coordinates: {
+            latitude: 13.0827,
+            longitude: 80.2707
+          },
+          contactName: 'Test Recipient',
+          contactPhone: '+919876543211'
+        },
+        package: {
+          weight: 5.0,
+          description: 'Test package for debugging'
+        },
+        fare: {
+          total: 150,
+          base: 100,
+          distance: 50
+        },
+        createdAt: new Date(),
+        updatedAt: new Date()
+      };
+
+      const docRef = await db.collection('bookings').add(testBooking);
+      
+      res.status(200).json({
+        success: true,
+        message: 'Test booking created successfully',
+        data: {
+          bookingId: docRef.id,
+          ...testBooking
+        },
+        timestamp: new Date().toISOString()
+      });
+    } catch (error) {
+      console.error('Error creating test booking:', error);
+      res.status(500).json({
+        success: false,
+        error: 'Failed to create test booking',
+        timestamp: new Date().toISOString()
+      });
+    }
+  });
+
   console.log('✅ Test endpoints enabled for development');
 }
 

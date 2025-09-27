@@ -1005,6 +1005,67 @@ router.get('/mock-otp-status', async (req, res) => {
 });
 
 /**
+ * @route POST /api/auth/validate-token
+ * @desc Validate JWT token (for debugging)
+ * @access Public
+ */
+router.post('/validate-token',
+  authRateLimit,
+  validateRequest({
+    body: {
+      token: { type: 'string', required: true, minLength: 10 }
+    }
+  }),
+  async (req, res) => {
+    try {
+      const { token } = req.body;
+      
+      // Debug token format
+      const tokenParts = token.split('.');
+      const tokenInfo = {
+        length: token.length,
+        parts: tokenParts.length,
+        preview: token.substring(0, 30) + '...',
+        isValidFormat: tokenParts.length === 3
+      };
+      
+      try {
+        const decoded = jwtService.verifyToken(token);
+        return res.status(200).json({
+          success: true,
+          message: 'Token is valid',
+          tokenInfo,
+          decoded: {
+            userId: decoded.userId,
+            userType: decoded.userType,
+            phone: decoded.phone,
+            exp: decoded.exp,
+            iat: decoded.iat
+          }
+        });
+      } catch (error) {
+        return res.status(400).json({
+          success: false,
+          message: 'Token validation failed',
+          tokenInfo,
+          error: error.message
+        });
+      }
+    } catch (error) {
+      console.error('Token validation error:', error);
+      return res.status(500).json({
+        success: false,
+        error: {
+          code: 'VALIDATION_ERROR',
+          message: 'Token validation failed'
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+  }
+);
+
+/**
  * @route POST /api/auth/refresh
  * @desc Refresh access token using refresh token
  * @access Public

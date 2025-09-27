@@ -43,8 +43,17 @@ const initializeSocketIO = async (server) => {
                      socket.handshake.headers.authorization?.replace('Bearer ', '');
         
         if (!token) {
+          console.log('Socket authentication failed: No token provided');
           return next(new Error('Authentication token required'));
         }
+
+        // Debug token format (only log on error)
+        const tokenInfo = {
+          tokenLength: token.length,
+          tokenPreview: token.substring(0, 20) + '...',
+          hasAuthToken: !!socket.handshake.auth.token,
+          hasAuthHeader: !!socket.handshake.headers.authorization
+        };
 
         // Verify JWT token
         const secret = process.env.JWT_SECRET;
@@ -81,11 +90,11 @@ const initializeSocketIO = async (server) => {
             }
           } else if (jwtError.message === 'Invalid token' || jwtError.message.includes('malformed')) {
             // Malformed or invalid token - reject connection
-            console.error('Socket authentication error: Invalid or malformed token');
+            console.error('Socket authentication error: Invalid or malformed token', tokenInfo);
             return next(new Error('Invalid authentication token'));
           }
           
-          console.error('Socket authentication error:', jwtError.message);
+          console.error('Socket authentication error:', jwtError.message, tokenInfo);
           return next(new Error('Invalid authentication token'));
         }
         

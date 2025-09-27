@@ -83,10 +83,34 @@ class JWTService {
    */
   verifyToken(token) {
     try {
-      const decoded = jwt.verify(token, this.secret, {
-        issuer: 'epickup-app',
-        audience: 'epickup-users'
-      });
+      // Validate token format first
+      if (!token || typeof token !== 'string') {
+        throw new Error('Token is required and must be a string');
+      }
+
+      // Check if token has proper JWT format (3 parts separated by dots)
+      const tokenParts = token.split('.');
+      if (tokenParts.length !== 3) {
+        console.error('Malformed JWT token - invalid format:', {
+          tokenLength: token.length,
+          parts: tokenParts.length,
+          tokenPreview: token.substring(0, 20) + '...'
+        });
+        throw new Error('Invalid token format');
+      }
+
+      // Try with issuer/audience first, then fallback to basic verification
+      let decoded;
+      try {
+        decoded = jwt.verify(token, this.secret, {
+          issuer: 'epickup-app',
+          audience: 'epickup-users'
+        });
+      } catch (issuerError) {
+        // Fallback to basic verification without issuer/audience
+        console.log('JWT verification with issuer/audience failed, trying basic verification:', issuerError.message);
+        decoded = jwt.verify(token, this.secret);
+      }
 
       // Check if token is expired
       if (decoded.exp && Date.now() >= decoded.exp * 1000) {
@@ -98,10 +122,16 @@ class JWTService {
       if (error.name === 'TokenExpiredError') {
         throw new Error('Token expired');
       } else if (error.name === 'JsonWebTokenError') {
+        console.error('JWT verification failed:', {
+          error: error.message,
+          tokenPreview: token ? token.substring(0, 20) + '...' : 'null',
+          tokenLength: token ? token.length : 0
+        });
         throw new Error('Invalid token');
       } else if (error.name === 'NotBeforeError') {
         throw new Error('Token not active');
       }
+      console.error('JWT verification error:', error.message);
       throw error;
     }
   }

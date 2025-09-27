@@ -6,7 +6,7 @@
 const express = require('express');
 const { body, validationResult } = require('express-validator');
 const router = express.Router();
-const { requireAuth, requireDriver } = require('../middleware/auth');
+const { authMiddleware, requireDriver } = require('../middleware/auth');
 const locationTrackingService = require('../services/locationTrackingService');
 const { getFirestore } = require('../services/firebase');
 
@@ -16,7 +16,7 @@ const { getFirestore } = require('../services/firebase');
  * @access  Private (Customer, Driver, Admin)
  */
 router.post('/start', [
-  requireAuth,
+  authMiddleware,
   body('bookingId').notEmpty().withMessage('Booking ID is required'),
   body('driverId').notEmpty().withMessage('Driver ID is required'),
   body('customerId').notEmpty().withMessage('Customer ID is required')
@@ -175,7 +175,7 @@ router.post('/update', [
  * @desc    Get current tracking data for a booking
  * @access  Private (Customer, Driver, Admin)
  */
-router.get('/:bookingId', requireAuth, async (req, res) => {
+router.get('/:bookingId', authMiddleware, async (req, res) => {
   try {
     const { bookingId } = req.params;
     const { uid, userType } = req.user;
@@ -259,7 +259,7 @@ router.get('/:bookingId', requireAuth, async (req, res) => {
  * @desc    Get location history for a booking
  * @access  Private (Customer, Driver, Admin)
  */
-router.get('/:bookingId/history', requireAuth, async (req, res) => {
+router.get('/:bookingId/history', authMiddleware, async (req, res) => {
   try {
     const { bookingId } = req.params;
     const { limit = 50 } = req.query;
@@ -345,7 +345,7 @@ router.get('/:bookingId/history', requireAuth, async (req, res) => {
  * @access  Private (Driver, Admin)
  */
 router.post('/:bookingId/stop', [
-  requireAuth,
+  authMiddleware,
   body('reason').optional().isString().withMessage('Reason must be a string')
 ], async (req, res) => {
   try {
@@ -433,7 +433,7 @@ router.post('/:bookingId/stop', [
  * @desc    Get tracking statistics (Admin only)
  * @access  Private (Admin only)
  */
-router.get('/statistics', requireAuth, async (req, res) => {
+router.get('/statistics', authMiddleware, async (req, res) => {
   try {
     const { userType } = req.user;
 

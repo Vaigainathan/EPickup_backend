@@ -6,7 +6,7 @@
 const express = require('express');
 const { body, validationResult } = require('express-validator');
 const router = express.Router();
-const { requireAuth } = require('../middleware/auth');
+const { authMiddleware } = require('../middleware/auth');
 const { getFirestore } = require('../services/firebase');
 const notificationService = require('../services/notificationService');
 const errorHandlingService = require('../services/errorHandlingService');
@@ -16,7 +16,7 @@ const errorHandlingService = require('../services/errorHandlingService');
  * @desc    Get all bookings with filters
  * @access  Private (Admin only)
  */
-router.get('/bookings', requireAuth, async (req, res) => {
+router.get('/bookings', authMiddleware, async (req, res) => {
   try {
     const { userType } = req.user;
     
@@ -145,7 +145,7 @@ router.get('/bookings', requireAuth, async (req, res) => {
  * @access  Private (Admin only)
  */
 router.post('/bookings/:bookingId/assign-driver', [
-  requireAuth,
+  authMiddleware,
   body('driverId').notEmpty().withMessage('Driver ID is required'),
   body('reason').optional().isString().withMessage('Reason must be a string')
 ], async (req, res) => {
@@ -331,7 +331,7 @@ router.post('/bookings/:bookingId/assign-driver', [
  * @access  Private (Admin only)
  */
 router.post('/bookings/:bookingId/reassign-driver', [
-  requireAuth,
+  authMiddleware,
   body('newDriverId').notEmpty().withMessage('New driver ID is required'),
   body('reason').optional().isString().withMessage('Reason must be a string')
 ], async (req, res) => {
@@ -512,7 +512,7 @@ router.post('/bookings/:bookingId/reassign-driver', [
  * @desc    Get available drivers for assignment
  * @access  Private (Admin only)
  */
-router.get('/available-drivers', requireAuth, async (req, res) => {
+router.get('/available-drivers', authMiddleware, async (req, res) => {
   try {
     const { userType } = req.user;
     if (userType !== 'admin') {
@@ -608,7 +608,7 @@ router.get('/available-drivers', requireAuth, async (req, res) => {
  * @access  Private (Admin only)
  */
 router.post('/bookings/:bookingId/cancel', [
-  requireAuth,
+  authMiddleware,
   body('reason').notEmpty().withMessage('Cancellation reason is required')
 ], async (req, res) => {
   try {

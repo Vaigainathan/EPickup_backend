@@ -164,10 +164,26 @@ class MonitoringService {
 
       // Check memory usage
       const memUsage = process.memoryUsage();
-      health.metrics.memoryUsage = {
+      const memoryUsage = {
         rss: Math.round(memUsage.rss / 1024 / 1024),
-        heapUsed: Math.round(memUsage.heapUsed / 1024 / 1024)
+        heapTotal: Math.round(memUsage.heapTotal / 1024 / 1024),
+        heapUsed: Math.round(memUsage.heapUsed / 1024 / 1024),
+        external: Math.round(memUsage.external / 1024 / 1024)
       };
+      
+      health.metrics.memoryUsage = memoryUsage;
+      
+      // Check for high memory usage and trigger GC
+      const memoryPercentage = (memoryUsage.heapUsed / memoryUsage.heapTotal) * 100;
+      if (memoryPercentage > 90) {
+        console.warn(`⚠️ [PERF_MONITOR] High memory usage detected: ${memoryPercentage.toFixed(1)}%`);
+        
+        // Force garbage collection if available
+        if (global.gc) {
+          global.gc();
+          console.log('✅ [PERF_MONITOR] Forced garbage collection executed');
+        }
+      }
 
       return health;
     } catch (error) {

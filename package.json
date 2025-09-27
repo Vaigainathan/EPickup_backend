@@ -5,7 +5,7 @@
   "description": "Backend API server for EPickup delivery service platform",
   "main": "src/server.js",
   "scripts": {
-    "start": "node src/server.js",
+    "start": "node --expose-gc src/server.js",
     "dev": "nodemon src/server.js",
     "test": "jest",
     "test:watch": "jest --watch",

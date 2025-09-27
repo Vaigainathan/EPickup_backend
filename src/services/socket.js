@@ -55,9 +55,12 @@ const initializeSocketIO = async (server) => {
         let decodedToken;
         
         try {
-          decodedToken = jwt.verify(token, secret);
+          // Use JWT service for proper verification
+          const JWTService = require('./jwtService');
+          const jwtService = new JWTService();
+          decodedToken = jwtService.verifyToken(token);
         } catch (jwtError) {
-          if (jwtError.name === 'TokenExpiredError') {
+          if (jwtError.message === 'Token expired') {
             // Token expired - allow connection but mark for token refresh
             console.log('Socket token expired, allowing connection for refresh');
             socket.needsTokenRefresh = true;
@@ -76,8 +79,14 @@ const initializeSocketIO = async (server) => {
             } catch (decodeError) {
               console.error('Failed to decode expired token:', decodeError.message);
             }
+          } else if (jwtError.message === 'Invalid token' || jwtError.message.includes('malformed')) {
+            // Malformed or invalid token - reject connection
+            console.error('Socket authentication error: Invalid or malformed token');
+            return next(new Error('Invalid authentication token'));
           }
-          throw jwtError;
+          
+          console.error('Socket authentication error:', jwtError.message);
+          return next(new Error('Invalid authentication token'));
         }
         
         // Add user info to socket
@@ -282,6 +291,11 @@ const initializeSocketIO = async (server) => {
         
         // Remove all event listeners to prevent memory leaks
         socket.removeAllListeners();
+        
+        // Force garbage collection if available
+        if (global.gc) {
+          global.gc();
+        }
       });
 
       // Handle admin-specific events

@@ -1358,14 +1358,27 @@ router.get('/bookings', requireDriver, async (req, res) => {
           bookingData.pickup.coordinates.longitude
         );
         
-        // For testing: bypass radius check, include all bookings
-        // TODO: Re-enable radius check in production
-        const isWithinRadius = distance <= parseFloat(radius);
+        // Check if pickup location is within Tirupattur service area
+        const tirupatturCenter = {
+          latitude: 12.4950,
+          longitude: 78.5678
+        };
+        
+        const pickupDistanceFromTirupattur = calculateDistance(
+          bookingData.pickup.coordinates.latitude,
+          bookingData.pickup.coordinates.longitude,
+          tirupatturCenter.latitude,
+          tirupatturCenter.longitude
+        );
+
+        // Check if within Tirupattur service area (27 km max) and driver radius
+        const isWithinTirupatturArea = pickupDistanceFromTirupattur <= 27;
+        const isWithinDriverRadius = distance <= parseFloat(radius);
         const isTestingMode = process.env.NODE_ENV === 'development' || 
                              process.env.TESTING_MODE === 'true' || 
                              process.env.BYPASS_RADIUS_CHECK === 'true';
         
-        if (isWithinRadius || isTestingMode) {
+        if ((isWithinTirupatturArea && isWithinDriverRadius) || isTestingMode) {
           bookings.push({
             id: doc.id,
             ...bookingData,
@@ -1851,7 +1864,7 @@ router.get('/bookings/test-backdoor', requireDriver, async (req, res) => {
 router.get('/bookings/available', requireDriver, async (req, res) => {
   try {
     const { uid } = req.user;
-    const { limit = 10, offset = 0, radius = 5 } = req.query;
+    const { limit = 10, offset = 0, radius = 25 } = req.query;
     const db = getFirestore();
     
     // Get driver's current location and availability status
@@ -1951,26 +1964,44 @@ router.get('/bookings/available', requireDriver, async (req, res) => {
           isWithinRadius: distance <= parseFloat(radius)
         });
         
-        // For testing: bypass radius check, include all bookings
-        // TODO: Re-enable radius check in production
-        const isWithinRadius = distance <= parseFloat(radius);
+        // Check if pickup location is within Tirupattur service area
+        const tirupatturCenter = {
+          latitude: 12.4950,
+          longitude: 78.5678
+        };
+        
+        const pickupDistanceFromTirupattur = calculateDistance(
+          bookingData.pickup.coordinates.latitude,
+          bookingData.pickup.coordinates.longitude,
+          tirupatturCenter.latitude,
+          tirupatturCenter.longitude
+        );
+
+        // Check if within Tirupattur service area (27 km max) and driver radius
+        const isWithinTirupatturArea = pickupDistanceFromTirupattur <= 27;
+        const isWithinDriverRadius = distance <= parseFloat(radius);
         const isTestingMode = process.env.NODE_ENV === 'development' || 
                              process.env.TESTING_MODE === 'true' || 
                              process.env.BYPASS_RADIUS_CHECK === 'true';
         
-        console.log('🔍 [DRIVER_API] Environment check:', {
+        console.log('🔍 [DRIVER_API] Service area check:', {
+          pickupDistanceFromTirupattur,
+          isWithinTirupatturArea,
+          driverDistance: distance,
+          isWithinDriverRadius,
           NODE_ENV: process.env.NODE_ENV,
           TESTING_MODE: process.env.TESTING_MODE,
           BYPASS_RADIUS_CHECK: process.env.BYPASS_RADIUS_CHECK
         });
         
         console.log('🔍 [DRIVER_API] Filtering decision:', {
-          isWithinRadius,
+          isWithinTirupatturArea,
+          isWithinDriverRadius,
           isTestingMode,
-          willInclude: isWithinRadius || isTestingMode
+          willInclude: (isWithinTirupatturArea && isWithinDriverRadius) || isTestingMode
         });
         
-        if (isWithinRadius || isTestingMode) {
+        if ((isWithinTirupatturArea && isWithinDriverRadius) || isTestingMode) {
           allBookings.push({
             id: doc.id,
             ...bookingData,
@@ -2385,7 +2416,7 @@ router.post('/bookings/:id/reject', [
 router.put('/bookings/:id/status', [
   requireDriver,
   body('status')
-    .isIn(['driver_enroute', 'driver_arrived', 'picked_up', 'in_transit', 'at_dropoff', 'delivered'])
+    .isIn(['pending', 'accepted', 'driver_enroute', 'driver_arrived', 'picked_up', 'enroute_dropoff', 'arrived_dropoff', 'delivered', 'cancelled'])
     .withMessage('Invalid status value'),
   body('location')
     .optional()
@@ -2445,6 +2476,33 @@ router.put('/bookings/:id/status', [
       });
     }
 
+    // Validate radius for pickup and dropoff confirmations
+    if (location && (status === 'picked_up' || status === 'delivered')) {
+      const targetLocation = status === 'picked_up' ? bookingData.pickup?.coordinates : bookingData.dropoff?.coordinates;
+      
+      if (targetLocation) {
+        const distance = calculateDistance(
+          location.latitude,
+          location.longitude,
+          targetLocation.latitude,
+          targetLocation.longitude
+        );
+        
+        // Check if within 100 meters (0.1 km)
+        if (distance > 0.1) {
+          return res.status(400).json({
+            success: false,
+            error: {
+              code: 'OUTSIDE_RADIUS',
+              message: 'Outside confirmation radius',
+              details: `You must be within 100m of the ${status === 'picked_up' ? 'pickup' : 'dropoff'} location to confirm. You are currently ${(distance * 1000).toFixed(0)}m away.`
+            },
+            timestamp: new Date().toISOString()
+          });
+        }
+      }
+    }
+
     // Update booking status
     const updateData = {
       status,
@@ -2453,6 +2511,9 @@ router.put('/bookings/:id/status', [
 
     // Add timing information based on status
     switch (status) {
+      case 'accepted':
+        updateData['timing.acceptedAt'] = new Date();
+        break;
       case 'driver_enroute':
         updateData['timing.driverEnrouteAt'] = new Date();
         break;
@@ -2461,6 +2522,12 @@ router.put('/bookings/:id/status', [
         break;
       case 'picked_up':
         updateData['timing.pickedUpAt'] = new Date();
+        break;
+      case 'enroute_dropoff':
+        updateData['timing.enrouteDropoffAt'] = new Date();
+        break;
+      case 'arrived_dropoff':
+        updateData['timing.arrivedDropoffAt'] = new Date();
         break;
       case 'delivered':
         updateData['timing.deliveredAt'] = new Date();
@@ -2514,6 +2581,147 @@ router.put('/bookings/:id/status', [
         code: 'STATUS_UPDATE_ERROR',
         message: 'Failed to update booking status',
         details: 'An error occurred while updating booking status'
+      },
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+/**
+ * @route   POST /api/driver/bookings/:id/validate-radius
+ * @desc    Validate if driver is within service radius for a booking
+ * @access  Private (Driver only)
+ */
+router.post('/bookings/:id/validate-radius', [
+  requireDriver,
+  body('driverLocation')
+    .isObject()
+    .withMessage('Driver location is required'),
+  body('driverLocation.latitude')
+    .isFloat({ min: -90, max: 90 })
+    .withMessage('Valid latitude is required'),
+  body('driverLocation.longitude')
+    .isFloat({ min: -180, max: 180 })
+    .withMessage('Valid longitude is required'),
+  body('serviceRadiusKm')
+    .optional()
+    .isFloat({ min: 1, max: 50 })
+    .withMessage('Service radius must be between 1 and 50 km')
+], async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'VALIDATION_ERROR',
+          message: 'Validation failed',
+          details: errors.array()
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    const { uid } = req.user;
+    const { id } = req.params;
+    const { driverLocation, serviceRadiusKm = 25 } = req.body;
+    const db = getFirestore();
+
+    // Get booking details
+    const bookingRef = db.collection('bookings').doc(id);
+    const bookingDoc = await bookingRef.get();
+
+    if (!bookingDoc.exists) {
+      return res.status(404).json({
+        success: false,
+        error: {
+          code: 'BOOKING_NOT_FOUND',
+          message: 'Booking not found',
+          details: 'Booking with this ID does not exist'
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    const bookingData = bookingDoc.data();
+    
+    // Check if driver is assigned to this booking
+    if (bookingData.driverId !== uid) {
+      return res.status(403).json({
+        success: false,
+        error: {
+          code: 'ACCESS_DENIED',
+          message: 'Access denied',
+          details: 'You can only validate radius for bookings assigned to you'
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    // First check if pickup location is within Tirupattur service area
+    const tirupatturCenter = {
+      latitude: 12.4950,
+      longitude: 78.5678
+    };
+    
+    const pickupDistanceFromTirupattur = calculateDistance(
+      bookingData.pickup.coordinates.latitude,
+      bookingData.pickup.coordinates.longitude,
+      tirupatturCenter.latitude,
+      tirupatturCenter.longitude
+    );
+
+    // Check if pickup is within Tirupattur service area (27 km max)
+    if (pickupDistanceFromTirupattur > 27) {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'OUTSIDE_SERVICE_AREA',
+          message: 'Pickup location outside service area',
+          details: 'This pickup location is outside the Tirupattur service area (27 km radius)'
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    // Calculate distance to pickup location
+    const pickupDistance = calculateDistance(
+      driverLocation.latitude,
+      driverLocation.longitude,
+      bookingData.pickup.coordinates.latitude,
+      bookingData.pickup.coordinates.longitude
+    );
+
+    // Calculate ETA (simplified - in real app, use Google Distance Matrix API)
+    const eta = Math.ceil(pickupDistance * 2); // Rough estimate: 2 minutes per km
+
+    const isWithinRadius = pickupDistance <= serviceRadiusKm;
+
+    res.status(200).json({
+      success: true,
+      data: {
+        isWithinRadius,
+        distance: pickupDistance,
+        distanceFormatted: pickupDistance < 1 
+          ? `${Math.round(pickupDistance * 1000)}m` 
+          : `${pickupDistance.toFixed(1)}km`,
+        eta,
+        etaFormatted: `${eta} min`,
+        serviceRadiusKm,
+        pickupLocation: bookingData.pickup.coordinates,
+        driverLocation
+      },
+      timestamp: new Date().toISOString()
+    });
+
+  } catch (error) {
+    console.error('Error validating radius:', error);
+    res.status(500).json({
+      success: false,
+      error: {
+        code: 'RADIUS_VALIDATION_ERROR',
+        message: 'Failed to validate radius',
+        details: 'An error occurred while validating radius'
       },
       timestamp: new Date().toISOString()
     });

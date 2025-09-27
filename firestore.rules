@@ -136,9 +136,9 @@ service cloud.firestore {
       allow create: if isAuthenticated() && 
         isCustomer() &&
         request.resource.data.customerId == request.auth.uid &&
-        request.resource.data.keys().hasAll(['customerId', 'pickup', 'drop', 'status', 'createdAt']) &&
+        request.resource.data.keys().hasAll(['customerId', 'pickup', 'dropoff', 'status', 'createdAt']) &&
         isValidBookingStatus(request.resource.data.status) &&
-        isValidPickupDelivery(request.resource.data.pickup, request.resource.data.drop);
+        isValidPickupDelivery(request.resource.data.pickup, request.resource.data.dropoff);
       
       allow update: if isAuthenticated() && (
         // Admin can update anything

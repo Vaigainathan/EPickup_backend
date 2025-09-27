@@ -1723,7 +1723,14 @@ router.get('/bookings/available', requireDriver, async (req, res) => {
     }
 
     // Check if driver is available
+    console.log('🔍 [DRIVER_API] Driver availability status:', {
+      isAvailable: driverData.driver?.isAvailable,
+      isOnline: driverData.driver?.isOnline,
+      hasDriverData: !!driverData.driver
+    });
+    
     if (!driverData.driver?.isAvailable || !driverData.driver?.isOnline) {
+      console.log('❌ [DRIVER_API] Driver not available for bookings');
       return res.status(400).json({
         success: false,
         error: {
@@ -1734,6 +1741,8 @@ router.get('/bookings/available', requireDriver, async (req, res) => {
         timestamp: new Date().toISOString()
       });
     }
+    
+    console.log('✅ [DRIVER_API] Driver is available and online');
 
     // Get available bookings (pending status, not assigned to any driver)
     const query = db.collection('bookings')
@@ -1788,6 +1797,12 @@ router.get('/bookings/available', requireDriver, async (req, res) => {
                              process.env.TESTING_MODE === 'true' || 
                              process.env.BYPASS_RADIUS_CHECK === 'true';
         
+        console.log('🔍 [DRIVER_API] Environment check:', {
+          NODE_ENV: process.env.NODE_ENV,
+          TESTING_MODE: process.env.TESTING_MODE,
+          BYPASS_RADIUS_CHECK: process.env.BYPASS_RADIUS_CHECK
+        });
+        
         console.log('🔍 [DRIVER_API] Filtering decision:', {
           isWithinRadius,
           isTestingMode,
@@ -1821,7 +1836,7 @@ router.get('/bookings/available', requireDriver, async (req, res) => {
       firstBooking: bookings[0] || null
     });
 
-    res.status(200).json({
+    const responseData = {
       success: true,
       message: 'Available bookings retrieved successfully',
       data: {
@@ -1838,10 +1853,28 @@ router.get('/bookings/available', requireDriver, async (req, res) => {
           address: driverLocation.address || 'Current Location',
           timestamp: driverLocation.timestamp || new Date().toISOString()
         },
-        searchRadius: parseFloat(radius)
+        searchRadius: parseFloat(radius),
+        // Debug info
+        debug: {
+          allBookingsProcessed: allBookings.length,
+          bookingsAfterPagination: bookings.length,
+          testingMode: process.env.NODE_ENV === 'development' || 
+                      process.env.TESTING_MODE === 'true' || 
+                      process.env.BYPASS_RADIUS_CHECK === 'true',
+          timestamp: new Date().toISOString()
+        }
       },
       timestamp: new Date().toISOString()
+    };
+
+    console.log('🔍 [DRIVER_API] Sending response with bookings:', {
+      hasBookings: !!responseData.data.bookings,
+      bookingsLength: responseData.data.bookings?.length || 0,
+      bookingsType: typeof responseData.data.bookings,
+      firstBookingId: responseData.data.bookings?.[0]?.id || null
     });
+
+    res.status(200).json(responseData);
 
   } catch (error) {
     console.error('Error getting available bookings:', error);

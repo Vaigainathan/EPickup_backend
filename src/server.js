@@ -455,20 +455,20 @@ if (process.env.NODE_ENV === 'development' || process.env.ENABLE_TEST_ENDPOINTS 
         status: 'pending',
         pickup: {
           name: 'Test Customer',
-          address: '123 Main St, Chennai',
+          address: '123 Main St, Bangalore',
           coordinates: {
-            latitude: 13.0827,
-            longitude: 80.2707
+            latitude: 13.0681637,
+            longitude: 77.5021978
           },
           contactName: 'Test Customer',
           contactPhone: '+919876543210'
         },
         dropoff: {
           name: 'Test Recipient',
-          address: '456 Park Ave, Chennai',
+          address: '456 Park Ave, Bangalore',
           coordinates: {
-            latitude: 13.0827,
-            longitude: 80.2707
+            latitude: 13.0681637,
+            longitude: 77.5021978
           },
           contactName: 'Test Recipient',
           contactPhone: '+919876543211'

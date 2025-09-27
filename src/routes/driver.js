@@ -1349,7 +1349,9 @@ router.get('/bookings', requireDriver, async (req, res) => {
         // For testing: bypass radius check, include all bookings
         // TODO: Re-enable radius check in production
         const isWithinRadius = distance <= parseFloat(radius);
-        const isTestingMode = process.env.NODE_ENV === 'development' || process.env.TESTING_MODE === 'true';
+        const isTestingMode = process.env.NODE_ENV === 'development' || 
+                             process.env.TESTING_MODE === 'true' || 
+                             process.env.BYPASS_RADIUS_CHECK === 'true';
         
         if (isWithinRadius || isTestingMode) {
           bookings.push({
@@ -1770,7 +1772,9 @@ router.get('/bookings/available', requireDriver, async (req, res) => {
         // For testing: bypass radius check, include all bookings
         // TODO: Re-enable radius check in production
         const isWithinRadius = distance <= parseFloat(radius);
-        const isTestingMode = process.env.NODE_ENV === 'development' || process.env.TESTING_MODE === 'true';
+        const isTestingMode = process.env.NODE_ENV === 'development' || 
+                             process.env.TESTING_MODE === 'true' || 
+                             process.env.BYPASS_RADIUS_CHECK === 'true';
         
         console.log('🔍 [DRIVER_API] Filtering decision:', {
           isWithinRadius,

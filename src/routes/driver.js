@@ -1683,6 +1683,111 @@ router.post('/set-availability', [
 });
 
 /**
+ * @route   GET /api/driver/bookings/test-simple
+ * @desc    SIMPLE TEST - Return hardcoded booking for testing
+ * @access  Private (Driver only) - FOR TESTING ONLY
+ */
+router.get('/bookings/test-simple', requireDriver, async (req, res) => {
+  try {
+    console.log('🧪 [SIMPLE_TEST] Simple test endpoint accessed');
+    
+    const testBooking = {
+      id: 'test-booking-123',
+      customerId: 'test-customer-456',
+      driverId: null,
+      status: 'pending',
+      pickup: {
+        name: 'Test Customer',
+        phone: '+919876543210',
+        address: 'Test Pickup Address, Bangalore',
+        coordinates: {
+          latitude: 13.0681637,
+          longitude: 77.5021978
+        },
+        instructions: 'Test pickup instructions'
+      },
+      dropoff: {
+        name: 'Test Recipient',
+        phone: '+919876543211',
+        address: 'Test Dropoff Address, Bangalore',
+        coordinates: {
+          latitude: 13.0827,
+          longitude: 80.2707
+        },
+        instructions: 'Test dropoff instructions'
+      },
+      package: {
+        weight: 5.0,
+        weightUnit: 'kg',
+        description: 'Test package for debugging',
+        dimensions: null,
+        isFragile: false,
+        requiresSpecialHandling: false
+      },
+      vehicle: {
+        type: '2_wheeler',
+        required: false
+      },
+      fare: {
+        base: 50,
+        distance: 20,
+        time: 0,
+        total: 70,
+        currency: 'INR'
+      },
+      paymentMethod: 'cash',
+      paymentStatus: 'pending',
+      timing: {
+        createdAt: new Date(),
+        estimatedPickupTime: new Date(Date.now() + 15 * 60 * 1000).toISOString(),
+        estimatedDeliveryTime: new Date(Date.now() + 45 * 60 * 1000).toISOString()
+      },
+      distance: {
+        total: 5.2,
+        unit: 'km'
+      },
+      rating: {
+        customerRating: null,
+        customerFeedback: null,
+        driverRating: null,
+        driverFeedback: null
+      },
+      cancellation: {
+        cancelledBy: null,
+        reason: null,
+        cancelledAt: null,
+        refundAmount: null
+      },
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      distanceFromDriver: 0.5,
+      estimatedPickupTime: new Date(Date.now() + 15 * 60 * 1000).toISOString()
+    };
+
+    console.log('✅ [SIMPLE_TEST] Returning test booking');
+
+    res.status(200).json({
+      success: true,
+      message: 'SIMPLE TEST - Hardcoded booking for testing',
+      data: [testBooking], // Return as array
+      timestamp: new Date().toISOString(),
+      debug: {
+        testMode: true,
+        hardcodedBooking: true
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ [SIMPLE_TEST] Error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'SIMPLE TEST - Failed to return test booking',
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+/**
  * @route   GET /api/driver/bookings/test-backdoor
  * @desc    TESTING BACKDOOR - Get all bookings without any restrictions
  * @access  Private (Driver only) - FOR TESTING ONLY

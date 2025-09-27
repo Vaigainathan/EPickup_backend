@@ -80,6 +80,82 @@ router.post('/create',
 );
 
 /**
+ * @route POST /api/payments/phonepe/initiate
+ * @desc Initiate PhonePe payment
+ * @access Private (Customer)
+ */
+router.post('/phonepe/initiate',
+  authMiddleware,
+  paymentRateLimit,
+  validateRequest({
+    body: {
+      bookingId: { type: 'string', required: true },
+      amount: { type: 'number', required: true, min: 1 },
+      customerPhone: { type: 'string', required: true },
+      customerEmail: { type: 'string', required: false },
+      customerName: { type: 'string', required: false },
+      redirectUrl: { type: 'string', required: false }
+    }
+  }),
+  async (req, res) => {
+    try {
+      const { 
+        bookingId, 
+        amount, 
+        customerPhone, 
+        customerEmail, 
+        customerName,
+        redirectUrl 
+      } = req.body;
+      const userId = req.user.id;
+
+      // Generate unique transaction ID
+      const transactionId = `TXN_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+
+      const paymentData = {
+        transactionId,
+        amount,
+        customerId: userId,
+        bookingId,
+        customerPhone,
+        customerEmail,
+        customerName: customerName || req.user.name,
+        redirectUrl
+      };
+
+      const result = await phonepeService.createPayment(paymentData);
+
+      if (result.success) {
+        res.json({
+          success: true,
+          message: 'Payment initiated successfully',
+          data: result.data,
+          timestamp: new Date().toISOString()
+        });
+      } else {
+        res.status(400).json({
+          success: false,
+          message: 'Payment initiation failed',
+          error: result.error,
+          timestamp: new Date().toISOString()
+        });
+      }
+    } catch (error) {
+      console.error('Initiate PhonePe payment error:', error);
+      res.status(500).json({
+        success: false,
+        message: 'Internal server error',
+        error: {
+          code: 'PAYMENT_INITIATION_ERROR',
+          message: error.message
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+  }
+);
+
+/**
  * @route GET /api/payments/verify/:transactionId
  * @desc Verify payment status
  * @access Private (Customer/Driver)

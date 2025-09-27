@@ -1072,16 +1072,28 @@ router.put('/status', [
     .withMessage('isAvailable must be a boolean'),
   body('currentLocation')
     .optional()
-    .isObject()
-    .withMessage('currentLocation must be an object'),
+    .custom((value) => {
+      if (value === null || value === undefined) return true;
+      if (typeof value === 'object' && value !== null) return true;
+      throw new Error('currentLocation must be an object or null');
+    })
+    .withMessage('currentLocation must be an object or null'),
   body('currentLocation.latitude')
     .optional()
-    .isFloat({ min: -90, max: 90 })
-    .withMessage('Latitude must be between -90 and 90'),
+    .custom((value) => {
+      if (value === null || value === undefined) return true;
+      if (typeof value === 'number' && value >= -90 && value <= 90) return true;
+      throw new Error('Latitude must be between -90 and 90 or null');
+    })
+    .withMessage('Latitude must be between -90 and 90 or null'),
   body('currentLocation.longitude')
     .optional()
-    .isFloat({ min: -180, max: 180 })
-    .withMessage('Longitude must be between -180 and 180'),
+    .custom((value) => {
+      if (value === null || value === undefined) return true;
+      if (typeof value === 'number' && value >= -180 && value <= 180) return true;
+      throw new Error('Longitude must be between -180 and 180 or null');
+    })
+    .withMessage('Longitude must be between -180 and 180 or null'),
   body('workingHours')
     .optional()
     .isObject()

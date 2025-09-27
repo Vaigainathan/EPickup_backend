@@ -19,5 +19,24 @@ export default [
       "prefer-const": "error",
       "no-var": "error"
     }
+  },
+  {
+    files: ["tests/**/*.js", "**/*.test.js", "**/*.spec.js"],
+    languageOptions: {
+      ecmaVersion: 2022,
+      sourceType: "module",
+      globals: {
+        ...globals.node,
+        ...globals.es2022,
+        ...globals.jest
+      }
+    },
+    rules: {
+      ...js.configs.recommended.rules,
+      "no-unused-vars": "warn",
+      "no-console": "off",
+      "prefer-const": "error",
+      "no-var": "error"
+    }
   }
 ];

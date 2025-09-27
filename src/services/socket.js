@@ -47,7 +47,11 @@ const initializeSocketIO = async (server) => {
         }
 
         // Verify JWT token
-        const secret = process.env.JWT_SECRET || 'your-secret-key';
+        const secret = process.env.JWT_SECRET;
+        if (!secret) {
+          console.error('JWT_SECRET environment variable is required for WebSocket authentication');
+          return next(new Error('Server configuration error'));
+        }
         let decodedToken;
         
         try {
@@ -186,7 +190,14 @@ const initializeSocketIO = async (server) => {
           }
 
           // Verify the new token
-          const secret = process.env.JWT_SECRET || 'your-secret-key';
+          const secret = process.env.JWT_SECRET;
+          if (!secret) {
+            socket.emit('token_refresh_failed', {
+              message: 'Server configuration error',
+              timestamp: new Date().toISOString()
+            });
+            return;
+          }
           const decodedToken = jwt.verify(newToken, secret);
           
           // Update socket with new token info
@@ -260,6 +271,17 @@ const initializeSocketIO = async (server) => {
             socket.leave(room);
           }
         });
+
+        // Clean up socket properties to prevent memory leaks
+        socket.userId = null;
+        socket.userType = null;
+        socket.userRole = null;
+        socket.userRooms = null;
+        socket.needsTokenRefresh = null;
+        socket.originalToken = null;
+        
+        // Remove all event listeners to prevent memory leaks
+        socket.removeAllListeners();
       });
 
       // Handle admin-specific events

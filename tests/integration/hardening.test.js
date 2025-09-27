@@ -1,5 +1,4 @@
 /* eslint-env jest */
-/* global describe, test, expect, beforeAll, afterAll, beforeEach, afterEach */
 
 const request = require('supertest');
 const { getFirestore } = require('../../src/services/firebase');

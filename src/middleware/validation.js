@@ -1,345 +1,414 @@
-
+const validationService = require('../services/validationService');
 
 /**
- * Generic request validation middleware
+ * API Validation Middleware
+ * Provides comprehensive request validation
  */
-const validateRequest = (schema) => {
+
+/**
+ * Validate request body against schema
+ * @param {Object} schema - Joi schema
+ * @param {Object} options - Validation options
+ * @returns {Function} Middleware function
+ */
+const validateBody = (schema, options = {}) => {
   return (req, res, next) => {
-    // Simple validation based on schema
-    const errors = [];
+    const result = validationService.validate(req.body, schema, options);
     
-    if (schema.body) {
-      for (const [field, rules] of Object.entries(schema.body)) {
-        const value = req.body[field];
-        
-        if (rules.required && (value === undefined || value === null || value === '')) {
-          errors.push({
-            field,
-            message: `${field} is required`,
-            value
-          });
-        } else if (value !== undefined && value !== null) {
-          if (rules.type && typeof value !== rules.type) {
-            errors.push({
-              field,
-              message: `${field} must be of type ${rules.type}`,
-              value
-            });
-          }
-          
-          if (rules.minLength && value.length < rules.minLength) {
-            errors.push({
-              field,
-              message: `${field} must be at least ${rules.minLength} characters long`,
-              value
-            });
-          }
-          
-          if (rules.maxLength && value.length > rules.maxLength) {
-            errors.push({
-              field,
-              message: `${field} must be no more than ${rules.maxLength} characters long`,
-              value
-            });
-          }
-          
-          if (rules.enum && !rules.enum.includes(value)) {
-            errors.push({
-              field,
-              message: `${field} must be one of: ${rules.enum.join(', ')}`,
-              value
-            });
-          }
-        }
-      }
-    }
-    
-    if (errors.length > 0) {
+    if (!result.isValid) {
       return res.status(400).json({
         success: false,
         error: {
           code: 'VALIDATION_ERROR',
           message: 'Request validation failed',
-          details: errors,
-          timestamp: new Date().toISOString()
-        }
+          details: result.errors
+        },
+        timestamp: new Date().toISOString()
       });
     }
+
+    req.body = result.data;
+    next();
+  };
+};
+
+/**
+ * Validate request query parameters
+ * @param {Object} schema - Joi schema
+ * @param {Object} options - Validation options
+ * @returns {Function} Middleware function
+ */
+const validateQuery = (schema, options = {}) => {
+  return (req, res, next) => {
+    const result = validationService.validate(req.query, schema, options);
     
+    if (!result.isValid) {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'VALIDATION_ERROR',
+          message: 'Query validation failed',
+          details: result.errors
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    req.query = result.data;
+    next();
+  };
+};
+
+/**
+ * Validate request parameters
+ * @param {Object} schema - Joi schema
+ * @param {Object} options - Validation options
+ * @returns {Function} Middleware function
+ */
+const validateParams = (schema, options = {}) => {
+  return (req, res, next) => {
+    const result = validationService.validate(req.params, schema, options);
+    
+    if (!result.isValid) {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'VALIDATION_ERROR',
+          message: 'Parameter validation failed',
+          details: result.errors
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    req.params = result.data;
+    next();
+  };
+};
+
+/**
+ * Validate file upload
+ * @param {Array} allowedTypes - Allowed MIME types
+ * @param {number} maxSize - Maximum file size in bytes
+ * @returns {Function} Middleware function
+ */
+const validateFileUpload = (allowedTypes = ['image/jpeg', 'image/png', 'image/webp'], maxSize = 5 * 1024 * 1024) => {
+  return (req, res, next) => {
+    if (!req.file) {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'VALIDATION_ERROR',
+          message: 'File is required',
+          details: 'No file provided in request'
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    const result = validationService.validateFileUpload(req.file, allowedTypes, maxSize);
+    
+    if (!result.isValid) {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'VALIDATION_ERROR',
+          message: 'File validation failed',
+          details: result.error
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    next();
+  };
+};
+
+/**
+ * Validate authentication request
+ * @returns {Function} Middleware function
+ */
+const validateAuth = () => {
+  return (req, res, next) => {
+    const result = validationService.validateAuth(req.body);
+    
+    if (!result.isValid) {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'VALIDATION_ERROR',
+          message: 'Authentication validation failed',
+          details: result.errors
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    req.body = result.data;
+    next();
+  };
+};
+
+/**
+ * Validate user registration
+ * @returns {Function} Middleware function
+ */
+const validateUserRegistration = () => {
+  return (req, res, next) => {
+    const result = validationService.validateUserRegistration(req.body);
+    
+    if (!result.isValid) {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'VALIDATION_ERROR',
+          message: 'User registration validation failed',
+          details: result.errors
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    req.body = result.data;
+    next();
+  };
+};
+
+/**
+ * Validate booking creation
+ * @returns {Function} Middleware function
+ */
+const validateBookingCreation = () => {
+  return (req, res, next) => {
+    const result = validationService.validateBookingCreation(req.body);
+    
+    if (!result.isValid) {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'VALIDATION_ERROR',
+          message: 'Booking creation validation failed',
+          details: result.errors
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    req.body = result.data;
+    next();
+  };
+};
+
+/**
+ * Validate driver location update
+ * @returns {Function} Middleware function
+ */
+const validateDriverLocation = () => {
+  return (req, res, next) => {
+    const result = validationService.validateDriverLocation(req.body);
+    
+    if (!result.isValid) {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'VALIDATION_ERROR',
+          message: 'Driver location validation failed',
+          details: result.error
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    req.body = result.data;
+    next();
+  };
+};
+
+/**
+ * Validate payment data
+ * @returns {Function} Middleware function
+ */
+const validatePayment = () => {
+  return (req, res, next) => {
+    const result = validationService.validatePayment(req.body);
+    
+    if (!result.isValid) {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'VALIDATION_ERROR',
+          message: 'Payment validation failed',
+          details: result.errors
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    req.body = result.data;
+    next();
+  };
+};
+
+/**
+ * Validate pagination parameters
+ * @returns {Function} Middleware function
+ */
+const validatePagination = () => {
+  return (req, res, next) => {
+    const result = validationService.validatePagination(req.query);
+    
+    if (!result.isValid) {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'VALIDATION_ERROR',
+          message: 'Pagination validation failed',
+          details: result.errors
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    req.query = result.data;
+    next();
+  };
+};
+
+/**
+ * Validate date range
+ * @returns {Function} Middleware function
+ */
+const validateDateRange = () => {
+  return (req, res, next) => {
+    const result = validationService.validateDateRange(req.query);
+    
+    if (!result.isValid) {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'VALIDATION_ERROR',
+          message: 'Date range validation failed',
+          details: result.errors
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    req.query = result.data;
+    next();
+  };
+};
+
+/**
+ * Sanitize request body
+ * @returns {Function} Middleware function
+ */
+const sanitizeBody = () => {
+  return (req, res, next) => {
+    if (req.body && typeof req.body === 'object') {
+      req.body = sanitizeObject(req.body);
+    }
+    next();
+  };
+};
+
+/**
+ * Sanitize object recursively
+ * @param {Object} obj - Object to sanitize
+ * @returns {Object} Sanitized object
+ */
+const sanitizeObject = (obj) => {
+  if (typeof obj !== 'object' || obj === null) {
+    return typeof obj === 'string' ? validationService.sanitizeString(obj) : obj;
+  }
+
+  if (Array.isArray(obj)) {
+    return obj.map(item => sanitizeObject(item));
+  }
+
+  const sanitized = {};
+  for (const [key, value] of Object.entries(obj)) {
+    sanitized[key] = sanitizeObject(value);
+  }
+  return sanitized;
+};
+
+/**
+ * Validate search query
+ * @returns {Function} Middleware function
+ */
+const validateSearchQuery = () => {
+  return (req, res, next) => {
+    const { q } = req.query;
+    
+    if (!q) {
+      return next();
+    }
+
+    const result = validationService.validateSearchQuery(q);
+    
+    if (!result.isValid) {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'VALIDATION_ERROR',
+          message: 'Search query validation failed',
+          details: result.errors
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    req.query.q = result.data;
     next();
   };
 };
 
 /**
  * Validate coordinates
+ * @param {string} fieldName - Field name containing coordinates
+ * @returns {Function} Middleware function
  */
-const validateCoordinates = (req, res, next) => {
-  const { latitude, longitude } = req.body;
-  
-  if (latitude === undefined || longitude === undefined) {
-    return res.status(400).json({
-      success: false,
-      error: {
-        code: 'MISSING_COORDINATES',
-        message: 'Latitude and longitude are required',
-        timestamp: new Date().toISOString()
-      }
-    });
-  }
-
-  if (typeof latitude !== 'number' || typeof longitude !== 'number') {
-    return res.status(400).json({
-      success: false,
-      error: {
-        code: 'INVALID_COORDINATES',
-        message: 'Latitude and longitude must be numbers',
-        timestamp: new Date().toISOString()
-      }
-    });
-  }
-
-  if (latitude < -90 || latitude > 90) {
-    return res.status(400).json({
-      success: false,
-      error: {
-        code: 'INVALID_LATITUDE',
-        message: 'Latitude must be between -90 and 90',
-        timestamp: new Date().toISOString()
-      }
-    });
-  }
-
-  if (longitude < -180 || longitude > 180) {
-    return res.status(400).json({
-      success: false,
-      error: {
-        code: 'INVALID_LONGITUDE',
-        message: 'Longitude must be between -180 and 180',
-        timestamp: new Date().toISOString()
-      }
-    });
-  }
-
-  next();
-};
-
-/**
- * Validate phone number format
- */
-const validatePhoneNumber = (req, res, next) => {
-  const { phone } = req.body;
-  
-  if (!phone) {
-    return res.status(400).json({
-      success: false,
-      error: {
-        code: 'MISSING_PHONE',
-        message: 'Phone number is required',
-        timestamp: new Date().toISOString()
-      }
-    });
-  }
-
-  // Indian phone number format: +91XXXXXXXXXX or 91XXXXXXXXXX or XXXXXXXXXX
-  const phoneRegex = /^(\+?91|0)?[6-9]\d{9}$/;
-  
-  if (!phoneRegex.test(phone)) {
-    return res.status(400).json({
-      success: false,
-      error: {
-        code: 'INVALID_PHONE',
-        message: 'Please provide a valid Indian phone number',
-        timestamp: new Date().toISOString()
-      }
-    });
-  }
-
-  next();
-};
-
-/**
- * Validate amount (positive number)
- */
-const validateAmount = (req, res, next) => {
-  const { amount } = req.body;
-  
-  if (amount === undefined) {
-    return res.status(400).json({
-      success: false,
-      error: {
-        code: 'MISSING_AMOUNT',
-        message: 'Amount is required',
-        timestamp: new Date().toISOString()
-      }
-    });
-  }
-
-  if (typeof amount !== 'number' || amount <= 0) {
-    return res.status(400).json({
-      success: false,
-      error: {
-        code: 'INVALID_AMOUNT',
-        message: 'Amount must be a positive number',
-        timestamp: new Date().toISOString()
-      }
-    });
-  }
-
-  if (amount > 100000) { // Max amount limit
-    return res.status(400).json({
-      success: false,
-      error: {
-        code: 'AMOUNT_TOO_HIGH',
-        message: 'Amount cannot exceed ₹100,000',
-        timestamp: new Date().toISOString()
-      }
-    });
-  }
-
-  next();
-};
-
-/**
- * Validate file upload
- */
-const validateFileUpload = (req, res, next) => {
-  if (!req.file) {
-    return res.status(400).json({
-      success: false,
-      error: {
-        code: 'NO_FILE_PROVIDED',
-        message: 'No file provided',
-        timestamp: new Date().toISOString()
-      }
-    });
-  }
-
-  const { file } = req;
-  const maxSize = parseInt(process.env.MAX_FILE_SIZE) || 10 * 1024 * 1024; // 10MB default
-
-  if (file.size > maxSize) {
-    return res.status(400).json({
-      success: false,
-      error: {
-        code: 'FILE_TOO_LARGE',
-        message: `File size exceeds maximum limit of ${Math.round(maxSize / (1024 * 1024))}MB`,
-        timestamp: new Date().toISOString()
-      }
-    });
-  }
-
-  const allowedTypes = ['image/jpeg', 'image/png', 'image/webp', 'application/pdf'];
-  
-  if (!allowedTypes.includes(file.mimetype)) {
-    return res.status(400).json({
-      success: false,
-      error: {
-        code: 'INVALID_FILE_TYPE',
-        message: 'Invalid file type. Only JPEG, PNG, WebP, and PDF files are allowed',
-        timestamp: new Date().toISOString()
-      }
-    });
-  }
-
-  next();
-};
-
-/**
- * Validate pagination parameters
- */
-const validatePagination = (req, res, next) => {
-  const { limit, offset } = req.query;
-  
-  if (limit !== undefined) {
-    const limitNum = parseInt(limit);
-    if (isNaN(limitNum) || limitNum < 1 || limitNum > 100) {
-      return res.status(400).json({
-        success: false,
-        error: {
-          code: 'INVALID_LIMIT',
-          message: 'Limit must be a number between 1 and 100',
-          timestamp: new Date().toISOString()
-        }
-      });
-    }
-  }
-
-  if (offset !== undefined) {
-    const offsetNum = parseInt(offset);
-    if (isNaN(offsetNum) || offsetNum < 0) {
-      return res.status(400).json({
-        success: false,
-        error: {
-          code: 'INVALID_OFFSET',
-          message: 'Offset must be a non-negative number',
-          timestamp: new Date().toISOString()
-        }
-      });
-    }
-  }
-
-  next();
-};
-
-/**
- * Validate date range
- */
-const validateDateRange = (req, res, next) => {
-  const { startDate, endDate } = req.query;
-  
-  if (startDate) {
-    const start = new Date(startDate);
-    if (isNaN(start.getTime())) {
-      return res.status(400).json({
-        success: false,
-        error: {
-          code: 'INVALID_START_DATE',
-          message: 'Start date must be a valid date',
-          timestamp: new Date().toISOString()
-        }
-      });
-    }
-  }
-
-  if (endDate) {
-    const end = new Date(endDate);
-    if (isNaN(end.getTime())) {
-      return res.status(400).json({
-        success: false,
-        error: {
-          code: 'INVALID_END_DATE',
-          message: 'End date must be a valid date',
-          timestamp: new Date().toISOString()
-        }
-      });
-    }
-  }
-
-  if (startDate && endDate) {
-    const start = new Date(startDate);
-    const end = new Date(endDate);
+const validateCoordinates = (fieldName = 'coordinates') => {
+  return (req, res, next) => {
+    const coordinates = req.body[fieldName];
     
-    if (start >= end) {
+    if (!coordinates) {
+      return next();
+    }
+
+    const result = validationService.validate(coordinates, validationService.schemas.coordinates);
+    
+    if (!result.isValid) {
       return res.status(400).json({
         success: false,
         error: {
-          code: 'INVALID_DATE_RANGE',
-          message: 'Start date must be before end date',
-          timestamp: new Date().toISOString()
-        }
+          code: 'VALIDATION_ERROR',
+          message: 'Coordinates validation failed',
+          details: result.errors
+        },
+        timestamp: new Date().toISOString()
       });
     }
-  }
 
-  next();
+    req.body[fieldName] = result.data;
+    next();
+  };
 };
 
 module.exports = {
-  validateRequest,
-  validateCoordinates,
-  validatePhoneNumber,
-  validateAmount,
+  validateBody,
+  validateQuery,
+  validateParams,
   validateFileUpload,
+  validateAuth,
+  validateUserRegistration,
+  validateBookingCreation,
+  validateDriverLocation,
+  validatePayment,
   validatePagination,
-  validateDateRange
+  validateDateRange,
+  sanitizeBody,
+  validateSearchQuery,
+  validateCoordinates
 };

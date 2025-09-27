@@ -27,13 +27,16 @@ service cloud.firestore {
     }
     
     function isWithinServiceArea(location) {
-      // For testing: bypass service area validation
-      // TODO: Re-enable service area validation in production
-      return true;
-      
-      // Original service area validation (Tirupattur area) - disabled for testing
-      // return location.latitude >= 12.0 && location.latitude <= 13.0 &&
-      //        location.longitude >= 78.0 && location.longitude <= 79.0;
+      // Service area validation for Tirupattur region
+      // Allow global customers but ensure pickup/delivery locations are within service area
+      return location.latitude >= 12.0 && location.latitude <= 13.0 &&
+             location.longitude >= 78.0 && location.longitude <= 79.0;
+    }
+    
+    function isValidPickupDelivery(pickup, drop) {
+      // Both pickup and delivery locations must be within service area
+      return isWithinServiceArea(pickup.coordinates) && 
+             isWithinServiceArea(drop.coordinates);
     }
     
     function isValidPhoneNumber(phone) {
@@ -135,8 +138,7 @@ service cloud.firestore {
         request.resource.data.customerId == request.auth.uid &&
         request.resource.data.keys().hasAll(['customerId', 'pickup', 'drop', 'status', 'createdAt']) &&
         isValidBookingStatus(request.resource.data.status) &&
-        isWithinServiceArea(request.resource.data.pickup.coordinates) &&
-        isWithinServiceArea(request.resource.data.drop.coordinates);
+        isValidPickupDelivery(request.resource.data.pickup, request.resource.data.drop);
       
       allow update: if isAuthenticated() && (
         // Admin can update anything

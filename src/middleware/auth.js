@@ -39,7 +39,19 @@ const authMiddleware = async (req, res, next) => {
     }
 
     // Verify JWT token
-    const secret = process.env.JWT_SECRET || 'your-secret-key';
+    const secret = process.env.JWT_SECRET;
+    if (!secret) {
+      console.error('JWT_SECRET environment variable is required');
+      return res.status(500).json({
+        success: false,
+        error: {
+          code: 'CONFIGURATION_ERROR',
+          message: 'Server configuration error',
+          details: 'JWT_SECRET environment variable is required'
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
     let decodedToken;
     
     try {
@@ -223,7 +235,19 @@ const adminAuthMiddleware = async (req, res, next) => {
     const token = authHeader.substring(7); // Remove 'Bearer ' prefix
 
     // Verify JWT token
-    const secret = process.env.JWT_SECRET || 'your-secret-key';
+    const secret = process.env.JWT_SECRET;
+    if (!secret) {
+      console.error('JWT_SECRET environment variable is required');
+      return res.status(500).json({
+        success: false,
+        error: {
+          code: 'CONFIGURATION_ERROR',
+          message: 'Server configuration error',
+          details: 'JWT_SECRET environment variable is required'
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
     let decodedToken;
     
     try {
@@ -386,7 +410,14 @@ const optionalAuth = async (req, res, next) => {
 
     // Try to authenticate
     const token = authHeader.substring(7);
-    const decodedToken = jwt.verify(token, process.env.JWT_SECRET || 'your-secret-key');
+    const secret = process.env.JWT_SECRET;
+    if (!secret) {
+      console.warn('JWT_SECRET not configured for optional auth');
+      req.user = null;
+      req.token = null;
+      return next();
+    }
+    const decodedToken = jwt.verify(token, secret);
     
     if (decodedToken) {
       const db = getFirestore();

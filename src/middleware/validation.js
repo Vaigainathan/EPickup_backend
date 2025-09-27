@@ -396,7 +396,57 @@ const validateCoordinates = (fieldName = 'coordinates') => {
   };
 };
 
+/**
+ * Generic request validation middleware
+ * @param {Object} validationRules - Validation rules for different parts of request
+ * @returns {Function} Middleware function
+ */
+const validateRequest = (validationRules = {}) => {
+  return (req, res, next) => {
+    const errors = [];
+
+    // Validate body if rules provided
+    if (validationRules.body) {
+      const bodyResult = validationService.validateInput(req.body, validationRules.body);
+      if (!bodyResult.isValid) {
+        errors.push(...bodyResult.errors.map(error => ({ field: 'body', message: error })));
+      }
+    }
+
+    // Validate query if rules provided
+    if (validationRules.query) {
+      const queryResult = validationService.validateInput(req.query, validationRules.query);
+      if (!queryResult.isValid) {
+        errors.push(...queryResult.errors.map(error => ({ field: 'query', message: error })));
+      }
+    }
+
+    // Validate params if rules provided
+    if (validationRules.params) {
+      const paramsResult = validationService.validateInput(req.params, validationRules.params);
+      if (!paramsResult.isValid) {
+        errors.push(...paramsResult.errors.map(error => ({ field: 'params', message: error })));
+      }
+    }
+
+    if (errors.length > 0) {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'VALIDATION_ERROR',
+          message: 'Request validation failed',
+          details: errors
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    next();
+  };
+};
+
 module.exports = {
+  validateRequest,
   validateBody,
   validateQuery,
   validateParams,

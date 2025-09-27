@@ -1,47 +1,55 @@
-const { getFirestore } = require('./firebase');
-
 /**
- * Comprehensive Error Handling and Retry Service
- * Provides robust error handling, retry logic, and recovery mechanisms
+ * Enhanced Error Handling Service
+ * Provides comprehensive error handling, retry mechanisms, and logging
  */
+
+const { getFirestore } = require('./firebase');
+const notificationService = require('./notificationService');
+
 class ErrorHandlingService {
   constructor() {
     this.db = getFirestore();
-    this.maxRetries = 3;
-    this.baseDelay = 1000; // 1 second
-    this.maxDelay = 30000; // 30 seconds
+    this.retryConfig = {
+      maxRetries: 3,
+      baseDelay: 1000, // 1 second
+      maxDelay: 10000, // 10 seconds
+      backoffMultiplier: 2
+    };
+    this.errorThresholds = {
+      critical: 5, // 5 errors in 1 minute
+      warning: 10, // 10 errors in 5 minutes
+      info: 20 // 20 errors in 10 minutes
+    };
   }
 
   /**
-   * Execute function with exponential backoff retry
+   * Execute function with retry logic
    * @param {Function} fn - Function to execute
    * @param {Object} options - Retry options
    * @returns {Promise} Result of function execution
    */
   async executeWithRetry(fn, options = {}) {
-    const {
-      maxRetries = this.maxRetries,
-      baseDelay = this.baseDelay,
-      maxDelay = this.maxDelay,
-      context = 'Unknown operation'
-    } = options;
-
-    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    const config = { ...this.retryConfig, ...options };
+    // let lastError;
+    
+    for (let attempt = 0; attempt <= config.maxRetries; attempt++) {
       try {
         const result = await fn();
         if (attempt > 0) {
-          console.log(`✅ ${context} succeeded on attempt ${attempt + 1}`);
+          console.log(`✅ [ERROR_HANDLING] Operation succeeded on attempt ${attempt + 1}`);
         }
         return result;
       } catch (error) {
+        // lastError = error;
         
-        if (attempt === maxRetries) {
-          console.error(`❌ ${context} failed after ${maxRetries + 1} attempts:`, error.message);
-          throw this.enhanceError(error, context, attempt + 1);
+        if (attempt === config.maxRetries) {
+          console.error(`❌ [ERROR_HANDLING] Operation failed after ${config.maxRetries + 1} attempts:`, error);
+          await this.logError(error, { attempts: attempt + 1, operation: fn.name });
+          throw error;
         }
-
-        const delay = Math.min(baseDelay * Math.pow(2, attempt), maxDelay);
-        console.warn(`⚠️ ${context} failed on attempt ${attempt + 1}, retrying in ${delay}ms:`, error.message);
+        
+        const delay = this.calculateDelay(attempt, config);
+        console.warn(`⚠️ [ERROR_HANDLING] Attempt ${attempt + 1} failed, retrying in ${delay}ms:`, error.message);
         
         await this.sleep(delay);
       }
@@ -49,314 +57,446 @@ class ErrorHandlingService {
   }
 
   /**
-   * Execute Firestore transaction with retry
-   * @param {Function} transactionFn - Transaction function
-   * @param {Object} options - Retry options
-   * @returns {Promise} Transaction result
+   * Calculate delay for retry attempts
+   * @param {number} attempt - Current attempt number
+   * @param {Object} config - Retry configuration
+   * @returns {number} Delay in milliseconds
    */
-  async executeTransactionWithRetry(transactionFn, options = {}) {
-    return this.executeWithRetry(async () => {
-      return this.db.runTransaction(transactionFn);
-    }, {
-      ...options,
-      context: 'Firestore transaction'
-    });
+  calculateDelay(attempt, config) {
+    const delay = config.baseDelay * Math.pow(config.backoffMultiplier, attempt);
+    return Math.min(delay, config.maxDelay);
   }
 
   /**
-   * Execute API call with retry
-   * @param {Function} apiCall - API call function
-   * @param {Object} options - Retry options
-   * @returns {Promise} API response
-   */
-  async executeApiCallWithRetry(apiCall, options = {}) {
-    return this.executeWithRetry(apiCall, {
-      ...options,
-      context: 'API call'
-    });
-  }
-
-  /**
-   * Handle WebSocket connection with auto-reconnect
-   * @param {Object} socket - Socket instance
-   * @param {Object} options - Reconnect options
-   */
-  handleWebSocketReconnect(socket, options = {}) {
-    const {
-      maxReconnectAttempts = 10,
-      baseDelay = 1000,
-      maxDelay = 30000,
-      context = 'WebSocket connection'
-    } = options;
-
-    let reconnectAttempts = 0;
-
-    const reconnect = async () => {
-      if (reconnectAttempts >= maxReconnectAttempts) {
-        console.error(`❌ ${context} max reconnection attempts reached`);
-        return;
-      }
-
-      reconnectAttempts++;
-      const delay = Math.min(baseDelay * Math.pow(2, reconnectAttempts - 1), maxDelay);
-      
-      console.warn(`🔄 ${context} attempting reconnection ${reconnectAttempts}/${maxReconnectAttempts} in ${delay}ms`);
-      
-      setTimeout(() => {
-        socket.connect();
-      }, delay);
-    };
-
-    socket.on('disconnect', (reason) => {
-      console.warn(`🔌 ${context} disconnected:`, reason);
-      if (reason === 'io server disconnect') {
-        // Server disconnected, reconnect immediately
-        reconnect();
-      } else {
-        // Client disconnected, attempt reconnection
-        reconnect();
-      }
-    });
-
-    socket.on('connect', () => {
-      console.log(`✅ ${context} reconnected successfully`);
-      reconnectAttempts = 0; // Reset counter on successful connection
-    });
-
-    socket.on('connect_error', (error) => {
-      console.error(`❌ ${context} connection error:`, error.message);
-      reconnect();
-    });
-  }
-
-  /**
-   * Handle driver assignment failures
-   * @param {string} bookingId - Booking ID
-   * @param {Error} error - Assignment error
-   * @param {Object} context - Additional context
-   */
-  async handleDriverAssignmentFailure(bookingId, error, context = {}) {
-    try {
-      console.error(`❌ Driver assignment failed for booking ${bookingId}:`, error.message);
-
-      // Log the failure
-      await this.logAssignmentFailure(bookingId, error, context);
-
-      // Determine recovery action based on error type
-      const recoveryAction = this.determineRecoveryAction(error);
-
-      switch (recoveryAction) {
-        case 'retry_assignment':
-          console.log(`🔄 Retrying assignment for booking ${bookingId}`);
-          // Re-queue for assignment
-          break;
-        
-        case 'notify_customer':
-          console.log(`📱 Notifying customer of assignment failure for booking ${bookingId}`);
-          // Send notification to customer
-          break;
-        
-        case 'cancel_booking':
-          console.log(`❌ Cancelling booking ${bookingId} due to assignment failure`);
-          // Cancel the booking
-          await this.cancelBooking(bookingId, 'No drivers available');
-          break;
-        
-        default:
-          console.log(`⚠️ Unknown recovery action for booking ${bookingId}`);
-      }
-
-    } catch (logError) {
-      console.error('❌ Failed to handle driver assignment failure:', logError.message);
-    }
-  }
-
-  /**
-   * Determine recovery action based on error type
-   * @param {Error} error - Error object
-   * @returns {string} Recovery action
-   */
-  determineRecoveryAction(error) {
-    if (error.code === 'NO_DRIVERS_AVAILABLE') {
-      return 'retry_assignment';
-    }
-    
-    if (error.code === 'SERVICE_UNAVAILABLE') {
-      return 'notify_customer';
-    }
-    
-    if (error.code === 'CRITICAL_ERROR') {
-      return 'cancel_booking';
-    }
-    
-    return 'retry_assignment';
-  }
-
-  /**
-   * Log assignment failure for monitoring
-   * @param {string} bookingId - Booking ID
-   * @param {Error} error - Error object
-   * @param {Object} context - Additional context
-   */
-  async logAssignmentFailure(bookingId, error, context) {
-    try {
-      const failureLog = {
-        bookingId,
-        error: {
-          code: error.code || 'UNKNOWN_ERROR',
-          message: error.message,
-          stack: error.stack
-        },
-        context,
-        timestamp: new Date(),
-        retryCount: context.retryCount || 0
-      };
-
-      await this.db.collection('assignmentFailures').add(failureLog);
-    } catch (logError) {
-      console.error('❌ Failed to log assignment failure:', logError.message);
-    }
-  }
-
-  /**
-   * Cancel booking due to assignment failure
-   * @param {string} bookingId - Booking ID
-   * @param {string} reason - Cancellation reason
-   */
-  async cancelBooking(bookingId, reason) {
-    try {
-      await this.db.collection('bookings').doc(bookingId).update({
-        status: 'cancelled',
-        cancellationReason: reason,
-        cancelledAt: new Date(),
-        updatedAt: new Date()
-      });
-
-      console.log(`✅ Booking ${bookingId} cancelled due to: ${reason}`);
-    } catch (error) {
-      console.error(`❌ Failed to cancel booking ${bookingId}:`, error.message);
-    }
-  }
-
-  /**
-   * Enhance error with additional context
-   * @param {Error} error - Original error
-   * @param {string} context - Operation context
-   * @param {number} attempt - Attempt number
-   * @returns {Error} Enhanced error
-   */
-  enhanceError(error, context, attempt) {
-    const enhancedError = new Error(`${context} failed after ${attempt} attempts: ${error.message}`);
-    enhancedError.originalError = error;
-    enhancedError.context = context;
-    enhancedError.attempts = attempt;
-    enhancedError.timestamp = new Date();
-    enhancedError.code = error.code || 'OPERATION_FAILED';
-    
-    return enhancedError;
-  }
-
-  /**
-   * Sleep utility
+   * Sleep for specified milliseconds
    * @param {number} ms - Milliseconds to sleep
-   * @returns {Promise} Sleep promise
+   * @returns {Promise} Promise that resolves after delay
    */
   sleep(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
   }
 
   /**
-   * Validate and sanitize input data
-   * @param {Object} data - Input data
-   * @param {Object} schema - Validation schema
-   * @returns {Object} Sanitized data
+   * Handle API errors with proper response formatting
+   * @param {Error} error - Error object
+   * @param {Object} context - Error context
+   * @returns {Object} Formatted error response
    */
-  validateAndSanitize(data, schema) {
-    const sanitized = {};
-    const errors = [];
+  handleApiError(error, context = {}) {
+    const errorResponse = {
+      success: false,
+      timestamp: new Date().toISOString(),
+      ...context
+    };
 
-    for (const [key, rules] of Object.entries(schema)) {
-      const value = data[key];
-
-      // Required field check
-      if (rules.required && (value === undefined || value === null || value === '')) {
-        errors.push(`${key} is required`);
-        continue;
-      }
-
-      // Type validation
-      if (value !== undefined && rules.type && typeof value !== rules.type) {
-        errors.push(`${key} must be of type ${rules.type}`);
-        continue;
-      }
-
-      // String length validation
-      if (rules.type === 'string' && rules.maxLength && value.length > rules.maxLength) {
-        errors.push(`${key} must be no more than ${rules.maxLength} characters`);
-        continue;
-      }
-
-      // Number range validation
-      if (rules.type === 'number' && rules.min !== undefined && value < rules.min) {
-        errors.push(`${key} must be at least ${rules.min}`);
-        continue;
-      }
-
-      if (rules.type === 'number' && rules.max !== undefined && value > rules.max) {
-        errors.push(`${key} must be no more than ${rules.max}`);
-        continue;
-      }
-
-      // Sanitize string values
-      if (rules.type === 'string' && typeof value === 'string') {
-        sanitized[key] = value.trim().replace(/[<>]/g, '');
+    // Handle specific error types
+    if (error.name === 'ValidationError') {
+      errorResponse.error = {
+        code: 'VALIDATION_ERROR',
+        message: 'Validation failed',
+        details: error.details || error.message
+      };
+      errorResponse.statusCode = 400;
+    } else if (error.name === 'AuthenticationError') {
+      errorResponse.error = {
+        code: 'AUTHENTICATION_ERROR',
+        message: 'Authentication failed',
+        details: error.message
+      };
+      errorResponse.statusCode = 401;
+    } else if (error.name === 'AuthorizationError') {
+      errorResponse.error = {
+        code: 'AUTHORIZATION_ERROR',
+        message: 'Access denied',
+        details: error.message
+      };
+      errorResponse.statusCode = 403;
+    } else if (error.name === 'NotFoundError') {
+      errorResponse.error = {
+        code: 'NOT_FOUND',
+        message: 'Resource not found',
+        details: error.message
+      };
+      errorResponse.statusCode = 404;
+    } else if (error.name === 'ConflictError') {
+      errorResponse.error = {
+        code: 'CONFLICT',
+        message: 'Resource conflict',
+        details: error.message
+      };
+      errorResponse.statusCode = 409;
+    } else if (error.name === 'RateLimitError') {
+      errorResponse.error = {
+        code: 'RATE_LIMIT_EXCEEDED',
+        message: 'Too many requests',
+        details: error.message
+      };
+      errorResponse.statusCode = 429;
+    } else if (error.name === 'ServiceUnavailableError') {
+      errorResponse.error = {
+        code: 'SERVICE_UNAVAILABLE',
+        message: 'Service temporarily unavailable',
+        details: error.message
+      };
+      errorResponse.statusCode = 503;
+    } else if (error.code === 'ECONNREFUSED' || error.code === 'ENOTFOUND') {
+      errorResponse.error = {
+        code: 'CONNECTION_ERROR',
+        message: 'Connection failed',
+        details: 'Unable to connect to external service'
+      };
+      errorResponse.statusCode = 502;
+    } else if (error.code === 'ETIMEDOUT') {
+      errorResponse.error = {
+        code: 'TIMEOUT_ERROR',
+        message: 'Request timeout',
+        details: 'The request took too long to complete'
+      };
+      errorResponse.statusCode = 504;
       } else {
-        sanitized[key] = value;
-      }
+      errorResponse.error = {
+        code: 'INTERNAL_ERROR',
+        message: 'Internal server error',
+        details: process.env.NODE_ENV === 'production' ? 'An unexpected error occurred' : error.message
+      };
+      errorResponse.statusCode = 500;
     }
 
-    if (errors.length > 0) {
-      throw new Error(`Validation failed: ${errors.join(', ')}`);
-    }
+    // Log error
+    this.logError(error, context);
 
-    return sanitized;
+    return errorResponse;
   }
 
   /**
-   * Rate limiting helper
-   * @param {string} key - Rate limit key
-   * @param {number} limit - Request limit
-   * @param {number} windowMs - Time window in milliseconds
-   * @returns {boolean} Whether request is allowed
+   * Log error to database and console
+   * @param {Error} error - Error object
+   * @param {Object} context - Error context
    */
-  async checkRateLimit(key, limit, windowMs) {
+  async logError(error, context = {}) {
     try {
-      const now = Date.now();
-      const windowStart = now - windowMs;
-      
-      // Get existing requests in time window
-      const requests = await this.db.collection('rateLimits')
-        .doc(key)
-        .collection('requests')
-        .where('timestamp', '>=', new Date(windowStart))
-        .get();
+      const errorLog = {
+        message: error.message,
+        stack: error.stack,
+        name: error.name,
+        code: error.code,
+        context,
+        timestamp: new Date(),
+        severity: this.determineSeverity(error),
+        environment: process.env.NODE_ENV || 'development'
+      };
 
-      if (requests.size >= limit) {
-        return false;
+      // Log to console
+      console.error('🚨 [ERROR_HANDLING] Error logged:', errorLog);
+
+      // Store in Firestore
+      await this.db.collection('errorLogs').add(errorLog);
+
+      // Check for error thresholds
+      await this.checkErrorThresholds(errorLog);
+
+    } catch (logError) {
+      console.error('❌ [ERROR_HANDLING] Failed to log error:', logError);
+    }
+  }
+
+  /**
+   * Determine error severity
+   * @param {Error} error - Error object
+   * @returns {string} Severity level
+   */
+  determineSeverity(error) {
+    if (error.name === 'ValidationError' || error.name === 'NotFoundError') {
+      return 'low';
+    } else if (error.name === 'AuthenticationError' || error.name === 'AuthorizationError') {
+      return 'medium';
+    } else if (error.name === 'ServiceUnavailableError' || error.code === 'ECONNREFUSED') {
+      return 'high';
+    } else {
+      return 'medium';
+    }
+  }
+
+  /**
+   * Check error thresholds and send alerts
+   * @param {Object} errorLog - Error log object
+   */
+  async checkErrorThresholds(errorLog) {
+    try {
+      const now = new Date();
+      const oneMinuteAgo = new Date(now.getTime() - 60 * 1000);
+      const fiveMinutesAgo = new Date(now.getTime() - 5 * 60 * 1000);
+      const tenMinutesAgo = new Date(now.getTime() - 10 * 60 * 1000);
+
+      // Count errors in different time windows
+      const [criticalCount, warningCount, infoCount] = await Promise.all([
+        this.countErrors(oneMinuteAgo, now, 'high'),
+        this.countErrors(fiveMinutesAgo, now, 'medium'),
+        this.countErrors(tenMinutesAgo, now, 'low')
+      ]);
+
+      // Send alerts if thresholds exceeded
+      if (criticalCount >= this.errorThresholds.critical) {
+        await this.sendErrorAlert('critical', criticalCount, errorLog);
+      } else if (warningCount >= this.errorThresholds.warning) {
+        await this.sendErrorAlert('warning', warningCount, errorLog);
+      } else if (infoCount >= this.errorThresholds.info) {
+        await this.sendErrorAlert('info', infoCount, errorLog);
       }
 
-      // Record this request
-      await this.db.collection('rateLimits')
-        .doc(key)
-        .collection('requests')
-        .add({
-          timestamp: now
-        });
-
-      return true;
     } catch (error) {
-      console.error('❌ Rate limit check failed:', error.message);
-      return true; // Allow request if rate limiting fails
+      console.error('❌ [ERROR_HANDLING] Failed to check error thresholds:', error);
+    }
+  }
+
+  /**
+   * Count errors in time range
+   * @param {Date} startTime - Start time
+   * @param {Date} endTime - End time
+   * @param {string} severity - Severity level
+   * @returns {Promise<number>} Error count
+   */
+  async countErrors(startTime, endTime, severity) {
+    try {
+      const query = await this.db.collection('errorLogs')
+        .where('timestamp', '>=', startTime)
+        .where('timestamp', '<=', endTime)
+        .where('severity', '==', severity)
+        .get();
+
+      return query.size;
+    } catch (error) {
+      console.error('❌ [ERROR_HANDLING] Failed to count errors:', error);
+      return 0;
+    }
+  }
+
+  /**
+   * Send error alert to admins
+   * @param {string} level - Alert level
+   * @param {number} count - Error count
+   * @param {Object} errorLog - Error log object
+   */
+  async sendErrorAlert(level, count, errorLog) {
+    try {
+      const alertMessage = {
+        title: `Error Alert - ${level.toUpperCase()}`,
+        body: `${count} ${level} errors detected in the system`,
+        data: {
+          type: 'error_alert',
+          level,
+          count,
+          errorId: errorLog.id,
+          timestamp: new Date().toISOString()
+        }
+      };
+
+      // Get admin users
+      const adminQuery = await this.db.collection('users')
+        .where('userType', '==', 'admin')
+        .get();
+
+      const adminIds = adminQuery.docs.map(doc => doc.id);
+
+      // Send notifications to all admins
+      for (const adminId of adminIds) {
+        await notificationService.sendToUser(adminId, alertMessage);
+      }
+
+      console.log(`🚨 [ERROR_HANDLING] Error alert sent to ${adminIds.length} admins`);
+
+    } catch (error) {
+      console.error('❌ [ERROR_HANDLING] Failed to send error alert:', error);
+    }
+  }
+
+  /**
+   * Create custom error classes
+   */
+  createCustomError(name, message, statusCode = 500) {
+    const error = new Error(message);
+    error.name = name;
+    error.statusCode = statusCode;
+    return error;
+  }
+
+  /**
+   * Validate and sanitize input
+   * @param {any} input - Input to validate
+   * @param {Object} schema - Validation schema
+   * @returns {Object} Validation result
+   */
+  validateInput(input, schema) {
+    const errors = [];
+
+    for (const [field, rules] of Object.entries(schema)) {
+      const value = input[field];
+
+      if (rules.required && (value === undefined || value === null || value === '')) {
+        errors.push(`${field} is required`);
+        continue;
+      }
+
+      if (value !== undefined && value !== null) {
+        if (rules.type && typeof value !== rules.type) {
+          errors.push(`${field} must be of type ${rules.type}`);
+        }
+        
+        if (rules.minLength && value.length < rules.minLength) {
+          errors.push(`${field} must be at least ${rules.minLength} characters`);
+        }
+        
+        if (rules.maxLength && value.length > rules.maxLength) {
+          errors.push(`${field} must be no more than ${rules.maxLength} characters`);
+        }
+        
+        if (rules.pattern && !rules.pattern.test(value)) {
+          errors.push(`${field} format is invalid`);
+        }
+        
+        if (rules.min && value < rules.min) {
+          errors.push(`${field} must be at least ${rules.min}`);
+        }
+        
+        if (rules.max && value > rules.max) {
+          errors.push(`${field} must be no more than ${rules.max}`);
+        }
+      }
+    }
+    
+    return {
+      isValid: errors.length === 0,
+      errors
+    };
+  }
+
+  /**
+   * Handle database connection errors
+   * @param {Error} error - Database error
+   * @returns {Object} Error response
+   */
+  handleDatabaseError(error) {
+    if (error.code === 'ECONNREFUSED') {
+      return this.createCustomError('ServiceUnavailableError', 'Database connection failed', 503);
+    } else if (error.code === 'ETIMEDOUT') {
+      return this.createCustomError('ServiceUnavailableError', 'Database operation timeout', 504);
+    } else if (error.code === 'ENOTFOUND') {
+      return this.createCustomError('ServiceUnavailableError', 'Database host not found', 503);
+    } else {
+      return this.createCustomError('InternalError', 'Database operation failed', 500);
+    }
+  }
+
+  /**
+   * Handle external API errors
+   * @param {Error} error - API error
+   * @param {string} service - Service name
+   * @returns {Object} Error response
+   */
+  handleExternalApiError(error, service) {
+    if (error.response) {
+      // API responded with error status
+      const status = error.response.status;
+      const message = error.response.data?.message || error.message;
+      
+      if (status >= 400 && status < 500) {
+        return this.createCustomError('ExternalApiError', `${service} API error: ${message}`, 502);
+      } else if (status >= 500) {
+        return this.createCustomError('ServiceUnavailableError', `${service} service unavailable`, 503);
+      }
+    } else if (error.request) {
+      // Request was made but no response received
+      return this.createCustomError('ServiceUnavailableError', `${service} service timeout`, 504);
+    } else {
+      // Something else happened
+      return this.createCustomError('ExternalApiError', `${service} integration error`, 502);
+    }
+  }
+
+  /**
+   * Get error statistics
+   * @param {Date} startDate - Start date
+   * @param {Date} endDate - End date
+   * @returns {Promise<Object>} Error statistics
+   */
+  async getErrorStatistics(startDate, endDate) {
+    try {
+      const query = await this.db.collection('errorLogs')
+        .where('timestamp', '>=', startDate)
+        .where('timestamp', '<=', endDate)
+        .get();
+
+      const errors = query.docs.map(doc => doc.data());
+      
+      const statistics = {
+        total: errors.length,
+        bySeverity: {
+          low: errors.filter(e => e.severity === 'low').length,
+          medium: errors.filter(e => e.severity === 'medium').length,
+          high: errors.filter(e => e.severity === 'high').length
+        },
+        byType: {},
+        byHour: {},
+        topErrors: []
+      };
+
+      // Group by error type
+      errors.forEach(error => {
+        const type = error.name || 'Unknown';
+        statistics.byType[type] = (statistics.byType[type] || 0) + 1;
+      });
+
+      // Group by hour
+      errors.forEach(error => {
+        const hour = new Date(error.timestamp).getHours();
+        statistics.byHour[hour] = (statistics.byHour[hour] || 0) + 1;
+      });
+
+      // Top errors
+      const errorCounts = {};
+      errors.forEach(error => {
+        const key = `${error.name}: ${error.message}`;
+        errorCounts[key] = (errorCounts[key] || 0) + 1;
+      });
+
+      statistics.topErrors = Object.entries(errorCounts)
+        .sort(([,a], [,b]) => b - a)
+        .slice(0, 10)
+        .map(([error, count]) => ({ error, count }));
+
+      return statistics;
+
+    } catch (error) {
+      console.error('❌ [ERROR_HANDLING] Failed to get error statistics:', error);
+      return null;
+    }
+  }
+
+  /**
+   * Clean up old error logs
+   * @param {number} daysToKeep - Number of days to keep logs
+   */
+  async cleanupOldLogs(daysToKeep = 30) {
+    try {
+      const cutoffDate = new Date();
+      cutoffDate.setDate(cutoffDate.getDate() - daysToKeep);
+
+      const query = await this.db.collection('errorLogs')
+        .where('timestamp', '<', cutoffDate)
+        .get();
+
+      const batch = this.db.batch();
+      query.docs.forEach(doc => {
+        batch.delete(doc.ref);
+      });
+
+      if (query.docs.length > 0) {
+        await batch.commit();
+        console.log(`🧹 [ERROR_HANDLING] Cleaned up ${query.docs.length} old error logs`);
+      }
+
+    } catch (error) {
+      console.error('❌ [ERROR_HANDLING] Failed to cleanup old logs:', error);
     }
   }
 }

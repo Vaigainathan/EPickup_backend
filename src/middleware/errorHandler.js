@@ -1,162 +1,250 @@
-const { validationResult } = require('express-validator');
+/**
+ * Enhanced Error Handler Middleware
+ * Provides comprehensive error handling for Express routes
+ */
+
+const errorHandlingService = require('../services/errorHandlingService');
 
 /**
- * Global error handler middleware
+ * Enhanced error handler middleware
+ * @param {Error} err - Error object
+ * @param {Object} req - Express request object
+ * @param {Object} res - Express response object
+ * @param {Function} next - Express next function
  */
-const errorHandler = (err, req, res, next) => { // eslint-disable-line no-unused-vars
-  console.error('Error:', err);
+const errorHandler = (err, req, res) => {
+  // Log the error
+  console.error('🚨 [ERROR_HANDLER] Unhandled error:', {
+    message: err.message,
+    stack: err.stack,
+    url: req.url,
+    method: req.method,
+    ip: req.ip,
+    userAgent: req.get('User-Agent'),
+    timestamp: new Date().toISOString()
+  });
 
-  // Default error response
-  let statusCode = 500;
-  let errorCode = 'INTERNAL_SERVER_ERROR';
-  let message = 'Something went wrong';
-  let details = null;
+  // Handle different types of errors
+  let statusCode = err.statusCode || err.status || 500;
+  const errorResponse = errorHandlingService.handleApiError(err, {
+    url: req.url,
+    method: req.method,
+    ip: req.ip,
+    userAgent: req.get('User-Agent'),
+    userId: req.user?.uid,
+    userType: req.user?.userType
+  });
 
-  // Handle validation errors
-  if (err.name === 'ValidationError') {
-    statusCode = 400;
-    errorCode = 'VALIDATION_ERROR';
-    message = 'Validation failed';
-    details = Object.values(err.errors).map(e => e.message);
-  }
-
-  // Handle JWT errors
-  if (err.name === 'JsonWebTokenError') {
-    statusCode = 401;
-    errorCode = 'INVALID_TOKEN';
-    message = 'Invalid token';
-  }
-
-  if (err.name === 'TokenExpiredError') {
-    statusCode = 401;
-    errorCode = 'TOKEN_EXPIRED';
-    message = 'Token expired';
-  }
-
-  // Handle Firebase errors
-  if (err.code === 'auth/user-not-found') {
-    statusCode = 404;
-    errorCode = 'USER_NOT_FOUND';
-    message = 'User not found';
-  }
-
-  if (err.code === 'auth/invalid-credential') {
-    statusCode = 401;
-    errorCode = 'INVALID_CREDENTIALS';
-    message = 'Invalid credentials';
-  }
-
-  // Handle rate limiting errors
-  if (err.status === 429) {
-    statusCode = 429;
-    errorCode = 'RATE_LIMIT_EXCEEDED';
-    message = 'Too many requests';
-    details = `Rate limit exceeded. Try again in ${err.retryAfter || '15 minutes'}`;
-  }
-
-  // Handle file upload errors
-  if (err.code === 'LIMIT_FILE_SIZE') {
-    statusCode = 400;
-    errorCode = 'FILE_TOO_LARGE';
-    message = 'File too large';
-    details = `Maximum file size is ${process.env.MAX_FILE_SIZE || '10MB'}`;
-  }
-
-  if (err.code === 'LIMIT_UNEXPECTED_FILE') {
-    statusCode = 400;
-    errorCode = 'INVALID_FILE_FIELD';
-    message = 'Invalid file field';
-  }
-
-  // Handle database errors
-  if (err.code === 'permission-denied') {
-    statusCode = 403;
-    errorCode = 'ACCESS_DENIED';
-    message = 'Access denied';
-  }
-
-  if (err.code === 'not-found') {
-    statusCode = 404;
-    errorCode = 'RESOURCE_NOT_FOUND';
-    message = 'Resource not found';
-  }
-
-  // Handle business logic errors
-  if (err.code === 'INSUFFICIENT_BALANCE') {
-    statusCode = 400;
-    errorCode = 'INSUFFICIENT_BALANCE';
-    message = 'Insufficient wallet balance';
-  }
-
-  if (err.code === 'DRIVER_NOT_AVAILABLE') {
-    statusCode = 400;
-    errorCode = 'DRIVER_NOT_AVAILABLE';
-    message = 'No drivers available in your area';
-  }
-
-  if (err.code === 'BOOKING_CANCELLED') {
-    statusCode = 400;
-    errorCode = 'BOOKING_CANCELLED';
-    message = 'This booking has been cancelled';
-  }
-
-  // Handle network errors
-  if (err.code === 'ECONNREFUSED') {
-    statusCode = 503;
-    errorCode = 'SERVICE_UNAVAILABLE';
-    message = 'Service temporarily unavailable';
-  }
-
-  if (err.code === 'ETIMEDOUT') {
-    statusCode = 504;
-    errorCode = 'GATEWAY_TIMEOUT';
-    message = 'Request timeout';
+  // Override status code if set by error handling service
+  if (errorResponse.statusCode) {
+    statusCode = errorResponse.statusCode;
   }
 
   // Send error response
-  res.status(statusCode).json({
-    success: false,
-    error: {
-      code: errorCode,
-      message: message,
-      details: details || err.message,
-      timestamp: new Date().toISOString()
-    }
-  });
+  res.status(statusCode).json(errorResponse);
 };
 
 /**
- * Async error wrapper for route handlers
+ * Async error wrapper
+ * Wraps async route handlers to catch errors
+ * @param {Function} fn - Async function to wrap
+ * @returns {Function} Wrapped function
  */
-const asyncHandler = (fn) => (req, res, next) => {
-  Promise.resolve(fn(req, res, next)).catch(next);
+const asyncHandler = (fn) => {
+  return (req, res, next) => {
+    Promise.resolve(fn(req, res, next)).catch(next);
+  };
 };
 
 /**
  * Validation error handler
+ * Handles validation errors from express-validator
+ * @param {Object} req - Express request object
+ * @param {Object} res - Express response object
+ * @param {Function} next - Express next function
  */
 const handleValidationErrors = (req, res, next) => {
-  const errors = validationResult(req);
-  if (!errors.isEmpty()) {
-    return res.status(400).json({
-      success: false,
-      error: {
-        code: 'VALIDATION_ERROR',
-        message: 'Validation failed',
-        details: errors.array().map(err => ({
-          field: err.path,
-          message: err.msg,
-          value: err.value
-        })),
-        timestamp: new Date().toISOString()
-      }
-    });
+  const errors = req.validationErrors();
+  if (errors) {
+    const error = new Error('Validation failed');
+    error.name = 'ValidationError';
+    error.details = errors;
+    error.statusCode = 400;
+    return next(error);
   }
   next();
+};
+
+/**
+ * Rate limit error handler
+ * Handles rate limit exceeded errors
+ * @param {Object} req - Express request object
+ * @param {Object} res - Express response object
+ * @param {Function} next - Express next function
+ */
+const handleRateLimitError = (req, res, next) => {
+  if (req.rateLimit) {
+    const error = new Error('Rate limit exceeded');
+    error.name = 'RateLimitError';
+    error.statusCode = 429;
+    error.retryAfter = req.rateLimit.resetTime;
+    return next(error);
+  }
+  next();
+};
+
+/**
+ * Database error handler
+ * Handles database connection and query errors
+ * @param {Error} err - Error object
+ * @param {Object} req - Express request object
+ * @param {Object} res - Express response object
+ * @param {Function} next - Express next function
+ */
+const handleDatabaseError = (err, req, res, next) => {
+  if (err.code && ['ECONNREFUSED', 'ETIMEDOUT', 'ENOTFOUND'].includes(err.code)) {
+    const dbError = errorHandlingService.handleDatabaseError(err);
+    return next(dbError);
+  }
+  next(err);
+};
+
+/**
+ * External API error handler
+ * Handles errors from external API calls
+ * @param {Error} err - Error object
+ * @param {Object} req - Express request object
+ * @param {Object} res - Express response object
+ * @param {Function} next - Express next function
+ */
+const handleExternalApiError = (err, req, res, next) => {
+  if (err.isAxiosError || err.response || err.request) {
+    const service = req.externalService || 'External API';
+    const apiError = errorHandlingService.handleExternalApiError(err, service);
+    return next(apiError);
+  }
+  next(err);
+};
+
+/**
+ * 404 handler
+ * Handles requests to non-existent routes
+ * @param {Object} req - Express request object
+ * @param {Object} res - Express response object
+ * @param {Function} next - Express next function
+ */
+const handle404 = (req, res, next) => {
+  const error = new Error(`Route ${req.originalUrl} not found`);
+  error.name = 'NotFoundError';
+  error.statusCode = 404;
+  next(error);
+};
+
+/**
+ * Request timeout handler
+ * Handles request timeout errors
+ * @param {Object} req - Express request object
+ * @param {Object} res - Express response object
+ * @param {Function} next - Express next function
+ */
+const handleTimeout = (req, res, next) => {
+  req.setTimeout(30000, () => {
+    const error = new Error('Request timeout');
+    error.name = 'TimeoutError';
+    error.statusCode = 408;
+    next(error);
+  });
+  next();
+};
+
+/**
+ * Error recovery middleware
+ * Attempts to recover from certain types of errors
+ * @param {Error} err - Error object
+ * @param {Object} req - Express request object
+ * @param {Object} res - Express response object
+ * @param {Function} next - Express next function
+ */
+const errorRecovery = async (err, req, res, next) => {
+  // Only attempt recovery for certain error types
+  if (err.name === 'ServiceUnavailableError' && err.code === 'ECONNREFUSED') {
+    try {
+      // Wait a bit and retry
+      await new Promise(resolve => setTimeout(resolve, 1000));
+      
+      // This would need to be implemented per route
+      // For now, just pass the error along
+      next(err);
+      } catch {
+      next(err);
+    }
+  } else {
+    next(err);
+  }
+};
+
+/**
+ * Error monitoring middleware
+ * Monitors error patterns and sends alerts
+ * @param {Error} err - Error object
+ * @param {Object} req - Express request object
+ * @param {Object} res - Express response object
+ * @param {Function} next - Express next function
+ */
+const errorMonitoring = (err, req, res, next) => {
+  // Log error for monitoring
+  errorHandlingService.logError(err, {
+    url: req.url,
+    method: req.method,
+    ip: req.ip,
+    userAgent: req.get('User-Agent'),
+    userId: req.user?.uid,
+    userType: req.user?.userType,
+    timestamp: new Date().toISOString()
+  });
+  
+  next(err);
+};
+
+/**
+ * Graceful shutdown handler
+ * Handles graceful shutdown of the application
+ * @param {Object} server - Express server instance
+ * @param {Object} options - Shutdown options
+ */
+const gracefulShutdown = (server, options = {}) => {
+  const { timeout = 10000, signals = ['SIGTERM', 'SIGINT'] } = options;
+  
+  const shutdown = (signal) => {
+    console.log(`🛑 [GRACEFUL_SHUTDOWN] Received ${signal}, shutting down gracefully...`);
+    
+    server.close(() => {
+      console.log('✅ [GRACEFUL_SHUTDOWN] Server closed successfully');
+      process.exit(0);
+    });
+    
+    // Force close after timeout
+    setTimeout(() => {
+      console.error('❌ [GRACEFUL_SHUTDOWN] Forced shutdown after timeout');
+      process.exit(1);
+    }, timeout);
+  };
+  
+  signals.forEach(signal => {
+    process.on(signal, () => shutdown(signal));
+  });
 };
 
 module.exports = {
   errorHandler,
   asyncHandler,
-  handleValidationErrors
+  handleValidationErrors,
+  handleRateLimitError,
+  handleDatabaseError,
+  handleExternalApiError,
+  handle404,
+  handleTimeout,
+  errorRecovery,
+  errorMonitoring,
+  gracefulShutdown
 };

@@ -32,9 +32,21 @@ const fareCalculationRoutes = require('./routes/fareCalculation');
 const workSlotsRoutes = require('./routes/workSlots');
 const adminRoutes = require('./routes/admin');
 const adminAuthRoutes = require('./routes/adminAuth');
+const adminBookingManagementRoutes = require('./routes/adminBookingManagement');
+const locationTrackingRoutes = require('./routes/locationTracking');
 
 // Import middleware
-const { errorHandler } = require('./middleware/errorHandler');
+const { 
+  errorHandler, 
+  handleRateLimitError, 
+  handleDatabaseError, 
+  handleExternalApiError, 
+  handle404, 
+  handleTimeout, 
+  errorRecovery, 
+  errorMonitoring, 
+  gracefulShutdown 
+} = require('./middleware/errorHandler');
 const { authMiddleware, adminAuthMiddleware } = require('./middleware/auth');
 
 // Import services
@@ -44,6 +56,7 @@ const { initializeFirebase } = require('./services/firebase');
 const socketService = require('./services/socket');
 const msg91Service = require('./services/msg91Service');
 const monitoringService = require('./services/monitoringService');
+const performanceMonitoringService = require('./services/performanceMonitoringService');
 
 const app = express();
 const PORT = env.getServerPort();
@@ -309,11 +322,42 @@ app.use('/service-area', serviceAreaRoutes); // Alternative path for service are
 app.use('/api/wallet', walletRoutes);
 app.use('/api/fare', fareCalculationRoutes);
 app.use('/api/slots', workSlotsRoutes);
+app.use('/api/location-tracking', authMiddleware, locationTrackingRoutes);
 app.use('/api/admin/auth', adminAuthRoutes); // No auth required for admin login
 app.use('/api/admin', adminAuthMiddleware, adminRoutes); // Admin routes use admin auth middleware
+app.use('/api/admin', adminAuthMiddleware, adminBookingManagementRoutes); // Admin booking management routes
 
 // Health check routes (for keepalive script) - No auth required
 app.use('/health', healthRoutes);
+
+// Performance metrics endpoint (Admin only)
+app.get('/api/admin/performance', adminAuthMiddleware, (req, res) => {
+  try {
+    const metrics = performanceMonitoringService.getMetrics();
+    const summary = performanceMonitoringService.getPerformanceSummary();
+    const alerts = performanceMonitoringService.getAlerts();
+    
+    res.json({
+      success: true,
+      data: {
+        metrics,
+        summary,
+        alerts
+      },
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: {
+        code: 'INTERNAL_ERROR',
+        message: 'Failed to get performance metrics',
+        details: error.message
+      },
+      timestamp: new Date().toISOString()
+    });
+  }
+});
 
 // File Upload Service Health Check (Public)
 app.get('/api/file-upload/health', (req, res) => {
@@ -416,12 +460,35 @@ app.use('*', (req, res) => {
   });
 });
 
+// Performance monitoring middleware
+app.use((req, res, next) => {
+  const startTime = Date.now();
+  
+  res.on('finish', () => {
+    const responseTime = Date.now() - startTime;
+    performanceMonitoringService.recordApiRequest(req, res, responseTime);
+  });
+  
+  next();
+});
+
+// Enhanced error handling middleware stack
+app.use(handleTimeout);
+app.use(handleRateLimitError);
+app.use(handleDatabaseError);
+app.use(handleExternalApiError);
+app.use(errorMonitoring);
+app.use(errorRecovery);
+
 // Sentry error handler - must be the first error handling middleware (only if available)
 if (Sentry && Sentry.Handlers && Sentry.Handlers.errorHandler) {
   app.use(Sentry.Handlers.errorHandler());
 }
 
-// Error handling middleware
+// 404 handler for unmatched routes
+app.use(handle404);
+
+// Final error handling middleware
 app.use(errorHandler);
 
 // Initialize Socket.IO with error handling
@@ -441,6 +508,10 @@ async function initializeServices() {
     // Initialize monitoring service
     await monitoringService.initialize();
     console.log('✅ Monitoring service initialized');
+
+    // Initialize performance monitoring
+    performanceMonitoringService.startMonitoring();
+    console.log('✅ Performance monitoring service initialized');
     
     console.log('✅ All services initialized successfully');
   } catch (error) {
@@ -480,21 +551,10 @@ try {
   process.exit(1);
 }
 
-// Graceful shutdown
-process.on('SIGTERM', () => {
-  console.log('SIGTERM received, shutting down gracefully');
-  server.close(() => {
-    console.log('Process terminated');
-    process.exit(0);
-  });
-});
-
-process.on('SIGINT', () => {
-  console.log('SIGINT received, shutting down gracefully');
-  server.close(() => {
-    console.log('Process terminated');
-    process.exit(0);
-  });
+// Enhanced graceful shutdown
+gracefulShutdown(server, {
+  timeout: 10000,
+  signals: ['SIGTERM', 'SIGINT', 'SIGUSR2']
 });
 
 // Handle uncaught exceptions

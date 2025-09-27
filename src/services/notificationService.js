@@ -1,5 +1,6 @@
 const admin = require('firebase-admin');
 const { getFirestore } = require('./firebase');
+const { NotificationBuilder, NotificationTemplateProcessor } = require('./notificationTemplates');
 
 /**
  * Push Notification Service for EPickup
@@ -680,6 +681,120 @@ class NotificationService {
           details: error.message
         }
       };
+    }
+  }
+
+  // ==================== TEMPLATE-BASED NOTIFICATIONS ====================
+
+  /**
+   * Send customer booking created notification
+   */
+  async notifyCustomerBookingCreated(bookingData) {
+    try {
+      const notification = NotificationBuilder.customerBookingCreated(bookingData);
+      return await this.sendToUser(bookingData.customerId, notification);
+    } catch (error) {
+      console.error('Error sending customer booking created notification:', error);
+      return { success: false, error: error.message };
+    }
+  }
+
+  /**
+   * Send driver assigned notification to customer
+   */
+  async notifyCustomerDriverAssigned(bookingData, driverData) {
+    try {
+      const notification = NotificationBuilder.customerDriverAssigned(bookingData, driverData);
+      return await this.sendToUser(bookingData.customerId, notification);
+    } catch (error) {
+      console.error('Error sending driver assigned notification:', error);
+      return { success: false, error: error.message };
+    }
+  }
+
+  /**
+   * Send new booking request notification to driver
+   */
+  async notifyDriverNewBookingRequest(bookingData, driverId) {
+    try {
+      const notification = NotificationBuilder.driverNewBookingRequest(bookingData);
+      return await this.sendToUser(driverId, notification);
+    } catch (error) {
+      console.error('Error sending new booking request notification:', error);
+      return { success: false, error: error.message };
+    }
+  }
+
+  /**
+   * Send package delivered notification to customer
+   */
+  async notifyCustomerPackageDelivered(bookingData) {
+    try {
+      const notification = NotificationBuilder.customerPackageDelivered(bookingData);
+      return await this.sendToUser(bookingData.customerId, notification);
+    } catch (error) {
+      console.error('Error sending package delivered notification:', error);
+      return { success: false, error: error.message };
+    }
+  }
+
+  /**
+   * Send emergency alert notification to admin
+   */
+  async notifyAdminEmergencyAlert(driverData, location) {
+    try {
+      const notification = NotificationBuilder.adminEmergencyAlert(driverData, location);
+      
+      // Get all admin users
+      const adminQuery = await this.db.collection('users')
+        .where('userType', '==', 'admin')
+        .get();
+
+      const results = [];
+      for (const doc of adminQuery.docs) {
+        const result = await this.sendToUser(doc.id, notification);
+        results.push({ adminId: doc.id, result });
+      }
+
+      return { success: true, results };
+    } catch (error) {
+      console.error('Error sending emergency alert notification:', error);
+      return { success: false, error: error.message };
+    }
+  }
+
+  /**
+   * Send custom template notification
+   */
+  async sendTemplateNotification(userId, category, type, variables = {}) {
+    try {
+      const template = NotificationTemplateProcessor.getTemplate(category, type);
+      const notification = NotificationTemplateProcessor.process(template, variables);
+      return await this.sendToUser(userId, notification);
+    } catch (error) {
+      console.error('Error sending template notification:', error);
+      return { success: false, error: error.message };
+    }
+  }
+
+  /**
+   * Send notification to multiple users with template
+   */
+  async sendTemplateNotificationToMultiple(userIds, category, type, variables = {}) {
+    try {
+      const template = NotificationTemplateProcessor.getTemplate(category, type);
+      const notification = NotificationTemplateProcessor.process(template, variables);
+      
+      const results = [];
+      for (const userId of userIds) {
+        const result = await this.sendToUser(userId, notification);
+        results.push({ userId, result });
+      }
+
+      return { success: true, results };
+    } catch (error) {
+      console.error('Error sending template notification to multiple users:', error);
+      return { success: false, error: error.message };
     }
   }
 }

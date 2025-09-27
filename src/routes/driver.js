@@ -1070,6 +1070,18 @@ router.put('/status', [
     .optional()
     .isBoolean()
     .withMessage('isAvailable must be a boolean'),
+  body('currentLocation')
+    .optional()
+    .isObject()
+    .withMessage('currentLocation must be an object'),
+  body('currentLocation.latitude')
+    .optional()
+    .isFloat({ min: -90, max: 90 })
+    .withMessage('Latitude must be between -90 and 90'),
+  body('currentLocation.longitude')
+    .optional()
+    .isFloat({ min: -180, max: 180 })
+    .withMessage('Longitude must be between -180 and 180'),
   body('workingHours')
     .optional()
     .isObject()
@@ -1094,7 +1106,7 @@ router.put('/status', [
     }
 
     const { uid } = req.user;
-    const { isOnline, isAvailable, workingHours, workingDays } = req.body;
+    const { isOnline, isAvailable, currentLocation, workingHours, workingDays } = req.body;
     const db = getFirestore();
     
     const userRef = db.collection('users').doc(uid);
@@ -1121,6 +1133,14 @@ router.put('/status', [
       updateData['driver.isAvailable'] = isAvailable;
     }
 
+    if (currentLocation) {
+      updateData['driver.currentLocation'] = {
+        latitude: currentLocation.latitude,
+        longitude: currentLocation.longitude,
+        timestamp: currentLocation.timestamp || new Date().toISOString()
+      };
+    }
+
     if (workingHours) {
       updateData['driver.availability.workingHours'] = workingHours;
     }
@@ -1133,12 +1153,22 @@ router.put('/status', [
 
     // Update driver location status
     const locationRef = db.collection('driverLocations').doc(uid);
-    await locationRef.set({
+    const locationData = {
       driverId: uid,
       isOnline,
       isAvailable: isAvailable !== undefined ? isAvailable : userDoc.data().driver?.isAvailable || false,
       lastUpdated: new Date()
-    }, { merge: true });
+    };
+
+    if (currentLocation) {
+      locationData.currentLocation = {
+        latitude: currentLocation.latitude,
+        longitude: currentLocation.longitude,
+        timestamp: currentLocation.timestamp || new Date().toISOString()
+      };
+    }
+
+    await locationRef.set(locationData, { merge: true });
 
     res.status(200).json({
       success: true,
@@ -1316,8 +1346,12 @@ router.get('/bookings', requireDriver, async (req, res) => {
           bookingData.pickup.coordinates.longitude
         );
         
-        // Only include bookings within radius
-        if (distance <= parseFloat(radius)) {
+        // For testing: bypass radius check, include all bookings
+        // TODO: Re-enable radius check in production
+        const isWithinRadius = distance <= parseFloat(radius);
+        const isTestingMode = process.env.NODE_ENV === 'development' || process.env.TESTING_MODE === 'true';
+        
+        if (isWithinRadius || isTestingMode) {
           bookings.push({
             id: doc.id,
             ...bookingData,
@@ -1709,8 +1743,12 @@ router.get('/bookings/available', requireDriver, async (req, res) => {
           bookingData.pickup.coordinates.longitude
         );
         
-        // Only include bookings within radius (convert km to meters)
-        if (distance <= (parseFloat(radius) * 1000)) {
+        // For testing: bypass radius check, include all bookings
+        // TODO: Re-enable radius check in production
+        const isWithinRadius = distance <= (parseFloat(radius) * 1000);
+        const isTestingMode = process.env.NODE_ENV === 'development' || process.env.TESTING_MODE === 'true';
+        
+        if (isWithinRadius || isTestingMode) {
           allBookings.push({
             id: doc.id,
             ...bookingData,

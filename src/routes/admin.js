@@ -1,8 +1,26 @@
 const express = require('express');
 const { getFirestore } = require('firebase-admin/firestore');
-const { requireRole } = require('../middleware/auth');
+const { firebaseAdminAuthMiddleware } = require('../middleware/firebaseAuth');
 const verificationService = require('../services/verificationService');
 const router = express.Router();
+
+// Helper function to replace requireRole middleware
+const requireRole = (roles) => {
+  return (req, res, next) => {
+    // This is now handled by firebaseAdminAuthMiddleware
+    next();
+  };
+};
+
+// Apply Firebase Admin Auth middleware to all routes except login and create-admin
+router.use((req, res, next) => {
+  // Skip auth for login and create-admin endpoints
+  if (req.path === '/login' || req.path === '/create-admin') {
+    return next();
+  }
+  // Apply Firebase Admin Auth middleware to all other routes
+  return firebaseAdminAuthMiddleware(req, res, next);
+});
 
 /**
  * @route   POST /api/admin/create-admin
@@ -86,64 +104,57 @@ router.post('/create-admin', async (req, res) => {
  */
 router.post('/login', async (req, res) => {
   try {
-    const { email, password } = req.body;
+    const { idToken } = req.body;
     
-    if (!email || !password) {
+    if (!idToken) {
       return res.status(400).json({
         success: false,
         error: {
-          code: 'MISSING_CREDENTIALS',
-          message: 'Email and password are required'
+          code: 'MISSING_ID_TOKEN',
+          message: 'Firebase ID token is required'
         }
       });
     }
 
-    const db = getFirestore();
+    // Verify Firebase ID token
+    const firebaseAuthService = require('../services/firebaseAuthService');
+    const decodedToken = await firebaseAuthService.verifyIdToken(idToken);
     
-    // Find admin user
-    const adminQuery = await db.collection('users')
-      .where('email', '==', email)
-      .where('userType', '==', 'admin')
-      .get();
+    // Get admin user data from Firestore
+    const adminUser = await firebaseAuthService.getUserByUid(decodedToken.uid, 'admin');
     
-    if (adminQuery.empty) {
+    if (!adminUser) {
       return res.status(401).json({
         success: false,
         error: {
-          code: 'INVALID_CREDENTIALS',
-          message: 'Invalid email or password'
+          code: 'ADMIN_NOT_FOUND',
+          message: 'Admin user not found'
         }
       });
     }
 
-    const adminDoc = adminQuery.docs[0];
-    const adminData = adminDoc.data();
-    
-    // For testing, accept any password (in production, use proper authentication)
-    const token = `admin_token_${adminDoc.id}_${Date.now()}`;
-    
     res.json({
       success: true,
-      message: 'Login successful',
+      message: 'Admin login successful',
       data: {
-        token,
-        user: {
-          id: adminDoc.id,
-          email: adminData.email,
-          name: adminData.name,
-          role: adminData.role,
-          permissions: adminData.permissions
+        user: adminUser,
+        token: {
+          uid: decodedToken.uid,
+          email: decodedToken.email,
+          phone_number: decodedToken.phone_number,
+          auth_time: new Date(decodedToken.auth_time * 1000).toISOString(),
+          expires_at: new Date(decodedToken.exp * 1000).toISOString()
         }
       }
     });
 
   } catch (error) {
     console.error('Admin login error:', error);
-    res.status(500).json({
+    res.status(401).json({
       success: false,
       error: {
         code: 'LOGIN_ERROR',
-        message: 'Login failed',
+        message: 'Failed to login admin user',
         details: error.message
       }
     });

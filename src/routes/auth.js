@@ -1,12 +1,12 @@
 const express = require('express');
 const router = express.Router();
-const msg91Service = require('../services/msg91Service');
 const authService = require('../services/authService');
 const JWTService = require('../services/jwtService');
 const jwtService = new JWTService(); // Create instance
+const firebaseAuthService = require('../services/firebaseAuthService');
 const { validateRequest } = require('../middleware/validation');
 const { rateLimit } = require('../middleware/rateLimit');
-const { env } = require('../config');
+// env import removed as MSG91 config is no longer needed
 
 // Rate limiting configuration
 const authRateLimit = rateLimit({
@@ -15,11 +15,11 @@ const authRateLimit = rateLimit({
   message: 'Too many authentication requests from this IP, please try again later.'
 });
 
-const otpRateLimit = rateLimit({
-  windowMs: 5 * 60 * 1000, // 5 minutes
-  max: 10, // limit each IP to 10 OTP requests per windowMs
-  message: 'Too many OTP requests from this IP, please try again later.'
-});
+// const otpRateLimit = rateLimit({
+//   windowMs: 5 * 60 * 1000, // 5 minutes
+//   max: 10, // limit each IP to 10 OTP requests per windowMs
+//   message: 'Too many OTP requests from this IP, please try again later.'
+// }); // Removed - MSG91 endpoints deprecated
 
 /**
  * @route POST /api/auth/check-user
@@ -85,582 +85,13 @@ router.post('/check-user',
   }
 );
 
-/**
- * @route POST /api/auth/send-otp
- * @desc Send OTP to phone number
- * @access Public
- */
-router.post('/send-otp', 
-  otpRateLimit,
-  validateRequest({
-    body: {
-      phoneNumber: { type: 'string', required: true, minLength: 10, maxLength: 15 },
-      isSignup: { type: 'boolean', required: false },
-      userType: { type: 'string', required: false, enum: ['customer', 'driver'] },
-      options: { type: 'object', required: false }
-    }
-  }),
-  async (req, res) => {
-    try {
-      const { phoneNumber, isSignup = false, userType = 'customer', options = {} } = req.body;
+// DEPRECATED: MSG91 OTP endpoints removed - using Firebase Auth instead
 
-      console.log(`📱 Sending OTP to ${phoneNumber} (signup: ${isSignup}, userType: ${userType})`);
+// DEPRECATED: MSG91 OTP verification removed - using Firebase Auth instead
 
-      // Send OTP via MSG91
-      const result = await msg91Service.sendOTP(phoneNumber, options);
+// DEPRECATED: MSG91 widget OTP verification removed - using Firebase Auth instead
 
-      if (!result.success) {
-        console.error('❌ OTP send failed:', result);
-        return res.status(400).json({
-          success: false,
-          message: 'Failed to send OTP',
-          error: {
-            code: 'OTP_SEND_FAILED',
-            message: result.message || 'Failed to send OTP'
-          }
-        });
-      }
-
-      // Log OTP sending for audit
-      await authService.logAuthAttempt({
-        phoneNumber,
-        action: 'send_otp',
-        success: true,
-        ip: req.ip,
-        userAgent: req.get('User-Agent')
-      });
-
-      console.log(`✅ OTP sent successfully to ${phoneNumber}`);
-
-      res.json({
-        success: true,
-        message: 'OTP sent successfully',
-        data: {
-          sessionId: result.sid,
-          expiresIn: result.expiresIn,
-          channel: result.channel
-        },
-        timestamp: new Date().toISOString()
-      });
-
-    } catch (error) {
-      console.error('❌ Send OTP error:', error);
-
-      // Log failed attempt
-      await authService.logAuthAttempt({
-        phoneNumber: req.body.phoneNumber,
-        action: 'send_otp',
-        success: false,
-        error: error.message,
-        ip: req.ip,
-        userAgent: req.get('User-Agent')
-      });
-
-      res.status(400).json({
-        success: false,
-        message: error.message || 'Failed to send OTP',
-        error: {
-          code: 'OTP_SEND_ERROR',
-          message: error.message
-        },
-        timestamp: new Date().toISOString()
-      });
-    }
-  }
-);
-
-/**
- * @route POST /api/auth/verify-otp
- * @desc Verify OTP and authenticate user
- * @access Public
- */
-router.post('/verify-otp',
-  otpRateLimit,
-  validateRequest({
-    body: {
-      phoneNumber: { type: 'string', required: true, minLength: 10, maxLength: 15 },
-      otp: { type: 'string', required: true, minLength: 6, maxLength: 6 },
-      verificationSid: { type: 'string', required: false },
-      name: { type: 'string', required: false, maxLength: 100 },
-      userType: { type: 'string', required: false, enum: ['customer', 'driver'] }
-    }
-  }),
-  async (req, res) => {
-    try {
-      const { phoneNumber, otp, verificationSid, name, userType = 'customer' } = req.body;
-
-      console.log(`🔐 Verifying OTP for ${phoneNumber}`);
-      console.log(`📝 Request body:`, { phoneNumber, otp, verificationSid, name, userType });
-
-      // Verify OTP via MSG91
-      const verificationResult = await msg91Service.verifyOTP(phoneNumber, otp, verificationSid);
-
-      if (!verificationResult.success) {
-        console.error('❌ OTP verification failed:', verificationResult);
-        
-        // Log failed verification
-        await authService.logAuthAttempt({
-          phoneNumber,
-          action: 'verify_otp',
-          success: false,
-          error: 'Invalid OTP',
-          ip: req.ip,
-          userAgent: req.get('User-Agent')
-        });
-
-        return res.status(400).json({
-          success: false,
-          message: 'Invalid OTP code',
-          error: {
-            code: 'INVALID_OTP',
-            message: 'The OTP code you entered is invalid or has expired'
-          },
-          timestamp: new Date().toISOString()
-        });
-      }
-
-      // Simplified user handling logic
-      const userExists = await authService.userExists(phoneNumber, userType);
-      
-      console.log(`📊 User exists check: ${userExists}, Name provided: ${!!name}, UserType: ${userType}`);
-      
-      let user, isNewUser = false;
-      
-      if (userExists) {
-        // User exists - handle login
-        console.log(`🔐 Login attempt for existing ${userType} user: ${phoneNumber}`);
-        
-        if (name) {
-          // User exists but trying to signup - duplicate signup attempt
-          console.log(`❌ Duplicate signup attempt for existing ${userType} user: ${phoneNumber}`);
-          
-          await authService.logAuthAttempt({
-            phoneNumber,
-            action: 'duplicate_signup',
-            success: false,
-            error: `${userType} user already exists`,
-            ip: req.ip,
-            userAgent: req.get('User-Agent')
-          });
-
-          return res.status(409).json({
-            success: false,
-            message: `A ${userType} account with this phone number already exists. Please login instead.`,
-            error: {
-              code: 'USER_ALREADY_EXISTS',
-              message: `${userType} account already exists`
-            },
-            timestamp: new Date().toISOString()
-          });
-        }
-        
-        // Get existing user
-        user = await authService.getUserByPhone(phoneNumber, userType);
-        isNewUser = false;
-        
-      } else {
-        // User doesn't exist - handle signup
-        // For new users, generate a default name if not provided
-        // Require proper name for signup
-        if (!name || name.trim().length < 2) {
-          console.log(`❌ Signup attempt without proper name: ${phoneNumber}`);
-          
-          await authService.logAuthAttempt({
-            phoneNumber,
-            action: 'signup_failed',
-            success: false,
-            error: 'Name is required for signup',
-            ip: req.ip,
-            userAgent: req.get('User-Agent')
-          });
-
-          return res.status(400).json({
-            success: false,
-            message: 'Name is required for signup',
-            error: {
-              code: 'NAME_REQUIRED',
-              message: 'Please provide your full name to create an account'
-            },
-            timestamp: new Date().toISOString()
-          });
-        }
-        
-        const userName = name.trim();
-        
-        console.log(`📝 New signup attempt: ${phoneNumber}`);
-        
-        // Create new user
-        const result = await authService.getOrCreateUser(phoneNumber, {
-          name: userName,
-          userType: userType
-        });
-        user = result.user;
-        isNewUser = true;
-      }
-
-      // Mark user as verified after successful OTP verification
-      if (!user.isVerified) {
-        console.log(`🔐 Marking user as verified: ${phoneNumber}`);
-        await authService.updateUser(user.id, {
-          isVerified: true,
-          phoneVerified: true,
-          updatedAt: new Date()
-        });
-        user.isVerified = true;
-        user.phoneVerified = true;
-      }
-
-      // Generate JWT token pair
-      const tokenData = jwtService.generateTokenPair({
-        userId: user.id,
-        phone: user.phone,
-        userType: user.userType
-      });
-
-      // Log successful authentication
-      await authService.logAuthAttempt({
-        phoneNumber,
-        action: isNewUser ? 'signup' : 'login',
-        success: true,
-        userId: user.id,
-        ip: req.ip,
-        userAgent: req.get('User-Agent')
-      });
-
-      console.log(`✅ OTP verification successful for ${phoneNumber} - ${isNewUser ? 'New user' : 'Existing user'} - Verified: ${user.isVerified}`);
-
-      return res.json({
-        success: true,
-        message: isNewUser ? 'Account created successfully' : 'Login successful',
-        data: {
-          user: {
-            id: user.id,
-            name: user.name,
-            phone: user.phone,
-            userType: user.userType,
-            isVerified: user.isVerified,
-            phoneVerified: user.phoneVerified,
-            createdAt: user.createdAt,
-            updatedAt: user.updatedAt
-          },
-          token: tokenData.accessToken,
-          accessToken: tokenData.accessToken,
-          refreshToken: tokenData.refreshToken,
-          isNewUser: isNewUser,
-          expiresIn: '7d',
-          refreshExpiresIn: '30d'
-        },
-        timestamp: new Date().toISOString()
-      });
-
-    } catch (error) {
-      console.error('❌ Verify OTP error:', error);
-
-      // Log failed attempt
-      await authService.logAuthAttempt({
-        phoneNumber: req.body.phoneNumber,
-        action: 'verify_otp',
-        success: false,
-        error: error.message,
-        ip: req.ip,
-        userAgent: req.get('User-Agent')
-      });
-
-      res.status(400).json({
-        success: false,
-        message: error.message || 'Failed to verify OTP',
-        error: {
-          code: 'OTP_VERIFY_ERROR',
-          message: error.message
-        },
-        timestamp: new Date().toISOString()
-      });
-    }
-  }
-);
-
-/**
- * @route POST /api/auth/verify-widget-otp
- * @desc Verify OTP that was already verified by MSG91 Widget and authenticate user
- * @access Public
- */
-router.post('/verify-widget-otp',
-  otpRateLimit,
-  validateRequest({
-    body: {
-      phoneNumber: { type: 'string', required: true, minLength: 10, maxLength: 15 },
-      name: { type: 'string', required: false, maxLength: 100 },
-      userType: { type: 'string', required: false, enum: ['customer', 'driver'] },
-      widgetToken: { type: 'string', required: false } // JWT token from MSG91 widget
-    }
-  }),
-  async (req, res) => {
-    try {
-      const { phoneNumber, name, userType = 'customer', widgetToken } = req.body;
-
-      console.log(`🔐 Creating user session for widget-verified OTP: ${phoneNumber}`);
-      console.log(`📝 Request body:`, { phoneNumber, name, userType, hasWidgetToken: !!widgetToken });
-
-      // If widget token is provided, verify it with MSG91
-      if (widgetToken) {
-        console.log('🔐 Verifying MSG91 widget token...');
-        const tokenVerification = await msg91Service.verifyWidgetToken(widgetToken);
-        
-        if (!tokenVerification.success) {
-          console.error('❌ Widget token verification failed:', tokenVerification);
-          return res.status(400).json({
-            success: false,
-            message: 'Invalid widget token',
-            error: {
-              code: 'INVALID_WIDGET_TOKEN',
-              message: 'The widget token is invalid or expired'
-            },
-            timestamp: new Date().toISOString()
-          });
-        }
-        
-        console.log('✅ Widget token verified successfully');
-      } else {
-        console.log('⚠️ No widget token provided, proceeding without verification (for testing)');
-      }
-
-      // Since OTP was already verified by MSG91 Widget, we can proceed directly to user creation
-      // Simplified user handling logic
-      const userExists = await authService.userExists(phoneNumber, userType);
-      
-      console.log(`📊 User exists check: ${userExists}, Name provided: ${!!name}, UserType: ${userType}`);
-      
-      let user, isNewUser = false;
-      
-      if (userExists) {
-        // User exists - handle login
-        console.log(`🔐 Login attempt for existing ${userType} user: ${phoneNumber}`);
-        
-        if (name) {
-          // User exists but trying to signup - duplicate signup attempt
-          console.log(`❌ Duplicate signup attempt for existing ${userType} user: ${phoneNumber}`);
-          
-          await authService.logAuthAttempt({
-            phoneNumber,
-            action: 'duplicate_signup',
-            success: false,
-            error: `${userType} user already exists`,
-            ip: req.ip,
-            userAgent: req.get('User-Agent')
-          });
-
-          return res.status(409).json({
-            success: false,
-            message: `A ${userType} account with this phone number already exists. Please login instead.`,
-            error: {
-              code: 'USER_ALREADY_EXISTS',
-              message: `${userType} account already exists`
-            },
-            timestamp: new Date().toISOString()
-          });
-        }
-        
-        // Get existing user
-        user = await authService.getUserByPhone(phoneNumber, userType);
-        isNewUser = false;
-        
-      } else {
-        // User doesn't exist - handle signup
-        // For new users, generate a default name if not provided
-        // Require proper name for signup
-        if (!name || name.trim().length < 2) {
-          console.log(`❌ Signup attempt without proper name: ${phoneNumber}`);
-          
-          await authService.logAuthAttempt({
-            phoneNumber,
-            action: 'signup_failed',
-            success: false,
-            error: 'Name is required for signup',
-            ip: req.ip,
-            userAgent: req.get('User-Agent')
-          });
-
-          return res.status(400).json({
-            success: false,
-            message: 'Name is required for signup',
-            error: {
-              code: 'NAME_REQUIRED',
-              message: 'Please provide your full name to create an account'
-            },
-            timestamp: new Date().toISOString()
-          });
-        }
-        
-        const userName = name.trim();
-        
-        console.log(`📝 New signup attempt: ${phoneNumber}`);
-        
-        // Create new user
-        const result = await authService.getOrCreateUser(phoneNumber, {
-          name: userName,
-          userType: userType
-        });
-        user = result.user;
-        isNewUser = true;
-      }
-
-      // Mark user as verified after successful OTP verification
-      if (!user.isVerified) {
-        console.log(`🔐 Marking user as verified (widget): ${phoneNumber}`);
-        await authService.updateUser(user.id, {
-          isVerified: true,
-          phoneVerified: true,
-          updatedAt: new Date()
-        });
-        user.isVerified = true;
-        user.phoneVerified = true;
-      }
-
-      // Generate JWT token
-      const token = jwtService.generateAccessToken({
-        userId: user.id,
-        phone: user.phone,
-        userType: user.userType
-      });
-
-      // Log successful authentication
-      await authService.logAuthAttempt({
-        phoneNumber,
-        action: isNewUser ? 'signup' : 'login',
-        success: true,
-        userId: user.id,
-        ip: req.ip,
-        userAgent: req.get('User-Agent')
-      });
-
-      console.log(`✅ Widget-verified OTP authentication successful for ${phoneNumber} - ${isNewUser ? 'New user' : 'Existing user'} - Verified: ${user.isVerified}`);
-
-      return res.json({
-        success: true,
-        message: isNewUser ? 'Account created successfully' : 'Login successful',
-        data: {
-          user: {
-            id: user.id,
-            name: user.name,
-            phone: user.phone,
-            userType: user.userType,
-            isVerified: user.isVerified,
-            phoneVerified: user.phoneVerified,
-            createdAt: user.createdAt,
-            updatedAt: user.updatedAt
-          },
-          token: token,
-          accessToken: token, // Keep both for backward compatibility
-          isNewUser: isNewUser,
-          expiresIn: '7d'
-        },
-        timestamp: new Date().toISOString()
-      });
-
-    } catch (error) {
-      console.error('❌ Verify widget OTP error:', error);
-
-      // Log failed attempt
-      await authService.logAuthAttempt({
-        phoneNumber: req.body.phoneNumber,
-        action: 'verify_widget_otp',
-        success: false,
-        error: error.message,
-        ip: req.ip,
-        userAgent: req.get('User-Agent')
-      });
-
-      res.status(400).json({
-        success: false,
-        message: error.message || 'Failed to verify widget OTP',
-        error: {
-          code: 'WIDGET_OTP_VERIFY_ERROR',
-          message: error.message
-        },
-        timestamp: new Date().toISOString()
-      });
-    }
-  }
-);
-
-/**
- * @route POST /api/auth/resend-otp
- * @desc Resend OTP to phone number
- * @access Public
- */
-router.post('/resend-otp',
-  otpRateLimit,
-  validateRequest({
-    body: {
-      phoneNumber: { type: 'string', required: true, minLength: 10, maxLength: 15 },
-      options: { type: 'object', required: false }
-    }
-  }),
-  async (req, res) => {
-    try {
-      const { phoneNumber, options = {} } = req.body;
-
-      console.log(`📱 Resending OTP to ${phoneNumber}`);
-
-      // Resend OTP via MSG91
-      const result = await msg91Service.resendOTP(phoneNumber, options);
-
-      if (!result.success) {
-        return res.status(400).json({
-          success: false,
-          message: 'Failed to resend OTP',
-          error: {
-            code: 'OTP_RESEND_FAILED',
-            message: result.message || 'Failed to resend OTP'
-          }
-        });
-      }
-
-      // Log resend attempt
-      await authService.logAuthAttempt({
-        phoneNumber,
-        action: 'resend_otp',
-        success: true,
-        ip: req.ip,
-        userAgent: req.get('User-Agent')
-      });
-
-      res.json({
-        success: true,
-        message: 'OTP resent successfully',
-        data: {
-          sessionId: result.sid,
-          expiresIn: result.expiresIn,
-          channel: result.channel
-        },
-        timestamp: new Date().toISOString()
-      });
-
-    } catch (error) {
-      console.error('❌ Resend OTP error:', error);
-
-      // Log failed attempt
-      await authService.logAuthAttempt({
-        phoneNumber: req.body.phoneNumber,
-        action: 'resend_otp',
-        success: false,
-        error: error.message,
-        ip: req.ip,
-        userAgent: req.get('User-Agent')
-      });
-
-      res.status(400).json({
-        success: false,
-        message: error.message || 'Failed to resend OTP',
-        error: {
-          code: 'OTP_RESEND_ERROR',
-          message: error.message
-        },
-        timestamp: new Date().toISOString()
-      });
-    }
-  }
-);
+// DEPRECATED: MSG91 resend OTP removed - using Firebase Auth instead
 
 /**
  * @route POST /api/auth/validate-session
@@ -876,7 +307,8 @@ router.post('/logout',
  */
 router.get('/health', async (req, res) => {
   try {
-    const msg91Health = await msg91Service.getHealthStatus();
+    // MSG91 service removed - using Firebase Auth instead
+    const msg91Health = { status: 'deprecated', message: 'Using Firebase Auth instead' };
     
     res.json({
       success: true,
@@ -902,107 +334,8 @@ router.get('/health', async (req, res) => {
   }
 });
 
-/**
- * @route GET /api/auth/msg91-status
- * @desc Check MSG91 service status and configuration
- * @access Public
- */
-router.get('/msg91-status', async (req, res) => {
-  try {
-    const msg91Health = await msg91Service.getHealthStatus();
-    const msg91Config = env.getMsg91Config();
-    
-    // Debug environment variables
-    const debugEnv = {
-      MSG91_ENABLED: process.env.MSG91_ENABLED,
-      MSG91_MOCK_MODE: process.env.MSG91_MOCK_MODE,
-      MSG91_AUTH_KEY: process.env.MSG91_AUTH_KEY ? 'SET' : 'NOT SET',
-      MSG91_SENDER_ID: process.env.MSG91_SENDER_ID ? 'SET' : 'NOT SET',
-      MSG91_API_URL: process.env.MSG91_API_URL ? 'SET' : 'NOT SET',
-      NODE_ENV: process.env.NODE_ENV
-    };
-    
-    // Check if there are any issues
-    const hasIssues = msg91Health.mockMode || msg91Health.errorCount > 0 || msg91Health.lastError;
-    const status = hasIssues ? 'warning' : 'healthy';
-    
-    console.log(`📊 MSG91 Status Check - Status: ${status}, Mock Mode: ${msg91Health.mockMode}, Error Count: ${msg91Health.errorCount}`);
-    
-    res.json({
-      success: true,
-      message: 'MSG91 status retrieved successfully',
-      data: {
-        status: status,
-        health: msg91Health,
-        config: {
-          enabled: env.isMsg91Enabled(),
-          hasAuthKey: !!msg91Config.authKey,
-          hasSenderId: !!msg91Config.senderId,
-          hasApiUrl: !!msg91Config.apiUrl,
-          mockMode: msg91Config.mockMode
-        },
-        debug: debugEnv,
-        issues: hasIssues ? {
-          mockMode: msg91Health.mockMode,
-          errorCount: msg91Health.errorCount,
-          lastError: msg91Health.lastError
-        } : null,
-        timestamp: new Date().toISOString()
-      }
-    });
+// MSG91 status route removed - using Firebase Auth instead
 
-  } catch (error) {
-    console.error('❌ MSG91 status check error:', error);
-
-    res.status(500).json({
-      success: false,
-      message: 'Failed to check MSG91 status',
-      error: {
-        code: 'MSG91_STATUS_ERROR',
-        message: error.message
-      },
-      timestamp: new Date().toISOString()
-    });
-  }
-});
-
-/**
- * @route GET /api/auth/mock-otp-status
- * @desc Check mock OTP service status and get active OTPs
- * @access Public
- */
-router.get('/mock-otp-status', async (req, res) => {
-  try {
-    const mockOTPService = require('../services/mockOTPService');
-    const status = mockOTPService.getStatus();
-    const activeOTPs = mockOTPService.getActiveOTPs();
-    
-    console.log(`🧪 Mock OTP Status Check - Enabled: ${status.enabled}, Active OTPs: ${status.activeOTPs}`);
-    
-    res.json({
-      success: true,
-      message: 'Mock OTP status retrieved successfully',
-      data: {
-        status: status,
-        activeOTPs: activeOTPs,
-        timestamp: new Date().toISOString()
-      }
-    });
-
-  } catch (error) {
-    console.error('❌ Mock OTP status check error:', error);
-
-    res.status(500).json({
-      success: false,
-      message: 'Failed to check mock OTP status',
-      error: {
-        code: 'MOCK_OTP_STATUS_ERROR',
-        message: error.message
-      },
-      timestamp: new Date().toISOString()
-    });
-  }
-});
 
 /**
  * @route POST /api/auth/validate-token
@@ -1108,6 +441,195 @@ router.post('/refresh',
         message: 'Token refresh failed',
         error: {
           code: 'TOKEN_REFRESH_ERROR',
+          message: error.message
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+  }
+);
+
+/**
+ * @route POST /api/auth/firebase/verify-token
+ * @desc Verify Firebase ID token and return user data
+ * @access Public
+ */
+router.post('/firebase/verify-token',
+  authRateLimit,
+  validateRequest({
+    body: {
+      idToken: { type: 'string', required: true },
+      userType: { type: 'string', required: false, enum: ['customer', 'driver', 'admin'] }
+    }
+  }),
+  async (req, res) => {
+    try {
+      const { idToken, userType } = req.body;
+
+      console.log('🔐 Verifying Firebase ID token...');
+
+      // Verify Firebase ID token
+      const decodedToken = await firebaseAuthService.verifyIdToken(idToken);
+      
+      // Get user data from Firestore
+      const userData = await firebaseAuthService.getUserByUid(decodedToken.uid, userType);
+      
+      if (!userData) {
+        // If user doesn't exist, create them
+        console.log('👤 User not found in Firestore, creating new user...');
+        const newUserData = await firebaseAuthService.createOrUpdateUser(
+          decodedToken, 
+          {}, 
+          userType || 'customer'
+        );
+        
+        return res.json({
+          success: true,
+          message: 'Firebase token verified and user created',
+          data: {
+            user: newUserData,
+            token: {
+              uid: decodedToken.uid,
+              email: decodedToken.email,
+              phone_number: decodedToken.phone_number,
+              auth_time: new Date(decodedToken.auth_time * 1000).toISOString(),
+              expires_at: new Date(decodedToken.exp * 1000).toISOString()
+            }
+          },
+          timestamp: new Date().toISOString()
+        });
+      }
+
+      // Return existing user data
+      res.json({
+        success: true,
+        message: 'Firebase token verified successfully',
+        data: {
+          user: userData,
+          token: {
+            uid: decodedToken.uid,
+            email: decodedToken.email,
+            phone_number: decodedToken.phone_number,
+            auth_time: new Date(decodedToken.auth_time * 1000).toISOString(),
+            expires_at: new Date(decodedToken.exp * 1000).toISOString()
+          }
+        },
+        timestamp: new Date().toISOString()
+      });
+
+    } catch (error) {
+      console.error('❌ Firebase token verification error:', error);
+      
+      res.status(401).json({
+        success: false,
+        message: 'Firebase token verification failed',
+        error: {
+          code: 'FIREBASE_VERIFICATION_ERROR',
+          message: error.message
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+  }
+);
+
+/**
+ * @route POST /api/auth/firebase/create-user
+ * @desc Create or update user in Firestore after Firebase authentication
+ * @access Public
+ */
+router.post('/firebase/create-user',
+  authRateLimit,
+  validateRequest({
+    body: {
+      idToken: { type: 'string', required: true },
+      userType: { type: 'string', required: true, enum: ['customer', 'driver', 'admin'] },
+      additionalData: { type: 'object', required: false }
+    }
+  }),
+  async (req, res) => {
+    try {
+      const { idToken, userType, additionalData = {} } = req.body;
+
+      console.log(`👤 Creating/updating ${userType} user in Firestore...`);
+
+      // Verify Firebase ID token
+      const decodedToken = await firebaseAuthService.verifyIdToken(idToken);
+      
+      // Create or update user in Firestore
+      const userData = await firebaseAuthService.createOrUpdateUser(
+        decodedToken, 
+        additionalData, 
+        userType
+      );
+
+      res.json({
+        success: true,
+        message: `${userType} user created/updated successfully`,
+        data: {
+          user: userData
+        },
+        timestamp: new Date().toISOString()
+      });
+
+    } catch (error) {
+      console.error(`❌ Error creating/updating user:`, error);
+      
+      res.status(500).json({
+        success: false,
+        message: `Failed to create/update user`,
+        error: {
+          code: 'USER_CREATION_ERROR',
+          message: error.message
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+  }
+);
+
+/**
+ * @route POST /api/auth/firebase/revoke-session
+ * @desc Revoke Firebase user session (sign out)
+ * @access Private (requires Firebase auth)
+ */
+router.post('/firebase/revoke-session',
+  authRateLimit,
+  async (req, res) => {
+    try {
+      const authHeader = req.headers.authorization;
+      
+      if (!authHeader || !authHeader.startsWith('Bearer ')) {
+        return res.status(401).json({
+          success: false,
+          error: {
+            code: 'UNAUTHORIZED',
+            message: 'Firebase ID token required'
+          },
+          timestamp: new Date().toISOString()
+        });
+      }
+
+      const idToken = authHeader.substring(7);
+      const decodedToken = await firebaseAuthService.verifyIdToken(idToken);
+      
+      // Revoke user session
+      await firebaseAuthService.revokeUserSession(decodedToken.uid);
+
+      res.json({
+        success: true,
+        message: 'User session revoked successfully',
+        timestamp: new Date().toISOString()
+      });
+
+    } catch (error) {
+      console.error('❌ Error revoking user session:', error);
+      
+      res.status(500).json({
+        success: false,
+        message: 'Failed to revoke user session',
+        error: {
+          code: 'SESSION_REVOKE_ERROR',
           message: error.message
         },
         timestamp: new Date().toISOString()

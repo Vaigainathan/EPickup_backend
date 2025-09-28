@@ -54,7 +54,7 @@ const { initializeFirebase } = require('./services/firebase');
 // Firestore Session Service is imported but not directly used in server.js
 // It's used by other services that import it directly
 const socketService = require('./services/socket');
-const msg91Service = require('./services/msg91Service');
+// const msg91Service = require('./services/msg91Service'); // Deprecated - using Firebase Auth instead
 const monitoringService = require('./services/monitoringService');
 const performanceMonitoringService = require('./services/performanceMonitoringService');
 

@@ -491,24 +491,7 @@ class EnvironmentConfig {
     return this.config.recaptcha.enterpriseSecretKey;
   }
 
-  /**
-   * Get MSG91 configuration
-   */
-  getMsg91Config() {
-    return this.config.msg91;
-  }
-
-  /**
-   * Check if MSG91 is enabled
-   */
-  isMsg91Enabled() {
-    // Force enable in production if credentials are available
-    if (this.isProduction() && this.config.msg91.authKey && this.config.msg91.senderId && this.config.msg91.apiUrl) {
-      console.log('🚀 Production environment detected - forcing MSG91 enabled');
-      return true;
-    }
-    return this.config.msg91.enabled && !this.config.msg91.mockMode;
-  }
+  // MSG91 configuration removed - using Firebase Auth instead
 
   /**
    * Get Firebase configuration

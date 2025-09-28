@@ -1,5 +1,4 @@
 const { getFirestore } = require('./firebase');
-const msg91Service = require('./msg91Service');
 const JWTService = require('./jwtService');
 const crypto = require('crypto');
 
@@ -13,130 +12,11 @@ class AuthService {
     this.jwtService = new JWTService();
   }
 
-  /**
-   * Generate OTP for phone number using MSG91
-   * @param {string} phoneNumber - Phone number to send OTP to
-   * @param {boolean} isSignup - Whether this is for signup or login
-   * @param {Object} options - Additional options for OTP
-   * @returns {Promise<Object>} OTP session data
-   */
-  async generateOTP(phoneNumber, isSignup = false, options = {}) {
-    try {
-      // Check if user already exists in Firestore
-      const userQuery = await this.db.collection('users').where('phone', '==', phoneNumber).limit(1).get();
-      const existingUser = userQuery.empty ? null : userQuery.docs[0].data();
-      
-      if (isSignup && existingUser) {
-        throw new Error('USER_EXISTS');
-      }
+  // MSG91 OTP methods removed - using Firebase Auth instead
 
-      if (!isSignup && !existingUser) {
-        throw new Error('USER_NOT_FOUND');
-      }
+  // MSG91 OTP verification removed - using Firebase Auth instead
 
-      // Send OTP via MSG91
-      const result = await msg91Service.sendOTP(phoneNumber, {
-        ...options,
-        metadata: {
-          isSignup,
-          ...options.metadata
-        }
-      });
-
-      if (!result.success) {
-        throw new Error(result.error?.code || 'OTP_SEND_FAILED');
-      }
-
-      return {
-        success: true,
-        sessionId: result.sid,
-        expiresIn: '5 minutes',
-        resendCount: 0,
-        maxResends: 3,
-        channel: result.channel,
-        to: result.to
-      };
-
-    } catch (error) {
-      console.error('Error generating OTP:', error);
-      throw error;
-    }
-  }
-
-  /**
-   * Verify OTP and authenticate user using MSG91
-   * @param {string} phoneNumber - Phone number
-   * @param {string} otp - OTP to verify
-   * @param {string} verificationSid - Verification session ID (optional)
-   * @param {Object} userData - User data for new signups
-   * @returns {Promise<Object>} Authentication result
-   */
-  async verifyOTP(phoneNumber, otp, verificationSid = null, userData = {}) {
-    try {
-      // Verify OTP via MSG91
-      const result = await msg91Service.verifyOTP(phoneNumber, otp, verificationSid);
-
-      if (!result.success) {
-        throw new Error('INVALID_OTP');
-      }
-
-      // Get or create user
-      const { user, isNewUser } = await this.getOrCreateUser(phoneNumber, userData);
-
-      // Generate JWT token for session management
-      const token = this.generateJWTToken({
-        userId: user.id,
-        userType: user.userType,
-        phone: user.phone
-      });
-
-      return {
-        success: true,
-        user: {
-          id: user.id,
-          name: user.name,
-          phone: user.phone,
-          userType: user.userType,
-          isVerified: user.isVerified
-        },
-        token: token,
-        isNewUser
-      };
-
-    } catch (error) {
-      console.error('Error verifying OTP:', error);
-      throw error;
-    }
-  }
-
-  /**
-   * Resend OTP to phone number using MSG91
-   * @param {string} phoneNumber - Phone number
-   * @param {Object} options - Additional options for resend
-   * @returns {Promise<Object>} Resend result
-   */
-  async resendOTP(phoneNumber, options = {}) {
-    try {
-      // Resend OTP via MSG91
-      const result = await msg91Service.resendOTP(phoneNumber, options);
-
-      if (!result.success) {
-        throw new Error(result.error?.code || 'OTP_RESEND_FAILED');
-      }
-
-      return {
-        success: true,
-        sessionId: result.sid,
-        expiresIn: '5 minutes',
-        channel: result.channel,
-        to: result.to
-      };
-
-    } catch (error) {
-      console.error('Error resending OTP:', error);
-      throw error;
-    }
-  }
+  // MSG91 OTP resend removed - using Firebase Auth instead
 
   /**
    * Get or create user based on phone number and user type

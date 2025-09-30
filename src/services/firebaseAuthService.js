@@ -132,6 +132,8 @@ class FirebaseAuthService {
         name: decodedToken.name || additionalData.name || null,
         photoURL: decodedToken.picture || null,
         isVerified: true, // Firebase users are verified by default
+        isActive: true, // Set account as active by default
+        accountStatus: 'active', // Set account status as active
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
         ...additionalData

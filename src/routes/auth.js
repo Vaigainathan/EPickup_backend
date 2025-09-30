@@ -696,8 +696,8 @@ router.post('/admin/login',
         });
       }
 
-      // For now, use a simple password check (in production, use proper authentication)
-      const adminPassword = 'EpickupAdmin2024!'; // More secure password
+      // Use environment variable for admin password (secure)
+      const adminPassword = process.env.ADMIN_PASSWORD || 'EpickupAdmin2024!';
       if (password !== adminPassword) {
         return res.status(401).json({
           success: false,

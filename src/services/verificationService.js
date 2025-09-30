@@ -291,17 +291,39 @@ class VerificationService {
       // Normalize documents (ensure consistent structure)
       const normalizedDocuments = this.normalizeDocuments(documents);
       
-      // Calculate verification status
-      const verificationStatus = this.calculateVerificationStatus(normalizedDocuments);
+      // Calculate verification status from documents
+      const documentVerificationStatus = this.calculateVerificationStatus(normalizedDocuments);
       
-      console.log(`📊 Final verification status: ${verificationStatus.status} (${verificationStatus.verifiedCount}/${verificationStatus.totalWithDocuments} verified)`);
+      // Check if user's verification status is already set to approved/verified
+      const userVerificationStatus = driverData.driver?.verificationStatus || driverData.verificationStatus;
+      const userIsVerified = driverData.driver?.isVerified || driverData.isVerified;
+      
+      // Use user's verification status if it's approved/verified, otherwise use document-based status
+      let finalVerificationStatus = documentVerificationStatus;
+      if (userVerificationStatus === 'approved' || userVerificationStatus === 'verified' || userIsVerified === true) {
+        finalVerificationStatus = {
+          status: 'approved',
+          verifiedCount: finalVerificationStatus.verifiedCount,
+          rejectedCount: finalVerificationStatus.rejectedCount,
+          totalWithDocuments: finalVerificationStatus.totalWithDocuments
+        };
+        console.log(`📊 Using user verification status: approved (user set to verified)`);
+      } else {
+        console.log(`📊 Using document verification status: ${finalVerificationStatus.status} (${finalVerificationStatus.verifiedCount}/${finalVerificationStatus.totalWithDocuments} verified)`);
+      }
+      
+      const verificationStatus = finalVerificationStatus;
       
       return {
         driverId,
         driverName: driverData.name || 'Unknown',
         documents: normalizedDocuments,
         verificationStatus: verificationStatus.status,
-        isVerified: verificationStatus.status === 'verified',
+        isVerified: verificationStatus.status === 'verified' || verificationStatus.status === 'approved',
+        overallProgress: verificationStatus.status === 'approved' ? 100 : 
+                        verificationStatus.status === 'verified' ? 100 :
+                        verificationStatus.totalWithDocuments > 0 ? 
+                          Math.round((verificationStatus.verifiedCount / verificationStatus.totalWithDocuments) * 100) : 0,
         source,
         documentSummary: {
           total: verificationStatus.totalWithDocuments,

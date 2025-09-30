@@ -23,11 +23,10 @@ router.post('/login', async (req, res) => {
       });
     }
 
-    // For now, use hardcoded admin credentials
-    // In production, this should be stored securely in the database
+    // Use environment variables for admin credentials (secure)
     const adminCredentials = {
-      email: 'admin@epickup.com',
-      password: 'admin123', // In production, this should be hashed
+      email: process.env.ADMIN_EMAIL || 'admin@epickup.com',
+      password: process.env.ADMIN_PASSWORD || 'admin123',
       name: 'Admin User',
       role: 'super_admin'
     };

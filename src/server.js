@@ -3,13 +3,16 @@ require("../instrument.js");
 
 const express = require('express');
 const cors = require('cors');
-const helmet = require('helmet');
 const morgan = require('morgan');
 const compression = require('compression');
 const rateLimit = require('express-rate-limit');
-const slowDown = require('express-slow-down');
 // Import configuration
 const { env } = require('./config');
+
+// Import security middleware
+const { sanitizeInput } = require('./middleware/validation');
+const { generalLimiter, authLimiter, speedLimiter } = require('./middleware/rateLimit');
+const { securityHeaders } = require('./middleware/security');
 
 // Import routes
 const authRoutes = require('./routes/auth');
@@ -90,17 +93,10 @@ const server = require('http').createServer(app);
 const Sentry = require('../instrument.js');
 
 // Security middleware
-app.use(helmet({
-  contentSecurityPolicy: {
-    directives: {
-      defaultSrc: ["'self'"],
-      styleSrc: ["'self'", "'unsafe-inline'"],
-      scriptSrc: ["'self'"],
-      imgSrc: ["'self'", "data:", "https:"],
-    },
-  },
-  crossOriginEmbedderPolicy: false,
-}));
+app.use(securityHeaders);
+app.use(sanitizeInput);
+app.use(generalLimiter);
+app.use(speedLimiter);
 
 // CORS configuration
 app.use(cors({
@@ -125,17 +121,6 @@ const limiter = rateLimit({
   trustProxy: true,
 });
 
-// Slow down responses for repeated requests
-const speedLimiter = slowDown({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  delayAfter: 50, // allow 50 requests per 15 minutes, then...
-  delayMs: (used, req) => {
-    const delayAfter = req.slowDown.limit;
-    return (used - delayAfter) * 500;
-  },
-  // Trust proxy for proper IP detection behind reverse proxy
-  trustProxy: true,
-});
 
 // Apply rate limiting to all routes
 app.use(limiter);
@@ -293,7 +278,7 @@ app.get('/metrics', (req, res) => {
 });
 
 // API Routes
-app.use('/api/auth', authRoutes);
+app.use('/api/auth', authLimiter, authRoutes);
 app.use('/api/customer', authMiddleware, customerRoutes);
 app.use('/api/driver', authMiddleware, driverRoutes);
 app.use('/api/bookings', authMiddleware, bookingRoutes);

@@ -86,48 +86,53 @@ router.post('/', [
       customerId: req.user.uid
     };
 
-    // Create booking
-    const result = await bookingService.createBooking(bookingData);
+    // Create booking with atomic transaction
+    const result = await bookingService.createBookingAtomically(bookingData);
 
-    // Add booking to driver assignment queue for automatic assignment
+    // If booking creation succeeded, handle driver assignment asynchronously
     if (result.success && result.data.booking) {
-      try {
-        console.log(`🚗 Adding booking ${result.data.booking.id} to driver assignment queue`);
-        driverAssignmentService.addBooking(result.data.booking);
-        
-        // Notify available drivers of new booking
-        const wsEventHandler = new WebSocketEventHandler();
-        await wsEventHandler.initialize();
-        await wsEventHandler.notifyDriversOfNewBooking(result.data.booking);
-        
-        // Also try immediate auto-assignment
-        const assignmentResult = await driverAssignmentService.autoAssignDriver(
-          result.data.booking.id, 
-          result.data.booking.pickup.coordinates
-        );
-        
-        if (assignmentResult.success) {
-          console.log(`✅ Driver ${assignmentResult.data.driverId} auto-assigned to booking ${result.data.booking.id}`);
+      // Handle driver assignment in background (non-blocking)
+      setImmediate(async () => {
+        try {
+          console.log(`🚗 Processing driver assignment for booking ${result.data.booking.id}`);
           
-          // Notify customer of driver assignment
-          await wsEventHandler.notifyCustomerOfDriverAssignment(
-            result.data.booking.customerId,
-            {
-              bookingId: result.data.booking.id,
-              driverId: assignmentResult.data.driverId,
-              driverName: assignmentResult.data.driverName,
-              driverPhone: assignmentResult.data.driverPhone,
-              vehicleInfo: assignmentResult.data.vehicleInfo,
-              estimatedArrival: assignmentResult.data.estimatedArrival
-            }
+          // Add booking to driver assignment queue
+          driverAssignmentService.addBooking(result.data.booking);
+          
+          // Notify available drivers of new booking
+          const wsEventHandler = new WebSocketEventHandler();
+          await wsEventHandler.initialize();
+          await wsEventHandler.notifyDriversOfNewBooking(result.data.booking);
+          
+          // Try immediate auto-assignment (non-blocking)
+          const assignmentResult = await driverAssignmentService.autoAssignDriver(
+            result.data.booking.id, 
+            result.data.booking.pickup.coordinates
           );
-        } else {
-          console.log(`⏳ No driver immediately available for booking ${result.data.booking.id}, added to queue`);
+          
+          if (assignmentResult.success) {
+            console.log(`✅ Driver ${assignmentResult.data.driverId} auto-assigned to booking ${result.data.booking.id}`);
+            
+            // Notify customer of driver assignment
+            await wsEventHandler.notifyCustomerOfDriverAssignment(
+              result.data.booking.customerId,
+              {
+                bookingId: result.data.booking.id,
+                driverId: assignmentResult.data.driverId,
+                driverName: assignmentResult.data.driverName,
+                driverPhone: assignmentResult.data.driverPhone,
+                vehicleInfo: assignmentResult.data.vehicleInfo,
+                estimatedArrival: assignmentResult.data.estimatedArrival
+              }
+            );
+          } else {
+            console.log(`⏳ No driver immediately available for booking ${result.data.booking.id}, added to queue`);
+          }
+        } catch (assignmentError) {
+          console.error('❌ Error in driver assignment:', assignmentError);
+          // Log error but don't fail the booking
         }
-      } catch (assignmentError) {
-        console.error('❌ Error in driver assignment:', assignmentError);
-        // Don't fail the booking creation if assignment fails
-      }
+      });
     }
 
     res.status(201).json({
@@ -751,6 +756,89 @@ router.delete('/:id', requireRole(['admin']), async (req, res) => {
       error: {
         code: 'BOOKING_DELETION_ERROR',
         message: 'Failed to delete booking',
+        details: error.message
+      },
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+/**
+ * @route   POST /api/bookings/:id/accept
+ * @desc    Driver accepts booking (Driver only)
+ * @access  Private (Driver only)
+ */
+router.post('/:id/accept', [
+  requireDriver,
+  body('estimatedArrival')
+    .optional()
+    .isISO8601()
+    .withMessage('Estimated arrival time must be a valid ISO 8601 date')
+], async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'VALIDATION_ERROR',
+          message: 'Validation failed',
+          details: errors.array()
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    const { id } = req.params;
+    const { uid } = req.user;
+    const { estimatedArrival } = req.body;
+
+    // Use atomic transaction for driver acceptance
+    const result = await bookingService.acceptBookingAtomically(id, uid, {
+      estimatedArrival: estimatedArrival ? new Date(estimatedArrival) : null
+    });
+
+    if (result.success) {
+      // Notify customer of driver acceptance
+      const wsEventHandler = new WebSocketEventHandler();
+      await wsEventHandler.initialize();
+      await wsEventHandler.notifyCustomerOfDriverAcceptance(
+        result.data.booking.customerId,
+        {
+          bookingId: id,
+          driverId: uid,
+          driverName: result.data.driver.name,
+          driverPhone: result.data.driver.phone,
+          vehicleInfo: result.data.driver.vehicleInfo,
+          estimatedArrival: estimatedArrival
+        }
+      );
+
+      res.status(200).json({
+        success: true,
+        message: 'Booking accepted successfully',
+        data: result.data,
+        timestamp: new Date().toISOString()
+      });
+    } else {
+      res.status(400).json({
+        success: false,
+        error: {
+          code: 'BOOKING_ACCEPTANCE_ERROR',
+          message: result.message,
+          details: result.error
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
+  } catch (error) {
+    console.error('Error accepting booking:', error);
+    res.status(500).json({
+      success: false,
+      error: {
+        code: 'BOOKING_ACCEPTANCE_ERROR',
+        message: 'Failed to accept booking',
         details: error.message
       },
       timestamp: new Date().toISOString()

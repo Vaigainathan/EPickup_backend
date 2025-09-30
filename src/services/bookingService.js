@@ -16,7 +16,216 @@ class BookingService {
   }
 
   /**
-   * Create a new delivery booking
+   * Create a new delivery booking with atomic transaction
+   * @param {Object} bookingData - Booking information
+   * @returns {Object} Created booking with calculated pricing
+   */
+  async createBookingAtomically(bookingData) {
+    try {
+      const {
+        customerId,
+        pickup,
+        dropoff,
+        package: packageInfo,
+        vehicle,
+        paymentMethod,
+        estimatedPickupTime,
+        estimatedDeliveryTime
+      } = bookingData;
+
+      // Validate booking data
+      const validation = this.validateBookingData(bookingData);
+      if (!validation.isValid) {
+        throw new Error(validation.errors.join(', '));
+      }
+
+      // Validate service area for booking locations
+      const serviceAreaValidation = await this.validateServiceArea(bookingData);
+      if (!serviceAreaValidation.isValid) {
+        throw new Error(serviceAreaValidation.message);
+      }
+
+      // Calculate distance and pricing
+      const distance = await this.calculateDistance(pickup.coordinates, dropoff.coordinates);
+      const pricing = await this.calculatePricing(distance, packageInfo.weight, vehicle.type);
+
+      // Use atomic transaction for booking creation
+      const result = await this.db.runTransaction(async (transaction) => {
+        const bookingId = this.db.collection('bookings').doc().id;
+        const bookingRef = this.db.collection('bookings').doc(bookingId);
+        
+        // Create booking document
+        const booking = {
+          id: bookingId,
+          customerId,
+          pickup: {
+            ...pickup,
+            coordinates: new this.db.GeoPoint(pickup.coordinates.latitude, pickup.coordinates.longitude)
+          },
+          dropoff: {
+            ...dropoff,
+            coordinates: new this.db.GeoPoint(dropoff.coordinates.latitude, dropoff.coordinates.longitude)
+          },
+          package: packageInfo,
+          vehicle,
+          paymentMethod,
+          status: 'pending', // Initial status - waiting for driver acceptance
+          pricing,
+          distance: {
+            value: distance.value,
+            text: distance.text
+          },
+          estimatedPickupTime: estimatedPickupTime ? new Date(estimatedPickupTime) : null,
+          estimatedDeliveryTime: estimatedDeliveryTime ? new Date(estimatedDeliveryTime) : null,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+          // Driver assignment fields (initially null)
+          driverId: null,
+          driverAssignedAt: null,
+          driverAcceptedAt: null,
+          // Timing fields
+          timing: {
+            createdAt: new Date(),
+            estimatedPickupTime: estimatedPickupTime ? new Date(estimatedPickupTime) : null,
+            estimatedDeliveryTime: estimatedDeliveryTime ? new Date(estimatedDeliveryTime) : null,
+            actualPickupTime: null,
+            actualDeliveryTime: null
+          }
+        };
+
+        // Set booking document in transaction
+        transaction.set(bookingRef, booking);
+
+        // Update customer's booking count
+        const customerRef = this.db.collection('customers').doc(customerId);
+        transaction.update(customerRef, {
+          totalBookings: this.db.FieldValue.increment(1),
+          lastBookingAt: new Date(),
+          updatedAt: new Date()
+        });
+
+        return { bookingId, booking };
+      });
+
+      console.log(`✅ Booking ${result.bookingId} created atomically`);
+
+      return {
+        success: true,
+        message: 'Booking created successfully',
+        data: {
+          booking: result.booking
+        }
+      };
+
+    } catch (error) {
+      console.error('❌ Error creating booking atomically:', error);
+      return {
+        success: false,
+        message: error.message || 'Failed to create booking',
+        error: error
+      };
+    }
+  }
+
+  /**
+   * Driver accepts booking with atomic transaction
+   * @param {string} bookingId - Booking ID
+   * @param {string} driverId - Driver ID
+   * @param {Object} acceptanceData - Additional acceptance data
+   * @returns {Object} Acceptance result
+   */
+  async acceptBookingAtomically(bookingId, driverId, acceptanceData = {}) {
+    try {
+      const { estimatedArrival } = acceptanceData;
+
+      // Use atomic transaction for driver acceptance
+      const result = await this.db.runTransaction(async (transaction) => {
+        const bookingRef = this.db.collection('bookings').doc(bookingId);
+        const driverRef = this.db.collection('drivers').doc(driverId);
+
+        // Get current booking and driver data
+        const [bookingDoc, driverDoc] = await Promise.all([
+          transaction.get(bookingRef),
+          transaction.get(driverRef)
+        ]);
+
+        if (!bookingDoc.exists) {
+          throw new Error('Booking not found');
+        }
+
+        if (!driverDoc.exists) {
+          throw new Error('Driver not found');
+        }
+
+        const booking = bookingDoc.data();
+        const driver = driverDoc.data();
+
+        // Validate booking can be accepted
+        if (booking.status !== 'pending') {
+          throw new Error(`Booking cannot be accepted. Current status: ${booking.status}`);
+        }
+
+        if (booking.driverId && booking.driverId !== driverId) {
+          throw new Error('Booking is already assigned to another driver');
+        }
+
+        // Check if driver is available
+        if (driver.status !== 'available') {
+          throw new Error('Driver is not available');
+        }
+
+        // Update booking with driver acceptance
+        const updatedBooking = {
+          ...booking,
+          driverId: driverId,
+          status: 'driver_assigned',
+          driverAssignedAt: new Date(),
+          driverAcceptedAt: new Date(),
+          updatedAt: new Date(),
+          timing: {
+            ...booking.timing,
+            driverAssignedAt: new Date(),
+            driverAcceptedAt: new Date(),
+            estimatedArrival: estimatedArrival || null
+          }
+        };
+
+        // Update driver status
+        const updatedDriver = {
+          ...driver,
+          status: 'busy',
+          currentBookingId: bookingId,
+          lastBookingAcceptedAt: new Date(),
+          updatedAt: new Date()
+        };
+
+        // Apply updates in transaction
+        transaction.update(bookingRef, updatedBooking);
+        transaction.update(driverRef, updatedDriver);
+
+        return { booking: updatedBooking, driver: updatedDriver };
+      });
+
+      console.log(`✅ Driver ${driverId} accepted booking ${bookingId} atomically`);
+
+      return {
+        success: true,
+        message: 'Booking accepted successfully',
+        data: result
+      };
+
+    } catch (error) {
+      console.error('❌ Error accepting booking atomically:', error);
+      return {
+        success: false,
+        message: error.message || 'Failed to accept booking',
+        error: error
+      };
+    }
+  }
+
+  /**
+   * Create a new delivery booking (legacy method - kept for backward compatibility)
    * @param {Object} bookingData - Booking information
    * @returns {Object} Created booking with calculated pricing
    */

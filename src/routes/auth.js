@@ -6,6 +6,7 @@ const jwtService = new JWTService(); // Create instance
 const firebaseAuthService = require('../services/firebaseAuthService');
 const { validateRequest } = require('../middleware/validation');
 const { rateLimit } = require('../middleware/rateLimit');
+const { sanitizeInput } = require('../middleware/validation');
 // Using Firebase Auth for authentication
 
 // Rate limiting configuration
@@ -28,6 +29,7 @@ const authRateLimit = rateLimit({
  */
 router.post('/check-user',
   authRateLimit,
+  sanitizeInput,
   validateRequest({
     body: {
       phoneNumber: { type: 'string', required: true, minLength: 10, maxLength: 15 },

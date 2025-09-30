@@ -11,7 +11,7 @@ service cloud.firestore {
     }
     
     function isAdmin() {
-      return request.auth.token.role == 'admin' || request.auth.token.userType == 'admin';
+      return request.auth.token.role == 'admin' && request.auth.token.userType == 'admin';
     }
     
     function isDriver() {
@@ -26,6 +26,14 @@ service cloud.firestore {
       return request.auth.token.userType in ['customer', 'driver', 'admin'];
     }
     
+    function isValidPhoneNumber(phone) {
+      return phone.matches('^\\+91[6-9][0-9]{9}$');
+    }
+    
+    function isValidEmail(email) {
+      return email.matches('^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$');
+    }
+    
     function isWithinServiceArea(location) {
       // Service area validation for Tirupattur region
       // Allow global customers but ensure pickup/delivery locations are within service area
@@ -37,10 +45,6 @@ service cloud.firestore {
       // Both pickup and delivery locations must be within service area
       return isWithinServiceArea(pickup.coordinates) && 
              isWithinServiceArea(drop.coordinates);
-    }
-    
-    function isValidPhoneNumber(phone) {
-      return phone.matches('^\\+91[6-9][0-9]{9}$');
     }
     
     function isValidBookingStatus(status) {
@@ -75,6 +79,7 @@ service cloud.firestore {
         isOwner(userId) &&
         request.resource.data.keys().hasAll(['name', 'phone', 'userType', 'createdAt']) &&
         isValidPhoneNumber(request.resource.data.phone) &&
+        isValidEmail(request.resource.data.email) &&
         request.resource.data.userType in ['customer', 'driver'];
       
       allow update: if isAuthenticated() && (
@@ -82,8 +87,9 @@ service cloud.firestore {
         isAdmin() ||
         // Users can update their own basic info
         (isOwner(userId) && 
-         request.writeFields.hasOnly(['name', 'phone', 'updatedAt', 'lastSeen']) &&
-         isValidPhoneNumber(request.resource.data.phone)) ||
+         request.writeFields.hasOnly(['name', 'phone', 'email', 'updatedAt', 'lastSeen']) &&
+         isValidPhoneNumber(request.resource.data.phone) &&
+         isValidEmail(request.resource.data.email)) ||
         // Drivers can update their driver-specific fields
         (isOwner(userId) && isDriver() &&
          request.writeFields.hasOnly(['driver', 'updatedAt', 'lastSeen']) &&

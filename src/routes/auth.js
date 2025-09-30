@@ -629,4 +629,94 @@ router.post('/firebase/revoke-session',
   }
 );
 
+/**
+ * @route POST /api/auth/admin/login
+ * @desc Admin login with email/password
+ * @access Public
+ */
+router.post('/admin/login',
+  authRateLimit,
+  body('email').isEmail().withMessage('Valid email is required'),
+  body('password').isString().withMessage('Password is required').isLength({ min: 6 }).withMessage('Password must be at least 6 characters'),
+  checkValidation,
+  async (req, res) => {
+    try {
+      const { email, password } = req.body;
+
+      console.log(`🔐 Admin login attempt: ${email}`);
+
+      // Check if this is a valid admin email
+      const adminEmails = ['admin@epickup.com', 'superadmin@epickup.com'];
+      if (!adminEmails.includes(email)) {
+        return res.status(403).json({
+          success: false,
+          error: {
+            code: 'ADMIN_ACCESS_DENIED',
+            message: 'Access denied. Admin email not authorized.'
+          },
+          timestamp: new Date().toISOString()
+        });
+      }
+
+      // For now, use a simple password check (in production, use proper authentication)
+      const adminPassword = 'admin123'; // This should be hashed and stored securely
+      if (password !== adminPassword) {
+        return res.status(401).json({
+          success: false,
+          error: {
+            code: 'INVALID_CREDENTIALS',
+            message: 'Invalid email or password'
+          },
+          timestamp: new Date().toISOString()
+        });
+      }
+
+      // Create admin user data
+      const adminUser = {
+        uid: `admin_${Date.now()}`,
+        email: email,
+        name: 'Admin User',
+        displayName: 'Admin User',
+        role: 'super_admin',
+        permissions: ['all'],
+        lastLogin: new Date().toISOString(),
+        createdAt: new Date().toISOString(),
+        isEmailVerified: true
+      };
+
+      // Generate JWT token
+      const token = jwtService.generateToken({
+        uid: adminUser.uid,
+        email: adminUser.email,
+        role: adminUser.role,
+        userType: 'admin'
+      });
+
+      console.log(`✅ Admin login successful: ${email}`);
+
+      res.status(200).json({
+        success: true,
+        message: 'Admin login successful',
+        data: {
+          user: adminUser,
+          token: token,
+          expiresIn: '24h'
+        },
+        timestamp: new Date().toISOString()
+      });
+
+    } catch (error) {
+      console.error('❌ Admin login error:', error);
+      res.status(500).json({
+        success: false,
+        error: {
+          code: 'INTERNAL_ERROR',
+          message: 'Internal server error during admin login'
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+  }
+);
+
 module.exports = router;

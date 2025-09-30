@@ -5,16 +5,12 @@ const JWTService = require('../services/jwtService');
 const jwtService = new JWTService(); // Create instance
 const firebaseAuthService = require('../services/firebaseAuthService');
 const { validateRequest } = require('../middleware/validation');
-const { rateLimit } = require('../middleware/rateLimit');
+const { authLimiter } = require('../middleware/rateLimit');
 const { sanitizeInput } = require('../middleware/validation');
 // Using Firebase Auth for authentication
 
 // Rate limiting configuration
-const authRateLimit = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 100, // limit each IP to 100 requests per windowMs
-  message: 'Too many authentication requests from this IP, please try again later.'
-});
+const authRateLimit = authLimiter;
 
 // const otpRateLimit = rateLimit({
 //   windowMs: 5 * 60 * 1000, // 5 minutes

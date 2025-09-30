@@ -1,16 +1,13 @@
 const express = require('express');
 const router = express.Router();
+const { body } = require('express-validator');
 const phonepeService = require('../services/phonepeService');
 const { authMiddleware } = require('../middleware/auth');
-const { validateRequest } = require('../middleware/validation');
-const { rateLimit } = require('../middleware/rateLimit');
+const { checkValidation } = require('../middleware/validation');
+const { generalLimiter } = require('../middleware/rateLimit');
 
 // Rate limiting for payment endpoints
-const paymentRateLimit = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 50, // limit each IP to 50 payment requests per windowMs
-  message: 'Too many payment requests from this IP, please try again later.'
-});
+const paymentRateLimit = generalLimiter;
 
 /**
  * @route POST /api/payments/create
@@ -20,15 +17,12 @@ const paymentRateLimit = rateLimit({
 router.post('/create',
   authMiddleware,
   paymentRateLimit,
-  validateRequest({
-    body: {
-      amount: { type: 'number', required: true, min: 1 },
-      bookingId: { type: 'string', required: true },
-      customerPhone: { type: 'string', required: true },
-      customerEmail: { type: 'string', required: false },
-      customerName: { type: 'string', required: false }
-    }
-  }),
+  body('amount').isNumeric().withMessage('Amount must be a number').isFloat({ min: 1 }).withMessage('Amount must be at least 1'),
+  body('bookingId').isString().withMessage('Booking ID is required').notEmpty().withMessage('Booking ID cannot be empty'),
+  body('customerPhone').isString().withMessage('Customer phone is required').notEmpty().withMessage('Customer phone cannot be empty'),
+  body('customerEmail').optional().isEmail().withMessage('Invalid email format'),
+  body('customerName').optional().isString().withMessage('Customer name must be a string'),
+  checkValidation,
   async (req, res) => {
     try {
       const { amount, bookingId, customerPhone, customerEmail, customerName } = req.body;
@@ -87,16 +81,13 @@ router.post('/create',
 router.post('/phonepe/initiate',
   authMiddleware,
   paymentRateLimit,
-  validateRequest({
-    body: {
-      bookingId: { type: 'string', required: true },
-      amount: { type: 'number', required: true, min: 1 },
-      customerPhone: { type: 'string', required: true },
-      customerEmail: { type: 'string', required: false },
-      customerName: { type: 'string', required: false },
-      redirectUrl: { type: 'string', required: false }
-    }
-  }),
+  body('bookingId').isString().withMessage('Booking ID is required').notEmpty().withMessage('Booking ID cannot be empty'),
+  body('amount').isNumeric().withMessage('Amount must be a number').isFloat({ min: 1 }).withMessage('Amount must be at least 1'),
+  body('customerPhone').isString().withMessage('Customer phone is required').notEmpty().withMessage('Customer phone cannot be empty'),
+  body('customerEmail').optional().isEmail().withMessage('Invalid email format'),
+  body('customerName').optional().isString().withMessage('Customer name must be a string'),
+  body('redirectUrl').optional().isURL().withMessage('Invalid redirect URL format'),
+  checkValidation,
   async (req, res) => {
     try {
       const { 
@@ -264,13 +255,10 @@ router.post('/phonepe/callback',
 router.post('/refund',
   authMiddleware,
   paymentRateLimit,
-  validateRequest({
-    body: {
-      transactionId: { type: 'string', required: true },
-      refundAmount: { type: 'number', required: true, min: 1 },
-      refundReason: { type: 'string', required: true }
-    }
-  }),
+  body('transactionId').isString().withMessage('Transaction ID is required').notEmpty().withMessage('Transaction ID cannot be empty'),
+  body('refundAmount').isNumeric().withMessage('Refund amount must be a number').isFloat({ min: 1 }).withMessage('Refund amount must be at least 1'),
+  body('refundReason').isString().withMessage('Refund reason is required').notEmpty().withMessage('Refund reason cannot be empty'),
+  checkValidation,
   async (req, res) => {
     try {
       const { transactionId, refundAmount, refundReason } = req.body;

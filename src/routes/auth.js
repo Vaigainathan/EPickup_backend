@@ -477,12 +477,22 @@ router.post('/firebase/verify-token',
           userType || 'customer'
         );
         
+        // Generate backend JWT token
+        const jwtToken = jwtService.generateAccessToken({
+          userId: newUserData.id,
+          uid: decodedToken.uid,
+          phone: decodedToken.phone_number,
+          userType: userType || 'customer',
+          email: decodedToken.email
+        });
+        
         return res.json({
           success: true,
           message: 'Firebase token verified and user created',
           data: {
             user: newUserData,
-            token: {
+            token: jwtToken, // Backend JWT token
+            firebaseToken: {
               uid: decodedToken.uid,
               email: decodedToken.email,
               phone_number: decodedToken.phone_number,
@@ -494,13 +504,23 @@ router.post('/firebase/verify-token',
         });
       }
 
-      // Return existing user data
+      // Generate backend JWT token for existing user
+      const jwtToken = jwtService.generateAccessToken({
+        userId: userData.id,
+        uid: decodedToken.uid,
+        phone: decodedToken.phone_number,
+        userType: userType || 'customer',
+        email: decodedToken.email
+      });
+
+      // Return existing user data with backend JWT token
       res.json({
         success: true,
         message: 'Firebase token verified successfully',
         data: {
           user: userData,
-          token: {
+          token: jwtToken, // Backend JWT token
+          firebaseToken: {
             uid: decodedToken.uid,
             email: decodedToken.email,
             phone_number: decodedToken.phone_number,
@@ -685,7 +705,7 @@ router.post('/admin/login',
       };
 
       // Generate JWT token
-      const token = jwtService.generateToken({
+      const token = jwtService.generateAccessToken({
         uid: adminUser.uid,
         email: adminUser.email,
         role: adminUser.role,

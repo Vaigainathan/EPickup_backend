@@ -455,10 +455,11 @@ router.post('/firebase/verify-token',
   authRateLimit,
   body('idToken').isString().withMessage('ID token is required').notEmpty().withMessage('ID token cannot be empty'),
   body('userType').optional().isIn(['customer', 'driver', 'admin']).withMessage('User type must be customer, driver, or admin'),
+  body('name').optional().isString().withMessage('Name must be a string'),
   checkValidation,
   async (req, res) => {
     try {
-      const { idToken, userType } = req.body;
+      const { idToken, userType, name } = req.body;
 
       console.log('🔐 Verifying Firebase ID token...');
 
@@ -471,9 +472,10 @@ router.post('/firebase/verify-token',
       if (!userData) {
         // If user doesn't exist, create them
         console.log('👤 User not found in Firestore, creating new user...');
+        const additionalData = name ? { name: name } : {};
         const newUserData = await firebaseAuthService.createOrUpdateUser(
           decodedToken, 
-          {}, 
+          additionalData, 
           userType || 'customer'
         );
         
@@ -502,6 +504,22 @@ router.post('/firebase/verify-token',
           },
           timestamp: new Date().toISOString()
         });
+      }
+
+      // Update existing user's name if it's null and name is provided
+      if (name && (!userData.name || userData.name === null)) {
+        console.log('👤 Updating existing user name...');
+        const { getFirestore } = require('../services/firebase');
+        const db = getFirestore();
+        
+        await db.collection('users').doc(decodedToken.uid).update({
+          name: name,
+          updatedAt: new Date().toISOString()
+        });
+        
+        // Update userData for response
+        userData.name = name;
+        userData.updatedAt = new Date().toISOString();
       }
 
       // Generate backend JWT token for existing user

@@ -89,42 +89,24 @@ class FirebaseAuthService {
   async getUserByUid(uid, userType = null) {
     try {
       this.ensureInitialized();
-      let userData = null;
       
-      // Try to find user in the appropriate collection based on userType
-      if (userType === 'customer' || !userType) {
-        const customerDoc = await this.db.collection('customers').doc(uid).get();
-        if (customerDoc.exists) {
-          userData = {
-            id: uid,
-            ...customerDoc.data(),
-            userType: 'customer'
-          };
-        }
-      }
+      // All users are now in the 'users' collection with userType field
+      const userDoc = await this.db.collection('users').doc(uid).get();
       
-      if (userType === 'driver' || (!userData && !userType)) {
-        const driverDoc = await this.db.collection('drivers').doc(uid).get();
-        if (driverDoc.exists) {
-          userData = {
-            id: uid,
-            ...driverDoc.data(),
-            userType: 'driver'
-          };
-        }
-      }
-      
-      if (userType === 'admin' || (!userData && !userType)) {
-        const adminDoc = await this.db.collection('admins').doc(uid).get();
-        if (adminDoc.exists) {
-          userData = {
-            id: uid,
-            ...adminDoc.data(),
-            userType: 'admin'
-          };
-        }
+      if (!userDoc.exists) {
+        console.log(`❌ User not found in users collection:`, uid);
+        return null;
       }
 
+      const userData = userDoc.data();
+      
+      // If userType is specified, verify it matches
+      if (userType && userData.userType !== userType) {
+        console.log(`⚠️ User type mismatch: expected ${userType}, found ${userData.userType}`);
+        return null;
+      }
+
+      console.log(`✅ Found user in users collection:`, uid, `(userType: ${userData.userType})`);
       return userData;
     } catch (error) {
       console.error('❌ Error fetching user data from Firestore:', error);
@@ -155,9 +137,43 @@ class FirebaseAuthService {
         ...additionalData
       };
 
-      // Determine collection based on userType
-      const collectionName = userType === 'customer' ? 'customers' : 
-                           userType === 'driver' ? 'drivers' : 'admins';
+      // Add driver-specific fields if userType is 'driver'
+      if (userType === 'driver') {
+        userData.driver = {
+          vehicleDetails: {
+            type: 'motorcycle',
+            model: '',
+            number: '',
+            color: ''
+          },
+          verificationStatus: 'pending',
+          isOnline: false,
+          isAvailable: false,
+          rating: 0,
+          totalTrips: 0,
+          earnings: {
+            total: 0,
+            thisMonth: 0,
+            thisWeek: 0
+          },
+          wallet: {
+            balance: 0,
+            currency: 'INR',
+            lastUpdated: new Date().toISOString(),
+            transactions: []
+          },
+          currentLocation: null,
+          welcomeBonusGiven: false,
+          welcomeBonusAmount: 500,
+          welcomeBonusGivenAt: null
+        };
+      }
+
+      // All users go into the 'users' collection with userType field
+      const collectionName = 'users';
+      
+      // Add userType to userData
+      userData.userType = userType;
 
       // Check if user already exists
       const existingUser = await this.getUserByUid(uid, userType);

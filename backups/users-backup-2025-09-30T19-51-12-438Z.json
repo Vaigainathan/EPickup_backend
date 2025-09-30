@@ -1,0 +1,99 @@
+{
+  "timestamp": "2025-09-30T19:51:13.356Z",
+  "totalUsers": 3,
+  "firebaseUsers": 1,
+  "customUsers": 2,
+  "users": [
+    {
+      "id": "91ZSMpAcBiep8Uf1d4cJM49DUVE2",
+      "data": {
+        "id": "91ZSMpAcBiep8Uf1d4cJM49DUVE2",
+        "email": null,
+        "phone": "+919686218054",
+        "photoURL": null,
+        "isVerified": true,
+        "isActive": true,
+        "accountStatus": "active",
+        "createdAt": "2025-09-30T19:16:15.955Z",
+        "userType": "customer",
+        "name": "Customer User",
+        "updatedAt": "2025-09-30T19:25:15.223Z",
+        "lastSeen": {
+          "_seconds": 1759261827,
+          "_nanoseconds": 165000000
+        },
+        "isOnline": false
+      },
+      "isFirebaseUID": false
+    },
+    {
+      "id": "Wlaz7du72rSsEmjDbdZKKUJ7Duf1",
+      "data": {
+        "id": "Wlaz7du72rSsEmjDbdZKKUJ7Duf1",
+        "email": null,
+        "phone": "+919148101698",
+        "name": "John Doe",
+        "photoURL": null,
+        "isVerified": true,
+        "isActive": true,
+        "accountStatus": "active",
+        "userType": "driver",
+        "createdAt": "2025-09-30T18:56:07.995Z",
+        "driver": {
+          "vehicleDetails": {
+            "type": "motorcycle",
+            "model": "",
+            "number": "",
+            "color": ""
+          },
+          "verificationStatus": "pending",
+          "isOnline": false,
+          "isAvailable": false,
+          "rating": 0,
+          "totalTrips": 0,
+          "earnings": {
+            "total": 0,
+            "thisMonth": 0,
+            "thisWeek": 0
+          },
+          "wallet": {
+            "balance": 0,
+            "currency": "INR",
+            "lastUpdated": "2025-09-30T18:56:07.995Z",
+            "transactions": []
+          },
+          "currentLocation": null,
+          "welcomeBonusGiven": false,
+          "welcomeBonusAmount": 500,
+          "welcomeBonusGivenAt": null
+        },
+        "updatedAt": "2025-09-30T19:25:15.942Z"
+      },
+      "isFirebaseUID": true
+    },
+    {
+      "id": "admin_1759259197478",
+      "data": {
+        "id": "admin_1759259197478",
+        "email": "admin@epickup.com",
+        "name": "Admin User",
+        "userType": "admin",
+        "role": "super_admin",
+        "permissions": [
+          "all"
+        ],
+        "isActive": true,
+        "isVerified": true,
+        "createdAt": {
+          "_seconds": 1759259197,
+          "_nanoseconds": 860000000
+        },
+        "updatedAt": {
+          "_seconds": 1759259197,
+          "_nanoseconds": 860000000
+        }
+      },
+      "isFirebaseUID": false
+    }
+  ]
+}

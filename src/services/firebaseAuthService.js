@@ -100,10 +100,30 @@ class FirebaseAuthService {
 
       const userData = userDoc.data();
       
-      // If userType is specified, verify it matches
+      // If userType is specified, check if user can switch roles
       if (userType && userData.userType !== userType) {
-        console.log(`⚠️ User type mismatch: expected ${userType}, found ${userData.userType}`);
-        return null;
+        console.log(`🔄 User type switch requested: ${userData.userType} → ${userType}`);
+        
+        // Allow role switching for same phone number
+        // Update user type and return updated data
+        const updatedUserData = {
+          ...userData,
+          userType: userType,
+          updatedAt: new Date().toISOString(),
+          roleSwitchedAt: new Date().toISOString(),
+          previousUserType: userData.userType
+        };
+        
+        // Update the user document with new role
+        await this.db.collection('users').doc(uid).update({
+          userType: userType,
+          updatedAt: new Date().toISOString(),
+          roleSwitchedAt: new Date().toISOString(),
+          previousUserType: userData.userType
+        });
+        
+        console.log(`✅ User role switched successfully: ${userData.userType} → ${userType}`);
+        return updatedUserData;
       }
 
       console.log(`✅ Found user in users collection:`, uid, `(userType: ${userData.userType})`);

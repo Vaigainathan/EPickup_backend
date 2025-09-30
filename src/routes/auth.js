@@ -4,6 +4,7 @@ const authService = require('../services/authService');
 const JWTService = require('../services/jwtService');
 const jwtService = new JWTService(); // Create instance
 const firebaseAuthService = require('../services/firebaseAuthService');
+const roleBasedAuthService = require('../services/roleBasedAuthService');
 const { body, validationResult } = require('express-validator');
 const { authLimiter } = require('../middleware/rateLimit');
 const { sanitizeInput } = require('../middleware/validation');
@@ -454,92 +455,46 @@ router.post('/refresh',
 router.post('/firebase/verify-token',
   authRateLimit,
   body('idToken').isString().withMessage('ID token is required').notEmpty().withMessage('ID token cannot be empty'),
-  body('userType').optional().isIn(['customer', 'driver', 'admin']).withMessage('User type must be customer, driver, or admin'),
+  body('userType').isIn(['customer', 'driver', 'admin']).withMessage('User type must be customer, driver, or admin'),
   body('name').optional().isString().withMessage('Name must be a string'),
   checkValidation,
   async (req, res) => {
     try {
       const { idToken, userType, name } = req.body;
 
-      console.log('🔐 Verifying Firebase ID token...');
+      console.log(`🔐 Verifying Firebase ID token for ${userType}...`);
 
       // Verify Firebase ID token
       const decodedToken = await firebaseAuthService.verifyIdToken(idToken);
       
-      // Get user data from Firestore
-      const userData = await firebaseAuthService.getUserByUid(decodedToken.uid, userType);
+      // Get or create user with role-specific UID
+      const additionalData = name ? { name: name } : {};
+      const userData = await roleBasedAuthService.getOrCreateRoleSpecificUser(
+        decodedToken, 
+        userType, 
+        additionalData
+      );
       
-      if (!userData) {
-        // If user doesn't exist, create them
-        console.log('👤 User not found in Firestore, creating new user...');
-        const additionalData = name ? { name: name } : {};
-        const newUserData = await firebaseAuthService.createOrUpdateUser(
-          decodedToken, 
-          additionalData, 
-          userType || 'customer'
-        );
-        
-        // Generate backend JWT token
-        const jwtToken = jwtService.generateAccessToken({
-          userId: newUserData.id,
-          uid: decodedToken.uid,
-          phone: decodedToken.phone_number,
-          userType: userType || 'customer',
-          email: decodedToken.email
-        });
-        
-        return res.json({
-          success: true,
-          message: 'Firebase token verified and user created',
-          data: {
-            user: newUserData,
-            token: jwtToken, // Backend JWT token
-            firebaseToken: {
-              uid: decodedToken.uid,
-              email: decodedToken.email,
-              phone_number: decodedToken.phone_number,
-              auth_time: new Date(decodedToken.auth_time * 1000).toISOString(),
-              expires_at: new Date(decodedToken.exp * 1000).toISOString()
-            }
-          },
-          timestamp: new Date().toISOString()
-        });
-      }
-
-      // Update existing user's name if it's null and name is provided
-      if (name && (!userData.name || userData.name === null)) {
-        console.log('👤 Updating existing user name...');
-        const { getFirestore } = require('../services/firebase');
-        const db = getFirestore();
-        
-        await db.collection('users').doc(decodedToken.uid).update({
-          name: name,
-          updatedAt: new Date().toISOString()
-        });
-        
-        // Update userData for response
-        userData.name = name;
-        userData.updatedAt = new Date().toISOString();
-      }
-
-      // Generate backend JWT token for existing user
+      // Generate backend JWT token with role-specific UID
       const jwtToken = jwtService.generateAccessToken({
-        userId: userData.id,
-        uid: decodedToken.uid,
+        userId: userData.id, // Role-specific UID
+        uid: userData.uid,   // Role-specific UID
+        originalFirebaseUID: userData.originalFirebaseUID, // Original Firebase UID
         phone: decodedToken.phone_number,
-        userType: userType || 'customer',
+        userType: userType,
         email: decodedToken.email
       });
+      
+      console.log(`✅ ${userType} authentication successful: ${userData.id}`);
 
-      // Return existing user data with backend JWT token
       res.json({
         success: true,
-        message: 'Firebase token verified successfully',
+        message: `${userType} authentication successful`,
         data: {
           user: userData,
           token: jwtToken, // Backend JWT token
           firebaseToken: {
-            uid: decodedToken.uid,
+            uid: decodedToken.uid, // Original Firebase UID
             email: decodedToken.email,
             phone_number: decodedToken.phone_number,
             auth_time: new Date(decodedToken.auth_time * 1000).toISOString(),
@@ -550,15 +505,93 @@ router.post('/firebase/verify-token',
       });
 
     } catch (error) {
-      console.error('❌ Firebase token verification error:', error);
+      console.error(`❌ Authentication error:`, error);
       
       res.status(401).json({
         success: false,
-        message: 'Firebase token verification failed',
+        message: `Authentication failed`,
         error: {
-          code: 'FIREBASE_VERIFICATION_ERROR',
+          code: 'AUTHENTICATION_ERROR',
           message: error.message
         },
+        timestamp: new Date().toISOString()
+      });
+    }
+  }
+);
+
+/**
+ * @route GET /api/auth/roles/:phoneNumber
+ * @desc Get all roles for a phone number
+ * @access Public
+ */
+router.get('/roles/:phoneNumber',
+  authRateLimit,
+  async (req, res) => {
+    try {
+      const { phoneNumber } = req.params;
+      
+      console.log(`🔍 Getting roles for phone: ${phoneNumber}`);
+      
+      const roles = await roleBasedAuthService.getRolesForPhone(phoneNumber);
+      
+      res.json({
+        success: true,
+        message: 'Roles retrieved successfully',
+        data: {
+          phone: phoneNumber,
+          roles: roles
+        },
+        timestamp: new Date().toISOString()
+      });
+      
+    } catch (error) {
+      console.error('❌ Error getting roles:', error);
+      res.status(500).json({
+        success: false,
+        message: 'Failed to get roles',
+        error: error.message,
+        timestamp: new Date().toISOString()
+      });
+    }
+  }
+);
+
+/**
+ * @route POST /api/auth/check-role
+ * @desc Check if user exists with specific role
+ * @access Public
+ */
+router.post('/check-role',
+  authRateLimit,
+  body('phoneNumber').isString().withMessage('Phone number is required'),
+  body('userType').isIn(['customer', 'driver', 'admin']).withMessage('User type must be customer, driver, or admin'),
+  checkValidation,
+  async (req, res) => {
+    try {
+      const { phoneNumber, userType } = req.body;
+      
+      console.log(`🔍 Checking if ${userType} exists for phone: ${phoneNumber}`);
+      
+      const exists = await roleBasedAuthService.userExistsWithRole(phoneNumber, userType);
+      
+      res.json({
+        success: true,
+        message: 'Role check completed',
+        data: {
+          phone: phoneNumber,
+          userType: userType,
+          exists: exists
+        },
+        timestamp: new Date().toISOString()
+      });
+      
+    } catch (error) {
+      console.error('❌ Error checking role:', error);
+      res.status(500).json({
+        success: false,
+        message: 'Failed to check role',
+        error: error.message,
         timestamp: new Date().toISOString()
       });
     }

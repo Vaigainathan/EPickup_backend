@@ -10,8 +10,27 @@ service cloud.firestore {
       return request.auth.uid == userId;
     }
     
+    function isRoleOwner(userId) {
+      // Check if the authenticated user owns this role-specific UID
+      return request.auth.uid == userId;
+    }
+    
+    function hasRoleAccess(userId, requiredUserType) {
+      // Check if user has access to this role-specific UID
+      return request.auth.uid == userId && request.auth.token.userType == requiredUserType;
+    }
+    
     function isAdmin() {
       return request.auth.token.role == 'admin' && request.auth.token.userType == 'admin';
+    }
+    
+    function isSuperAdmin() {
+      return request.auth.token.role == 'super_admin' && request.auth.token.userType == 'admin';
+    }
+    
+    function isAdminUser() {
+      return request.auth.token.userType == 'admin' && 
+        request.auth.token.role in ['super_admin', 'driver_admin', 'support_admin', 'analytics_admin'];
     }
     
     function isDriver() {
@@ -253,6 +272,28 @@ service cloud.firestore {
     match /adminSettings/{settingId} {
       allow read, write: if request.auth != null && 
         (request.auth.token.role == 'admin' || request.auth.token.userType == 'admin');
+    }
+    
+    // Admin users collection - allow admin user management
+    match /adminUsers/{userId} {
+      // Allow admin users to read admin users (for admin management)
+      allow read: if request.auth != null && isAdminUser();
+      
+      // Allow authenticated users to create admin users (for signup)
+      // This allows new admin users to create their own profile during signup
+      allow create: if request.auth != null && 
+        request.resource.data.uid == request.auth.uid &&
+        request.resource.data.keys().hasAll(['uid', 'email', 'displayName', 'role', 'permissions', 'createdAt']) &&
+        isValidEmail(request.resource.data.email) &&
+        request.resource.data.role in ['super_admin', 'driver_admin', 'support_admin', 'analytics_admin'];
+      
+      // Allow admin users to update their own profile
+      allow update: if request.auth != null && 
+        (request.auth.uid == userId || isSuperAdmin()) &&
+        request.writeFields.hasOnly(['displayName', 'lastLogin', 'updatedAt', 'permissions']);
+      
+      // Allow super admins to delete admin users
+      allow delete: if request.auth != null && isSuperAdmin();
     }
     
     // File uploads - allow admin access only

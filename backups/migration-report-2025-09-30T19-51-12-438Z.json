@@ -1,0 +1,38 @@
+{
+  "timestamp": "2025-09-30T19:51:13.470Z",
+  "summary": {
+    "totalUsers": 3,
+    "firebaseUsers": 1,
+    "customUsers": 2
+  },
+  "customUsers": [
+    {
+      "id": "91ZSMpAcBiep8Uf1d4cJM49DUVE2",
+      "phone": "+919686218054",
+      "name": "Customer User",
+      "email": null,
+      "userType": "customer",
+      "createdAt": "2025-09-30T19:16:15.955Z"
+    },
+    {
+      "id": "admin_1759259197478",
+      "name": "Admin User",
+      "email": "admin@epickup.com",
+      "userType": "admin",
+      "createdAt": {
+        "_seconds": 1759259197,
+        "_nanoseconds": 860000000
+      }
+    }
+  ],
+  "firebaseUsers": [
+    {
+      "id": "Wlaz7du72rSsEmjDbdZKKUJ7Duf1",
+      "phone": "+919148101698",
+      "name": "John Doe",
+      "email": null,
+      "userType": "driver",
+      "createdAt": "2025-09-30T18:56:07.995Z"
+    }
+  ]
+}

@@ -7,8 +7,35 @@ const { getFirestore } = require('./firebase');
  */
 class FirebaseAuthService {
   constructor() {
-    this.auth = admin.auth();
-    this.db = getFirestore();
+    this.auth = null;
+    this.db = null;
+    this.initialized = false;
+  }
+
+  /**
+   * Initialize Firebase services (lazy initialization)
+   */
+  initialize() {
+    if (this.initialized) return;
+    
+    try {
+      this.auth = admin.auth();
+      this.db = getFirestore();
+      this.initialized = true;
+      console.log('✅ Firebase Auth Service initialized');
+    } catch (error) {
+      console.error('❌ Failed to initialize Firebase Auth Service:', error.message);
+      throw error;
+    }
+  }
+
+  /**
+   * Ensure Firebase services are initialized
+   */
+  ensureInitialized() {
+    if (!this.initialized) {
+      this.initialize();
+    }
   }
 
   /**
@@ -18,6 +45,8 @@ class FirebaseAuthService {
    */
   async verifyIdToken(idToken) {
     try {
+      this.ensureInitialized();
+      
       if (!idToken) {
         throw new Error('ID token is required');
       }
@@ -59,6 +88,7 @@ class FirebaseAuthService {
    */
   async getUserByUid(uid, userType = null) {
     try {
+      this.ensureInitialized();
       let userData = null;
       
       // Try to find user in the appropriate collection based on userType
@@ -111,6 +141,7 @@ class FirebaseAuthService {
    */
   async createOrUpdateUser(decodedToken, additionalData = {}, userType = 'customer') {
     try {
+      this.ensureInitialized();
       const uid = decodedToken.uid;
       const userData = {
         id: uid,
@@ -159,6 +190,7 @@ class FirebaseAuthService {
    */
   async getUserRole(uid) {
     try {
+      this.ensureInitialized();
       const adminDoc = await this.db.collection('admins').doc(uid).get();
       if (adminDoc.exists) {
         return adminDoc.data().role || 'pending';
@@ -177,6 +209,7 @@ class FirebaseAuthService {
    */
   async revokeUserSession(uid) {
     try {
+      this.ensureInitialized();
       await this.auth.revokeRefreshTokens(uid);
       console.log('✅ User session revoked:', uid);
     } catch (error) {
@@ -192,6 +225,7 @@ class FirebaseAuthService {
    */
   async getUserByEmail(email) {
     try {
+      this.ensureInitialized();
       const userRecord = await this.auth.getUserByEmail(email);
       return userRecord;
     } catch (error) {
@@ -211,6 +245,7 @@ class FirebaseAuthService {
    */
   async setCustomClaims(uid, claims) {
     try {
+      this.ensureInitialized();
       await this.auth.setCustomUserClaims(uid, claims);
       console.log(`✅ Custom claims set for user ${uid}:`, claims);
     } catch (error) {
@@ -227,6 +262,7 @@ class FirebaseAuthService {
    */
   async createCustomToken(uid, additionalClaims = {}) {
     try {
+      this.ensureInitialized();
       const customToken = await this.auth.createCustomToken(uid, additionalClaims);
       return customToken;
     } catch (error) {

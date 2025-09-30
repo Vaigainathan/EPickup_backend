@@ -71,6 +71,11 @@ app.set('trust proxy', 1);
 try {
   initializeFirebase();
   console.log('✅ Firebase initialization completed');
+  
+  // Initialize Firebase Auth Service after Firebase is ready
+  const firebaseAuthService = require('./services/firebaseAuthService');
+  firebaseAuthService.initialize();
+  console.log('✅ Firebase Auth Service initialized');
 } catch (error) {
   console.log('⚠️  Firebase initialization failed, continuing without Firebase...');
   console.error('Firebase Error:', error.message);

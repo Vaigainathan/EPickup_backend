@@ -4,13 +4,30 @@ const authService = require('../services/authService');
 const JWTService = require('../services/jwtService');
 const jwtService = new JWTService(); // Create instance
 const firebaseAuthService = require('../services/firebaseAuthService');
-const { validateRequest } = require('../middleware/validation');
+const { body, validationResult } = require('express-validator');
 const { authLimiter } = require('../middleware/rateLimit');
 const { sanitizeInput } = require('../middleware/validation');
 // Using Firebase Auth for authentication
 
 // Rate limiting configuration
 const authRateLimit = authLimiter;
+
+// Validation helper function
+const checkValidation = (req, res, next) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({
+      success: false,
+      error: {
+        code: 'VALIDATION_ERROR',
+        message: 'Validation failed',
+        details: errors.array()
+      },
+      timestamp: new Date().toISOString()
+    });
+  }
+  next();
+};
 
 // const otpRateLimit = rateLimit({
 //   windowMs: 5 * 60 * 1000, // 5 minutes
@@ -26,12 +43,9 @@ const authRateLimit = authLimiter;
 router.post('/check-user',
   authRateLimit,
   sanitizeInput,
-  validateRequest({
-    body: {
-      phoneNumber: { type: 'string', required: true, minLength: 10, maxLength: 15 },
-      userType: { type: 'string', required: false, enum: ['customer', 'driver'] }
-    }
-  }),
+  body('phoneNumber').isString().withMessage('Phone number is required').isLength({ min: 10, max: 15 }).withMessage('Phone number must be between 10 and 15 characters'),
+  body('userType').optional().isIn(['customer', 'driver']).withMessage('User type must be customer or driver'),
+  checkValidation,
   async (req, res) => {
     try {
       const { phoneNumber, userType = 'customer' } = req.body;
@@ -176,13 +190,10 @@ router.post('/validate-session',
  */
 router.put('/profile',
   authRateLimit,
-  validateRequest({
-    body: {
-      name: { type: 'string', required: false, maxLength: 100 },
-      email: { type: 'string', required: false, format: 'email' },
-      profilePicture: { type: 'string', required: false }
-    }
-  }),
+  body('name').optional().isString().withMessage('Name must be a string').isLength({ max: 100 }).withMessage('Name cannot exceed 100 characters'),
+  body('email').optional().isEmail().withMessage('Invalid email format'),
+  body('profilePicture').optional().isString().withMessage('Profile picture must be a string'),
+  checkValidation,
   async (req, res) => {
     try {
       const token = req.headers.authorization?.replace('Bearer ', '');
@@ -336,11 +347,8 @@ router.get('/health', async (req, res) => {
  */
 router.post('/validate-token',
   authRateLimit,
-  validateRequest({
-    body: {
-      token: { type: 'string', required: true, minLength: 10 }
-    }
-  }),
+  body('token').isString().withMessage('Token is required').isLength({ min: 10 }).withMessage('Token must be at least 10 characters'),
+  checkValidation,
   async (req, res) => {
     try {
       const { token } = req.body;
@@ -397,11 +405,8 @@ router.post('/validate-token',
  */
 router.post('/refresh',
   authRateLimit,
-  validateRequest({
-    body: {
-      refreshToken: { type: 'string', required: true }
-    }
-  }),
+  body('refreshToken').isString().withMessage('Refresh token is required').notEmpty().withMessage('Refresh token cannot be empty'),
+  checkValidation,
   async (req, res) => {
     try {
       const { refreshToken } = req.body;
@@ -448,12 +453,9 @@ router.post('/refresh',
  */
 router.post('/firebase/verify-token',
   authRateLimit,
-  validateRequest({
-    body: {
-      idToken: { type: 'string', required: true },
-      userType: { type: 'string', required: false, enum: ['customer', 'driver', 'admin'] }
-    }
-  }),
+  body('idToken').isString().withMessage('ID token is required').notEmpty().withMessage('ID token cannot be empty'),
+  body('userType').optional().isIn(['customer', 'driver', 'admin']).withMessage('User type must be customer, driver, or admin'),
+  checkValidation,
   async (req, res) => {
     try {
       const { idToken, userType } = req.body;
@@ -532,13 +534,10 @@ router.post('/firebase/verify-token',
  */
 router.post('/firebase/create-user',
   authRateLimit,
-  validateRequest({
-    body: {
-      idToken: { type: 'string', required: true },
-      userType: { type: 'string', required: true, enum: ['customer', 'driver', 'admin'] },
-      additionalData: { type: 'object', required: false }
-    }
-  }),
+  body('idToken').isString().withMessage('ID token is required').notEmpty().withMessage('ID token cannot be empty'),
+  body('userType').isIn(['customer', 'driver', 'admin']).withMessage('User type must be customer, driver, or admin'),
+  body('additionalData').optional().isObject().withMessage('Additional data must be an object'),
+  checkValidation,
   async (req, res) => {
     try {
       const { idToken, userType, additionalData = {} } = req.body;

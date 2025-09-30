@@ -95,9 +95,7 @@ FIREBASE_CLIENT_EMAIL=your-service-account@your-project.iam.gserviceaccount.com
 # Google Maps API
 GOOGLE_MAPS_API_KEY=your-google-maps-api-key
 
-# MSG91 Configuration
-MSG91_API_KEY=your-msg91-api-key
-MSG91_SENDER_ID=your-sender-id
+# MSG91 Configuration removed - using Firebase Auth
 
 # CORS Configuration
 CORS_ORIGIN=https://your-frontend-domain.com
@@ -187,7 +185,7 @@ function createDeploymentChecklist() {
 - [ ] All environment variables configured
 - [ ] Firebase project configured and accessible
 - [ ] Google Maps API key valid and has required permissions
-- [ ] MSG91 API key valid and configured
+- [ ] Firebase Auth configured for OTP
 - [ ] Database indexes created in Firestore
 - [ ] Security rules deployed to Firestore
 - [ ] SSL certificate configured (if using custom domain)

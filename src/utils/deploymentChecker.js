@@ -13,7 +13,7 @@ class DeploymentChecker {
       'FIREBASE_PRIVATE_KEY',
       'FIREBASE_CLIENT_EMAIL',
       'GOOGLE_MAPS_API_KEY',
-      'MSG91_API_KEY',
+      // MSG91_API_KEY removed - using Firebase Auth
       'NODE_ENV'
     ];
 
@@ -45,8 +45,7 @@ class DeploymentChecker {
     // Check Google Maps configuration
     this.checkGoogleMapsConfiguration();
 
-    // Check MSG91 configuration
-    this.checkMSG91Configuration();
+    // MSG91 configuration removed - using Firebase Auth
 
     // Check file permissions
     this.checkFilePermissions();
@@ -178,23 +177,7 @@ class DeploymentChecker {
     }
   }
 
-  /**
-   * Check MSG91 configuration
-   */
-  checkMSG91Configuration() {
-    console.log('📱 Checking MSG91 configuration...');
-
-    const apiKey = process.env.MSG91_API_KEY;
-    if (!apiKey) {
-      this.errors.push('MSG91_API_KEY is required for OTP services');
-      return;
-    }
-
-    // Basic API key format validation
-    if (apiKey.length < 20) {
-      this.warnings.push('MSG91_API_KEY format appears invalid');
-    }
-  }
+  // MSG91 configuration check removed - using Firebase Auth
 
   /**
    * Check file permissions
@@ -292,8 +275,7 @@ class DeploymentChecker {
     // Check Google Maps API
     await this.checkGoogleMapsAPI();
 
-    // Check MSG91 API
-    await this.checkMSG91API();
+    // MSG91 API check removed - using Firebase Auth
   }
 
   /**
@@ -317,25 +299,7 @@ class DeploymentChecker {
     }
   }
 
-  /**
-   * Check MSG91 API
-   */
-  async checkMSG91API() {
-    const apiKey = process.env.MSG91_API_KEY;
-    if (!apiKey) return;
-
-    try {
-      const response = await fetch(`https://api.msg91.com/api/v5/otp?template_id=test&mobile=9999999999&authkey=${apiKey}`);
-      
-      if (response.ok) {
-        console.log('✅ MSG91 API accessible');
-      } else {
-        this.warnings.push(`MSG91 API error: ${response.status}`);
-      }
-    } catch (error) {
-      this.warnings.push(`MSG91 API check failed: ${error.message}`);
-    }
-  }
+  // MSG91 API check removed - using Firebase Auth
 
   /**
    * Generate deployment report

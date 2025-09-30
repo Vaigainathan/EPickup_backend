@@ -53,6 +53,18 @@ service cloud.firestore {
       return status in ['available', 'busy', 'offline', 'enroute', 'arrived'];
     }
     
+    function isValidWorkSlotStatus(status) {
+      return status in ['available', 'booked', 'completed', 'cancelled'];
+    }
+    
+    function isValidPaymentStatus(status) {
+      return status in ['pending', 'completed', 'failed', 'refunded', 'cancelled'];
+    }
+    
+    function isValidNotificationType(type) {
+      return type in ['booking_update', 'driver_assigned', 'payment_update', 'system_alert'];
+    }
+
     // Users collection - enhanced security with field validation
     match /users/{userId} {
       allow read: if isAuthenticated() && 
@@ -75,11 +87,16 @@ service cloud.firestore {
         // Drivers can update their driver-specific fields
         (isOwner(userId) && isDriver() &&
          request.writeFields.hasOnly(['driver', 'updatedAt', 'lastSeen']) &&
-         request.resource.data.driver.keys().hasOnly(['isOnline', 'isAvailable', 'currentLocation', 'vehicleInfo', 'status']) &&
+         request.resource.data.driver.keys().hasOnly(['isOnline', 'isAvailable', 'currentLocation', 'vehicleInfo', 'status', 'verificationStatus', 'wallet']) &&
          isValidDriverStatus(request.resource.data.driver.status))
       );
       
       allow delete: if isAuthenticated() && isAdmin();
+    }
+    
+    // Auth attempts collection - admin only for security
+    match /auth_attempts/{attemptId} {
+      allow read, write: if isAuthenticated() && isAdmin();
     }
     
     // Document verification requests - allow admin access only
@@ -156,6 +173,30 @@ service cloud.firestore {
       allow delete: if isAuthenticated() && isAdmin();
     }
     
+    // Chat messages collection - allow participants to read/write
+    match /chat_messages/{messageId} {
+      allow read: if isAuthenticated() && (
+        // Get booking to check participants
+        exists(/databases/$(database)/documents/bookings/$(resource.data.bookingId)) &&
+        (
+          get(/databases/$(database)/documents/bookings/$(resource.data.bookingId)).data.customerId == request.auth.uid ||
+          get(/databases/$(database)/documents/bookings/$(resource.data.bookingId)).data.driverId == request.auth.uid ||
+          isAdmin()
+        )
+      );
+      
+      allow create: if isAuthenticated() && 
+        request.resource.data.senderId == request.auth.uid &&
+        request.resource.data.keys().hasAll(['bookingId', 'senderId', 'senderType', 'message', 'timestamp']) &&
+        request.resource.data.senderType in ['customer', 'driver'];
+      
+      allow update: if isAuthenticated() && 
+        resource.data.senderId == request.auth.uid &&
+        request.writeFields.hasOnly(['read', 'updatedAt']);
+      
+      allow delete: if isAuthenticated() && isAdmin();
+    }
+    
     // Driver locations - allow drivers to read/write their own location, admins full access
     match /driverLocations/{driverId} {
       allow read, write: if request.auth != null && 
@@ -186,7 +227,8 @@ service cloud.firestore {
       // Allow drivers to update trip status
       allow update: if request.auth != null && 
         (resource.data.driverId == request.auth.uid && 
-         request.auth.token.userType == 'driver');
+         request.auth.token.userType == 'driver' &&
+         request.writeFields.hasOnly(['status', 'location', 'updatedAt']));
     }
     
     // Support tickets - allow admin access only
@@ -247,19 +289,88 @@ service cloud.firestore {
          request.auth.token.userType == 'admin');
     }
 
-    // Driver assignments collection - secure assignment data access
-    match /driverAssignments/{assignmentId} {
+    // Commission transactions - driver and admin access
+    match /commissionTransactions/{transactionId} {
       allow read: if request.auth != null && 
-        (request.auth.token.userType == 'driver' || 
+        (resource.data.driverId == request.auth.uid || 
          request.auth.token.role == 'admin' || 
          request.auth.token.userType == 'admin');
       allow write: if request.auth != null && 
         (request.auth.token.role == 'admin' || request.auth.token.userType == 'admin');
     }
 
-    // System health collection - admin only
-    match /systemHealth/{healthId} {
+    // Recharge transactions - driver and admin access
+    match /rechargeTransactions/{transactionId} {
+      allow read: if request.auth != null && 
+        (resource.data.driverId == request.auth.uid || 
+         request.auth.token.role == 'admin' || 
+         request.auth.token.userType == 'admin');
+      allow write: if request.auth != null && 
+        (request.auth.token.role == 'admin' || request.auth.token.userType == 'admin');
+    }
+
+    // Notifications collection - user-specific access
+    match /notifications/{notificationId} {
       allow read, write: if request.auth != null && 
+        (resource.data.userId == request.auth.uid || 
+         request.auth.token.role == 'admin' || 
+         request.auth.token.userType == 'admin');
+      allow create: if request.auth != null && 
+        (request.resource.data.userId == request.auth.uid || 
+         request.auth.token.role == 'admin' || 
+         request.auth.token.userType == 'admin') &&
+        request.resource.data.keys().hasAll(['userId', 'type', 'title', 'message', 'createdAt']) &&
+        isValidNotificationType(request.resource.data.type);
+    }
+
+    // Orders collection - customer, driver, and admin access
+    match /orders/{orderId} {
+      allow read: if request.auth != null && 
+        (resource.data.customerId == request.auth.uid || 
+         resource.data.driverId == request.auth.uid ||
+         request.auth.token.role == 'admin' || 
+         request.auth.token.userType == 'admin');
+      allow create: if request.auth != null && 
+        (request.resource.data.customerId == request.auth.uid || 
+         request.auth.token.role == 'admin' || 
+         request.auth.token.userType == 'admin');
+      allow update: if request.auth != null && (
+        request.auth.token.role == 'admin' || 
+        request.auth.token.userType == 'admin' ||
+        (resource.data.driverId == request.auth.uid && 
+         request.writeFields.hasOnly(['status', 'updatedAt']))
+      );
+    }
+
+    // Customers collection - admin access only
+    match /customers/{customerId} {
+      allow read, write: if request.auth != null && 
+        (request.auth.token.role == 'admin' || request.auth.token.userType == 'admin');
+    }
+
+    // Drivers collection - driver and admin access
+    match /drivers/{driverId} {
+      allow read: if request.auth != null && 
+        (request.auth.uid == driverId || 
+         request.auth.token.role == 'admin' || 
+         request.auth.token.userType == 'admin');
+      allow write: if request.auth != null && 
+        (request.auth.token.role == 'admin' || request.auth.token.userType == 'admin');
+    }
+
+    // Support collection - customer, driver, and admin access
+    match /support/{supportId} {
+      allow read: if request.auth != null && 
+        (resource.data.customerId == request.auth.uid || 
+         resource.data.driverId == request.auth.uid ||
+         request.auth.token.role == 'admin' || 
+         request.auth.token.userType == 'admin');
+      allow create: if request.auth != null && 
+        (request.resource.data.customerId == request.auth.uid || 
+         request.resource.data.driverId == request.auth.uid ||
+         request.auth.token.role == 'admin' || 
+         request.auth.token.userType == 'admin');
+      allow update: if request.auth != null && 
         (request.auth.token.role == 'admin' || request.auth.token.userType == 'admin');
     }
     
@@ -275,14 +386,16 @@ service cloud.firestore {
         isAdmin() ||
         (isDriver() && request.resource.data.driverId == request.auth.uid &&
          request.resource.data.keys().hasAll(['slotId', 'startTime', 'endTime', 'label', 'status', 'driverId', 'createdAt', 'updatedAt']) &&
-         request.resource.data.status in ['available', 'booked', 'completed'])
+         request.resource.data.status in ['available', 'booked', 'completed'] &&
+         isValidWorkSlotStatus(request.resource.data.status))
       );
       
       allow update: if isAuthenticated() && (
         isAdmin() ||
         (resource.data.driverId == request.auth.uid && isDriver() &&
          request.writeFields.hasOnly(['status', 'updatedAt']) &&
-         request.resource.data.status in ['available', 'booked', 'completed'])
+         request.resource.data.status in ['available', 'booked', 'completed'] &&
+         isValidWorkSlotStatus(request.resource.data.status))
       );
       
       allow delete: if isAuthenticated() && isAdmin();

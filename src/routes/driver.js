@@ -1983,6 +1983,7 @@ router.get('/bookings/available', requireDriver, async (req, res) => {
         const isTestingMode = process.env.NODE_ENV === 'development' || 
                              process.env.TESTING_MODE === 'true' || 
                              process.env.BYPASS_RADIUS_CHECK === 'true';
+        const isDeveloperMode = process.env.DEVELOPER_MODE === 'true';
         
         console.log('🔍 [DRIVER_API] Service area check:', {
           pickupDistanceFromTirupattur,
@@ -1990,6 +1991,7 @@ router.get('/bookings/available', requireDriver, async (req, res) => {
           driverDistance: distance,
           isWithinDriverRadius,
           NODE_ENV: process.env.NODE_ENV,
+          DEVELOPER_MODE: process.env.DEVELOPER_MODE,
           TESTING_MODE: process.env.TESTING_MODE,
           BYPASS_RADIUS_CHECK: process.env.BYPASS_RADIUS_CHECK
         });
@@ -1997,11 +1999,11 @@ router.get('/bookings/available', requireDriver, async (req, res) => {
         console.log('🔍 [DRIVER_API] Filtering decision:', {
           isWithinTirupatturArea,
           isWithinDriverRadius,
-          isTestingMode,
-          willInclude: (isWithinTirupatturArea && isWithinDriverRadius) || isTestingMode
+          isTestingMode: isTestingMode || isDeveloperMode,
+          willInclude: (isWithinTirupatturArea && isWithinDriverRadius) || isTestingMode || isDeveloperMode
         });
         
-        if ((isWithinTirupatturArea && isWithinDriverRadius) || isTestingMode) {
+        if ((isWithinTirupatturArea && isWithinDriverRadius) || isTestingMode || isDeveloperMode) {
           allBookings.push({
             id: doc.id,
             ...bookingData,

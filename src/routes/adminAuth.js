@@ -79,6 +79,16 @@ router.post('/login', async (req, res) => {
     }
 
     // Generate JWT token
+    if (!process.env.JWT_SECRET) {
+      return res.status(500).json({
+        success: false,
+        error: {
+          message: 'JWT_SECRET environment variable is required',
+          code: 'JWT_SECRET_MISSING'
+        }
+      });
+    }
+    
     const token = jwt.sign(
       {
         userId: adminUser.id,
@@ -86,7 +96,7 @@ router.post('/login', async (req, res) => {
         userType: 'admin',
         role: adminUser.role
       },
-      process.env.JWT_SECRET || 'your-secret-key',
+      process.env.JWT_SECRET,
       { expiresIn: '24h' }
     );
 
@@ -141,7 +151,17 @@ router.post('/verify-token', async (req, res) => {
     }
 
     // Verify JWT token
-    const decoded = jwt.verify(token, process.env.JWT_SECRET || 'your-secret-key');
+    if (!process.env.JWT_SECRET) {
+      return res.status(500).json({
+        success: false,
+        error: {
+          message: 'JWT_SECRET environment variable is required',
+          code: 'JWT_SECRET_MISSING'
+        }
+      });
+    }
+    
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
     
     if (!decoded || decoded.userType !== 'admin') {
       return res.status(401).json({

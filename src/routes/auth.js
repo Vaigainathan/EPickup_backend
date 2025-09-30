@@ -6,7 +6,7 @@ const jwtService = new JWTService(); // Create instance
 const firebaseAuthService = require('../services/firebaseAuthService');
 const { validateRequest } = require('../middleware/validation');
 const { rateLimit } = require('../middleware/rateLimit');
-// env import removed as MSG91 config is no longer needed
+// Using Firebase Auth for authentication
 
 // Rate limiting configuration
 const authRateLimit = rateLimit({
@@ -85,13 +85,7 @@ router.post('/check-user',
   }
 );
 
-// DEPRECATED: MSG91 OTP endpoints removed - using Firebase Auth instead
-
-// DEPRECATED: MSG91 OTP verification removed - using Firebase Auth instead
-
-// DEPRECATED: MSG91 widget OTP verification removed - using Firebase Auth instead
-
-// DEPRECATED: MSG91 resend OTP removed - using Firebase Auth instead
+// OTP authentication handled by Firebase Auth
 
 /**
  * @route POST /api/auth/validate-session
@@ -307,14 +301,14 @@ router.post('/logout',
  */
 router.get('/health', async (req, res) => {
   try {
-    // MSG91 service removed - using Firebase Auth instead
-    const msg91Health = { status: 'deprecated', message: 'Using Firebase Auth instead' };
+    // Authentication handled by Firebase Auth
+    const authHealth = { status: 'active', message: 'Using Firebase Auth' };
     
     res.json({
       success: true,
       message: 'Authentication service is healthy',
       data: {
-        msg91: msg91Health,
+        auth: authHealth,
         timestamp: new Date().toISOString()
       }
     });
@@ -334,7 +328,7 @@ router.get('/health', async (req, res) => {
   }
 });
 
-// MSG91 status route removed - using Firebase Auth instead
+// Authentication status handled by Firebase Auth
 
 
 /**

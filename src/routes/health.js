@@ -269,7 +269,7 @@ router.get('/config', async (req, res) => {
         firebase: !!process.env.FIREBASE_PROJECT_ID,
         googleMaps: !!process.env.GOOGLE_MAPS_API_KEY,
         jwt: !!process.env.JWT_SECRET,
-        msg91: !!process.env.MSG91_API_KEY
+        auth: true // Using Firebase Auth
       }
     };
 

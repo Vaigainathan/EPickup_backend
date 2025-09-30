@@ -12,11 +12,7 @@ class AuthService {
     this.jwtService = new JWTService();
   }
 
-  // MSG91 OTP methods removed - using Firebase Auth instead
-
-  // MSG91 OTP verification removed - using Firebase Auth instead
-
-  // MSG91 OTP resend removed - using Firebase Auth instead
+  // OTP authentication handled by Firebase Auth
 
   /**
    * Get or create user based on phone number and user type

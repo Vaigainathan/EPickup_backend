@@ -81,18 +81,7 @@ try {
   console.error('Firestore Session Error:', error.message);
 }
 
-// Initialize MSG91 service
-try {
-  msg91Service.initialize().then(() => {
-    console.log('✅ MSG91 service initialization completed');
-  }).catch((error) => {
-    console.log('⚠️  MSG91 service initialization failed, continuing with mock service...');
-    console.error('MSG91 Error:', error.message);
-  });
-} catch (error) {
-  console.log('⚠️  MSG91 service initialization failed, continuing with mock service...');
-  console.error('MSG91 Error:', error.message);
-}
+// MSG91 service removed - using Firebase Auth for OTP
 
 // Create HTTP server
 const server = require('http').createServer(app);

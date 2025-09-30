@@ -32,10 +32,7 @@ const REQUIRED_ENV_VARS = {
   // Google Maps
   GOOGLE_MAPS_API_KEY: 'Google Maps API key',
   
-  // MSG91 Configuration
-  MSG91_AUTH_KEY: 'MSG91 auth key',
-  MSG91_SENDER_ID: 'MSG91 sender ID',
-  MSG91_API_URL: 'MSG91 API URL',
+  // MSG91 Configuration removed - using Firebase Auth
   
   // Redis Configuration
   REDIS_URL: 'Redis connection URL',
@@ -132,14 +129,7 @@ function validateSpecificConfigs(warnings) {
     });
   }
   
-  // Validate phone number format
-  const phoneNumber = process.env.MSG91_AUTH_KEY;
-  if (phoneNumber && phoneNumber.length < 10) {
-    warnings.push({ 
-      name: 'MSG91_AUTH_KEY', 
-      message: 'Account SID format may be incorrect' 
-    });
-  }
+  // MSG91 validation removed - using Firebase Auth
   
   // Validate URL formats
   const backendUrl = process.env.BACKEND_URL;

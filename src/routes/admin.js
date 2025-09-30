@@ -5,7 +5,7 @@ const verificationService = require('../services/verificationService');
 const router = express.Router();
 
 // Helper function to replace requireRole middleware
-const requireRole = (roles) => {
+const requireRole = () => {
   return (req, res, next) => {
     // This is now handled by firebaseAdminAuthMiddleware
     next();

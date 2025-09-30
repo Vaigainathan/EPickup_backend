@@ -659,7 +659,7 @@ router.post('/admin/login',
       }
 
       // For now, use a simple password check (in production, use proper authentication)
-      const adminPassword = 'admin123'; // This should be hashed and stored securely
+      const adminPassword = 'EpickupAdmin2024!'; // More secure password
       if (password !== adminPassword) {
         return res.status(401).json({
           success: false,

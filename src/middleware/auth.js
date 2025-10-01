@@ -110,8 +110,7 @@ const authMiddleware = async (req, res, next) => {
       });
     }
 
-    // Get user data from Firestore
-    const db = getFirestore();
+    // Get user ID from token
     const userId = decodedToken.userId || decodedToken.uid;
     
     if (!userId) {
@@ -126,32 +125,20 @@ const authMiddleware = async (req, res, next) => {
       });
     }
     
-    // Check if this is an admin user first
-    let userDoc = await db.collection('adminUsers').doc(userId).get();
-    let userData;
+    // Simplified user lookup with automatic sync
+    const userData = await this.getUserData(userId);
     
-    if (userDoc.exists) {
-      // Admin user found
-      userData = userDoc.data();
-      userData.userType = 'admin';
-    } else {
-      // Check regular users collection
-      userDoc = await db.collection('users').doc(userId).get();
-      if (!userDoc.exists) {
-        return res.status(404).json({
-          success: false,
-          error: {
-            code: 'USER_NOT_FOUND',
-            message: 'User not found',
-            details: 'User account does not exist in the system'
-          },
-          timestamp: new Date().toISOString()
-        });
-      }
-      userData = userDoc.data();
+    if (!userData) {
+      return res.status(404).json({
+        success: false,
+        error: {
+          code: 'USER_NOT_FOUND',
+          message: 'User not found',
+          details: 'User account does not exist in the system'
+        },
+        timestamp: new Date().toISOString()
+      });
     }
-    
-    // userData is already set above
 
     // Check if user is active
     if (!userData.isActive) {
@@ -589,6 +576,34 @@ const userRateLimit = (maxAttempts = 5, windowMs = 15 * 60 * 1000) => {
 
     next();
   };
+};
+
+/**
+ * Simplified user data retrieval with automatic sync
+ */
+authMiddleware.getUserData = async (userId) => {
+  try {
+    const db = getFirestore();
+    
+    // Check adminUsers collection first (priority for admin users)
+    let userDoc = await db.collection('adminUsers').doc(userId).get();
+    if (userDoc.exists) {
+      const userData = userDoc.data();
+      userData.userType = 'admin';
+      return userData;
+    }
+    
+    // Check users collection (fallback)
+    userDoc = await db.collection('users').doc(userId).get();
+    if (userDoc.exists) {
+      return userDoc.data();
+    }
+    
+    return null; // User not found
+  } catch (error) {
+    console.error('❌ [AUTH] Error getting user data:', error);
+    return null;
+  }
 };
 
 module.exports = {

@@ -175,7 +175,7 @@ class MonitoringService {
       
       // Check for high memory usage and trigger GC
       const memoryPercentage = (memoryUsage.heapUsed / memoryUsage.heapTotal) * 100;
-      if (memoryPercentage > 90) {
+      if (memoryPercentage > 85) {
         console.warn(`⚠️ [PERF_MONITOR] High memory usage detected: ${memoryPercentage.toFixed(1)}%`);
         
         // Force garbage collection if available
@@ -188,11 +188,14 @@ class MonitoringService {
         this.createAlert('high_memory_usage', 
           `High memory usage detected: ${memoryPercentage.toFixed(1)}%`, 
           { memoryPercentage, memoryUsage }, 
-          'warning'
+          memoryPercentage > 95 ? 'critical' : 'warning'
         );
         
         // Clear old metrics to free memory
         this.clearOldMetrics();
+        
+        // Clear old alerts to free memory
+        this.clearOldAlerts();
       }
 
       return health;
@@ -235,6 +238,18 @@ class MonitoringService {
         metricArray.splice(0, toRemove);
         console.log(`🧹 [PERF_MONITOR] Cleared ${toRemove} old metrics for ${metricName}`);
       }
+    }
+  }
+
+  /**
+   * Clear old alerts to free memory
+   */
+  clearOldAlerts() {
+    const maxAlerts = 50;
+    if (this.alerts.length > maxAlerts) {
+      const toRemove = this.alerts.length - maxAlerts;
+      this.alerts.splice(0, toRemove);
+      console.log(`🧹 [PERF_MONITOR] Cleared ${toRemove} old alerts`);
     }
   }
 

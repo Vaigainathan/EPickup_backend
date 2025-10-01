@@ -4121,4 +4121,301 @@ router.get('/email-verification/:uid', async (req, res) => {
   }
 });
 
+/**
+ * @route   GET /api/admin/support-tickets
+ * @desc    Get support tickets
+ * @access  Private (Admin only)
+ */
+router.get('/support-tickets', async (req, res) => {
+  try {
+    const { status, limit = 50, offset = 0 } = req.query;
+    const db = getFirestore();
+
+    console.log('📋 Getting support tickets...');
+
+    let query = db.collection('supportTickets').orderBy('createdAt', 'desc');
+    
+    if (status) {
+      query = query.where('status', '==', status);
+    }
+
+    const snapshot = await query.limit(parseInt(limit)).offset(parseInt(offset)).get();
+    
+    const tickets = [];
+    snapshot.forEach(doc => {
+      tickets.push({
+        id: doc.id,
+        ...doc.data()
+      });
+    });
+
+    res.json({
+      success: true,
+      data: tickets,
+      pagination: {
+        limit: parseInt(limit),
+        offset: parseInt(offset),
+        total: tickets.length
+      },
+      timestamp: new Date().toISOString()
+    });
+
+  } catch (error) {
+    console.error('❌ Error getting support tickets:', error);
+    res.status(500).json({
+      success: false,
+      error: {
+        code: 'SUPPORT_TICKETS_ERROR',
+        message: 'Failed to get support tickets',
+        details: error.message
+      },
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+/**
+ * @route   GET /api/admin/system/users/online
+ * @desc    Get online users count
+ * @access  Private (Admin only)
+ */
+router.get('/system/users/online', async (req, res) => {
+  try {
+    const db = getFirestore();
+    
+    // Get users who were active in the last 5 minutes
+    const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000);
+    
+    const onlineUsersSnapshot = await db.collection('users')
+      .where('lastSeen', '>=', fiveMinutesAgo)
+      .get();
+    
+    const onlineCount = onlineUsersSnapshot.size;
+    
+    res.json({
+      success: true,
+      data: {
+        onlineUsers: onlineCount,
+        lastChecked: new Date().toISOString()
+      },
+      timestamp: new Date().toISOString()
+    });
+
+  } catch (error) {
+    console.error('❌ Error getting online users:', error);
+    res.status(500).json({
+      success: false,
+      error: {
+        code: 'ONLINE_USERS_ERROR',
+        message: 'Failed to get online users count',
+        details: error.message
+      },
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+/**
+ * @route   GET /api/admin/system/logs
+ * @desc    Get system logs
+ * @access  Private (Admin only)
+ */
+router.get('/system/logs', async (req, res) => {
+  try {
+    const { limit = 50, level } = req.query;
+    const db = getFirestore();
+
+    let query = db.collection('systemLogs').orderBy('timestamp', 'desc');
+    
+    if (level) {
+      query = query.where('level', '==', level);
+    }
+
+    const snapshot = await query.limit(parseInt(limit)).get();
+    
+    const logs = [];
+    snapshot.forEach(doc => {
+      logs.push({
+        id: doc.id,
+        ...doc.data()
+      });
+    });
+
+    res.json({
+      success: true,
+      data: logs,
+      pagination: {
+        limit: parseInt(limit),
+        total: logs.length
+      },
+      timestamp: new Date().toISOString()
+    });
+
+  } catch (error) {
+    console.error('❌ Error getting system logs:', error);
+    res.status(500).json({
+      success: false,
+      error: {
+        code: 'SYSTEM_LOGS_ERROR',
+        message: 'Failed to get system logs',
+        details: error.message
+      },
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+/**
+ * @route   GET /api/admin/analytics/bookings
+ * @desc    Get booking analytics
+ * @access  Private (Admin only)
+ */
+router.get('/analytics/bookings', async (req, res) => {
+  try {
+    const { startDate, endDate } = req.query;
+    const db = getFirestore();
+
+    let query = db.collection('bookings');
+    
+    if (startDate && endDate) {
+      query = query.where('createdAt', '>=', new Date(startDate))
+                   .where('createdAt', '<=', new Date(endDate));
+    }
+
+    const snapshot = await query.get();
+    
+    const bookings = [];
+    snapshot.forEach(doc => {
+      bookings.push({
+        id: doc.id,
+        ...doc.data()
+      });
+    });
+
+    // Calculate analytics
+    const totalBookings = bookings.length;
+    const completedBookings = bookings.filter(b => b.status === 'completed').length;
+    const cancelledBookings = bookings.filter(b => b.status === 'cancelled').length;
+    const pendingBookings = bookings.filter(b => b.status === 'pending').length;
+
+    res.json({
+      success: true,
+      data: {
+        totalBookings,
+        completedBookings,
+        cancelledBookings,
+        pendingBookings,
+        completionRate: totalBookings > 0 ? (completedBookings / totalBookings * 100).toFixed(2) : 0,
+        bookings: bookings.slice(0, 100) // Limit returned data
+      },
+      timestamp: new Date().toISOString()
+    });
+
+  } catch (error) {
+    console.error('❌ Error getting booking analytics:', error);
+    res.status(500).json({
+      success: false,
+      error: {
+        code: 'BOOKING_ANALYTICS_ERROR',
+        message: 'Failed to get booking analytics',
+        details: error.message
+      },
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+/**
+ * @route   GET /api/admin/analytics/system
+ * @desc    Get system analytics
+ * @access  Private (Admin only)
+ */
+router.get('/analytics/system', async (req, res) => {
+  try {
+    const db = getFirestore();
+
+    // Get basic system metrics
+    const [usersSnapshot, driversSnapshot, customersSnapshot] = await Promise.all([
+      db.collection('users').get(),
+      db.collection('users').where('userType', '==', 'driver').get(),
+      db.collection('users').where('userType', '==', 'customer').get()
+    ]);
+
+    res.json({
+      success: true,
+      data: {
+        totalUsers: usersSnapshot.size,
+        totalDrivers: driversSnapshot.size,
+        totalCustomers: customersSnapshot.size,
+        systemUptime: process.uptime(),
+        memoryUsage: process.memoryUsage(),
+        timestamp: new Date().toISOString()
+      },
+      timestamp: new Date().toISOString()
+    });
+
+  } catch (error) {
+    console.error('❌ Error getting system analytics:', error);
+    res.status(500).json({
+      success: false,
+      error: {
+        code: 'SYSTEM_ANALYTICS_ERROR',
+        message: 'Failed to get system analytics',
+        details: error.message
+      },
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+/**
+ * @route   GET /api/admin/analytics/drivers
+ * @desc    Get driver analytics
+ * @access  Private (Admin only)
+ */
+router.get('/analytics/drivers', async (req, res) => {
+  try {
+    const db = getFirestore();
+
+    const driversSnapshot = await db.collection('users')
+      .where('userType', '==', 'driver')
+      .get();
+    
+    const drivers = [];
+    driversSnapshot.forEach(doc => {
+      drivers.push({
+        id: doc.id,
+        ...doc.data()
+      });
+    });
+
+    const activeDrivers = drivers.filter(d => d.isActive !== false).length;
+    const verifiedDrivers = drivers.filter(d => d.isVerified === true).length;
+
+    res.json({
+      success: true,
+      data: {
+        totalDrivers: drivers.length,
+        activeDrivers,
+        verifiedDrivers,
+        verificationRate: drivers.length > 0 ? (verifiedDrivers / drivers.length * 100).toFixed(2) : 0,
+        drivers: drivers.slice(0, 100) // Limit returned data
+      },
+      timestamp: new Date().toISOString()
+    });
+
+  } catch (error) {
+    console.error('❌ Error getting driver analytics:', error);
+    res.status(500).json({
+      success: false,
+      error: {
+        code: 'DRIVER_ANALYTICS_ERROR',
+        message: 'Failed to get driver analytics',
+        details: error.message
+      },
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
 module.exports = router;

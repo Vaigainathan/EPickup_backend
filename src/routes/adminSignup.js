@@ -111,8 +111,30 @@ router.post('/', async (req, res) => {
 
     console.log('📝 Creating admin user document...');
 
-    // Create admin user document in Firestore
-    await db.collection('adminUsers').doc(decodedToken.uid).set(adminData);
+    // Create user data for both collections
+    const userData = {
+      id: decodedToken.uid,
+      uid: decodedToken.uid,
+      originalFirebaseUID: decodedToken.uid,
+      email: decodedToken.email,
+      name: adminData.displayName,
+      userType: 'admin',
+      role: adminData.role,
+      permissions: adminData.permissions,
+      isVerified: adminData.isEmailVerified,
+      isActive: adminData.isActive,
+      accountStatus: adminData.accountStatus,
+      createdAt: adminData.createdAt,
+      updatedAt: adminData.updatedAt
+    };
+
+    // Create admin user in both collections simultaneously (automatic sync)
+    await Promise.all([
+      db.collection('adminUsers').doc(decodedToken.uid).set(adminData),
+      db.collection('users').doc(decodedToken.uid).set(userData)
+    ]);
+    
+    console.log('✅ [SIGNUP] Admin user created in both collections');
     
     console.log('📝 Setting custom claims on Firebase user...');
 

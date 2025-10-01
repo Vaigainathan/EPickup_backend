@@ -42,9 +42,12 @@ const initializeSocketIO = async (server) => {
         const token = socket.handshake.auth.token || 
                      socket.handshake.headers.authorization?.replace('Bearer ', '');
         
-        if (!token) {
-          console.log('🔐 Socket authentication failed: No token provided');
-          return next(new Error('Authentication token required'));
+        if (!token || token.length < 10) {
+          console.log('🔐 Socket authentication failed: No token provided or token too short');
+          // Allow connection but mark as unauthenticated
+          socket.isAuthenticated = false;
+          socket.userType = 'guest';
+          return next();
         }
 
         // Validate token format

@@ -494,11 +494,14 @@ router.post('/firebase/verify-token',
             updatedAt: adminData.updatedAt
           };
           
-          // Sync to users collection for consistency
+          // Automatic sync to users collection for consistency
           await db.collection('users').doc(decodedToken.uid).set({
             ...userData,
-            lastLogin: new Date().toISOString()
+            lastLogin: new Date().toISOString(),
+            updatedAt: new Date().toISOString()
           }, { merge: true });
+          
+          console.log('✅ [AUTH] Admin user data synced to users collection');
         } else {
           // Admin user doesn't exist, create them
           const adminData = {
@@ -516,8 +519,7 @@ router.post('/firebase/verify-token',
             lastLogin: new Date().toISOString()
           };
           
-          await db.collection('adminUsers').doc(decodedToken.uid).set(adminData);
-          
+          // Create admin user in both collections simultaneously
           userData = {
             id: decodedToken.uid,
             uid: decodedToken.uid,
@@ -532,11 +534,17 @@ router.post('/firebase/verify-token',
             isActive: true,
             accountStatus: 'active',
             createdAt: adminData.createdAt,
-            updatedAt: adminData.updatedAt
+            updatedAt: adminData.updatedAt,
+            lastLogin: new Date().toISOString()
           };
           
-          // Also create in users collection for consistency
-          await db.collection('users').doc(decodedToken.uid).set(userData);
+          // Automatic sync: Create in both collections simultaneously
+          await Promise.all([
+            db.collection('adminUsers').doc(decodedToken.uid).set(adminData),
+            db.collection('users').doc(decodedToken.uid).set(userData)
+          ]);
+          
+          console.log('✅ [AUTH] New admin user created in both collections');
         }
       } else {
         // For customer/driver users, use role-specific UID
@@ -775,102 +783,20 @@ router.post('/firebase/revoke-session',
 
 /**
  * @route POST /api/auth/admin/login
- * @desc Admin login with email/password
+ * @desc DEPRECATED - Use Firebase authentication flow instead
  * @access Public
+ * @deprecated This endpoint has been removed. Use Firebase authentication with /api/auth/firebase/verify-token
  */
-router.post('/admin/login',
-  authRateLimit,
-  body('email').isEmail().withMessage('Valid email is required'),
-  body('password').isString().withMessage('Password is required').isLength({ min: 6 }).withMessage('Password must be at least 6 characters'),
-  checkValidation,
-  async (req, res) => {
-    try {
-      const { email, password } = req.body;
-
-      console.log(`🔐 Admin login attempt: ${email}`);
-
-      // Check if this is a valid admin email
-      const adminEmails = ['admin@epickup.com', 'superadmin@epickup.com'];
-      if (!adminEmails.includes(email)) {
-        return res.status(403).json({
-          success: false,
-          error: {
-            code: 'ADMIN_ACCESS_DENIED',
-            message: 'Access denied. Admin email not authorized.'
-          },
-          timestamp: new Date().toISOString()
-        });
-      }
-
-      // Use environment variable for admin password (secure)
-      const adminPassword = process.env.ADMIN_PASSWORD;
-      if (!adminPassword) {
-        return res.status(500).json({
-          success: false,
-          error: {
-            code: 'CONFIGURATION_ERROR',
-            message: 'Admin password not configured'
-          },
-          timestamp: new Date().toISOString()
-        });
-      }
-      if (password !== adminPassword) {
-        return res.status(401).json({
-          success: false,
-          error: {
-            code: 'INVALID_CREDENTIALS',
-            message: 'Invalid email or password'
-          },
-          timestamp: new Date().toISOString()
-        });
-      }
-
-      // Create admin user data
-      const adminUser = {
-        uid: `admin_${Date.now()}`,
-        email: email,
-        name: 'Admin User',
-        displayName: 'Admin User',
-        role: 'super_admin',
-        permissions: ['all'],
-        lastLogin: new Date().toISOString(),
-        createdAt: new Date().toISOString(),
-        isEmailVerified: true
-      };
-
-      // Generate JWT token
-      const token = jwtService.generateAccessToken({
-        uid: adminUser.uid,
-        email: adminUser.email,
-        role: adminUser.role,
-        userType: 'admin'
-      });
-
-      console.log(`✅ Admin login successful: ${email}`);
-
-      res.status(200).json({
-        success: true,
-        message: 'Admin login successful',
-        data: {
-          user: adminUser,
-          token: token,
-          expiresIn: '24h'
-        },
-        timestamp: new Date().toISOString()
-      });
-
-    } catch (error) {
-      console.error('❌ Admin login error:', error);
-      res.status(500).json({
-        success: false,
-        error: {
-          code: 'INTERNAL_ERROR',
-          message: 'Internal server error during admin login'
-        },
-        timestamp: new Date().toISOString()
-      });
-    }
-  }
-);
+router.post('/admin/login', (req, res) => {
+  res.status(410).json({
+    success: false,
+    error: {
+      code: 'ENDPOINT_DEPRECATED',
+      message: 'This endpoint has been deprecated. Please use Firebase authentication flow.',
+      details: 'Use Firebase authentication with /api/auth/firebase/verify-token for admin login'
+    },
+    timestamp: new Date().toISOString()
+  });
+});
 
 module.exports = router;

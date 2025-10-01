@@ -8,7 +8,7 @@ const router = express.Router();
  * @desc    Create new admin user (for signup flow)
  * @access  Public (but requires valid Firebase ID token)
  */
-router.post('/signup', async (req, res) => {
+router.post('/', async (req, res) => {
   try {
     // Extract token from Authorization header
     const authHeader = req.headers.authorization;
@@ -38,11 +38,25 @@ router.post('/signup', async (req, res) => {
     console.log('🔐 Verifying Firebase ID token for admin signup...');
 
     // Verify Firebase ID token
-    const decodedToken = await admin.auth().verifyIdToken(idToken);
-    
-    console.log('✅ Firebase ID token verified successfully');
-    console.log(`📋 User UID: ${decodedToken.uid}`);
-    console.log(`📋 User Email: ${decodedToken.email}`);
+    let decodedToken;
+    try {
+      decodedToken = await admin.auth().verifyIdToken(idToken);
+      console.log('✅ Firebase ID token verified successfully');
+      console.log(`📋 User UID: ${decodedToken.uid}`);
+      console.log(`📋 User Email: ${decodedToken.email}`);
+      console.log(`📋 Custom Claims:`, decodedToken);
+    } catch (tokenError) {
+      console.error('❌ Firebase ID token verification failed:', tokenError);
+      return res.status(401).json({
+        success: false,
+        error: {
+          code: 'INVALID_TOKEN',
+          message: 'Invalid Firebase ID token provided.',
+          details: tokenError.message
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
 
     const { displayName } = req.body;
     

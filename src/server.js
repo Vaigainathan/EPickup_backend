@@ -147,8 +147,8 @@ const adminLimiter = rateLimit({
   trustProxy: true
 });
 
-// Apply admin rate limiter to admin routes
-app.use('/api/admin', adminLimiter);
+// Apply admin rate limiter to protected admin routes only (not signup/auth)
+// app.use('/api/admin', adminLimiter); // Moved to individual routes
 
 // Compression middleware
 app.use(compression());
@@ -307,7 +307,7 @@ app.use('/api/slots', workSlotsRoutes);
 app.use('/api/location-tracking', authMiddleware, locationTrackingRoutes);
 app.use('/api/admin/auth', adminAuthRoutes); // No auth required for admin login
 app.use('/api/admin/signup', adminSignupRoutes); // Admin signup route (no auth required)
-app.use('/api/admin', firebaseIdTokenAuth, adminRoutes); // Admin routes use Firebase ID token auth middleware
+app.use('/api/admin', adminLimiter, firebaseIdTokenAuth, adminRoutes); // Admin routes use Firebase ID token auth middleware
 // Note: adminBookingManagementRoutes are included in adminRoutes to avoid conflicts
 
 // Health check routes (for keepalive script) - No auth required

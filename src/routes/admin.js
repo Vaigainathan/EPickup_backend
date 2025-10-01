@@ -215,8 +215,6 @@ router.put('/admins/:uid', requireRole(['admin']), async (req, res) => {
       });
     }
 
-    const currentAdmin = adminDoc.data();
-    
     // Check permissions - only super admin can change roles or deactivate others
     if (req.user.role !== 'super_admin' && req.user.uid !== uid) {
       return res.status(403).json({

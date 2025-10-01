@@ -6,6 +6,11 @@ service cloud.firestore {
       return request.auth != null;
     }
     
+    // TEMPORARY: Allow basic operations for testing (remove after setup)
+    match /test/{document} {
+      allow read, write: if true;
+    }
+    
     function isOwner(userId) {
       return request.auth.uid == userId;
     }
@@ -311,6 +316,17 @@ service cloud.firestore {
         request.resource.data.uid == request.auth.uid &&
         request.resource.data.role == 'super_admin' &&
         request.resource.data.keys().hasAll(['uid', 'email', 'displayName', 'role', 'permissions', 'createdAt']);
+      
+      // TEMPORARY: Allow read for authenticated users during setup
+      allow read: if request.auth != null;
+      
+      // TEMPORARY: Allow creation for admin signup flow (client-side)
+      allow create: if request.auth != null && 
+        request.resource.data.uid == request.auth.uid &&
+        request.resource.data.email == request.auth.token.email &&
+        request.resource.data.role in ['super_admin', 'driver_admin', 'support_admin', 'analytics_admin'] &&
+        request.resource.data.keys().hasAll(['uid', 'email', 'displayName', 'role', 'permissions', 'createdAt']) &&
+        isValidEmail(request.resource.data.email);
       
       
       // Allow admin users to update their own profile

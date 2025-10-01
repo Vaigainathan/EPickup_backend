@@ -35,7 +35,7 @@ const fareCalculationRoutes = require('./routes/fareCalculation');
 const workSlotsRoutes = require('./routes/workSlots');
 const adminRoutes = require('./routes/admin');
 const adminAuthRoutes = require('./routes/adminAuth');
-const adminBookingManagementRoutes = require('./routes/adminBookingManagement');
+// const adminBookingManagementRoutes = require('./routes/adminBookingManagement'); // Included in adminRoutes
 const locationTrackingRoutes = require('./routes/locationTracking');
 
 // Import middleware
@@ -51,7 +51,7 @@ const {
   gracefulShutdown 
 } = require('./middleware/errorHandler');
 const { authMiddleware } = require('./middleware/auth');
-const { firebaseAdminAuthMiddleware } = require('./middleware/firebaseAuth');
+// const { firebaseAdminAuthMiddleware } = require('./middleware/firebaseAuth'); // No longer used - using authMiddleware instead
 
 // Import services
 const { initializeFirebase } = require('./services/firebase');
@@ -304,7 +304,7 @@ app.use('/api/fare', fareCalculationRoutes);
 app.use('/api/slots', workSlotsRoutes);
 app.use('/api/location-tracking', authMiddleware, locationTrackingRoutes);
 app.use('/api/admin/auth', adminAuthRoutes); // No auth required for admin login
-app.use('/api/admin', firebaseAdminAuthMiddleware, adminRoutes); // Admin routes use Firebase auth middleware
+app.use('/api/admin', authMiddleware, adminRoutes); // Admin routes use standard JWT auth middleware
 // Note: adminBookingManagementRoutes are included in adminRoutes to avoid conflicts
 
 // Health check routes (for keepalive script) - No auth required

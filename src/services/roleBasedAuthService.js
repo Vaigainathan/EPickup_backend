@@ -69,7 +69,7 @@ class RoleBasedAuthService {
   /**
    * Generate role-specific UID for same phone number
    * @param {string} phoneNumber - Phone number
-   * @param {string} userType - User type (customer, driver)
+   * @param {string} userType - User type (customer, driver, admin)
    * @returns {string} Role-specific UID
    */
   generateRoleSpecificUID(phoneNumber, userType) {
@@ -123,7 +123,7 @@ class RoleBasedAuthService {
   /**
    * Create user with role-specific UID
    * @param {Object} decodedToken - Firebase decoded token
-   * @param {string} userType - User type (customer, driver)
+   * @param {string} userType - User type (customer, driver, admin)
    * @param {string} roleSpecificUID - Role-specific UID
    * @param {Object} additionalData - Additional user data
    * @returns {Promise<Object>} Created user data
@@ -194,6 +194,12 @@ class RoleBasedAuthService {
             transactions: []
           }
         };
+      } else if (userType === 'admin') {
+        baseUserData.role = additionalData.role || 'super_admin';
+        baseUserData.permissions = additionalData.permissions || ['all'];
+        baseUserData.isEmailVerified = true;
+        baseUserData.isActive = true;
+        baseUserData.accountStatus = 'active';
       }
 
       // Create user document

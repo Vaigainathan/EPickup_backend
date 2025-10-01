@@ -10,27 +10,28 @@ service cloud.firestore {
       return request.auth.uid == userId;
     }
     
-    function isRoleOwner(userId) {
-      // Check if the authenticated user owns this role-specific UID
-      return request.auth.uid == userId;
-    }
-    
-    function hasRoleAccess(userId, requiredUserType) {
-      // Check if user has access to this role-specific UID
-      return request.auth.uid == userId && request.auth.token.userType == requiredUserType;
-    }
-    
     function isAdmin() {
-      return request.auth.token.role == 'admin' && request.auth.token.userType == 'admin';
+      return request.auth != null && 
+        (request.auth.token.userType == 'admin' || 
+         request.auth.token.role in ['admin', 'super_admin', 'driver_admin', 'support_admin', 'analytics_admin'] ||
+         // Fallback: check if user exists in adminUsers collection
+         exists(/databases/$(database)/documents/adminUsers/$(request.auth.uid)));
     }
     
     function isSuperAdmin() {
-      return request.auth.token.role == 'super_admin' && request.auth.token.userType == 'admin';
+      return request.auth != null && 
+        (request.auth.token.userType == 'admin' && request.auth.token.role == 'super_admin') ||
+        // Fallback: check adminUsers collection
+        (exists(/databases/$(database)/documents/adminUsers/$(request.auth.uid)) && 
+         get(/databases/$(database)/documents/adminUsers/$(request.auth.uid)).data.role == 'super_admin');
     }
     
     function isAdminUser() {
-      return request.auth.token.userType == 'admin' && 
-        request.auth.token.role in ['super_admin', 'driver_admin', 'support_admin', 'analytics_admin'];
+      return request.auth != null && 
+        (request.auth.token.userType == 'admin' && 
+         request.auth.token.role in ['super_admin', 'driver_admin', 'support_admin', 'analytics_admin']) ||
+        // Fallback: check adminUsers collection
+        exists(/databases/$(database)/documents/adminUsers/$(request.auth.uid));
     }
     
     function isDriver() {
@@ -78,10 +79,6 @@ service cloud.firestore {
     
     function isValidWorkSlotStatus(status) {
       return status in ['available', 'booked', 'completed', 'cancelled'];
-    }
-    
-    function isValidPaymentStatus(status) {
-      return status in ['pending', 'completed', 'failed', 'refunded', 'cancelled'];
     }
     
     function isValidNotificationType(type) {

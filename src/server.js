@@ -50,7 +50,7 @@ const {
   errorMonitoring, 
   gracefulShutdown 
 } = require('./middleware/errorHandler');
-const { authMiddleware, adminAuthMiddleware } = require('./middleware/auth');
+const { authMiddleware } = require('./middleware/auth');
 
 // Import services
 const { initializeFirebase } = require('./services/firebase');
@@ -303,14 +303,14 @@ app.use('/api/fare', fareCalculationRoutes);
 app.use('/api/slots', workSlotsRoutes);
 app.use('/api/location-tracking', authMiddleware, locationTrackingRoutes);
 app.use('/api/admin/auth', adminAuthRoutes); // No auth required for admin login
-app.use('/api/admin', adminAuthMiddleware, adminRoutes); // Admin routes use admin auth middleware
-app.use('/api/admin', adminAuthMiddleware, adminBookingManagementRoutes); // Admin booking management routes
+app.use('/api/admin', authMiddleware, adminRoutes); // Admin routes use standard JWT auth middleware
+app.use('/api/admin', authMiddleware, adminBookingManagementRoutes); // Admin booking management routes
 
 // Health check routes (for keepalive script) - No auth required
 app.use('/health', healthRoutes);
 
 // Performance metrics endpoint (Admin only)
-app.get('/api/admin/performance', adminAuthMiddleware, (req, res) => {
+app.get('/api/admin/performance', authMiddleware, (req, res) => {
   try {
     const metrics = performanceMonitoringService.getMetrics();
     const summary = performanceMonitoringService.getPerformanceSummary();

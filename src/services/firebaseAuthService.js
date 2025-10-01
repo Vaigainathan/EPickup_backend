@@ -90,7 +90,34 @@ class FirebaseAuthService {
     try {
       this.ensureInitialized();
       
-      // All users are now in the 'users' collection with userType field
+      // For admin users, check adminUsers collection first
+      if (userType === 'admin') {
+        const adminDoc = await this.db.collection('adminUsers').doc(uid).get();
+        if (adminDoc.exists) {
+          const adminData = adminDoc.data();
+          console.log(`✅ Found admin user in adminUsers collection:`, uid);
+          
+          // Also check/sync with users collection
+          const userDoc = await this.db.collection('users').doc(uid).get();
+          if (!userDoc.exists) {
+            // Sync admin user to users collection
+            await this.db.collection('users').doc(uid).set({
+              ...adminData,
+              userType: 'admin',
+              originalFirebaseUID: uid
+            });
+            console.log(`✅ Synced admin user to users collection:`, uid);
+          }
+          
+          return {
+            ...adminData,
+            userType: 'admin',
+            originalFirebaseUID: uid
+          };
+        }
+      }
+      
+      // Check users collection for all user types
       const userDoc = await this.db.collection('users').doc(uid).get();
       
       if (!userDoc.exists) {
@@ -191,6 +218,18 @@ class FirebaseAuthService {
         };
       }
 
+      // For admin users, store in both adminUsers and users collections
+      if (userType === 'admin') {
+        // Store in adminUsers collection (Admin App expects this)
+        await this.db.collection('adminUsers').doc(uid).set({
+          ...userData,
+          userType: 'admin',
+          role: userData.role || 'super_admin',
+          permissions: userData.permissions || ['all']
+        });
+        console.log(`✅ Stored admin user in adminUsers collection:`, uid);
+      }
+      
       // All users go into the 'users' collection with userType field
       const collectionName = 'users';
       
@@ -212,7 +251,13 @@ class FirebaseAuthService {
       }
 
       // Set custom claims for userType
-      await this.setCustomClaims(uid, { userType, role: userType });
+      if (userType === 'admin') {
+        // For admin users, set proper role based on user data
+        const adminRole = userData.role || 'super_admin';
+        await this.setCustomClaims(uid, { userType: 'admin', role: adminRole });
+      } else {
+        await this.setCustomClaims(uid, { userType, role: userType });
+      }
 
       return userData;
     } catch (error) {

@@ -99,7 +99,7 @@ router.post('/create-admin', async (req, res) => {
 
 /**
  * @route   POST /api/admin/login
- * @desc    Admin login (simplified for testing)
+ * @desc    Admin login with Firebase ID token
  * @access  Public
  */
 router.post('/login', async (req, res) => {
@@ -120,17 +120,51 @@ router.post('/login', async (req, res) => {
     const firebaseAuthService = require('../services/firebaseAuthService');
     const decodedToken = await firebaseAuthService.verifyIdToken(idToken);
     
-    // Get admin user data from Firestore
-    const adminUser = await firebaseAuthService.getUserByUid(decodedToken.uid, 'admin');
+    // Get admin user data from Firestore (check both collections)
+    let adminUser = await firebaseAuthService.getUserByUid(decodedToken.uid, 'admin');
+    
+    // If not found in users collection, check adminUsers collection
+    if (!adminUser) {
+      const { getFirestore } = require('firebase-admin/firestore');
+      const db = getFirestore();
+      const adminDoc = await db.collection('adminUsers').doc(decodedToken.uid).get();
+      
+      if (adminDoc.exists) {
+        adminUser = adminDoc.data();
+        console.log('✅ Found admin user in adminUsers collection');
+      }
+    }
     
     if (!adminUser) {
       return res.status(401).json({
         success: false,
         error: {
           code: 'ADMIN_NOT_FOUND',
-          message: 'Admin user not found'
+          message: 'Admin user not found. Please contact system administrator.'
         }
       });
+    }
+
+    // Ensure user has admin role
+    if (adminUser.userType !== 'admin') {
+      return res.status(403).json({
+        success: false,
+        error: {
+          code: 'INSUFFICIENT_PERMISSIONS',
+          message: 'User does not have admin privileges'
+        }
+      });
+    }
+
+    // Set custom claims if not already set
+    try {
+      await firebaseAuthService.setCustomClaims(decodedToken.uid, {
+        userType: 'admin',
+        role: adminUser.role || 'super_admin'
+      });
+      console.log('✅ Custom claims set for admin user');
+    } catch (claimsError) {
+      console.warn('⚠️ Failed to set custom claims:', claimsError.message);
     }
 
     res.json({

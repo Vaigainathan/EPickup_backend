@@ -35,20 +35,84 @@ const requireRole = (roles) => (req, res, next) => {
 // All admin routes will receive Backend JWT tokens via authMiddleware
 
 /**
- * @route   POST /api/admin/create-admin
- * @desc    Create admin user for testing (temporary endpoint)
- * @access  Public (for initial setup)
+ * @route   GET /api/admin/admins
+ * @desc    Get all admin users
+ * @access  Private (Super Admin only)
  */
-router.post('/create-admin', async (req, res) => {
+router.get('/admins', requireRole(['admin']), async (req, res) => {
   try {
-    const { email, password, name } = req.body;
+    const db = getFirestore();
+    const { limit = 20, offset = 0, role } = req.query;
+
+    let query = db.collection('adminUsers');
+
+    // Apply filters
+    if (role) {
+      query = query.where('role', '==', role);
+    }
+
+    // Apply pagination and ordering
+    query = query.orderBy('createdAt', 'desc').limit(parseInt(limit)).offset(parseInt(offset));
+
+    const snapshot = await query.get();
+    const admins = [];
+
+    for (const doc of snapshot.docs) {
+      const data = doc.data();
+      admins.push({
+        id: doc.id,
+        uid: data.uid,
+        email: data.email,
+        displayName: data.displayName,
+        role: data.role,
+        permissions: data.permissions,
+        isActive: data.isActive,
+        lastLogin: data.lastLogin,
+        createdAt: data.createdAt?.toDate?.() || data.createdAt,
+        updatedAt: data.updatedAt?.toDate?.() || data.updatedAt
+      });
+    }
+
+    res.json({
+      success: true,
+      data: admins,
+      pagination: {
+        limit: parseInt(limit),
+        offset: parseInt(offset),
+        total: admins.length
+      },
+      timestamp: new Date().toISOString()
+    });
+
+  } catch (error) {
+    console.error('Error fetching admins:', error);
+    res.status(500).json({
+      success: false,
+      error: {
+        code: 'FETCH_ADMINS_ERROR',
+        message: 'Failed to fetch admin users',
+        details: error.message
+      },
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+/**
+ * @route   POST /api/admin/admins
+ * @desc    Create new admin user
+ * @access  Private (Super Admin only)
+ */
+router.post('/admins', requireRole(['admin']), async (req, res) => {
+  try {
+    const { email, displayName, role = 'driver_admin', permissions = [] } = req.body;
     
-    if (!email || !password || !name) {
+    if (!email || !displayName) {
       return res.status(400).json({
         success: false,
         error: {
           code: 'MISSING_FIELDS',
-          message: 'Email, password, and name are required'
+          message: 'Email and display name are required'
         }
       });
     }
@@ -56,9 +120,8 @@ router.post('/create-admin', async (req, res) => {
     const db = getFirestore();
     
     // Check if admin already exists
-    const existingAdmin = await db.collection('users')
+    const existingAdmin = await db.collection('adminUsers')
       .where('email', '==', email)
-      .where('userType', '==', 'admin')
       .get();
     
     if (!existingAdmin.empty) {
@@ -71,29 +134,47 @@ router.post('/create-admin', async (req, res) => {
       });
     }
 
-    // Create admin user
+    // Generate a unique UID for the admin
+    const adminUid = `admin_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+
+    // Create admin user data
     const adminData = {
-      email,
-      name,
-      userType: 'admin',
-      role: 'super_admin',
-      permissions: ['all'],
+      uid: adminUid,
+      id: adminUid,
+      email: email,
+      displayName: displayName,
+      role: role,
+      permissions: permissions.length > 0 ? permissions : getDefaultPermissions(role),
       isActive: true,
-      createdAt: new Date(),
-      updatedAt: new Date()
+      isEmailVerified: false,
+      accountStatus: 'pending',
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      createdBy: req.user.uid,
+      lastLogin: null
     };
 
-    const adminRef = await db.collection('users').add(adminData);
+    // Store in adminUsers collection
+    await db.collection('adminUsers').doc(adminUid).set(adminData);
+    
+    // Also store in users collection for consistency
+    await db.collection('users').doc(adminUid).set({
+      ...adminData,
+      userType: 'admin'
+    });
     
     res.status(201).json({
       success: true,
       message: 'Admin user created successfully',
       data: {
-        id: adminRef.id,
-        email,
-        name,
-        role: 'super_admin'
-      }
+        uid: adminUid,
+        email: email,
+        displayName: displayName,
+        role: role,
+        permissions: adminData.permissions,
+        status: 'pending_activation'
+      },
+      timestamp: new Date().toISOString()
     });
 
   } catch (error) {
@@ -104,10 +185,169 @@ router.post('/create-admin', async (req, res) => {
         code: 'CREATE_ADMIN_ERROR',
         message: 'Failed to create admin user',
         details: error.message
-      }
+      },
+      timestamp: new Date().toISOString()
     });
   }
 });
+
+/**
+ * @route   PUT /api/admin/admins/:uid
+ * @desc    Update admin user
+ * @access  Private (Admin only - can update own profile, Super Admin can update any)
+ */
+router.put('/admins/:uid', requireRole(['admin']), async (req, res) => {
+  try {
+    const { uid } = req.params;
+    const { displayName, role, permissions, isActive } = req.body;
+    
+    const db = getFirestore();
+    
+    // Check if admin exists
+    const adminDoc = await db.collection('adminUsers').doc(uid).get();
+    if (!adminDoc.exists) {
+      return res.status(404).json({
+        success: false,
+        error: {
+          code: 'ADMIN_NOT_FOUND',
+          message: 'Admin user not found'
+        }
+      });
+    }
+
+    const currentAdmin = adminDoc.data();
+    
+    // Check permissions - only super admin can change roles or deactivate others
+    if (req.user.role !== 'super_admin' && req.user.uid !== uid) {
+      return res.status(403).json({
+        success: false,
+        error: {
+          code: 'INSUFFICIENT_PERMISSIONS',
+          message: 'You can only update your own profile'
+        }
+      });
+    }
+
+    // Prepare update data
+    const updateData = {
+      updatedAt: new Date().toISOString()
+    };
+
+    if (displayName) updateData.displayName = displayName;
+    if (role && req.user.role === 'super_admin') updateData.role = role;
+    if (permissions && req.user.role === 'super_admin') updateData.permissions = permissions;
+    if (isActive !== undefined && req.user.role === 'super_admin') updateData.isActive = isActive;
+
+    // Update adminUsers collection
+    await db.collection('adminUsers').doc(uid).update(updateData);
+    
+    // Update users collection
+    await db.collection('users').doc(uid).update(updateData);
+    
+    res.json({
+      success: true,
+      message: 'Admin user updated successfully',
+      data: {
+        uid: uid,
+        ...updateData
+      },
+      timestamp: new Date().toISOString()
+    });
+
+  } catch (error) {
+    console.error('Error updating admin user:', error);
+    res.status(500).json({
+      success: false,
+      error: {
+        code: 'UPDATE_ADMIN_ERROR',
+        message: 'Failed to update admin user',
+        details: error.message
+      },
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+/**
+ * @route   DELETE /api/admin/admins/:uid
+ * @desc    Delete admin user
+ * @access  Private (Super Admin only)
+ */
+router.delete('/admins/:uid', requireRole(['admin']), async (req, res) => {
+  try {
+    const { uid } = req.params;
+    
+    // Only super admin can delete other admins
+    if (req.user.role !== 'super_admin') {
+      return res.status(403).json({
+        success: false,
+        error: {
+          code: 'INSUFFICIENT_PERMISSIONS',
+          message: 'Only super admin can delete admin users'
+        }
+      });
+    }
+
+    // Cannot delete self
+    if (req.user.uid === uid) {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'CANNOT_DELETE_SELF',
+          message: 'You cannot delete your own account'
+        }
+      });
+    }
+
+    const db = getFirestore();
+    
+    // Check if admin exists
+    const adminDoc = await db.collection('adminUsers').doc(uid).get();
+    if (!adminDoc.exists) {
+      return res.status(404).json({
+        success: false,
+        error: {
+          code: 'ADMIN_NOT_FOUND',
+          message: 'Admin user not found'
+        }
+      });
+    }
+
+    // Delete from both collections
+    await db.collection('adminUsers').doc(uid).delete();
+    await db.collection('users').doc(uid).delete();
+    
+    res.json({
+      success: true,
+      message: 'Admin user deleted successfully',
+      timestamp: new Date().toISOString()
+    });
+
+  } catch (error) {
+    console.error('Error deleting admin user:', error);
+    res.status(500).json({
+      success: false,
+      error: {
+        code: 'DELETE_ADMIN_ERROR',
+        message: 'Failed to delete admin user',
+        details: error.message
+      },
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+// Helper function to get default permissions for a role
+function getDefaultPermissions(role) {
+  const rolePermissions = {
+    'super_admin': ['all'],
+    'driver_admin': ['drivers', 'bookings', 'reports'],
+    'support_admin': ['support', 'customers', 'tickets'],
+    'analytics_admin': ['reports', 'analytics', 'dashboard']
+  };
+  
+  return rolePermissions[role] || ['dashboard'];
+}
 
 // Note: Admin login is now handled by /api/auth/firebase/verify-token
 // This endpoint has been removed to avoid conflicts

@@ -6,13 +6,17 @@ service cloud.firestore {
       return request.auth != null;
     }
     
-    // TEMPORARY: Allow basic operations for testing (remove after setup)
+    // Test collection - disabled for security
     match /test/{document} {
-      allow read, write: if true;
+      allow read, write: if false;
     }
     
     function isOwner(userId) {
-      return request.auth.uid == userId;
+      return request.auth != null && request.auth.uid == userId;
+    }
+    
+    function isValidEmail(email) {
+      return email is string && email.matches('^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$');
     }
     
     function isAdmin() {
@@ -20,15 +24,18 @@ service cloud.firestore {
         (request.auth.token.userType == 'admin' || 
          request.auth.token.role == 'super_admin' ||
          // Fallback: check if user exists in adminUsers collection
-         exists(/databases/$(database)/documents/adminUsers/$(request.auth.uid)));
+         exists(/databases/$(database)/documents/adminUsers/$(request.auth.uid)) ||
+         // Additional fallback: check users collection for admin users
+         (exists(/databases/$(database)/documents/users/$(request.auth.uid)) && 
+          get(/databases/$(database)/documents/users/$(request.auth.uid)).data.userType == 'admin'));
     }
     
     function isSuperAdmin() {
       return request.auth != null && 
-        (request.auth.token.userType == 'admin' && request.auth.token.role == 'super_admin') ||
-        // Fallback: check adminUsers collection
-        (exists(/databases/$(database)/documents/adminUsers/$(request.auth.uid)) && 
-         get(/databases/$(database)/documents/adminUsers/$(request.auth.uid)).data.role == 'super_admin');
+        (request.auth.token.role == 'super_admin' ||
+         // Fallback: check if user exists in adminUsers collection with super_admin role
+         (exists(/databases/$(database)/documents/adminUsers/$(request.auth.uid)) && 
+          get(/databases/$(database)/documents/adminUsers/$(request.auth.uid)).data.role == 'super_admin'));
     }
     
     function isAdminUser() {
@@ -55,10 +62,6 @@ service cloud.firestore {
     
     function isValidPhoneNumber(phone) {
       return phone.matches('^\\+91[6-9][0-9]{9}$');
-    }
-    
-    function isValidEmail(email) {
-      return email.matches('^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$');
     }
     
     function isWithinServiceArea(location) {

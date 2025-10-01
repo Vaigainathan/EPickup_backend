@@ -6,12 +6,13 @@ const cors = require('cors');
 const morgan = require('morgan');
 const compression = require('compression');
 const rateLimit = require('express-rate-limit');
+const helmet = require('helmet');
 // Import configuration
 const { env } = require('./config');
 
 // Import security middleware
 const { sanitizeInput } = require('./middleware/validation');
-const { generalLimiter, authLimiter, speedLimiter } = require('./middleware/rateLimit');
+const { generalLimiter, authLimiter, adminLimiter, speedLimiter } = require('./middleware/rateLimit');
 const { securityHeaders } = require('./middleware/security');
 
 // Import routes
@@ -41,7 +42,6 @@ const locationTrackingRoutes = require('./routes/locationTracking');
 
 // Import middleware
 const { 
-  errorHandler, 
   handleRateLimitError, 
   handleDatabaseError, 
   handleExternalApiError, 
@@ -51,6 +51,9 @@ const {
   errorMonitoring, 
   gracefulShutdown 
 } = require('./middleware/errorHandler');
+
+// Import standardized error handler
+const { errorHandler: standardizedErrorHandler } = require('./middleware/errorHandler');
 const { authMiddleware } = require('./middleware/auth');
 // const { firebaseAdminAuthMiddleware } = require('./middleware/firebaseAuth'); // No longer used - using firebaseIdTokenAuth instead
 
@@ -105,12 +108,66 @@ app.use(sanitizeInput);
 app.use(generalLimiter);
 app.use(speedLimiter);
 
-// CORS configuration
+// Additional Helmet security
+app.use(helmet({
+  crossOriginEmbedderPolicy: false,
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc: ["'self'"],
+      styleSrc: ["'self'", "'unsafe-inline'"],
+      scriptSrc: ["'self'", "'unsafe-inline'"],
+      imgSrc: ["'self'", "data:", "https:"],
+      connectSrc: ["'self'", "https:", "wss:"],
+      fontSrc: ["'self'"],
+      objectSrc: ["'none'"],
+      mediaSrc: ["'self'"],
+      frameSrc: ["'none'"],
+    },
+  },
+}));
+
+// Compression middleware with optimized settings
+app.use(compression({
+  level: 6, // Compression level (1-9)
+  threshold: 1024, // Only compress responses larger than 1KB
+  filter: (req, res) => {
+    // Don't compress if the request includes a no-transform directive
+    if (req.headers['cache-control'] && req.headers['cache-control'].includes('no-transform')) {
+      return false;
+    }
+    
+    // Don't compress already compressed content
+    if (res.getHeader('content-encoding')) {
+      return false;
+    }
+    
+    // Enable compression for more content types
+    const contentType = res.getHeader('content-type') || '';
+    return /json|text|javascript|css|html|xml/.test(contentType);
+  }
+}));
+
+// CORS configuration with security
 app.use(cors({
-  origin: env.getAllowedOrigins(),
+  origin: function (origin, callback) {
+    // Allow requests with no origin (mobile apps, Postman, etc.)
+    if (!origin) return callback(null, true);
+    
+    const allowedOrigins = env.getAllowedOrigins();
+    if (allowedOrigins.includes(origin)) {
+      callback(null, true);
+    } else {
+      console.warn(`CORS blocked origin: ${origin}`);
+      callback(new Error('Not allowed by CORS'));
+    }
+  },
   credentials: true,
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With']
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept', 'Origin'],
+  exposedHeaders: ['X-Total-Count', 'X-Page-Count'],
+  maxAge: 86400, // 24 hours
+  preflightContinue: false,
+  optionsSuccessStatus: 200
 }));
 
 // Rate limiting
@@ -133,18 +190,18 @@ const limiter = rateLimit({
 app.use(limiter);
 app.use(speedLimiter);
 
-// Admin-specific rate limiter (more lenient)
-const adminLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 5000, // 5000 requests per 15 minutes for admin
-  message: {
-    error: 'Too many admin requests from this IP, please try again later.',
-    retryAfter: '15 minutes'
-  },
-  standardHeaders: true,
-  legacyHeaders: false,
-  trustProxy: true
-});
+// Admin-specific rate limiter (more lenient) - using imported adminLimiter
+// const adminLimiter = rateLimit({
+//   windowMs: 15 * 60 * 1000, // 15 minutes
+//   max: 5000, // 5000 requests per 15 minutes for admin
+//   message: {
+//     error: 'Too many admin requests from this IP, please try again later.',
+//     retryAfter: '15 minutes'
+//   },
+//   standardHeaders: true,
+//   legacyHeaders: false,
+//   trustProxy: true
+// });
 
 // Apply admin rate limiter to protected admin routes only (not signup/auth)
 // app.use('/api/admin', adminLimiter); // Moved to individual routes
@@ -159,9 +216,21 @@ if (process.env.NODE_ENV === 'development') {
   app.use(morgan('combined'));
 }
 
-// Body parsing middleware
-app.use(express.json({ limit: '10mb' }));
-app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+// Body parsing middleware with security limits
+app.use(express.json({ 
+  limit: '1mb', // Reduced from 10mb for security
+  verify: (req, res, buf) => {
+    // Additional security check for JSON payload
+    if (buf.length > 1024 * 1024) { // 1MB limit
+      throw new Error('Payload too large');
+    }
+  }
+}));
+app.use(express.urlencoded({ 
+  extended: true, 
+  limit: '1mb', // Reduced from 10mb for security
+  parameterLimit: 100 // Limit number of parameters
+}));
 
 // Static files (for file uploads)
 app.use('/uploads', express.static('uploads'));
@@ -306,7 +375,9 @@ app.use('/api/slots', workSlotsRoutes);
 app.use('/api/location-tracking', authMiddleware, locationTrackingRoutes);
 app.use('/api/admin/auth', adminAuthRoutes); // No auth required for admin login
 app.use('/api/admin/signup', adminSignupRoutes); // Admin signup route (no auth required)
-app.use('/api/admin', adminLimiter, authMiddleware, adminRoutes); // Admin routes use standard JWT auth middleware
+// Import admin role validation
+const { requireAdmin } = require('./middleware/auth');
+app.use('/api/admin', adminLimiter, authMiddleware, requireAdmin, adminRoutes); // Admin routes require admin role
 // Note: adminBookingManagementRoutes are included in adminRoutes to avoid conflicts
 
 // Health check routes (for keepalive script) - No auth required
@@ -535,7 +606,7 @@ if (Sentry && Sentry.Handlers && Sentry.Handlers.errorHandler) {
 app.use(handle404);
 
 // Final error handling middleware
-app.use(errorHandler);
+app.use(standardizedErrorHandler);
 
 // Initialize Socket.IO with error handling
 try {

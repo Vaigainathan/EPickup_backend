@@ -1,7 +1,11 @@
 const express = require('express');
 const { getFirestore } = require('firebase-admin/firestore');
 const verificationService = require('../services/verificationService');
+const { sanitizeInput, validateEmail, checkValidation } = require('../middleware/validation');
 const router = express.Router();
+
+// Apply input sanitization to all admin routes
+router.use(sanitizeInput);
 
 // Note: Authentication is now handled by authMiddleware in server.js
 // This middleware validates backend JWT tokens and sets req.user with user data
@@ -17,7 +21,17 @@ router.get('/profile', async (req, res) => {
     const db = getFirestore();
     const adminId = req.user.uid || req.user.userId;
 
-    console.log(`📋 Getting admin profile for: ${adminId}`);
+    // Validate admin ID
+    if (!adminId || typeof adminId !== 'string' || adminId.length < 3) {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'INVALID_ADMIN_ID',
+          message: 'Invalid admin ID provided'
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
 
     // Get admin user data from adminUsers collection
     const adminDoc = await db.collection('adminUsers').doc(adminId).get();
@@ -86,26 +100,48 @@ router.get('/users', async (req, res) => {
 
     console.log(`📋 Getting users list for admin: ${req.user.email || req.user.userId}`);
 
+    // Validate and sanitize query parameters
+    const validatedLimit = Math.max(1, Math.min(100, parseInt(limit) || 50));
+    const validatedOffset = Math.max(0, parseInt(offset) || 0);
+    
+    // Validate userType parameter
+    const allowedUserTypes = ['customer', 'driver', 'admin'];
+    const validatedUserType = allowedUserTypes.includes(userType) ? userType : null;
+    
+    // Validate status parameter
+    const allowedStatuses = ['active', 'inactive'];
+    const validatedStatus = allowedStatuses.includes(status) ? status : null;
+
     let query = db.collection('users');
 
-    // Apply filters
-    if (userType) {
-      query = query.where('userType', '==', userType);
+    // Apply validated filters
+    if (validatedUserType) {
+      query = query.where('userType', '==', validatedUserType);
     }
     
-    if (status) {
-      query = query.where('status', '==', status);
+    if (validatedStatus) {
+      query = query.where('status', '==', validatedStatus);
     }
 
-    // Apply pagination and ordering
-    query = query.orderBy('createdAt', 'desc').limit(Math.max(1, Math.min(100, parseInt(limit) || 20))).offset(Math.max(0, parseInt(offset) || 0));
+    // Apply pagination and ordering with validated values
+    // Use cursor-based pagination for better performance
+    if (req.query.cursor) {
+      const cursorDoc = await db.collection('users').doc(req.query.cursor).get();
+      if (cursorDoc.exists) {
+        query = query.orderBy('createdAt', 'desc').startAfter(cursorDoc).limit(validatedLimit);
+      } else {
+        query = query.orderBy('createdAt', 'desc').limit(validatedLimit);
+      }
+    } else {
+      query = query.orderBy('createdAt', 'desc').limit(validatedLimit);
+    }
 
     const snapshot = await query.get();
-    const users = [];
 
-    for (const doc of snapshot.docs) {
+    // Use map for better performance
+    const users = snapshot.docs.map(doc => {
       const data = doc.data();
-      users.push({
+      return {
         id: doc.id,
         uid: data.uid,
         email: data.email,
@@ -124,8 +160,8 @@ router.get('/users', async (req, res) => {
             verificationStatus: data.driver?.verificationStatus || 'pending'
           }
         })
-      });
-    }
+      };
+    });
 
     console.log(`✅ Retrieved ${users.length} users for admin`);
 
@@ -135,13 +171,13 @@ router.get('/users', async (req, res) => {
         users,
         total: users.length,
         pagination: {
-          limit: Math.max(1, Math.min(100, parseInt(limit) || 20)),
-          offset: Math.max(0, parseInt(offset) || 0),
-          hasMore: users.length === Math.max(1, Math.min(100, parseInt(limit) || 20))
+          limit: validatedLimit,
+          offset: validatedOffset,
+          hasMore: users.length === validatedLimit
         },
         filters: {
-          userType,
-          status
+          userType: validatedUserType,
+          status: validatedStatus
         }
       },
       timestamp: new Date().toISOString()
@@ -150,7 +186,8 @@ router.get('/users', async (req, res) => {
   } catch (error) {
     console.error('❌ Error getting users list:', error);
     
-    res.status(500).json({
+    // Use standardized error response
+    const errorResponse = {
       success: false,
       error: {
         code: 'USERS_RETRIEVAL_ERROR',
@@ -158,7 +195,9 @@ router.get('/users', async (req, res) => {
         details: error.message
       },
       timestamp: new Date().toISOString()
-    });
+    };
+    
+    res.status(500).json(errorResponse);
   }
 });
 
@@ -231,7 +270,10 @@ router.get('/admins', async (req, res) => {
  * @desc    Create new admin user
  * @access  Private (Super Admin only)
  */
-router.post('/admins', async (req, res) => {
+router.post('/admins', [
+  validateEmail('email'),
+  checkValidation
+], async (req, res) => {
   try {
     const { email, displayName, role = 'super_admin', permissions = [] } = req.body;
     
@@ -1529,6 +1571,18 @@ router.get('/drivers/:driverId/documents', async (req, res) => {
 router.post('/test-verification-flow/:driverId', async (req, res) => {
   try {
     const { driverId } = req.params;
+    
+    // Validate driverId parameter
+    if (!driverId || typeof driverId !== 'string' || driverId.length < 3) {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'INVALID_DRIVER_ID',
+          message: 'Valid driver ID is required'
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
     const db = getFirestore();
     
     console.log(`🧪 Testing complete verification flow for driver: ${driverId}`);
@@ -2002,6 +2056,18 @@ router.post('/drivers/:driverId/verify', async (req, res) => {
   try {
     const { driverId } = req.params;
     const { status, reason, comments } = req.body;
+    
+    // Validate driverId parameter
+    if (!driverId || typeof driverId !== 'string' || driverId.length < 3) {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'INVALID_DRIVER_ID',
+          message: 'Valid driver ID is required'
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
     const adminId = req.user.uid || req.user.userId;
 
     if (!status || !['approved', 'rejected'].includes(status)) {

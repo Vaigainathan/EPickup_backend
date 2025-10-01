@@ -1,356 +1,390 @@
-const express = require('express');
-const monitoringService = require('../services/monitoringService');
-const { getFirestore } = require('../services/firebase');
-
-const router = express.Router();
-
 /**
- * Health check endpoint
- * GET /api/health
+ * Health Check Routes
+ * Provides comprehensive health monitoring endpoints
  */
-router.get('/', async (req, res) => {
+
+const express = require('express');
+const router = express.Router();
+const { getFirestore } = require('firebase-admin/firestore');
+const { auth } = require('firebase-admin/auth');
+
+// Health check data
+const healthData = {
+  status: 'healthy',
+  timestamp: new Date().toISOString(),
+  uptime: process.uptime(),
+  version: process.env.npm_package_version || '1.0.0',
+  environment: process.env.NODE_ENV || 'development',
+  services: {
+    database: 'unknown',
+    auth: 'unknown',
+    memory: 'unknown',
+    cpu: 'unknown'
+  },
+  metrics: {
+    memoryUsage: 0,
+    cpuUsage: 0,
+    responseTime: 0,
+    errorRate: 0,
+    requestCount: 0,
+    errorCount: 0
+  }
+};
+
+// Request tracking
+const requestMetrics = {
+  total: 0,
+  errors: 0,
+  responseTimes: []
+};
+
+// Update request metrics
+const updateRequestMetrics = (responseTime, isError = false) => {
+  requestMetrics.total++;
+  if (isError) requestMetrics.errors++;
+  
+  requestMetrics.responseTimes.push(responseTime);
+  
+  // Keep only last 100 response times
+  if (requestMetrics.responseTimes.length > 100) {
+    requestMetrics.responseTimes.shift();
+  }
+  
+  // Update health data
+  healthData.metrics.requestCount = requestMetrics.total;
+  healthData.metrics.errorCount = requestMetrics.errors;
+  healthData.metrics.errorRate = requestMetrics.total > 0 ? requestMetrics.errors / requestMetrics.total : 0;
+  healthData.metrics.responseTime = requestMetrics.responseTimes.length > 0 
+    ? requestMetrics.responseTimes.reduce((a, b) => a + b, 0) / requestMetrics.responseTimes.length 
+    : 0;
+};
+
+// Check database health
+const checkDatabaseHealth = async () => {
   try {
-    // Simple, reliable health check without external dependencies
-    const memoryUsage = process.memoryUsage();
-    const memoryPercentage = (memoryUsage.heapUsed / memoryUsage.heapTotal) * 100;
+    const db = getFirestore();
+    const startTime = Date.now();
     
-    const healthStatus = {
-      status: 'healthy',
-      timestamp: new Date().toISOString(),
-      version: process.env.npm_package_version || '1.0.0',
-      environment: process.env.NODE_ENV || 'development',
-      uptime: process.uptime(),
-      services: {
-        api: 'healthy',
-        database: 'healthy',
-        websocket: 'healthy'
-      },
-      metrics: {
-        memoryUsage: {
-          rss: Math.round(memoryUsage.rss / 1024 / 1024),
-          heapTotal: Math.round(memoryUsage.heapTotal / 1024 / 1024),
-          heapUsed: Math.round(memoryUsage.heapUsed / 1024 / 1024),
-          external: Math.round(memoryUsage.external / 1024 / 1024),
-          usagePercentage: Math.round(memoryPercentage)
-        },
-        performance: {
-          uptime: process.uptime(),
-          nodeVersion: process.version,
-          platform: process.platform
-        }
-      }
-    };
-
-    // Check for high memory usage
-    if (memoryPercentage > 90) {
-      healthStatus.status = 'degraded';
-      healthStatus.warning = `High memory usage: ${memoryPercentage.toFixed(1)}%`;
+    // Simple read operation
+    await db.collection('_health').doc('test').get();
+    
+    const responseTime = Date.now() - startTime;
+    
+    if (responseTime < 1000) {
+      healthData.services.database = 'healthy';
+    } else {
+      healthData.services.database = 'slow';
     }
-
-    res.status(200).json(healthStatus);
-  } catch (error) {
-    console.error('Health check error:', error);
     
-    // Fallback health check
-    res.status(200).json({
-      status: 'healthy',
-      timestamp: new Date().toISOString(),
-      version: '1.0.0',
-      environment: 'development',
-      uptime: process.uptime(),
-      services: { api: 'healthy' },
-      metrics: {
-        memoryUsage: {
-          rss: Math.round(process.memoryUsage().rss / 1024 / 1024),
-          heapTotal: Math.round(process.memoryUsage().heapTotal / 1024 / 1024),
-          heapUsed: Math.round(process.memoryUsage().heapUsed / 1024 / 1024),
-          external: Math.round(process.memoryUsage().external / 1024 / 1024)
+    return { status: 'healthy', responseTime };
+  } catch (error) {
+    healthData.services.database = 'unhealthy';
+    return { status: 'unhealthy', error: error.message };
+  }
+};
+
+// Check auth service health
+const checkAuthHealth = async () => {
+  try {
+    const startTime = Date.now();
+    
+    // Simple auth operation
+    await auth.listUsers(1);
+    
+    const responseTime = Date.now() - startTime;
+    
+    if (responseTime < 2000) {
+      healthData.services.auth = 'healthy';
+    } else {
+      healthData.services.auth = 'slow';
+    }
+    
+    return { status: 'healthy', responseTime };
+  } catch (error) {
+    healthData.services.auth = 'unhealthy';
+    return { status: 'unhealthy', error: error.message };
+  }
+};
+
+// Check memory health
+const checkMemoryHealth = () => {
+  const memUsage = process.memoryUsage();
+  const totalMem = memUsage.heapTotal + memUsage.external;
+  const usedMem = memUsage.heapUsed + memUsage.external;
+  const memoryUsage = usedMem / totalMem;
+  
+  healthData.metrics.memoryUsage = memoryUsage;
+  
+  if (memoryUsage < 0.8) {
+    healthData.services.memory = 'healthy';
+  } else if (memoryUsage < 0.9) {
+    healthData.services.memory = 'warning';
+  } else {
+    healthData.services.memory = 'critical';
+  }
+  
+  return { 
+    status: memoryUsage < 0.9 ? 'healthy' : 'unhealthy', 
+    memoryUsage,
+    heapUsed: memUsage.heapUsed,
+    heapTotal: memUsage.heapTotal,
+    external: memUsage.external
+  };
+};
+
+// Check CPU health
+const checkCPUHealth = () => {
+  const cpuUsage = process.cpuUsage();
+  const cpuUsagePercent = (cpuUsage.user + cpuUsage.system) / 1000000; // Convert to seconds
+  
+  healthData.metrics.cpuUsage = cpuUsagePercent;
+  
+  if (cpuUsagePercent < 0.5) {
+    healthData.services.cpu = 'healthy';
+  } else if (cpuUsagePercent < 0.8) {
+    healthData.services.cpu = 'warning';
+  } else {
+    healthData.services.cpu = 'critical';
+  }
+  
+  return { 
+    status: cpuUsagePercent < 0.8 ? 'healthy' : 'unhealthy', 
+    cpuUsage: cpuUsagePercent,
+    user: cpuUsage.user,
+    system: cpuUsage.system
+  };
+};
+
+// Basic health check
+router.get('/', async (req, res) => {
+  const startTime = Date.now();
+  
+  try {
+    // Update basic metrics
+    healthData.timestamp = new Date().toISOString();
+    healthData.uptime = process.uptime();
+    
+    // Check memory and CPU
+    const memoryHealth = checkMemoryHealth();
+    const cpuHealth = checkCPUHealth();
+    
+    // Determine overall health
+    const isHealthy = memoryHealth.status === 'healthy' && cpuHealth.status === 'healthy';
+    healthData.status = isHealthy ? 'healthy' : 'unhealthy';
+    
+    const responseTime = Date.now() - startTime;
+    updateRequestMetrics(responseTime, !isHealthy);
+    
+    const statusCode = isHealthy ? 200 : 503;
+    
+    res.status(statusCode).json({
+      success: true,
+      data: {
+        ...healthData,
+        checks: {
+          memory: memoryHealth,
+          cpu: cpuHealth
         }
       },
-      note: 'Basic health check - monitoring service unavailable'
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    const responseTime = Date.now() - startTime;
+    updateRequestMetrics(responseTime, true);
+    
+    res.status(500).json({
+      success: false,
+      error: {
+        code: 'HEALTH_CHECK_ERROR',
+        message: 'Health check failed',
+        details: error.message
+      },
+      timestamp: new Date().toISOString()
     });
   }
 });
 
-/**
- * Detailed metrics endpoint
- * GET /api/health/metrics
- */
-router.get('/metrics', async (req, res) => {
+// Detailed health check
+router.get('/detailed', async (req, res) => {
+  const startTime = Date.now();
+  
   try {
-    const { timeRange = '24h' } = req.query;
+    // Update basic metrics
+    healthData.timestamp = new Date().toISOString();
+    healthData.uptime = process.uptime();
     
-    const metrics = {
-      timestamp: new Date().toISOString(),
-      timeRange,
-      performance: monitoringService.getPerformanceMetrics(),
-      driverAssignment: await monitoringService.getDriverAssignmentMetrics(timeRange),
-      bookings: await monitoringService.getBookingMetrics(timeRange),
-      system: {
-        memory: process.memoryUsage(),
+    // Run all health checks
+    const [databaseHealth, authHealth, memoryHealth, cpuHealth] = await Promise.all([
+      checkDatabaseHealth(),
+      checkAuthHealth(),
+      Promise.resolve(checkMemoryHealth()),
+      Promise.resolve(checkCPUHealth())
+    ]);
+    
+    // Determine overall health
+    const isHealthy = databaseHealth.status === 'healthy' && 
+                     authHealth.status === 'healthy' && 
+                     memoryHealth.status === 'healthy' && 
+                     cpuHealth.status === 'healthy';
+    
+    healthData.status = isHealthy ? 'healthy' : 'unhealthy';
+    
+    const responseTime = Date.now() - startTime;
+    updateRequestMetrics(responseTime, !isHealthy);
+    
+    const statusCode = isHealthy ? 200 : 503;
+    
+    res.status(statusCode).json({
+      success: true,
+      data: {
+        ...healthData,
+        checks: {
+          database: databaseHealth,
+          auth: authHealth,
+          memory: memoryHealth,
+          cpu: cpuHealth
+        },
+        metrics: {
+          ...healthData.metrics,
+          uptime: healthData.uptime,
+          nodeVersion: process.version,
+          platform: process.platform,
+          arch: process.arch
+        }
+      },
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    const responseTime = Date.now() - startTime;
+    updateRequestMetrics(responseTime, true);
+    
+    res.status(500).json({
+      success: false,
+      error: {
+        code: 'DETAILED_HEALTH_CHECK_ERROR',
+        message: 'Detailed health check failed',
+        details: error.message
+      },
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+// Readiness check
+router.get('/ready', async (req, res) => {
+  const startTime = Date.now();
+  
+  try {
+    // Check critical services
+    const [databaseHealth, authHealth] = await Promise.all([
+      checkDatabaseHealth(),
+      checkAuthHealth()
+    ]);
+    
+    const isReady = databaseHealth.status === 'healthy' && authHealth.status === 'healthy';
+    
+    const responseTime = Date.now() - startTime;
+    updateRequestMetrics(responseTime, !isReady);
+    
+    const statusCode = isReady ? 200 : 503;
+    
+    res.status(statusCode).json({
+      success: true,
+      data: {
+        ready: isReady,
+        checks: {
+          database: databaseHealth,
+          auth: authHealth
+        }
+      },
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    const responseTime = Date.now() - startTime;
+    updateRequestMetrics(responseTime, true);
+    
+    res.status(500).json({
+      success: false,
+      error: {
+        code: 'READINESS_CHECK_ERROR',
+        message: 'Readiness check failed',
+        details: error.message
+      },
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+// Liveness check
+router.get('/live', (req, res) => {
+  const startTime = Date.now();
+  
+  try {
+    // Simple liveness check
+    const isAlive = process.uptime() > 0;
+    
+    const responseTime = Date.now() - startTime;
+    updateRequestMetrics(responseTime, !isAlive);
+    
+    const statusCode = isAlive ? 200 : 503;
+    
+    res.status(statusCode).json({
+      success: true,
+      data: {
+        alive: isAlive,
         uptime: process.uptime(),
-        nodeVersion: process.version,
-        platform: process.platform
+        timestamp: new Date().toISOString()
+      },
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    const responseTime = Date.now() - startTime;
+    updateRequestMetrics(responseTime, true);
+    
+    res.status(500).json({
+      success: false,
+      error: {
+        code: 'LIVENESS_CHECK_ERROR',
+        message: 'Liveness check failed',
+        details: error.message
+      },
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+// Metrics endpoint
+router.get('/metrics', (req, res) => {
+  try {
+    const metrics = {
+      ...healthData.metrics,
+      uptime: healthData.uptime,
+      version: healthData.version,
+      environment: healthData.environment,
+      services: healthData.services,
+      requestMetrics: {
+        total: requestMetrics.total,
+        errors: requestMetrics.errors,
+        errorRate: requestMetrics.total > 0 ? requestMetrics.errors / requestMetrics.total : 0,
+        avgResponseTime: requestMetrics.responseTimes.length > 0 
+          ? requestMetrics.responseTimes.reduce((a, b) => a + b, 0) / requestMetrics.responseTimes.length 
+          : 0,
+        minResponseTime: requestMetrics.responseTimes.length > 0 ? Math.min(...requestMetrics.responseTimes) : 0,
+        maxResponseTime: requestMetrics.responseTimes.length > 0 ? Math.max(...requestMetrics.responseTimes) : 0
       }
     };
-
-    res.json(metrics);
+    
+    res.json({
+      success: true,
+      data: metrics,
+      timestamp: new Date().toISOString()
+    });
   } catch (error) {
-    console.error('Metrics error:', error);
     res.status(500).json({
       success: false,
       error: {
         code: 'METRICS_ERROR',
         message: 'Failed to retrieve metrics',
-        details: error.message
-      },
-      timestamp: new Date().toISOString()
-    });
-  }
-});
-
-/**
- * System logs endpoint
- * GET /api/health/logs
- */
-router.get('/logs', async (req, res) => {
-  try {
-    const { 
-      level = 'error', 
-      limit = 100, 
-      service = null,
-      startTime = null,
-      endTime = null
-    } = req.query;
-
-    const db = getFirestore();
-    let query = db.collection('systemLogs')
-      .where('level', '==', level)
-      .orderBy('timestamp', 'desc')
-      .limit(parseInt(limit));
-
-    if (service) {
-      query = query.where('service', '==', service);
-    }
-
-    if (startTime) {
-      query = query.where('timestamp', '>=', new Date(startTime));
-    }
-
-    if (endTime) {
-      query = query.where('timestamp', '<=', new Date(endTime));
-    }
-
-    const snapshot = await query.get();
-    const logs = snapshot.docs.map(doc => ({
-      id: doc.id,
-      ...doc.data()
-    }));
-
-    res.json({
-      success: true,
-      data: {
-        logs,
-        total: logs.length,
-        filters: {
-          level,
-          limit: parseInt(limit),
-          service,
-          startTime,
-          endTime
-        }
-      },
-      timestamp: new Date().toISOString()
-    });
-  } catch (error) {
-    console.error('Logs retrieval error:', error);
-    res.status(500).json({
-      success: false,
-      error: {
-        code: 'LOGS_ERROR',
-        message: 'Failed to retrieve logs',
-        details: error.message
-      },
-      timestamp: new Date().toISOString()
-    });
-  }
-});
-
-/**
- * System alerts endpoint
- * GET /api/health/alerts
- */
-router.get('/alerts', async (req, res) => {
-  try {
-    const { status = 'active', limit = 50 } = req.query;
-    
-    const db = getFirestore();
-    const query = db.collection('systemAlerts')
-      .where('status', '==', status)
-      .orderBy('timestamp', 'desc')
-      .limit(parseInt(limit));
-
-    const snapshot = await query.get();
-    const alerts = snapshot.docs.map(doc => ({
-      id: doc.id,
-      ...doc.data()
-    }));
-
-    res.json({
-      success: true,
-      data: {
-        alerts,
-        total: alerts.length,
-        filters: {
-          status,
-          limit: parseInt(limit)
-        }
-      },
-      timestamp: new Date().toISOString()
-    });
-  } catch (error) {
-    console.error('Alerts retrieval error:', error);
-    res.status(500).json({
-      success: false,
-      error: {
-        code: 'ALERTS_ERROR',
-        message: 'Failed to retrieve alerts',
-        details: error.message
-      },
-      timestamp: new Date().toISOString()
-    });
-  }
-});
-
-/**
- * Create alert endpoint
- * POST /api/health/alerts
- */
-router.post('/alerts', async (req, res) => {
-  try {
-    const { type, message, data = {}, severity = 'medium' } = req.body;
-
-    if (!type || !message) {
-      return res.status(400).json({
-        success: false,
-        error: {
-          code: 'MISSING_REQUIRED_FIELDS',
-          message: 'Type and message are required'
-        },
-        timestamp: new Date().toISOString()
-      });
-    }
-
-    await monitoringService.createAlert(type, message, data, severity);
-
-    res.status(201).json({
-      success: true,
-      message: 'Alert created successfully',
-      data: {
-        type,
-        message,
-        severity,
-        timestamp: new Date().toISOString()
-      }
-    });
-  } catch (error) {
-    console.error('Alert creation error:', error);
-    res.status(500).json({
-      success: false,
-      error: {
-        code: 'ALERT_CREATION_ERROR',
-        message: 'Failed to create alert',
-        details: error.message
-      },
-      timestamp: new Date().toISOString()
-    });
-  }
-});
-
-/**
- * System configuration endpoint
- * GET /api/health/config
- */
-router.get('/config', async (req, res) => {
-  try {
-    const config = {
-      environment: process.env.NODE_ENV || 'development',
-      version: process.env.npm_package_version || '1.0.0',
-      nodeVersion: process.version,
-      platform: process.platform,
-      features: {
-        driverAssignment: true,
-        realTimeNotifications: true,
-        locationTracking: true,
-        bookingStateMachine: true,
-        errorHandling: true,
-        monitoring: true
-      },
-      limits: {
-        maxConnectionsPerUser: 3,
-        maxReassignmentAttempts: 3,
-        assignmentTimeout: 300000,
-        gracePeriod: 60000
-      },
-      services: {
-        firebase: !!process.env.FIREBASE_PROJECT_ID,
-        googleMaps: !!process.env.GOOGLE_MAPS_API_KEY,
-        jwt: !!process.env.JWT_SECRET,
-        auth: true // Using Firebase Auth
-      }
-    };
-
-    res.json({
-      success: true,
-      data: config,
-      timestamp: new Date().toISOString()
-    });
-  } catch (error) {
-    console.error('Config retrieval error:', error);
-    res.status(500).json({
-      success: false,
-      error: {
-        code: 'CONFIG_ERROR',
-        message: 'Failed to retrieve configuration',
-        details: error.message
-      },
-      timestamp: new Date().toISOString()
-    });
-  }
-});
-
-/**
- * Database health check
- * GET /api/health/database
- */
-router.get('/database', async (req, res) => {
-  try {
-    const db = getFirestore();
-    
-    // Test basic read operation
-    await db.collection('health').doc('test').get();
-    
-    // Test write operation
-    await db.collection('health').doc('test').set({
-      timestamp: new Date(),
-      test: true
-    });
-
-    // Test delete operation
-    await db.collection('health').doc('test').delete();
-
-    res.json({
-      success: true,
-      message: 'Database connection healthy',
-      timestamp: new Date().toISOString()
-    });
-  } catch (error) {
-    console.error('Database health check error:', error);
-    res.status(503).json({
-      success: false,
-      error: {
-        code: 'DATABASE_UNHEALTHY',
-        message: 'Database connection failed',
         details: error.message
       },
       timestamp: new Date().toISOString()

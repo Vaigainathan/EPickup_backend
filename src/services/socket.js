@@ -2,6 +2,38 @@ const { Server } = require('socket.io');
 const jwt = require('jsonwebtoken');
 const WebSocketEventHandler = require('./websocketEventHandler');
 
+/**
+ * Sanitize message data to prevent XSS and other attacks
+ */
+function sanitizeMessageData(data) {
+  if (!data || typeof data !== 'object') {
+    return data;
+  }
+
+  const sanitized = { ...data };
+
+  // Remove potentially dangerous properties
+  delete sanitized.__proto__;
+  delete sanitized.constructor;
+  delete sanitized.prototype;
+
+  // Sanitize string values
+  for (const key in sanitized) {
+    if (typeof sanitized[key] === 'string') {
+      // Remove potential XSS vectors
+      sanitized[key] = sanitized[key]
+        .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '')
+        .replace(/javascript:/gi, '')
+        .replace(/on\w+\s*=/gi, '');
+    } else if (typeof sanitized[key] === 'object' && sanitized[key] !== null) {
+      // Recursively sanitize nested objects
+      sanitized[key] = sanitizeMessageData(sanitized[key]);
+    }
+  }
+
+  return sanitized;
+}
+
 let io = null;
 let eventHandler = null;
 
@@ -35,6 +67,38 @@ const initializeSocketIO = async (server) => {
     
     // Set the io instance in the event handler
     eventHandler.setIO(io);
+
+    // Rate limiting for WebSocket connections
+    const connectionCounts = new Map();
+    const maxConnectionsPerIP = 10;
+    const connectionWindow = 60000; // 1 minute
+
+    io.use((socket, next) => {
+      const clientIP = socket.handshake.address || socket.conn.remoteAddress;
+      const now = Date.now();
+      
+      // Clean up old entries
+      for (const [ip, data] of connectionCounts.entries()) {
+        if (now - data.timestamp > connectionWindow) {
+          connectionCounts.delete(ip);
+        }
+      }
+      
+      // Check current connection count
+      const currentData = connectionCounts.get(clientIP);
+      if (currentData && currentData.count >= maxConnectionsPerIP) {
+        console.log(`🚫 Rate limit exceeded for IP: ${clientIP}`);
+        return next(new Error('Too many connections from this IP'));
+      }
+      
+      // Update connection count
+      connectionCounts.set(clientIP, {
+        count: (currentData?.count || 0) + 1,
+        timestamp: now
+      });
+      
+      next();
+    });
 
     // Authentication middleware with improved error handling
     io.use(async (socket, next) => {
@@ -124,6 +188,30 @@ const initializeSocketIO = async (server) => {
     // Connection handler
     io.on('connection', (socket) => {
       console.log(`🔌 User connected: ${socket.userId} (${socket.userType})`);
+      
+      // Message validation middleware
+      socket.use((packet, next) => {
+        const [event, data] = packet;
+        
+        // Validate event name
+        if (!event || typeof event !== 'string' || event.length === 0) {
+          console.log(`❌ Invalid event name from ${socket.id}: ${event}`);
+          return next(new Error('Invalid event name'));
+        }
+        
+        // Validate data size
+        if (data && JSON.stringify(data).length > 1024 * 1024) { // 1MB limit
+          console.log(`❌ Message too large from ${socket.id}`);
+          return next(new Error('Message too large'));
+        }
+        
+        // Sanitize data
+        if (data && typeof data === 'object') {
+          packet[1] = sanitizeMessageData(data);
+        }
+        
+        next();
+      });
       
       // Check if token needs refresh
       if (socket.needsTokenRefresh) {
@@ -283,6 +371,31 @@ const initializeSocketIO = async (server) => {
 
       socket.on('typing_stop', (data) => {
         eventHandler.handleTypingIndicator(socket, data, false);
+      });
+
+      // Handle disconnection
+      socket.on('disconnect', (reason) => {
+        console.log(`🔌 User disconnected: ${socket.userId} (${socket.userType}) - Reason: ${reason}`);
+        
+        // Handle disconnection with event handler
+        eventHandler.handleDisconnection(socket);
+      });
+
+      // Handle errors
+      socket.on('error', (error) => {
+        console.error(`❌ Socket error for ${socket.userId}:`, error);
+        
+        // Send error response to client
+        socket.emit('error', {
+          message: 'An error occurred',
+          timestamp: new Date().toISOString()
+        });
+      });
+
+      // Handle connection timeout
+      socket.on('timeout', () => {
+        console.log(`⏰ Socket timeout for ${socket.userId}`);
+        socket.disconnect(true);
       });
 
       // Handle disconnection

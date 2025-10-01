@@ -1,5 +1,6 @@
 const express = require('express');
 const { getFirestore } = require('firebase-admin/firestore');
+const { getAuth } = require('firebase-admin/auth');
 const jwt = require('jsonwebtoken');
 const router = express.Router();
 
@@ -10,45 +11,103 @@ const router = express.Router();
  */
 router.post('/login', async (req, res) => {
   try {
-    const { email, password } = req.body;
+    const { idToken } = req.body;
 
-    if (!email || !password) {
+    if (!idToken) {
       return res.status(400).json({
         success: false,
         error: {
-          code: 'MISSING_CREDENTIALS',
-          message: 'Email and password are required'
+          code: 'MISSING_ID_TOKEN',
+          message: 'Firebase ID token is required'
         },
         timestamp: new Date().toISOString()
       });
     }
 
-    // Use environment variables for admin credentials (secure)
-    const adminCredentials = {
-      email: process.env.ADMIN_EMAIL || 'admin@epickup.com',
-      password: process.env.ADMIN_PASSWORD || 'admin123',
-      name: 'Admin User',
-      role: 'super_admin'
-    };
+    // Verify Firebase ID token
+    const auth = getAuth();
+    const db = getFirestore();
+    
+    let decodedToken, userRecord, customClaims;
+    
+    try {
+      // Validate token format before verification
+      if (!idToken || typeof idToken !== 'string' || idToken.length < 10) {
+        return res.status(400).json({
+          success: false,
+          error: {
+            code: 'INVALID_TOKEN_FORMAT',
+            message: 'Invalid token format'
+          },
+          timestamp: new Date().toISOString()
+        });
+      }
 
-    if (email !== adminCredentials.email || password !== adminCredentials.password) {
+      // Verify the Firebase ID token
+      decodedToken = await auth.verifyIdToken(idToken);
+      
+      // Validate token expiration
+      if (decodedToken.exp < Date.now() / 1000) {
+        return res.status(401).json({
+          success: false,
+          error: {
+            code: 'TOKEN_EXPIRED',
+            message: 'Token has expired'
+          },
+          timestamp: new Date().toISOString()
+        });
+      }
+      
+      // Check if user has admin custom claims
+      customClaims = decodedToken.customClaims || {};
+      if (customClaims.userType !== 'admin' && customClaims.role !== 'super_admin') {
+        return res.status(403).json({
+          success: false,
+          error: {
+            code: 'INSUFFICIENT_PRIVILEGES',
+            message: 'This account does not have admin privileges'
+          },
+          timestamp: new Date().toISOString()
+        });
+      }
+
+      // Get user record for additional info
+      userRecord = await auth.getUser(decodedToken.uid);
+      
+    } catch (authError) {
+      console.error('Firebase Auth verification error:', authError);
+      
+      // Handle specific Firebase Auth errors
+      let errorCode = 'INVALID_TOKEN';
+      let errorMessage = 'Invalid or expired Firebase ID token';
+      
+      if (authError.code === 'auth/id-token-expired') {
+        errorCode = 'TOKEN_EXPIRED';
+        errorMessage = 'Token has expired';
+      } else if (authError.code === 'auth/id-token-revoked') {
+        errorCode = 'TOKEN_REVOKED';
+        errorMessage = 'Token has been revoked';
+      } else if (authError.code === 'auth/invalid-id-token') {
+        errorCode = 'INVALID_TOKEN_FORMAT';
+        errorMessage = 'Invalid token format';
+      }
+      
       return res.status(401).json({
         success: false,
         error: {
-          code: 'INVALID_CREDENTIALS',
-          message: 'Invalid email or password'
+          code: errorCode,
+          message: errorMessage
         },
         timestamp: new Date().toISOString()
       });
     }
 
     // Create or get admin user in database
-    const db = getFirestore();
-    const adminId = 'admin_' + Date.now();
+    const adminId = decodedToken.uid; // Use Firebase UID as admin ID
     
     // Check if admin user already exists
     const existingAdminQuery = await db.collection('users')
-      .where('email', '==', email)
+      .where('uid', '==', adminId)
       .where('userType', '==', 'admin')
       .limit(1)
       .get();
@@ -57,19 +116,27 @@ router.post('/login', async (req, res) => {
     if (!existingAdminQuery.empty) {
       adminUser = existingAdminQuery.docs[0].data();
       adminUser.id = existingAdminQuery.docs[0].id;
+      
+      // Update last login
+      await db.collection('users').doc(adminId).update({
+        lastLogin: new Date(),
+        updatedAt: new Date()
+      });
     } else {
       // Create new admin user
       const adminUserData = {
         id: adminId,
-        email: adminCredentials.email,
-        name: adminCredentials.name,
+        uid: adminId,
+        email: userRecord.email,
+        name: userRecord.displayName || 'Admin User',
         userType: 'admin',
-        role: adminCredentials.role,
-        permissions: ['all'],
+        role: customClaims.role || 'super_admin',
+        permissions: customClaims.permissions || ['all'],
         isActive: true,
         isVerified: true,
         createdAt: new Date(),
-        updatedAt: new Date()
+        updatedAt: new Date(),
+        lastLogin: new Date()
       };
 
       const adminRef = db.collection('users').doc(adminId);
@@ -90,10 +157,11 @@ router.post('/login', async (req, res) => {
     
     const token = jwt.sign(
       {
-        userId: adminUser.id,
+        userId: adminUser.uid,
         email: adminUser.email,
         userType: 'admin',
-        role: adminUser.role
+        role: adminUser.role,
+        permissions: adminUser.permissions
       },
       process.env.JWT_SECRET,
       { expiresIn: '24h' }

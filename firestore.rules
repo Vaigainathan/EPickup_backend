@@ -18,7 +18,7 @@ service cloud.firestore {
     function isAdmin() {
       return request.auth != null && 
         (request.auth.token.userType == 'admin' || 
-         request.auth.token.role in ['admin', 'super_admin', 'driver_admin', 'support_admin', 'analytics_admin'] ||
+         request.auth.token.role == 'super_admin' ||
          // Fallback: check if user exists in adminUsers collection
          exists(/databases/$(database)/documents/adminUsers/$(request.auth.uid)));
     }
@@ -34,17 +34,12 @@ service cloud.firestore {
     function isAdminUser() {
       return request.auth != null && 
         (request.auth.token.userType == 'admin' && 
-         request.auth.token.role in ['super_admin', 'driver_admin', 'support_admin', 'analytics_admin']) ||
+         request.auth.token.role == 'super_admin') ||
         // Fallback: check adminUsers collection
         exists(/databases/$(database)/documents/adminUsers/$(request.auth.uid));
     }
     
-    function canCreateAdminProfile() {
-      return request.auth != null && 
-        request.resource.data.uid == request.auth.uid &&
-        request.resource.data.email == request.auth.token.email &&
-        request.resource.data.role in ['super_admin', 'driver_admin', 'support_admin', 'analytics_admin'];
-    }
+    // Removed unused canCreateAdminProfile function - admin creation is handled by backend
     
     function isDriver() {
       return request.auth.token.userType == 'driver';
@@ -115,7 +110,7 @@ service cloud.firestore {
         isOwner(userId) &&
         request.resource.data.email == request.auth.token.email &&
         request.resource.data.userType == 'admin' &&
-        request.resource.data.role in ['super_admin', 'driver_admin', 'support_admin', 'analytics_admin'] &&
+        request.resource.data.role == 'super_admin' &&
         request.resource.data.keys().hasAll(['uid', 'email', 'name', 'userType', 'role', 'createdAt']) &&
         isValidEmail(request.resource.data.email);
       
@@ -305,29 +300,14 @@ service cloud.firestore {
       // Allow admin users to read admin users (for admin management)
       allow read: if request.auth != null && isAdminUser();
       
-      // Allow any authenticated user to create their own admin profile
-      // This is the primary rule for admin user creation
-      allow create: if canCreateAdminProfile() &&
-        request.resource.data.keys().hasAll(['uid', 'email', 'displayName', 'role', 'permissions', 'createdAt']) &&
-        isValidEmail(request.resource.data.email);
-      
-      // TEMPORARY: Allow creation for initial setup (remove after first admin is created)
-      allow create: if request.auth != null && 
-        request.resource.data.uid == request.auth.uid &&
-        request.resource.data.role == 'super_admin' &&
-        request.resource.data.keys().hasAll(['uid', 'email', 'displayName', 'role', 'permissions', 'createdAt']);
-      
-      // TEMPORARY: Allow read for authenticated users during setup
-      allow read: if request.auth != null;
-      
-      // TEMPORARY: Allow creation for admin signup flow (client-side)
+      // Allow authenticated users to create their own admin profile
+      // This supports both client-side and backend admin creation
       allow create: if request.auth != null && 
         request.resource.data.uid == request.auth.uid &&
         request.resource.data.email == request.auth.token.email &&
-        request.resource.data.role in ['super_admin', 'driver_admin', 'support_admin', 'analytics_admin'] &&
+        request.resource.data.role == 'super_admin' &&
         request.resource.data.keys().hasAll(['uid', 'email', 'displayName', 'role', 'permissions', 'createdAt']) &&
         isValidEmail(request.resource.data.email);
-      
       
       // Allow admin users to update their own profile
       allow update: if request.auth != null && 

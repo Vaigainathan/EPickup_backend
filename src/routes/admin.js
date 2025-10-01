@@ -1297,7 +1297,7 @@ router.get('/emergency/reports', async (req, res) => {
 
 /**
  * @route   GET /api/admin/system-health
- * @desc    Get system health metrics
+ * @desc    Get system health metrics (DEPRECATED - use /system/health)
  * @access  Private (Admin only)
  */
 router.get('/system-health', async (req, res) => {
@@ -1318,17 +1318,16 @@ router.get('/system-health', async (req, res) => {
       timestamp: new Date().toISOString()
     };
 
-    // Count users by type
-    const usersSnapshot = await db.collection('users').get();
-    usersSnapshot.forEach(doc => {
-      const data = doc.data();
-      metrics.totalUsers++;
-      if (data.userType === 'driver') {
-        metrics.totalDrivers++;
-      } else if (data.userType === 'customer') {
-        metrics.totalCustomers++;
-      }
-    });
+    // Count users by type using efficient queries
+    const [driversSnapshot, customersSnapshot, adminSnapshot] = await Promise.all([
+      db.collection('users').where('userType', '==', 'driver').get(),
+      db.collection('users').where('userType', '==', 'customer').get(),
+      db.collection('adminUsers').get()
+    ]);
+    
+    metrics.totalDrivers = driversSnapshot.size;
+    metrics.totalCustomers = customersSnapshot.size;
+    metrics.totalUsers = metrics.totalDrivers + metrics.totalCustomers + adminSnapshot.size;
 
     // Count active bookings
     const activeBookingsSnapshot = await db.collection('bookings')
@@ -4000,6 +3999,124 @@ router.put('/customers/:id/name', async (req, res) => {
         message: 'Failed to update customer name',
         details: error.message
       }
+    });
+  }
+});
+
+/**
+ * @route   GET /api/admin/email-verification/:uid
+ * @desc    Get email verification link for admin user
+ * @access  Private (Admin only)
+ */
+router.get('/email-verification/:uid', async (req, res) => {
+  try {
+    const { uid } = req.params;
+    const db = getFirestore();
+
+    console.log(`📧 Getting email verification link for admin: ${uid}`);
+
+    // Get admin user data
+    const adminDoc = await db.collection('adminUsers').doc(uid).get();
+    
+    if (!adminDoc.exists) {
+      return res.status(404).json({
+        success: false,
+        error: {
+          code: 'ADMIN_NOT_FOUND',
+          message: 'Admin user not found'
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    const adminData = adminDoc.data();
+    
+    // Check if email is already verified
+    if (adminData.isEmailVerified) {
+      return res.json({
+        success: true,
+        message: 'Email is already verified',
+        data: {
+          isVerified: true,
+          verifiedAt: adminData.emailVerifiedAt
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    // Check if verification link exists
+    if (adminData.emailVerificationLink) {
+      return res.json({
+        success: true,
+        message: 'Email verification link retrieved',
+        data: {
+          verificationLink: adminData.emailVerificationLink,
+          sentAt: adminData.emailVerificationSentAt,
+          isVerified: false
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    // Generate new verification link
+    try {
+      const admin = require('firebase-admin');
+      const userRecord = await admin.auth().getUser(uid);
+      
+      const actionCodeSettings = {
+        url: `${process.env.FRONTEND_URL || 'http://localhost:5173'}/admin/email-verified`,
+        handleCodeInApp: false,
+      };
+      
+      const emailVerificationLink = await admin.auth().generateEmailVerificationLink(
+        userRecord.email,
+        actionCodeSettings
+      );
+      
+      // Store the verification link
+      await db.collection('adminUsers').doc(uid).update({
+        emailVerificationLink: emailVerificationLink,
+        emailVerificationSent: true,
+        emailVerificationSentAt: new Date().toISOString()
+      });
+      
+      console.log('✅ Email verification link generated for admin:', uid);
+      
+      res.json({
+        success: true,
+        message: 'Email verification link generated',
+        data: {
+          verificationLink: emailVerificationLink,
+          sentAt: new Date().toISOString(),
+          isVerified: false
+        },
+        timestamp: new Date().toISOString()
+      });
+      
+    } catch (emailError) {
+      console.error('❌ Email verification link generation failed:', emailError);
+      return res.status(500).json({
+        success: false,
+        error: {
+          code: 'EMAIL_VERIFICATION_ERROR',
+          message: 'Failed to generate email verification link',
+          details: emailError.message
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
+  } catch (error) {
+    console.error('❌ Error getting email verification link:', error);
+    
+    res.status(500).json({
+      success: false,
+      error: {
+        code: 'VERIFICATION_LINK_ERROR',
+        message: 'Failed to get email verification link',
+        details: error.message
+      },
+      timestamp: new Date().toISOString()
     });
   }
 });

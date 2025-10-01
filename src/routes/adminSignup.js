@@ -146,6 +146,14 @@ router.post('/', async (req, res) => {
         // For now, we'll just log it (in production, use SendGrid, AWS SES, etc.)
         console.log('📧 Email verification link:', emailVerificationLink);
         
+        // TODO: Implement actual email sending service
+        // For now, we'll store the verification link in the admin document
+        await db.collection('adminUsers').doc(decodedToken.uid).update({
+          emailVerificationLink: emailVerificationLink,
+          emailVerificationSent: true,
+          emailVerificationSentAt: new Date().toISOString()
+        });
+        
         // Update admin data to indicate email verification was sent
         await db.collection('adminUsers').doc(decodedToken.uid).update({
           emailVerificationSent: true,

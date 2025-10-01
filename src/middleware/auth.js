@@ -126,21 +126,32 @@ const authMiddleware = async (req, res, next) => {
       });
     }
     
-    const userDoc = await db.collection('users').doc(userId).get();
+    // Check if this is an admin user first
+    let userDoc = await db.collection('adminUsers').doc(userId).get();
+    let userData;
     
-    if (!userDoc.exists) {
-      return res.status(404).json({
-        success: false,
-        error: {
-          code: 'USER_NOT_FOUND',
-          message: 'User not found',
-          details: 'User account does not exist in the system'
-        },
-        timestamp: new Date().toISOString()
-      });
+    if (userDoc.exists) {
+      // Admin user found
+      userData = userDoc.data();
+      userData.userType = 'admin';
+    } else {
+      // Check regular users collection
+      userDoc = await db.collection('users').doc(userId).get();
+      if (!userDoc.exists) {
+        return res.status(404).json({
+          success: false,
+          error: {
+            code: 'USER_NOT_FOUND',
+            message: 'User not found',
+            details: 'User account does not exist in the system'
+          },
+          timestamp: new Date().toISOString()
+        });
+      }
+      userData = userDoc.data();
     }
-
-    const userData = userDoc.data();
+    
+    // userData is already set above
 
     // Check if user is active
     if (!userData.isActive) {

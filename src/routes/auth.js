@@ -467,13 +467,86 @@ router.post('/firebase/verify-token',
       // Verify Firebase ID token
       const decodedToken = await firebaseAuthService.verifyIdToken(idToken);
       
-      // Get or create user with role-specific UID
-      const additionalData = name ? { name: name } : {};
-      const userData = await roleBasedAuthService.getOrCreateRoleSpecificUser(
-        decodedToken, 
-        userType, 
-        additionalData
-      );
+      // Handle admin users differently - they should use their Firebase UID directly
+      let userData;
+      if (userType === 'admin') {
+        // For admin users, check if they exist in adminUsers collection
+        const { getFirestore } = require('firebase-admin/firestore');
+        const db = getFirestore();
+        const adminDoc = await db.collection('adminUsers').doc(decodedToken.uid).get();
+        
+        if (adminDoc.exists) {
+          const adminData = adminDoc.data();
+          userData = {
+            id: decodedToken.uid,
+            uid: decodedToken.uid,
+            originalFirebaseUID: decodedToken.uid,
+            email: decodedToken.email,
+            phone: decodedToken.phone_number,
+            name: adminData.displayName,
+            userType: 'admin',
+            role: adminData.role || 'super_admin',
+            permissions: adminData.permissions || ['all'],
+            isVerified: true,
+            isActive: adminData.isActive !== false,
+            accountStatus: adminData.accountStatus || 'active',
+            createdAt: adminData.createdAt,
+            updatedAt: adminData.updatedAt
+          };
+          
+          // Sync to users collection for consistency
+          await db.collection('users').doc(decodedToken.uid).set({
+            ...userData,
+            lastLogin: new Date().toISOString()
+          }, { merge: true });
+        } else {
+          // Admin user doesn't exist, create them
+          const adminData = {
+            uid: decodedToken.uid,
+            id: decodedToken.uid,
+            email: decodedToken.email,
+            displayName: name || 'EPickup Admin',
+            role: 'super_admin',
+            permissions: ['all'],
+            isActive: true,
+            isEmailVerified: decodedToken.email_verified || false,
+            accountStatus: 'active',
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+            lastLogin: new Date().toISOString()
+          };
+          
+          await db.collection('adminUsers').doc(decodedToken.uid).set(adminData);
+          
+          userData = {
+            id: decodedToken.uid,
+            uid: decodedToken.uid,
+            originalFirebaseUID: decodedToken.uid,
+            email: decodedToken.email,
+            phone: decodedToken.phone_number,
+            name: adminData.displayName,
+            userType: 'admin',
+            role: adminData.role,
+            permissions: adminData.permissions,
+            isVerified: true,
+            isActive: true,
+            accountStatus: 'active',
+            createdAt: adminData.createdAt,
+            updatedAt: adminData.updatedAt
+          };
+          
+          // Also create in users collection for consistency
+          await db.collection('users').doc(decodedToken.uid).set(userData);
+        }
+      } else {
+        // For customer/driver users, use role-specific UID
+        const additionalData = name ? { name: name } : {};
+        userData = await roleBasedAuthService.getOrCreateRoleSpecificUser(
+          decodedToken, 
+          userType, 
+          additionalData
+        );
+      }
       
       // Generate backend JWT token with role-specific UID
       const jwtToken = jwtService.generateAccessToken({
@@ -730,7 +803,17 @@ router.post('/admin/login',
       }
 
       // Use environment variable for admin password (secure)
-      const adminPassword = process.env.ADMIN_PASSWORD || 'EpickupAdmin2024!';
+      const adminPassword = process.env.ADMIN_PASSWORD;
+      if (!adminPassword) {
+        return res.status(500).json({
+          success: false,
+          error: {
+            code: 'CONFIGURATION_ERROR',
+            message: 'Admin password not configured'
+          },
+          timestamp: new Date().toISOString()
+        });
+      }
       if (password !== adminPassword) {
         return res.status(401).json({
           success: false,

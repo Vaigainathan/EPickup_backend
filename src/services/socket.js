@@ -74,6 +74,15 @@ const initializeSocketIO = async (server) => {
           const JWTService = require('./jwtService');
           const jwtService = new JWTService();
           decodedToken = jwtService.verifyToken(token);
+          
+          // Set user info for successful authentication
+          socket.userId = decodedToken.userId;
+          socket.userType = decodedToken.userType || 'customer';
+          socket.userRole = decodedToken.role || 'customer';
+          socket.userRooms = new Set();
+          
+          console.log(`✅ Socket authentication successful for ${socket.userType}: ${socket.userId}`);
+          return next();
         } catch (jwtError) {
           if (jwtError.message === 'Token expired') {
             // Token expired - allow connection but mark for token refresh
@@ -103,15 +112,6 @@ const initializeSocketIO = async (server) => {
           console.error('Socket authentication error:', jwtError.message, tokenInfo);
           return next(new Error('Invalid authentication token'));
         }
-        
-        // Add user info to socket
-        socket.userId = decodedToken.userId;
-        socket.userType = decodedToken.userType || 'customer';
-        socket.userRole = decodedToken.role || 'customer';
-        socket.userRooms = new Set();
-        socket.needsTokenRefresh = false;
-        
-        next();
       } catch (error) {
         console.error('Socket authentication error:', error.message);
         next(new Error('Invalid authentication token'));

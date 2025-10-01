@@ -114,6 +114,28 @@ class FirebaseAuthService {
             userType: 'admin',
             originalFirebaseUID: uid
           };
+        } else {
+          // Admin user not found in adminUsers collection, check users collection
+          const userDoc = await this.db.collection('users').doc(uid).get();
+          if (userDoc.exists) {
+            const userData = userDoc.data();
+            if (userData.userType === 'admin') {
+              // Sync to adminUsers collection
+              await this.db.collection('adminUsers').doc(uid).set({
+                ...userData,
+                originalFirebaseUID: uid
+              });
+              console.log(`✅ Synced admin user to adminUsers collection:`, uid);
+              
+              return {
+                ...userData,
+                originalFirebaseUID: uid
+              };
+            }
+          }
+          
+          console.log(`❌ Admin user not found in any collection:`, uid);
+          return null;
         }
       }
       

@@ -98,6 +98,15 @@ service cloud.firestore {
         isValidEmail(request.resource.data.email) &&
         request.resource.data.userType in ['customer', 'driver'];
       
+      // Allow admin users to be created in users collection
+      allow create: if isAuthenticated() && 
+        isOwner(userId) &&
+        request.resource.data.email == request.auth.token.email &&
+        request.resource.data.userType == 'admin' &&
+        request.resource.data.role in ['super_admin', 'driver_admin', 'support_admin', 'analytics_admin'] &&
+        request.resource.data.keys().hasAll(['uid', 'email', 'name', 'userType', 'role', 'createdAt']) &&
+        isValidEmail(request.resource.data.email);
+      
       allow update: if isAuthenticated() && (
         // Admin can update anything
         isAdmin() ||
@@ -283,6 +292,15 @@ service cloud.firestore {
         request.resource.data.keys().hasAll(['uid', 'email', 'displayName', 'role', 'permissions', 'createdAt']) &&
         isValidEmail(request.resource.data.email) &&
         request.resource.data.role in ['super_admin', 'driver_admin', 'support_admin', 'analytics_admin'];
+      
+      // Allow initial admin user creation for authenticated users
+      // This allows any authenticated user to create their own admin profile
+      allow create: if request.auth != null && 
+        request.resource.data.uid == request.auth.uid &&
+        request.resource.data.email == request.auth.token.email &&
+        request.resource.data.role in ['super_admin', 'driver_admin', 'support_admin', 'analytics_admin'] &&
+        request.resource.data.keys().hasAll(['uid', 'email', 'displayName', 'role', 'permissions', 'createdAt']) &&
+        isValidEmail(request.resource.data.email);
       
       // Allow admin users to update their own profile
       allow update: if request.auth != null && 

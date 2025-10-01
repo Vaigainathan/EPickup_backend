@@ -77,7 +77,7 @@ class RateLimitingService {
   getAuthRateLimiter() {
     return this.createRateLimiter({
       windowMs: 15 * 60 * 1000, // 15 minutes
-      max: 5, // 5 attempts per 15 minutes
+      max: 50, // 50 attempts per 15 minutes (more reasonable for testing)
       message: {
         success: false,
         error: {

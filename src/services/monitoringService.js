@@ -183,6 +183,16 @@ class MonitoringService {
           global.gc();
           console.log('✅ [PERF_MONITOR] Forced garbage collection executed');
         }
+        
+        // Create alert for high memory usage
+        this.createAlert('high_memory_usage', 
+          `High memory usage detected: ${memoryPercentage.toFixed(1)}%`, 
+          { memoryPercentage, memoryUsage }, 
+          'warning'
+        );
+        
+        // Clear old metrics to free memory
+        this.clearOldMetrics();
       }
 
       return health;
@@ -212,6 +222,20 @@ class MonitoringService {
     this.recordMetric('memory.rss', memUsage.rss);
     this.recordMetric('memory.heap_used', memUsage.heapUsed);
     this.recordMetric('uptime', process.uptime());
+  }
+
+  /**
+   * Clear old metrics to free memory
+   */
+  clearOldMetrics() {
+    const maxMetricsPerType = 100;
+    for (const [metricName, metricArray] of this.metrics.entries()) {
+      if (metricArray.length > maxMetricsPerType) {
+        const toRemove = metricArray.length - maxMetricsPerType;
+        metricArray.splice(0, toRemove);
+        console.log(`🧹 [PERF_MONITOR] Cleared ${toRemove} old metrics for ${metricName}`);
+      }
+    }
   }
 
   /**

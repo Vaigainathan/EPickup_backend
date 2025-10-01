@@ -7,7 +7,6 @@
 
 const { execSync } = require('child_process');
 const path = require('path');
-const fs = require('fs');
 
 console.log('🚀 Deploying Firestore indexes...');
 
@@ -15,7 +14,7 @@ try {
   // Check if firebase CLI is installed
   try {
     execSync('firebase --version', { stdio: 'pipe' });
-  } catch (error) {
+  } catch {
     console.error('❌ Firebase CLI not found. Please install it first:');
     console.error('   npm install -g firebase-tools');
     process.exit(1);
@@ -24,7 +23,7 @@ try {
   // Check if user is logged in
   try {
     execSync('firebase projects:list', { stdio: 'pipe' });
-  } catch (error) {
+  } catch {
     console.error('❌ Not logged in to Firebase. Please login first:');
     console.error('   firebase login');
     process.exit(1);
@@ -32,7 +31,7 @@ try {
 
   // Deploy indexes
   console.log('📦 Deploying Firestore indexes...');
-  const result = execSync('firebase deploy --only firestore:indexes', {
+  execSync('firebase deploy --only firestore:indexes', {
     cwd: path.join(__dirname, '..'),
     stdio: 'inherit'
   });

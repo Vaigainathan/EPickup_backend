@@ -98,7 +98,7 @@ router.get('/users', async (req, res) => {
     }
 
     // Apply pagination and ordering
-    query = query.orderBy('createdAt', 'desc').limit(parseInt(limit)).offset(parseInt(offset));
+    query = query.orderBy('createdAt', 'desc').limit(Math.max(1, Math.min(100, parseInt(limit) || 20))).offset(Math.max(0, parseInt(offset) || 0));
 
     const snapshot = await query.get();
     const users = [];
@@ -135,9 +135,9 @@ router.get('/users', async (req, res) => {
         users,
         total: users.length,
         pagination: {
-          limit: parseInt(limit),
-          offset: parseInt(offset),
-          hasMore: users.length === parseInt(limit)
+          limit: Math.max(1, Math.min(100, parseInt(limit) || 20)),
+          offset: Math.max(0, parseInt(offset) || 0),
+          hasMore: users.length === Math.max(1, Math.min(100, parseInt(limit) || 20))
         },
         filters: {
           userType,
@@ -180,7 +180,7 @@ router.get('/admins', async (req, res) => {
     }
 
     // Apply pagination and ordering
-    query = query.orderBy('createdAt', 'desc').limit(parseInt(limit)).offset(parseInt(offset));
+    query = query.orderBy('createdAt', 'desc').limit(Math.max(1, Math.min(100, parseInt(limit) || 20))).offset(Math.max(0, parseInt(offset) || 0));
 
     const snapshot = await query.get();
     const admins = [];
@@ -205,8 +205,8 @@ router.get('/admins', async (req, res) => {
       success: true,
       data: admins,
       pagination: {
-        limit: parseInt(limit),
-        offset: parseInt(offset),
+        limit: Math.max(1, Math.min(100, parseInt(limit) || 20)),
+        offset: Math.max(0, parseInt(offset) || 0),
         total: admins.length
       },
       timestamp: new Date().toISOString()
@@ -496,7 +496,7 @@ router.get('/drivers', async (req, res) => {
     }
 
     // Apply pagination and ordering
-    query = query.orderBy('createdAt', 'desc').limit(parseInt(limit)).offset(parseInt(offset));
+    query = query.orderBy('createdAt', 'desc').limit(Math.max(1, Math.min(100, parseInt(limit) || 20))).offset(Math.max(0, parseInt(offset) || 0));
 
     const snapshot = await query.get();
     const drivers = [];
@@ -514,8 +514,8 @@ router.get('/drivers', async (req, res) => {
       success: true,
       data: drivers,
       pagination: {
-        limit: parseInt(limit),
-        offset: parseInt(offset),
+        limit: Math.max(1, Math.min(100, parseInt(limit) || 20)),
+        offset: Math.max(0, parseInt(offset) || 0),
         total: drivers.length
       },
       timestamp: new Date().toISOString()
@@ -785,7 +785,7 @@ router.get('/bookings', async (req, res) => {
     }
 
     // Apply pagination and ordering
-    query = query.orderBy('createdAt', 'desc').limit(parseInt(limit)).offset(parseInt(offset));
+    query = query.orderBy('createdAt', 'desc').limit(Math.max(1, Math.min(100, parseInt(limit) || 20))).offset(Math.max(0, parseInt(offset) || 0));
 
     const snapshot = await query.get();
     const bookings = [];
@@ -804,8 +804,8 @@ router.get('/bookings', async (req, res) => {
       success: true,
       data: bookings,
       pagination: {
-        limit: parseInt(limit),
-        offset: parseInt(offset),
+        limit: Math.max(1, Math.min(100, parseInt(limit) || 20)),
+        offset: Math.max(0, parseInt(offset) || 0),
         total: bookings.length
       },
       timestamp: new Date().toISOString()
@@ -846,7 +846,7 @@ router.get('/emergency-alerts', async (req, res) => {
     }
 
     // Apply pagination and ordering
-    query = query.orderBy('createdAt', 'desc').limit(parseInt(limit)).offset(parseInt(offset));
+    query = query.orderBy('createdAt', 'desc').limit(Math.max(1, Math.min(100, parseInt(limit) || 20))).offset(Math.max(0, parseInt(offset) || 0));
 
     const snapshot = await query.get();
     const alerts = [];
@@ -865,8 +865,8 @@ router.get('/emergency-alerts', async (req, res) => {
       success: true,
       data: alerts,
       pagination: {
-        limit: parseInt(limit),
-        offset: parseInt(offset),
+        limit: Math.max(1, Math.min(100, parseInt(limit) || 20)),
+        offset: Math.max(0, parseInt(offset) || 0),
         total: alerts.length
       },
       timestamp: new Date().toISOString()
@@ -1393,7 +1393,7 @@ router.get('/drivers/pending', async (req, res) => {
     let processedCount = 0;
 
     for (const doc of driversSnapshot.docs) {
-      if (processedCount >= parseInt(limit)) break;
+      if (processedCount >= Math.max(1, Math.min(100, parseInt(limit) || 20))) break;
       
       const driverData = doc.data();
       const verificationStatus = driverData.driver?.verificationStatus || 'pending';
@@ -1413,8 +1413,8 @@ router.get('/drivers/pending', async (req, res) => {
       success: true,
       data: pendingDrivers,
       pagination: {
-        limit: parseInt(limit),
-        offset: parseInt(offset),
+        limit: Math.max(1, Math.min(100, parseInt(limit) || 20)),
+        offset: Math.max(0, parseInt(offset) || 0),
         total: pendingDrivers.length
       },
       timestamp: new Date().toISOString()
@@ -2229,7 +2229,7 @@ router.get('/support/tickets', async (req, res) => {
     }
 
     // Apply pagination and ordering
-    query = query.orderBy('createdAt', 'desc').limit(parseInt(limit)).offset(parseInt(offset));
+    query = query.orderBy('createdAt', 'desc').limit(Math.max(1, Math.min(100, parseInt(limit) || 20))).offset(Math.max(0, parseInt(offset) || 0));
 
     const snapshot = await query.get();
     const tickets = [];
@@ -2248,8 +2248,8 @@ router.get('/support/tickets', async (req, res) => {
       success: true,
       data: tickets,
       pagination: {
-        limit: parseInt(limit),
-        offset: parseInt(offset),
+        limit: Math.max(1, Math.min(100, parseInt(limit) || 20)),
+        offset: Math.max(0, parseInt(offset) || 0),
         total: tickets.length
       },
       timestamp: new Date().toISOString()
@@ -2531,7 +2531,7 @@ router.get('/system/logs', async (req, res) => {
     const db = getFirestore();
     let query = db.collection('system_logs')
       .orderBy('timestamp', 'desc')
-      .limit(parseInt(limit));
+      .limit(Math.max(1, Math.min(100, parseInt(limit) || 20)));
     
     // Apply filters
     if (level) {
@@ -3391,7 +3391,7 @@ router.get('/customers', async (req, res) => {
     }
 
     // Apply pagination and ordering
-    query = query.orderBy('createdAt', 'desc').limit(parseInt(limit)).offset(parseInt(offset));
+    query = query.orderBy('createdAt', 'desc').limit(Math.max(1, Math.min(100, parseInt(limit) || 20))).offset(Math.max(0, parseInt(offset) || 0));
 
     const snapshot = await query.get();
     let customers = [];
@@ -3443,8 +3443,8 @@ router.get('/customers', async (req, res) => {
       success: true,
       data: customers,
       pagination: {
-        limit: parseInt(limit),
-        offset: parseInt(offset),
+        limit: Math.max(1, Math.min(100, parseInt(limit) || 20)),
+        offset: Math.max(0, parseInt(offset) || 0),
         total: customers.length
       }
     });
@@ -3871,7 +3871,7 @@ router.get('/customers/:id/bookings', async (req, res) => {
       query = query.where('status', '==', status);
     }
 
-    query = query.orderBy('createdAt', 'desc').limit(parseInt(limit)).offset(parseInt(offset));
+    query = query.orderBy('createdAt', 'desc').limit(Math.max(1, Math.min(100, parseInt(limit) || 20))).offset(Math.max(0, parseInt(offset) || 0));
 
     const snapshot = await query.get();
     const bookings = [];
@@ -3890,8 +3890,8 @@ router.get('/customers/:id/bookings', async (req, res) => {
       success: true,
       data: bookings,
       pagination: {
-        limit: parseInt(limit),
-        offset: parseInt(offset),
+        limit: Math.max(1, Math.min(100, parseInt(limit) || 20)),
+        offset: Math.max(0, parseInt(offset) || 0),
         total: bookings.length
       }
     });
@@ -4139,7 +4139,7 @@ router.get('/support-tickets', async (req, res) => {
       query = query.where('status', '==', status);
     }
 
-    const snapshot = await query.limit(parseInt(limit)).offset(parseInt(offset)).get();
+    const snapshot = await query.limit(Math.max(1, Math.min(100, parseInt(limit) || 20))).offset(Math.max(0, parseInt(offset) || 0)).get();
     
     const tickets = [];
     snapshot.forEach(doc => {
@@ -4153,8 +4153,8 @@ router.get('/support-tickets', async (req, res) => {
       success: true,
       data: tickets,
       pagination: {
-        limit: parseInt(limit),
-        offset: parseInt(offset),
+        limit: Math.max(1, Math.min(100, parseInt(limit) || 20)),
+        offset: Math.max(0, parseInt(offset) || 0),
         total: tickets.length
       },
       timestamp: new Date().toISOString()
@@ -4231,7 +4231,7 @@ router.get('/system/logs', async (req, res) => {
       query = query.where('level', '==', level);
     }
 
-    const snapshot = await query.limit(parseInt(limit)).get();
+    const snapshot = await query.limit(Math.max(1, Math.min(100, parseInt(limit) || 20))).get();
     
     const logs = [];
     snapshot.forEach(doc => {
@@ -4245,7 +4245,7 @@ router.get('/system/logs', async (req, res) => {
       success: true,
       data: logs,
       pagination: {
-        limit: parseInt(limit),
+        limit: Math.max(1, Math.min(100, parseInt(limit) || 20)),
         total: logs.length
       },
       timestamp: new Date().toISOString()
@@ -4411,6 +4411,104 @@ router.get('/analytics/drivers', async (req, res) => {
       error: {
         code: 'DRIVER_ANALYTICS_ERROR',
         message: 'Failed to get driver analytics',
+        details: error.message
+      },
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+/**
+ * @route   GET /api/admin/system/metrics
+ * @desc    Get system metrics
+ * @access  Private (Admin only)
+ */
+router.get('/system/metrics', async (req, res) => {
+  try {
+    const db = getFirestore();
+    
+    // Get basic metrics
+    const [usersSnapshot, driversSnapshot, customersSnapshot, bookingsSnapshot] = await Promise.all([
+      db.collection('users').get(),
+      db.collection('users').where('userType', '==', 'driver').get(),
+      db.collection('users').where('userType', '==', 'customer').get(),
+      db.collection('bookings').get()
+    ]);
+
+    const memoryUsage = process.memoryUsage();
+    const memoryPercentage = (memoryUsage.heapUsed / memoryUsage.heapTotal) * 100;
+
+    res.json({
+      success: true,
+      data: {
+        users: {
+          total: usersSnapshot.size,
+          drivers: driversSnapshot.size,
+          customers: customersSnapshot.size
+        },
+        bookings: {
+          total: bookingsSnapshot.size
+        },
+        system: {
+          uptime: process.uptime(),
+          memoryUsage: {
+            used: Math.round(memoryUsage.heapUsed / 1024 / 1024),
+            total: Math.round(memoryUsage.heapTotal / 1024 / 1024),
+            percentage: Math.round(memoryPercentage)
+          },
+          nodeVersion: process.version,
+          platform: process.platform
+        }
+      },
+      timestamp: new Date().toISOString()
+    });
+
+  } catch (error) {
+    console.error('❌ Error getting system metrics:', error);
+    res.status(500).json({
+      success: false,
+      error: {
+        code: 'SYSTEM_METRICS_ERROR',
+        message: 'Failed to get system metrics',
+        details: error.message
+      },
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+/**
+ * @route   GET /api/admin/admins
+ * @desc    Get all admin users
+ * @access  Private (Admin only)
+ */
+router.get('/admins', async (req, res) => {
+  try {
+    const db = getFirestore();
+    
+    const adminsSnapshot = await db.collection('adminUsers').get();
+    
+    const admins = [];
+    adminsSnapshot.forEach(doc => {
+      admins.push({
+        id: doc.id,
+        ...doc.data()
+      });
+    });
+
+    res.json({
+      success: true,
+      data: admins,
+      timestamp: new Date().toISOString()
+    });
+
+  } catch (error) {
+    console.error('❌ Error getting admins:', error);
+    res.status(500).json({
+      success: false,
+      error: {
+        code: 'ADMINS_ERROR',
+        message: 'Failed to get admin users',
         details: error.message
       },
       timestamp: new Date().toISOString()

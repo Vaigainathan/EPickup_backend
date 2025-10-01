@@ -10,6 +10,7 @@ class MonitoringService {
     this.metrics = new Map();
     this.alerts = [];
     this.isInitialized = false;
+    this.intervals = []; // Track intervals for cleanup
   }
 
   /**
@@ -175,7 +176,7 @@ class MonitoringService {
       
       // Check for high memory usage and trigger GC
       const memoryPercentage = (memoryUsage.heapUsed / memoryUsage.heapTotal) * 100;
-      if (memoryPercentage > 85) {
+      if (memoryPercentage > 75) { // Lowered from 85 to 75
         console.warn(`⚠️ [PERF_MONITOR] High memory usage detected: ${memoryPercentage.toFixed(1)}%`);
         
         // Force garbage collection if available
@@ -188,7 +189,7 @@ class MonitoringService {
         this.createAlert('high_memory_usage', 
           `High memory usage detected: ${memoryPercentage.toFixed(1)}%`, 
           { memoryPercentage, memoryUsage }, 
-          memoryPercentage > 95 ? 'critical' : 'warning'
+          memoryPercentage > 90 ? 'critical' : 'warning' // Lowered from 95 to 90
         );
         
         // Clear old metrics to free memory
@@ -196,6 +197,21 @@ class MonitoringService {
         
         // Clear old alerts to free memory
         this.clearOldAlerts();
+        
+        // Additional cleanup for critical memory usage
+        if (memoryPercentage > 90) {
+          console.warn('🚨 [PERF_MONITOR] Critical memory usage - performing aggressive cleanup');
+          
+          // Clear all metrics older than 1 hour
+          const oneHourAgo = Date.now() - (60 * 60 * 1000);
+          this.metrics = this.metrics.filter(metric => metric.timestamp > oneHourAgo);
+          
+          // Clear all alerts older than 30 minutes
+          const thirtyMinutesAgo = Date.now() - (30 * 60 * 1000);
+          this.alerts = this.alerts.filter(alert => alert.timestamp > thirtyMinutesAgo);
+          
+          console.log('✅ [PERF_MONITOR] Aggressive cleanup completed');
+        }
       }
 
       return health;
@@ -212,9 +228,10 @@ class MonitoringService {
    * Start metrics collection
    */
   startMetricsCollection() {
-    setInterval(() => {
+    const interval = setInterval(() => {
       this.collectSystemMetrics();
     }, 30000);
+    this.intervals.push(interval);
   }
 
   /**
@@ -257,13 +274,23 @@ class MonitoringService {
    * Start health checks
    */
   startHealthChecks() {
-    setInterval(async () => {
+    const interval = setInterval(async () => {
       const health = await this.getSystemHealth();
       
       if (health.status === 'unhealthy') {
         this.createAlert('system_unhealthy', 'System health check failed', health, 'critical');
       }
     }, 5 * 60 * 1000);
+    this.intervals.push(interval);
+  }
+
+  /**
+   * Cleanup intervals to prevent memory leaks
+   */
+  cleanup() {
+    this.intervals.forEach(interval => clearInterval(interval));
+    this.intervals = [];
+    console.log('✅ Monitoring service intervals cleaned up');
   }
 }
 

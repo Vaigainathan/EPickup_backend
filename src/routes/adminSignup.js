@@ -190,10 +190,24 @@ router.post('/', async (req, res) => {
 
     console.log('✅ Admin user created and custom claims set successfully');
 
+    // Generate backend JWT token for immediate use
+    const jwtService = require('../services/jwtService');
+    const backendToken = jwtService.generateAccessToken({
+      userId: adminData.id,
+      uid: adminData.uid,
+      email: adminData.email,
+      userType: 'admin',
+      role: adminData.role
+    });
+
     res.json({
       success: true,
       message: 'Admin user created successfully',
-      data: adminData
+      data: {
+        user: adminData,
+        token: backendToken,
+        expiresIn: '24h'
+      }
     });
 
   } catch (error) {

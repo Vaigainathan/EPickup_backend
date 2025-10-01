@@ -1,6 +1,4 @@
 const { execSync } = require('child_process');
-const fs = require('fs');
-const path = require('path');
 
 async function deployFirebaseConfig() {
   try {
@@ -9,7 +7,7 @@ async function deployFirebaseConfig() {
     // Check if Firebase CLI is installed
     try {
       execSync('firebase --version', { stdio: 'pipe' });
-    } catch (error) {
+    } catch {
       console.error('❌ Firebase CLI not found. Please install it first:');
       console.error('   npm install -g firebase-tools');
       process.exit(1);
@@ -18,7 +16,7 @@ async function deployFirebaseConfig() {
     // Check if user is logged in
     try {
       execSync('firebase projects:list', { stdio: 'pipe' });
-    } catch (error) {
+    } catch {
       console.error('❌ Not logged in to Firebase. Please run:');
       console.error('   firebase login');
       process.exit(1);

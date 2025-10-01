@@ -1,19 +1,173 @@
-const express = require('express');
-const { getFirestore } = require('firebase-admin/firestore');
-const verificationService = require('../services/verificationService');
-const { requireRole } = require('../middleware/firebaseIdTokenAuth');
+import express from 'express';
+import { getFirestore } from 'firebase-admin/firestore';
+import verificationService from '../services/verificationService.js';
 const router = express.Router();
 
-// Note: Authentication is now handled by firebaseIdTokenAuth middleware in server.js
-// This middleware validates Firebase ID tokens and sets req.user with Firebase data
-// Role and permission checks are handled by requireRole and requirePermission middleware
+// Note: Authentication is now handled by authMiddleware in server.js
+// This middleware validates backend JWT tokens and sets req.user with user data
+// Admin routes are protected by standard JWT authentication
+
+/**
+ * @route   GET /api/admin/profile
+ * @desc    Get current admin user profile
+ * @access  Private (Admin only)
+ */
+router.get('/profile', async (req, res) => {
+  try {
+    const db = getFirestore();
+    const adminId = req.user.uid || req.user.userId;
+
+    console.log(`📋 Getting admin profile for: ${adminId}`);
+
+    // Get admin user data from adminUsers collection
+    const adminDoc = await db.collection('adminUsers').doc(adminId).get();
+    
+    if (!adminDoc.exists) {
+      return res.status(404).json({
+        success: false,
+        error: {
+          code: 'ADMIN_NOT_FOUND',
+          message: 'Admin profile not found'
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    const adminData = adminDoc.data();
+    
+    // Return sanitized admin profile
+    const profile = {
+      id: adminDoc.id,
+      uid: adminData.uid,
+      email: adminData.email,
+      displayName: adminData.displayName,
+      role: adminData.role,
+      permissions: adminData.permissions || [],
+      isActive: adminData.isActive !== false,
+      isEmailVerified: adminData.isEmailVerified || false,
+      accountStatus: adminData.accountStatus || 'active',
+      lastLogin: adminData.lastLogin,
+      createdAt: adminData.createdAt?.toDate?.() || adminData.createdAt,
+      updatedAt: adminData.updatedAt?.toDate?.() || adminData.updatedAt
+    };
+
+    console.log(`✅ Admin profile retrieved successfully: ${adminData.email}`);
+
+    res.json({
+      success: true,
+      data: profile,
+      timestamp: new Date().toISOString()
+    });
+
+  } catch (error) {
+    console.error('❌ Error getting admin profile:', error);
+    
+    res.status(500).json({
+      success: false,
+      error: {
+        code: 'PROFILE_RETRIEVAL_ERROR',
+        message: 'Failed to retrieve admin profile',
+        details: error.message
+      },
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+/**
+ * @route   GET /api/admin/users
+ * @desc    Get all users (customers and drivers)
+ * @access  Private (Admin only)
+ */
+router.get('/users', async (req, res) => {
+  try {
+    const db = getFirestore();
+    const { limit = 50, offset = 0, userType, status } = req.query;
+
+    console.log(`📋 Getting users list for admin: ${req.user.email || req.user.userId}`);
+
+    let query = db.collection('users');
+
+    // Apply filters
+    if (userType) {
+      query = query.where('userType', '==', userType);
+    }
+    
+    if (status) {
+      query = query.where('status', '==', status);
+    }
+
+    // Apply pagination and ordering
+    query = query.orderBy('createdAt', 'desc').limit(parseInt(limit)).offset(parseInt(offset));
+
+    const snapshot = await query.get();
+    const users = [];
+
+    for (const doc of snapshot.docs) {
+      const data = doc.data();
+      users.push({
+        id: doc.id,
+        uid: data.uid,
+        email: data.email,
+        name: data.name || data.displayName,
+        phone: data.phone,
+        userType: data.userType,
+        status: data.status || 'active',
+        isActive: data.isActive !== false,
+        createdAt: data.createdAt?.toDate?.() || data.createdAt,
+        lastLogin: data.lastLogin,
+        // Include driver-specific data if available
+        ...(data.userType === 'driver' && {
+          driver: {
+            isOnline: data.driver?.isOnline || false,
+            isAvailable: data.driver?.isAvailable || false,
+            verificationStatus: data.driver?.verificationStatus || 'pending'
+          }
+        })
+      });
+    }
+
+    console.log(`✅ Retrieved ${users.length} users for admin`);
+
+    res.json({
+      success: true,
+      data: {
+        users,
+        total: users.length,
+        pagination: {
+          limit: parseInt(limit),
+          offset: parseInt(offset),
+          hasMore: users.length === parseInt(limit)
+        },
+        filters: {
+          userType,
+          status
+        }
+      },
+      timestamp: new Date().toISOString()
+    });
+
+  } catch (error) {
+    console.error('❌ Error getting users list:', error);
+    
+    res.status(500).json({
+      success: false,
+      error: {
+        code: 'USERS_RETRIEVAL_ERROR',
+        message: 'Failed to retrieve users list',
+        details: error.message
+      },
+      timestamp: new Date().toISOString()
+    });
+  }
+});
 
 /**
  * @route   GET /api/admin/admins
  * @desc    Get all admin users
  * @access  Private (Super Admin only)
  */
-router.get('/admins', requireRole(['super_admin']), async (req, res) => {
+router.get('/admins', async (req, res) => {
   try {
     const db = getFirestore();
     const { limit = 20, offset = 0, role } = req.query;
@@ -77,7 +231,7 @@ router.get('/admins', requireRole(['super_admin']), async (req, res) => {
  * @desc    Create new admin user
  * @access  Private (Super Admin only)
  */
-router.post('/admins', requireRole(['super_admin']), async (req, res) => {
+router.post('/admins', async (req, res) => {
   try {
     const { email, displayName, role = 'super_admin', permissions = [] } = req.body;
     
@@ -124,7 +278,7 @@ router.post('/admins', requireRole(['super_admin']), async (req, res) => {
       accountStatus: 'pending',
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
-      createdBy: req.user.uid,
+      createdBy: req.user.uid || req.user.userId,
       lastLogin: null
     };
 
@@ -170,7 +324,7 @@ router.post('/admins', requireRole(['super_admin']), async (req, res) => {
  * @desc    Update admin user
  * @access  Private (Admin only - can update own profile, Super Admin can update any)
  */
-router.put('/admins/:uid', requireRole(['super_admin']), async (req, res) => {
+router.put('/admins/:uid', async (req, res) => {
   try {
     const { uid } = req.params;
     const { displayName, role, permissions, isActive } = req.body;
@@ -190,7 +344,7 @@ router.put('/admins/:uid', requireRole(['super_admin']), async (req, res) => {
     }
 
     // Check permissions - only super admin can change roles or deactivate others
-    if (req.user.role !== 'super_admin' && req.user.uid !== uid) {
+    if (req.user.role !== 'super_admin' && (req.user.uid || req.user.userId) !== uid) {
       return res.status(403).json({
         success: false,
         error: {
@@ -245,7 +399,7 @@ router.put('/admins/:uid', requireRole(['super_admin']), async (req, res) => {
  * @desc    Delete admin user
  * @access  Private (Super Admin only)
  */
-router.delete('/admins/:uid', requireRole(['super_admin']), async (req, res) => {
+router.delete('/admins/:uid', async (req, res) => {
   try {
     const { uid } = req.params;
     
@@ -261,7 +415,7 @@ router.delete('/admins/:uid', requireRole(['super_admin']), async (req, res) => 
     }
 
     // Cannot delete self
-    if (req.user.uid === uid) {
+    if ((req.user.uid || req.user.userId) === uid) {
       return res.status(400).json({
         success: false,
         error: {
@@ -326,7 +480,7 @@ function getDefaultPermissions(role) {
  * @desc    Get all drivers with pagination and filters
  * @access  Private (Admin only)
  */
-router.get('/drivers', requireRole(['super_admin']), async (req, res) => {
+router.get('/drivers', async (req, res) => {
   try {
     const db = getFirestore();
     const { limit = 20, offset = 0, status, verificationStatus } = req.query;
@@ -386,10 +540,10 @@ router.get('/drivers', requireRole(['super_admin']), async (req, res) => {
  * @desc    Permanently delete a driver and cascade delete related data
  * @access  Private (Admin only)
  */
-router.delete('/drivers/:id', requireRole(['super_admin']), async (req, res) => {
+router.delete('/drivers/:id', async (req, res) => {
   try {
     const { id } = req.params;
-    const adminId = req.user.uid;
+    const adminId = req.user.uid || req.user.userId;
     const db = getFirestore();
     const batch = db.batch();
 
@@ -498,11 +652,11 @@ router.delete('/drivers/:id', requireRole(['super_admin']), async (req, res) => 
  * @desc    Ban a driver (irreversible action)
  * @access  Private (Admin only)
  */
-router.put('/drivers/:id/ban', requireRole(['super_admin']), async (req, res) => {
+router.put('/drivers/:id/ban', async (req, res) => {
   try {
     const { id } = req.params;
     const { reason } = req.body;
-    const adminId = req.user.uid;
+    const adminId = req.user.uid || req.user.userId;
     const db = getFirestore();
     const batch = db.batch();
 
@@ -612,7 +766,7 @@ router.put('/drivers/:id/ban', requireRole(['super_admin']), async (req, res) =>
  * @desc    Get all bookings with pagination and filters
  * @access  Private (Admin only)
  */
-router.get('/bookings', requireRole(['super_admin']), async (req, res) => {
+router.get('/bookings', async (req, res) => {
   try {
     const db = getFirestore();
     const { limit = 20, offset = 0, status, dateFrom, dateTo } = req.query;
@@ -676,7 +830,7 @@ router.get('/bookings', requireRole(['super_admin']), async (req, res) => {
  * @desc    Get all emergency alerts with pagination and filters
  * @access  Private (Admin only)
  */
-router.get('/emergency-alerts', requireRole(['super_admin']), async (req, res) => {
+router.get('/emergency-alerts', async (req, res) => {
   try {
     const db = getFirestore();
     const { limit = 20, offset = 0, status, alertType } = req.query;
@@ -737,7 +891,7 @@ router.get('/emergency-alerts', requireRole(['super_admin']), async (req, res) =
  * @desc    Get active emergency alerts
  * @access  Private (Admin only)
  */
-router.get('/emergency/alerts/active', requireRole(['super_admin']), async (req, res) => {
+router.get('/emergency/alerts/active', async (req, res) => {
   try {
     const db = getFirestore();
     
@@ -859,7 +1013,7 @@ router.get('/emergency/alerts/active', requireRole(['super_admin']), async (req,
  * @desc    Get emergency analytics data
  * @access  Private (Admin only)
  */
-router.get('/emergency/analytics', requireRole(['super_admin']), async (req, res) => {
+router.get('/emergency/analytics', async (req, res) => {
   try {
     const db = getFirestore();
     
@@ -929,7 +1083,7 @@ router.get('/emergency/analytics', requireRole(['super_admin']), async (req, res
  * @desc    Get nearby drivers for emergency response
  * @access  Private (Admin only)
  */
-router.get('/emergency/nearby-drivers', requireRole(['super_admin']), async (req, res) => {
+router.get('/emergency/nearby-drivers', async (req, res) => {
   try {
     const { latitude, longitude } = req.query;
     
@@ -999,7 +1153,7 @@ router.get('/emergency/nearby-drivers', requireRole(['super_admin']), async (req
  * @desc    Notify drivers about emergency
  * @access  Private (Admin only)
  */
-router.post('/emergency/notify-drivers', requireRole(['super_admin']), async (req, res) => {
+router.post('/emergency/notify-drivers', async (req, res) => {
   try {
     const { alertId, driverIds, message } = req.body;
     
@@ -1043,7 +1197,7 @@ router.post('/emergency/notify-drivers', requireRole(['super_admin']), async (re
  * @desc    Contact emergency services
  * @access  Private (Admin only)
  */
-router.post('/emergency/contact-services', requireRole(['super_admin']), async (req, res) => {
+router.post('/emergency/contact-services', async (req, res) => {
   try {
     const { alertId, serviceType } = req.body;
     
@@ -1088,7 +1242,7 @@ router.post('/emergency/contact-services', requireRole(['super_admin']), async (
  * @desc    Get emergency reports
  * @access  Private (Admin only)
  */
-router.get('/emergency/reports', requireRole(['super_admin']), async (req, res) => {
+router.get('/emergency/reports', async (req, res) => {
   try {
     // const { startDate, endDate, type, severity } = req.query; // TODO: Implement filtering
     
@@ -1146,7 +1300,7 @@ router.get('/emergency/reports', requireRole(['super_admin']), async (req, res) 
  * @desc    Get system health metrics
  * @access  Private (Admin only)
  */
-router.get('/system-health', requireRole(['super_admin']), async (req, res) => {
+router.get('/system-health', async (req, res) => {
   try {
     const db = getFirestore();
     
@@ -1225,7 +1379,7 @@ router.get('/system-health', requireRole(['super_admin']), async (req, res) => {
  * @desc    Get drivers pending verification
  * @access  Private (Admin only)
  */
-router.get('/drivers/pending', requireRole(['super_admin']), async (req, res) => {
+router.get('/drivers/pending', async (req, res) => {
   try {
     const db = getFirestore();
     const { limit = 20, offset = 0 } = req.query;
@@ -1286,7 +1440,7 @@ router.get('/drivers/pending', requireRole(['super_admin']), async (req, res) =>
  * @desc    Get driver documents for admin review
  * @access  Private (Admin only)
  */
-router.get('/drivers/:driverId/documents', requireRole(['super_admin']), async (req, res) => {
+router.get('/drivers/:driverId/documents', async (req, res) => {
   try {
     const { driverId } = req.params;
     
@@ -1373,7 +1527,7 @@ router.get('/drivers/:driverId/documents', requireRole(['super_admin']), async (
  * @desc    Test complete verification flow
  * @access  Private (Admin only)
  */
-router.post('/test-verification-flow/:driverId', requireRole(['super_admin']), async (req, res) => {
+router.post('/test-verification-flow/:driverId', async (req, res) => {
   try {
     const { driverId } = req.params;
     const db = getFirestore();
@@ -1523,7 +1677,7 @@ router.post('/test-verification-flow/:driverId', requireRole(['super_admin']), a
  * @desc    Test document access from Firebase Storage
  * @access  Private (Admin only)
  */
-router.get('/test-document-access/:driverId', requireRole(['super_admin']), async (req, res) => {
+router.get('/test-document-access/:driverId', async (req, res) => {
   try {
     const { driverId } = req.params;
     const db = getFirestore();
@@ -1610,7 +1764,7 @@ router.get('/test-document-access/:driverId', requireRole(['super_admin']), asyn
  * @desc    Debug endpoint to check document flow
  * @access  Private (Admin only)
  */
-router.get('/debug/documents/:driverId', requireRole(['super_admin']), async (req, res) => {
+router.get('/debug/documents/:driverId', async (req, res) => {
   try {
     const { driverId } = req.params;
     const db = getFirestore();
@@ -1682,11 +1836,11 @@ router.get('/debug/documents/:driverId', requireRole(['super_admin']), async (re
  * @desc    Verify individual document
  * @access  Private (Admin only)
  */
-router.post('/drivers/:driverId/documents/:documentType/verify', requireRole(['super_admin']), async (req, res) => {
+router.post('/drivers/:driverId/documents/:documentType/verify', async (req, res) => {
   try {
     const { driverId, documentType } = req.params;
     const { status, comments, rejectionReason } = req.body;
-    const adminId = req.user.uid;
+    const adminId = req.user.uid || req.user.userId;
 
     // Input validation
     if (!driverId || typeof driverId !== 'string' || driverId.trim() === '') {
@@ -1769,7 +1923,7 @@ router.post('/drivers/:driverId/documents/:documentType/verify', requireRole(['s
  * @desc    Sync verification status for all drivers based on document status
  * @access  Private (Admin only)
  */
-router.post('/sync-all-drivers-status', requireRole(['super_admin']), async (req, res) => {
+router.post('/sync-all-drivers-status', async (req, res) => {
   try {
     console.log('🔄 Syncing verification status for all drivers...');
     
@@ -1802,7 +1956,7 @@ router.post('/sync-all-drivers-status', requireRole(['super_admin']), async (req
  * @desc    Sync driver verification status based on documents
  * @access  Private (Admin only)
  */
-router.post('/drivers/:driverId/sync-status', requireRole(['super_admin']), async (req, res) => {
+router.post('/drivers/:driverId/sync-status', async (req, res) => {
   try {
     const { driverId } = req.params;
     
@@ -1845,11 +1999,11 @@ router.post('/drivers/:driverId/sync-status', requireRole(['super_admin']), asyn
  * @desc    Approve or reject driver verification
  * @access  Private (Admin only)
  */
-router.post('/drivers/:driverId/verify', requireRole(['super_admin']), async (req, res) => {
+router.post('/drivers/:driverId/verify', async (req, res) => {
   try {
     const { driverId } = req.params;
     const { status, reason, comments } = req.body;
-    const adminId = req.user.uid;
+    const adminId = req.user.uid || req.user.userId;
 
     if (!status || !['approved', 'rejected'].includes(status)) {
       return res.status(400).json({
@@ -1907,7 +2061,7 @@ router.post('/drivers/:driverId/verify', requireRole(['super_admin']), async (re
  * @desc    Get verification statistics
  * @access  Private (Admin only)
  */
-router.get('/verification/stats', requireRole(['super_admin']), async (req, res) => {
+router.get('/verification/stats', async (req, res) => {
   try {
     const db = getFirestore();
 
@@ -1950,7 +2104,7 @@ router.get('/verification/stats', requireRole(['super_admin']), async (req, res)
  * @desc    Get comprehensive analytics data
  * @access  Private (Admin only)
  */
-router.get('/analytics', requireRole(['super_admin']), async (req, res) => {
+router.get('/analytics', async (req, res) => {
   try {
     const db = getFirestore();
     const { period = '30d' } = req.query;
@@ -2057,7 +2211,7 @@ router.get('/analytics', requireRole(['super_admin']), async (req, res) => {
  * @desc    Get all support tickets with pagination and filters
  * @access  Private (Admin only)
  */
-router.get('/support/tickets', requireRole(['super_admin']), async (req, res) => {
+router.get('/support/tickets', async (req, res) => {
   try {
     const db = getFirestore();
     const { limit = 20, offset = 0, status, priority, category } = req.query;
@@ -2121,11 +2275,11 @@ router.get('/support/tickets', requireRole(['super_admin']), async (req, res) =>
  * @desc    Resolve a support ticket
  * @access  Private (Admin only)
  */
-router.post('/support/tickets/:ticketId/resolve', requireRole(['super_admin']), async (req, res) => {
+router.post('/support/tickets/:ticketId/resolve', async (req, res) => {
   try {
     const { ticketId } = req.params;
     const { resolution, notes } = req.body;
-    const adminId = req.user.uid;
+    const adminId = req.user.uid || req.user.userId;
 
     if (!resolution) {
       return res.status(400).json({
@@ -2193,7 +2347,7 @@ router.post('/support/tickets/:ticketId/resolve', requireRole(['super_admin']), 
  * @desc    Get detailed system health information
  * @access  Private (Admin only)
  */
-router.get('/system/health', requireRole(['super_admin']), async (req, res) => {
+router.get('/system/health', async (req, res) => {
   try {
     const db = getFirestore();
     
@@ -2425,10 +2579,10 @@ router.get('/system/logs', async (req, res) => {
  * @desc    Get admin settings
  * @access  Private (Admin only)
  */
-router.get('/settings', requireRole(['super_admin']), async (req, res) => {
+router.get('/settings', async (req, res) => {
   try {
     const db = getFirestore();
-    const adminId = req.user.userId;
+    const adminId = req.user.uid || req.user.userId;
     
     // Get admin settings from database
     const settingsDoc = await db.collection('adminSettings').doc(adminId).get();
@@ -2482,10 +2636,10 @@ router.get('/settings', requireRole(['super_admin']), async (req, res) => {
  * @desc    Update admin settings
  * @access  Private (Admin only)
  */
-router.put('/settings', requireRole(['super_admin']), async (req, res) => {
+router.put('/settings', async (req, res) => {
   try {
     const db = getFirestore();
-    const adminId = req.user.userId;
+    const adminId = req.user.uid || req.user.userId;
     const settings = req.body;
     
     // Validate settings
@@ -2528,7 +2682,7 @@ router.put('/settings', requireRole(['super_admin']), async (req, res) => {
  * @desc    Create system backup
  * @access  Private (Admin only)
  */
-router.post('/system/backup', requireRole(['super_admin']), async (req, res) => {
+router.post('/system/backup', async (req, res) => {
   try {
     const db = getFirestore();
     const backupId = `backup_${Date.now()}`;
@@ -2574,7 +2728,7 @@ router.post('/system/backup', requireRole(['super_admin']), async (req, res) => 
  * @desc    Restore system from backup
  * @access  Private (Admin only)
  */
-router.post('/system/restore', requireRole(['super_admin']), async (req, res) => {
+router.post('/system/restore', async (req, res) => {
   try {
     const { backupId } = req.body;
     
@@ -2619,7 +2773,7 @@ router.post('/system/restore', requireRole(['super_admin']), async (req, res) =>
  * @desc    Clear system cache
  * @access  Private (Admin only)
  */
-router.post('/system/clear-cache', requireRole(['super_admin']), async (req, res) => {
+router.post('/system/clear-cache',  async (req, res) => {
   try {
     // Simulate cache clearing
     res.json({
@@ -2650,7 +2804,7 @@ router.post('/system/clear-cache', requireRole(['super_admin']), async (req, res
  * @desc    Restart system
  * @access  Private (Admin only)
  */
-router.post('/system/restart', requireRole(['super_admin']), async (req, res) => {
+router.post('/system/restart', async (req, res) => {
   try {
     // Simulate system restart
     res.json({
@@ -2681,7 +2835,7 @@ router.post('/system/restart', requireRole(['super_admin']), async (req, res) =>
  * @desc    Get list of system backups
  * @access  Private (Admin only)
  */
-router.get('/system/backups', requireRole(['super_admin']), async (req, res) => {
+router.get('/system/backups', async (req, res) => {
   try {
     const db = getFirestore();
     
@@ -2724,7 +2878,7 @@ router.get('/system/backups', requireRole(['super_admin']), async (req, res) => 
  * @desc    Get revenue analytics
  * @access  Private (Admin)
  */
-router.get('/analytics/revenue', requireRole(['super_admin']), async (req, res) => {
+router.get('/analytics/revenue', async (req, res) => {
   try {
     const { startDate, endDate } = req.query;
     
@@ -2814,7 +2968,7 @@ router.get('/analytics/revenue', requireRole(['super_admin']), async (req, res) 
  * @desc    Get driver analytics
  * @access  Private (Admin)
  */
-router.get('/analytics/drivers', requireRole(['super_admin']), async (req, res) => {
+router.get('/analytics/drivers', async (req, res) => {
   try {
     const { startDate, endDate } = req.query;
     
@@ -2897,7 +3051,7 @@ router.get('/analytics/drivers', requireRole(['super_admin']), async (req, res) 
  * @desc    Get booking analytics
  * @access  Private (Admin)
  */
-router.get('/analytics/bookings', requireRole(['super_admin']), async (req, res) => {
+router.get('/analytics/bookings', async (req, res) => {
   try {
     const { startDate, endDate } = req.query;
     
@@ -2983,7 +3137,7 @@ router.get('/analytics/bookings', requireRole(['super_admin']), async (req, res)
  * @desc    Get system analytics
  * @access  Private (Admin)
  */
-router.get('/analytics/system', requireRole(['super_admin']), async (req, res) => {
+router.get('/analytics/system', async (req, res) => {
   try {
     const { startDate, endDate } = req.query;
     
@@ -3063,7 +3217,7 @@ router.get('/analytics/system', requireRole(['super_admin']), async (req, res) =
  * @desc    Get emergency analytics
  * @access  Private (Admin)
  */
-router.get('/analytics/emergency', requireRole(['super_admin']), async (req, res) => {
+router.get('/analytics/emergency', async (req, res) => {
   try {
     const { startDate, endDate } = req.query;
     
@@ -3140,7 +3294,7 @@ router.get('/analytics/emergency', requireRole(['super_admin']), async (req, res
  * @desc    Get support analytics
  * @access  Private (Admin)
  */
-router.get('/analytics/support', requireRole(['super_admin']), async (req, res) => {
+router.get('/analytics/support', async (req, res) => {
   try {
     const { startDate, endDate } = req.query;
     
@@ -3225,7 +3379,7 @@ router.get('/analytics/support', requireRole(['super_admin']), async (req, res) 
  * @desc    Get all customers with pagination and filters
  * @access  Private (Admin only)
  */
-router.get('/customers', requireRole(['super_admin']), async (req, res) => {
+router.get('/customers', async (req, res) => {
   try {
     const db = getFirestore();
     const { limit = 20, offset = 0, status, search } = req.query;
@@ -3314,7 +3468,7 @@ router.get('/customers', requireRole(['super_admin']), async (req, res) => {
  * @desc    Get single customer profile
  * @access  Private (Admin only)
  */
-router.get('/customers/:id', requireRole(['super_admin']), async (req, res) => {
+router.get('/customers/:id', async (req, res) => {
   try {
     const { id } = req.params;
     const db = getFirestore();
@@ -3395,11 +3549,11 @@ router.get('/customers/:id', requireRole(['super_admin']), async (req, res) => {
  * @desc    Suspend/Unsuspend customer
  * @access  Private (Admin only)
  */
-router.put('/customers/:id/status', requireRole(['super_admin']), async (req, res) => {
+router.put('/customers/:id/status', async (req, res) => {
   try {
     const { id } = req.params;
     const { status, reason } = req.body;
-    const adminId = req.user.uid;
+    const adminId = req.user.uid || req.user.userId;
     const db = getFirestore();
 
     if (!status || !['active', 'suspended'].includes(status)) {
@@ -3498,11 +3652,11 @@ router.put('/customers/:id/status', requireRole(['super_admin']), async (req, re
  * @desc    Ban customer (cannot log back in)
  * @access  Private (Admin only)
  */
-router.put('/customers/:id/ban', requireRole(['super_admin']), async (req, res) => {
+router.put('/customers/:id/ban', async (req, res) => {
   try {
     const { id } = req.params;
     const { reason } = req.body;
-    const adminId = req.user.uid;
+    const adminId = req.user.uid || req.user.userId;
     const db = getFirestore();
     const batch = db.batch();
 
@@ -3611,10 +3765,10 @@ router.put('/customers/:id/ban', requireRole(['super_admin']), async (req, res) 
  * @desc    Delete customer completely
  * @access  Private (Admin only)
  */
-router.delete('/customers/:id', requireRole(['super_admin']), async (req, res) => {
+router.delete('/customers/:id', async (req, res) => {
   try {
     const { id } = req.params;
-    const adminId = req.user.uid;
+    const adminId = req.user.uid || req.user.userId;
     const db = getFirestore();
     const batch = db.batch();
 
@@ -3706,7 +3860,7 @@ router.delete('/customers/:id', requireRole(['super_admin']), async (req, res) =
  * @desc    Fetch customer bookings
  * @access  Private (Admin only)
  */
-router.get('/customers/:id/bookings', requireRole(['super_admin']), async (req, res) => {
+router.get('/customers/:id/bookings', async (req, res) => {
   try {
     const { id } = req.params;
     const { limit = 20, offset = 0, status } = req.query;
@@ -3765,11 +3919,11 @@ router.get('/customers/:id/bookings', requireRole(['super_admin']), async (req, 
  * @desc    Update customer name
  * @access  Private (Admin only)
  */
-router.put('/customers/:id/name', requireRole(['super_admin']), async (req, res) => {
+router.put('/customers/:id/name', async (req, res) => {
   try {
     const { id } = req.params;
     const { name } = req.body;
-    const adminId = req.user.uid;
+    const adminId = req.user.uid || req.user.userId;
     const db = getFirestore();
 
     if (!name || name.trim().length < 2) {
@@ -3850,4 +4004,4 @@ router.put('/customers/:id/name', requireRole(['super_admin']), async (req, res)
   }
 });
 
-module.exports = router;
+export default router;

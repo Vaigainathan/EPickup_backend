@@ -36,15 +36,21 @@ const initializeSocketIO = async (server) => {
     // Set the io instance in the event handler
     eventHandler.setIO(io);
 
-    // Authentication middleware
+    // Authentication middleware with improved error handling
     io.use(async (socket, next) => {
       try {
         const token = socket.handshake.auth.token || 
                      socket.handshake.headers.authorization?.replace('Bearer ', '');
         
         if (!token) {
-          console.log('Socket authentication failed: No token provided');
+          console.log('🔐 Socket authentication failed: No token provided');
           return next(new Error('Authentication token required'));
+        }
+
+        // Validate token format
+        if (token.length < 10) {
+          console.log('🔐 Socket authentication failed: Invalid token format');
+          return next(new Error('Invalid token format'));
         }
 
         // Debug token format (only log on error)

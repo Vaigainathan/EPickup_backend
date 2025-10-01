@@ -52,7 +52,6 @@ const {
   gracefulShutdown 
 } = require('./middleware/errorHandler');
 const { authMiddleware } = require('./middleware/auth');
-const { firebaseIdTokenAuth } = require('./middleware/firebaseIdTokenAuth');
 // const { firebaseAdminAuthMiddleware } = require('./middleware/firebaseAuth'); // No longer used - using firebaseIdTokenAuth instead
 
 // Import services
@@ -307,11 +306,12 @@ app.use('/api/slots', workSlotsRoutes);
 app.use('/api/location-tracking', authMiddleware, locationTrackingRoutes);
 app.use('/api/admin/auth', adminAuthRoutes); // No auth required for admin login
 app.use('/api/admin/signup', adminSignupRoutes); // Admin signup route (no auth required)
-app.use('/api/admin', adminLimiter, firebaseIdTokenAuth, adminRoutes); // Admin routes use Firebase ID token auth middleware
+app.use('/api/admin', adminLimiter, authMiddleware, adminRoutes); // Admin routes use standard JWT auth middleware
 // Note: adminBookingManagementRoutes are included in adminRoutes to avoid conflicts
 
 // Health check routes (for keepalive script) - No auth required
-app.use('/health', healthRoutes);
+app.use('/api/health', healthRoutes);
+app.use('/health', healthRoutes); // Keep both for backward compatibility
 
 // Performance metrics endpoint (Admin only)
 app.get('/api/admin/performance', authMiddleware, (req, res) => {

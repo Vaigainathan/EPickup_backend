@@ -123,6 +123,41 @@ router.post('/', async (req, res) => {
       permissions: getDefaultPermissions()
     });
 
+    // Send email verification if not already verified
+    if (!decodedToken.email_verified) {
+      try {
+        console.log('📧 Sending email verification...');
+        const userRecord = await admin.auth().getUser(decodedToken.uid);
+        
+        // Generate email verification link
+        const actionCodeSettings = {
+          url: `${process.env.FRONTEND_URL || 'http://localhost:5173'}/admin/email-verified`,
+          handleCodeInApp: false,
+        };
+        
+        const emailVerificationLink = await admin.auth().generateEmailVerificationLink(
+          userRecord.email,
+          actionCodeSettings
+        );
+        
+        console.log('✅ Email verification link generated');
+        
+        // In a real application, you would send this link via email service
+        // For now, we'll just log it (in production, use SendGrid, AWS SES, etc.)
+        console.log('📧 Email verification link:', emailVerificationLink);
+        
+        // Update admin data to indicate email verification was sent
+        await db.collection('adminUsers').doc(decodedToken.uid).update({
+          emailVerificationSent: true,
+          emailVerificationSentAt: new Date().toISOString()
+        });
+        
+      } catch (emailError) {
+        console.warn('⚠️ Email verification setup failed:', emailError.message);
+        // Don't fail the signup process if email verification fails
+      }
+    }
+
     console.log('✅ Admin user created and custom claims set successfully');
 
     res.json({

@@ -1,26 +1,38 @@
 const express = require('express');
 const { getFirestore } = require('firebase-admin/firestore');
-const { firebaseAdminAuthMiddleware } = require('../middleware/firebaseAuth');
 const verificationService = require('../services/verificationService');
 const router = express.Router();
 
 // Helper function to replace requireRole middleware
-const requireRole = () => {
-  return (req, res, next) => {
-    // This is now handled by firebaseAdminAuthMiddleware
-    next();
-  };
+const requireRole = (roles) => (req, res, next) => {
+  // This middleware is now handled by the main authMiddleware in server.js
+  // which validates Backend JWT tokens and sets req.user
+  if (!req.user) {
+    return res.status(401).json({
+      success: false,
+      error: {
+        code: 'UNAUTHORIZED',
+        message: 'Authentication required'
+      }
+    });
+  }
+  
+  // Check userType for admin access
+  if (roles && roles.includes('admin') && req.user.userType !== 'admin') {
+    return res.status(403).json({
+      success: false,
+      error: {
+        code: 'INSUFFICIENT_PERMISSIONS',
+        message: 'Admin access required'
+      }
+    });
+  }
+  
+  next();
 };
 
-// Apply Firebase Admin Auth middleware to all routes except login and create-admin
-router.use((req, res, next) => {
-  // Skip auth for login and create-admin endpoints
-  if (req.path === '/login' || req.path === '/create-admin') {
-    return next();
-  }
-  // Apply Firebase Admin Auth middleware to all other routes
-  return firebaseAdminAuthMiddleware(req, res, next);
-});
+// Note: Authentication middleware is now handled by server.js
+// All admin routes will receive Backend JWT tokens via authMiddleware
 
 /**
  * @route   POST /api/admin/create-admin
@@ -97,103 +109,8 @@ router.post('/create-admin', async (req, res) => {
   }
 });
 
-/**
- * @route   POST /api/admin/login
- * @desc    Admin login with Firebase ID token
- * @access  Public
- */
-router.post('/login', async (req, res) => {
-  try {
-    const { idToken } = req.body;
-    
-    if (!idToken) {
-      return res.status(400).json({
-        success: false,
-        error: {
-          code: 'MISSING_ID_TOKEN',
-          message: 'Firebase ID token is required'
-        }
-      });
-    }
-
-    // Verify Firebase ID token
-    const firebaseAuthService = require('../services/firebaseAuthService');
-    const decodedToken = await firebaseAuthService.verifyIdToken(idToken);
-    
-    // Get admin user data from Firestore (check both collections)
-    let adminUser = await firebaseAuthService.getUserByUid(decodedToken.uid, 'admin');
-    
-    // If not found in users collection, check adminUsers collection
-    if (!adminUser) {
-      const { getFirestore } = require('firebase-admin/firestore');
-      const db = getFirestore();
-      const adminDoc = await db.collection('adminUsers').doc(decodedToken.uid).get();
-      
-      if (adminDoc.exists) {
-        adminUser = adminDoc.data();
-        console.log('✅ Found admin user in adminUsers collection');
-      }
-    }
-    
-    if (!adminUser) {
-      return res.status(401).json({
-        success: false,
-        error: {
-          code: 'ADMIN_NOT_FOUND',
-          message: 'Admin user not found. Please contact system administrator.'
-        }
-      });
-    }
-
-    // Ensure user has admin role
-    if (adminUser.userType !== 'admin') {
-      return res.status(403).json({
-        success: false,
-        error: {
-          code: 'INSUFFICIENT_PERMISSIONS',
-          message: 'User does not have admin privileges'
-        }
-      });
-    }
-
-    // Set custom claims if not already set
-    try {
-      await firebaseAuthService.setCustomClaims(decodedToken.uid, {
-        userType: 'admin',
-        role: adminUser.role || 'super_admin'
-      });
-      console.log('✅ Custom claims set for admin user');
-    } catch (claimsError) {
-      console.warn('⚠️ Failed to set custom claims:', claimsError.message);
-    }
-
-    res.json({
-      success: true,
-      message: 'Admin login successful',
-      data: {
-        user: adminUser,
-        token: {
-          uid: decodedToken.uid,
-          email: decodedToken.email,
-          phone_number: decodedToken.phone_number,
-          auth_time: new Date(decodedToken.auth_time * 1000).toISOString(),
-          expires_at: new Date(decodedToken.exp * 1000).toISOString()
-        }
-      }
-    });
-
-  } catch (error) {
-    console.error('Admin login error:', error);
-    res.status(401).json({
-      success: false,
-      error: {
-        code: 'LOGIN_ERROR',
-        message: 'Failed to login admin user',
-        details: error.message
-      }
-    });
-  }
-});
+// Note: Admin login is now handled by /api/auth/firebase/verify-token
+// This endpoint has been removed to avoid conflicts
 
 /**
  * @route   GET /api/admin/drivers

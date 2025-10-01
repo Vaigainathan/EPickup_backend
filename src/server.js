@@ -304,7 +304,7 @@ app.use('/api/slots', workSlotsRoutes);
 app.use('/api/location-tracking', authMiddleware, locationTrackingRoutes);
 app.use('/api/admin/auth', adminAuthRoutes); // No auth required for admin login
 app.use('/api/admin', authMiddleware, adminRoutes); // Admin routes use standard JWT auth middleware
-app.use('/api/admin', authMiddleware, adminBookingManagementRoutes); // Admin booking management routes
+// Note: adminBookingManagementRoutes are included in adminRoutes to avoid conflicts
 
 // Health check routes (for keepalive script) - No auth required
 app.use('/health', healthRoutes);

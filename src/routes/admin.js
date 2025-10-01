@@ -1,6 +1,6 @@
-import express from 'express';
-import { getFirestore } from 'firebase-admin/firestore';
-import verificationService from '../services/verificationService.js';
+const express = require('express');
+const { getFirestore } = require('firebase-admin/firestore');
+const verificationService = require('../services/verificationService');
 const router = express.Router();
 
 // Note: Authentication is now handled by authMiddleware in server.js
@@ -4004,4 +4004,4 @@ router.put('/customers/:id/name', async (req, res) => {
   }
 });
 
-export default router;
+module.exports = router;

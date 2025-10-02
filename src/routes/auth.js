@@ -132,6 +132,7 @@ router.post('/firebase/verify-token', async (req, res) => {
         updatedAt: new Date(),
         status: 'pending_verification',
         isActive: true, // Required for authentication middleware
+        accountStatus: 'active', // Explicitly set account status
         documents: {}
       };
       
@@ -141,6 +142,18 @@ router.post('/firebase/verify-token', async (req, res) => {
     } else {
       userData = userDoc.data();
       console.log(`✅ Found existing ${userType} user:`, roleBasedUID);
+      
+      // Ensure isActive field exists for existing users
+      if (userData.isActive === undefined) {
+        console.log(`🔧 Setting isActive field for existing user:`, roleBasedUID);
+        await db.collection('users').doc(roleBasedUID).update({
+          isActive: true,
+          accountStatus: userData.accountStatus || 'active',
+          updatedAt: new Date()
+        });
+        userData.isActive = true;
+        userData.accountStatus = userData.accountStatus || 'active';
+      }
     }
 
     // Set dynamic custom claims on Firebase user for customer/driver

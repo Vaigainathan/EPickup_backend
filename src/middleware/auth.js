@@ -140,8 +140,8 @@ const authMiddleware = async (req, res, next) => {
       });
     }
 
-    // Check if user is active
-    if (!userData.isActive) {
+    // Check if user is active (default to true if undefined)
+    if (userData.isActive === false) {
       return res.status(403).json({
         success: false,
         error: {

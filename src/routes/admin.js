@@ -658,8 +658,8 @@ router.delete('/drivers/:id', async (req, res) => {
       targetUserId: id,
       targetUserType: 'driver',
       details: {
-        driverName: driverData.name || driverData.personalInfo?.name,
-        driverEmail: driverData.email || driverData.personalInfo?.email,
+        driverName: driverData.name || driverData.personalInfo?.name || 'Unknown Driver',
+        driverEmail: driverData.email || driverData.personalInfo?.email || 'No email provided',
         deletedAt: new Date()
       },
       timestamp: new Date()
@@ -769,8 +769,8 @@ router.put('/drivers/:id/ban', async (req, res) => {
       targetUserId: id,
       targetUserType: 'driver',
       details: {
-        driverName: driverData.name || driverData.personalInfo?.name,
-        driverEmail: driverData.email || driverData.personalInfo?.email,
+        driverName: driverData.name || driverData.personalInfo?.name || 'Unknown Driver',
+        driverEmail: driverData.email || driverData.personalInfo?.email || 'No email provided',
         banReason: reason || 'Violation of terms of service',
         bannedAt: new Date()
       },
@@ -1537,7 +1537,7 @@ router.get('/drivers/:driverId/documents', async (req, res) => {
       data: {
         documents: processedDocuments,
         driverId,
-        driverName: driverData.name,
+        driverName: driverData.name || 'Unknown Driver',
         verificationStatus: finalVerificationStatus,
         // Add comprehensive data source info
         dataSource: comprehensiveVerificationData ? 'comprehensive' : 'basic',
@@ -1788,7 +1788,7 @@ router.get('/test-document-access/:driverId', async (req, res) => {
       success: true,
       data: {
         driverId,
-        driverName: driverData.name,
+        driverName: driverData.name || 'Unknown Driver',
         testResults,
         summary: {
           totalDocuments: documentTypes.length,
@@ -3695,8 +3695,8 @@ router.put('/customers/:id/status', async (req, res) => {
       targetUserId: id,
       targetUserType: 'customer',
       details: {
-        customerName: customerData.name || customerData.personalInfo?.name,
-        customerEmail: customerData.email || customerData.personalInfo?.email,
+        customerName: customerData.name || customerData.personalInfo?.name || 'Unknown Customer',
+        customerEmail: customerData.email || customerData.personalInfo?.email || 'No email provided',
         reason: reason || 'No reason provided',
         status,
         timestamp: new Date()
@@ -3806,8 +3806,8 @@ router.put('/customers/:id/ban', async (req, res) => {
       targetUserId: id,
       targetUserType: 'customer',
       details: {
-        customerName: customerData.name || customerData.personalInfo?.name,
-        customerEmail: customerData.email || customerData.personalInfo?.email,
+        customerName: customerData.name || customerData.personalInfo?.name || 'Unknown Customer',
+        customerEmail: customerData.email || customerData.personalInfo?.email || 'No email provided',
         banReason: reason || 'Violation of terms of service',
         bannedAt: new Date()
       },
@@ -3904,8 +3904,8 @@ router.delete('/customers/:id', async (req, res) => {
       targetUserId: id,
       targetUserType: 'customer',
       details: {
-        customerName: customerData.name || customerData.personalInfo?.name,
-        customerEmail: customerData.email || customerData.personalInfo?.email,
+        customerName: customerData.name || customerData.personalInfo?.name || 'Unknown Customer',
+        customerEmail: customerData.email || customerData.personalInfo?.email || 'No email provided',
         deletedAt: new Date()
       },
       timestamp: new Date()
@@ -4054,7 +4054,7 @@ router.put('/customers/:id/name', async (req, res) => {
       targetUserId: id,
       targetUserType: 'customer',
       details: {
-        oldName: customerData.name,
+        oldName: customerData.name || 'Unknown Customer',
         newName: name.trim(),
         timestamp: new Date()
       },
@@ -4066,7 +4066,7 @@ router.put('/customers/:id/name', async (req, res) => {
       message: 'Customer name updated successfully',
       data: {
         customerId: id,
-        oldName: customerData.name,
+        oldName: customerData.name || 'Unknown Customer',
         newName: name.trim()
       }
     });

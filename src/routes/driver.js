@@ -4562,7 +4562,7 @@ router.post('/documents/request-verification', requireDriver, async (req, res) =
 
     // Check if all required documents are uploaded
     const requiredDocuments = ['drivingLicense', 'profilePhoto', 'aadhaarCard', 'bikeInsurance', 'rcBook'];
-    const uploadedDocuments = requiredDocuments.filter(doc => documents[doc]?.url);
+    const uploadedDocuments = requiredDocuments.filter(doc => documents[doc]?.downloadURL || documents[doc]?.url);
 
     if (uploadedDocuments.length !== requiredDocuments.length) {
       return res.status(400).json({
@@ -4570,7 +4570,7 @@ router.post('/documents/request-verification', requireDriver, async (req, res) =
         error: {
           code: 'INCOMPLETE_DOCUMENTS',
           message: 'Incomplete documents',
-          details: `Please upload all required documents. Missing: ${requiredDocuments.filter(doc => !documents[doc]?.url).join(', ')}`
+          details: `Please upload all required documents. Missing: ${requiredDocuments.filter(doc => !documents[doc]?.downloadURL && !documents[doc]?.url).join(', ')}`
         },
         timestamp: new Date().toISOString()
       });
@@ -4605,31 +4605,31 @@ router.post('/documents/request-verification', requireDriver, async (req, res) =
       driverPhone: userData.phone,
       documents: {
         drivingLicense: {
-          downloadURL: documents.drivingLicense?.url || '',
+          downloadURL: documents.drivingLicense?.downloadURL || documents.drivingLicense?.url || '',
           verificationStatus: documents.drivingLicense?.status || 'pending',
           uploadedAt: documents.drivingLicense?.uploadedAt || new Date(),
           verified: documents.drivingLicense?.verified || false
         },
         aadhaarCard: {
-          downloadURL: documents.aadhaarCard?.url || documents.aadhaar?.url || '',
+          downloadURL: documents.aadhaarCard?.downloadURL || documents.aadhaarCard?.url || documents.aadhaar?.url || '',
           verificationStatus: documents.aadhaarCard?.status || documents.aadhaar?.status || 'pending',
           uploadedAt: documents.aadhaarCard?.uploadedAt || documents.aadhaar?.uploadedAt || new Date(),
           verified: documents.aadhaarCard?.verified || documents.aadhaar?.verified || false
         },
         bikeInsurance: {
-          downloadURL: documents.bikeInsurance?.url || documents.insurance?.url || '',
+          downloadURL: documents.bikeInsurance?.downloadURL || documents.bikeInsurance?.url || documents.insurance?.url || '',
           verificationStatus: documents.bikeInsurance?.status || documents.insurance?.status || 'pending',
           uploadedAt: documents.bikeInsurance?.uploadedAt || documents.insurance?.uploadedAt || new Date(),
           verified: documents.bikeInsurance?.verified || documents.insurance?.verified || false
         },
         rcBook: {
-          downloadURL: documents.rcBook?.url || '',
+          downloadURL: documents.rcBook?.downloadURL || documents.rcBook?.url || '',
           verificationStatus: documents.rcBook?.status || 'pending',
           uploadedAt: documents.rcBook?.uploadedAt || new Date(),
           verified: documents.rcBook?.verified || false
         },
         profilePhoto: {
-          downloadURL: documents.profilePhoto?.url || '',
+          downloadURL: documents.profilePhoto?.downloadURL || documents.profilePhoto?.url || '',
           verificationStatus: documents.profilePhoto?.status || 'pending',
           uploadedAt: documents.profilePhoto?.uploadedAt || new Date(),
           verified: documents.profilePhoto?.verified || false

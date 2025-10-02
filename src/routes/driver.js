@@ -136,7 +136,19 @@ router.put('/profile', [
   body('profilePicture')
     .optional()
     .isURL()
-    .withMessage('Profile picture must be a valid URL')
+    .withMessage('Profile picture must be a valid URL'),
+  body('vehicleDetails.vehicleType')
+    .optional()
+    .isIn(['motorcycle', 'electric'])
+    .withMessage('Vehicle type must be motorcycle or electric'),
+  body('vehicleDetails.vehicleNumber')
+    .optional()
+    .isLength({ min: 1 })
+    .withMessage('Vehicle number is required'),
+  body('vehicleDetails.vehicleYear')
+    .optional()
+    .isInt({ min: 2000, max: new Date().getFullYear() + 1 })
+    .withMessage('Invalid vehicle year')
 ], async (req, res) => {
   try {
     const errors = validationResult(req);
@@ -153,7 +165,7 @@ router.put('/profile', [
     }
 
     const { uid } = req.user;
-    const { name, email, profilePicture } = req.body;
+    const { name, email, profilePicture, vehicleDetails } = req.body;
     const db = getFirestore();
     
     const updateData = {
@@ -163,6 +175,11 @@ router.put('/profile', [
     if (name) updateData.name = name;
     if (email) updateData.email = email;
     if (profilePicture) updateData.profilePicture = profilePicture;
+    
+    // Handle vehicle details update
+    if (vehicleDetails) {
+      updateData['driver.vehicleDetails'] = vehicleDetails;
+    }
 
     await db.collection('users').doc(uid).update(updateData);
 
@@ -2178,6 +2195,15 @@ router.post('/bookings/:id/accept', requireDriver, async (req, res) => {
         throw new Error('DRIVER_NOT_AVAILABLE');
       }
 
+      // Check if driver is verified (both documents and vehicle data)
+      // This check is done inside the transaction to prevent race conditions
+      const userVerificationStatus = freshDriverData.driver?.verificationStatus || freshDriverData.verificationStatus;
+      const userIsVerified = freshDriverData.driver?.isVerified || freshDriverData.isVerified;
+      
+      if (!userIsVerified && userVerificationStatus !== 'approved' && userVerificationStatus !== 'verified') {
+        throw new Error('DRIVER_NOT_VERIFIED');
+      }
+
       // Check if driver is already assigned to another booking
       const activeBookingsQuery = db.collection('bookings')
         .where('driverId', '==', uid)
@@ -2264,6 +2290,18 @@ router.post('/bookings/:id/accept', requireDriver, async (req, res) => {
     console.error('Error accepting booking:', error);
     
     // Handle specific transaction errors
+    if (error.message === 'DRIVER_NOT_VERIFIED') {
+      return res.status(403).json({
+        success: false,
+        error: {
+          code: 'DRIVER_NOT_VERIFIED',
+          message: 'Driver not verified',
+          details: 'Driver must be verified (documents and vehicle details approved) before accepting bookings'
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+    
     if (error.message === 'BOOKING_ALREADY_ASSIGNED') {
       return res.status(409).json({
         success: false,

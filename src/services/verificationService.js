@@ -294,12 +294,38 @@ class VerificationService {
       // Calculate verification status from documents
       const documentVerificationStatus = this.calculateVerificationStatus(normalizedDocuments);
       
+      // Check driver data verification status
+      let dataEntryStatus = 'pending';
+      let hasVehicleDetails = false;
+      
+      if (driverData.driver?.vehicleDetails || driverData.vehicleDetails) {
+        hasVehicleDetails = true;
+        // Check if there's a driver data entry
+        try {
+          const dataEntryQuery = await this.db.collection('driverDataEntries')
+            .where('driverId', '==', driverId)
+            .orderBy('submittedAt', 'desc')
+            .limit(1)
+            .get();
+          
+          if (!dataEntryQuery.empty) {
+            const latestEntry = dataEntryQuery.docs[0].data();
+            dataEntryStatus = latestEntry.status || 'pending_verification';
+            console.log(`📊 Driver data entry status: ${dataEntryStatus}`);
+          }
+        } catch (error) {
+          console.warn('⚠️ Could not check driver data entry status:', error.message);
+        }
+      }
+      
       // Check if user's verification status is already set to approved/verified
       const userVerificationStatus = driverData.driver?.verificationStatus || driverData.verificationStatus;
       const userIsVerified = driverData.driver?.isVerified || driverData.isVerified;
       
-      // Use user's verification status if it's approved/verified, otherwise use document-based status
+      // Determine final verification status considering both documents and data entry
       let finalVerificationStatus = documentVerificationStatus;
+      
+      // If user is explicitly verified, use that status
       if (userVerificationStatus === 'approved' || userVerificationStatus === 'verified' || userIsVerified === true) {
         finalVerificationStatus = {
           status: 'approved',
@@ -308,7 +334,39 @@ class VerificationService {
           totalWithDocuments: finalVerificationStatus.totalWithDocuments
         };
         console.log(`📊 Using user verification status: approved (user set to verified)`);
-      } else {
+      } 
+      // If driver data entry is rejected, driver is rejected
+      else if (dataEntryStatus === 'rejected') {
+        finalVerificationStatus = {
+          status: 'rejected',
+          verifiedCount: finalVerificationStatus.verifiedCount,
+          rejectedCount: finalVerificationStatus.rejectedCount,
+          totalWithDocuments: finalVerificationStatus.totalWithDocuments
+        };
+        console.log(`📊 Driver data entry rejected, setting status to rejected`);
+      }
+      // If driver data entry is pending verification, set to pending_verification
+      else if (dataEntryStatus === 'pending_verification') {
+        finalVerificationStatus = {
+          status: 'pending_verification',
+          verifiedCount: finalVerificationStatus.verifiedCount,
+          rejectedCount: finalVerificationStatus.rejectedCount,
+          totalWithDocuments: finalVerificationStatus.totalWithDocuments
+        };
+        console.log(`📊 Driver data entry pending verification`);
+      }
+      // If driver data entry is approved and documents are verified, driver is verified
+      else if (dataEntryStatus === 'approved' && documentVerificationStatus.status === 'verified') {
+        finalVerificationStatus = {
+          status: 'verified',
+          verifiedCount: finalVerificationStatus.verifiedCount,
+          rejectedCount: finalVerificationStatus.rejectedCount,
+          totalWithDocuments: finalVerificationStatus.totalWithDocuments
+        };
+        console.log(`📊 Driver data approved and documents verified`);
+      }
+      // Otherwise use document verification status
+      else {
         console.log(`📊 Using document verification status: ${finalVerificationStatus.status} (${finalVerificationStatus.verifiedCount}/${finalVerificationStatus.totalWithDocuments} verified)`);
       }
       
@@ -325,6 +383,8 @@ class VerificationService {
                         verificationStatus.totalWithDocuments > 0 ? 
                           Math.round((verificationStatus.verifiedCount / verificationStatus.totalWithDocuments) * 100) : 0,
         source,
+        hasVehicleDetails,
+        dataEntryStatus,
         documentSummary: {
           total: verificationStatus.totalWithDocuments,
           verified: verificationStatus.verifiedCount,

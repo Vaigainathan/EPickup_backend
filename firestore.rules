@@ -94,6 +94,46 @@ service cloud.firestore {
     function isValidNotificationType(type) {
       return type in ['booking_update', 'driver_assigned', 'payment_update', 'system_alert'];
     }
+    
+    function isValidVehicleType(vehicleType) {
+      return vehicleType in ['motorcycle', 'electric'];
+    }
+    
+    function isValidVehicleNumber(vehicleNumber) {
+      return vehicleNumber is string && vehicleNumber.matches('^[A-Z]{2}[0-9]{2}[A-Z]{1,2}[0-9]{4}$');
+    }
+    
+    function isValidLicenseNumber(licenseNumber) {
+      return licenseNumber is string && licenseNumber.matches('^[A-Z]{2}[0-9]{2}[0-9]{4}[0-9]{7}$');
+    }
+    
+    function isValidRCNumber(rcNumber) {
+      return rcNumber is string && rcNumber.matches('^[A-Z]{2}[0-9]{2}[A-Z]{2}[0-9]{4}$');
+    }
+    
+    function isValidInsuranceNumber(insuranceNumber) {
+      return insuranceNumber is string && insuranceNumber.matches('^[A-Z]{2}[0-9]{2}[A-Z]{2}[0-9]{4}$');
+    }
+    
+    function isValidDate(dateString) {
+      return dateString is string && dateString.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$');
+    }
+    
+    function isValidDriverVerificationStatus(status) {
+      return status in ['pending_verification', 'approved', 'rejected'];
+    }
+    
+    function isValidVehicleDetails(vehicleDetails) {
+      return vehicleDetails.keys().hasAll(['vehicleType', 'vehicleNumber', 'vehicleMake', 'vehicleModel', 'vehicleYear', 'vehicleColor', 'licenseNumber', 'licenseExpiry', 'rcNumber', 'insuranceNumber', 'insuranceExpiry']) &&
+             isValidVehicleType(vehicleDetails.vehicleType) &&
+             isValidVehicleNumber(vehicleDetails.vehicleNumber) &&
+             isValidLicenseNumber(vehicleDetails.licenseNumber) &&
+             isValidRCNumber(vehicleDetails.rcNumber) &&
+             isValidInsuranceNumber(vehicleDetails.insuranceNumber) &&
+             isValidDate(vehicleDetails.licenseExpiry) &&
+             isValidDate(vehicleDetails.insuranceExpiry) &&
+             vehicleDetails.vehicleYear is int && vehicleDetails.vehicleYear >= 2000 && vehicleDetails.vehicleYear <= 2030;
+    }
 
     // Users collection - enhanced security with field validation
     match /users/{userId} {
@@ -136,8 +176,9 @@ service cloud.firestore {
         // Drivers can update their driver-specific fields
         (isOwner(userId) && isDriver() &&
          request.writeFields.hasOnly(['driver', 'updatedAt', 'lastSeen']) &&
-         request.resource.data.driver.keys().hasOnly(['isOnline', 'isAvailable', 'currentLocation', 'vehicleInfo', 'status', 'verificationStatus', 'wallet']) &&
-         isValidDriverStatus(request.resource.data.driver.status))
+         request.resource.data.driver.keys().hasOnly(['isOnline', 'isAvailable', 'currentLocation', 'vehicleInfo', 'vehicleDetails', 'status', 'verificationStatus', 'wallet']) &&
+         isValidDriverStatus(request.resource.data.driver.status) &&
+         (request.resource.data.driver.vehicleDetails == null || isValidVehicleDetails(request.resource.data.driver.vehicleDetails)))
       );
       
       allow delete: if isAuthenticated() && isAdmin();
@@ -335,6 +376,23 @@ service cloud.firestore {
          request.auth.token.userType == 'admin');
       allow write: if request.auth != null && 
         (request.auth.token.role == 'admin' || request.auth.token.userType == 'admin');
+    }
+    
+    // Driver data entries - allow drivers to create/read their own entries, admin access for all
+    match /driverDataEntries/{entryId} {
+      allow read: if request.auth != null && 
+        (resource.data.driverId == request.auth.uid || 
+         request.auth.token.role == 'admin' || 
+         request.auth.token.userType == 'admin');
+      allow create: if request.auth != null && 
+        request.resource.data.driverId == request.auth.uid &&
+        request.resource.data.keys().hasAll(['driverId', 'vehicleDetails', 'status', 'submittedAt']) &&
+        isValidVehicleDetails(request.resource.data.vehicleDetails) &&
+        isValidDriverVerificationStatus(request.resource.data.status);
+      allow update: if request.auth != null && 
+        (request.auth.token.role == 'admin' || request.auth.token.userType == 'admin') &&
+        request.writeFields.hasOnly(['status', 'rejectionReason', 'reviewedAt', 'reviewedBy', 'updatedAt']) &&
+        isValidDriverVerificationStatus(request.resource.data.status);
     }
     
     // Payments collection - secure payment data access

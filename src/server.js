@@ -39,6 +39,8 @@ const adminAuthRoutes = require('./routes/adminAuth');
 const adminSignupRoutes = require('./routes/adminSignup');
 // const adminBookingManagementRoutes = require('./routes/adminBookingManagement'); // Included in adminRoutes
 const locationTrackingRoutes = require('./routes/locationTracking');
+const driverDataRoutes = require('./routes/driverData');
+const adminDriverDataRoutes = require('./routes/adminDriverData');
 
 // Import middleware
 const { 
@@ -373,11 +375,13 @@ app.use('/api/wallet', walletRoutes);
 app.use('/api/fare', fareCalculationRoutes);
 app.use('/api/slots', workSlotsRoutes);
 app.use('/api/location-tracking', authMiddleware, locationTrackingRoutes);
+app.use('/api/driver-data', authMiddleware, driverDataRoutes); // Driver data management routes
 app.use('/api/admin/auth', adminAuthRoutes); // No auth required for admin login
 app.use('/api/admin/signup', adminSignupRoutes); // Admin signup route (no auth required)
 // Import admin role validation
 const { requireAdmin } = require('./middleware/auth');
 app.use('/api/admin', adminLimiter, authMiddleware, requireAdmin, adminRoutes); // Admin routes require admin role
+app.use('/api/admin/driver-data', adminLimiter, authMiddleware, requireAdmin, adminDriverDataRoutes); // Admin driver data management routes
 // Note: adminBookingManagementRoutes are included in adminRoutes to avoid conflicts
 
 // Health check routes (for keepalive script) - No auth required

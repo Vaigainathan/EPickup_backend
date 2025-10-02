@@ -5,23 +5,26 @@
 
 const NodeCache = require('node-cache');
 
-// Create cache instances for different data types
+// Create cache instances for different data types with size limits
 const userCache = new NodeCache({ 
   stdTTL: 300, // 5 minutes
   checkperiod: 60, // Check for expired keys every minute
-  useClones: false // Don't clone objects for better performance
+  useClones: false, // Don't clone objects for better performance
+  maxKeys: 100 // Limit to 100 user cache entries
 });
 
 const adminCache = new NodeCache({ 
   stdTTL: 600, // 10 minutes
   checkperiod: 120,
-  useClones: false
+  useClones: false,
+  maxKeys: 50 // Limit to 50 admin cache entries
 });
 
 const statsCache = new NodeCache({ 
   stdTTL: 60, // 1 minute
   checkperiod: 30,
-  useClones: false
+  useClones: false,
+  maxKeys: 20 // Limit to 20 stats cache entries
 });
 
 /**

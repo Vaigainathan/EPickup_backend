@@ -53,21 +53,21 @@ class PerformanceMonitoringService {
     this.isMonitoring = true;
     this.startTime = Date.now();
     
-    // Update uptime every minute
+    // Update uptime every 2 minutes (reduced frequency)
     setInterval(() => {
       this.uptime = Date.now() - this.startTime;
       this.updateMemoryMetrics();
-    }, 60000);
+    }, 120000);
 
-    // Log performance metrics every 5 minutes
+    // Log performance metrics every 10 minutes (reduced frequency)
     setInterval(() => {
       this.logPerformanceMetrics();
-    }, 300000);
+    }, 600000);
 
-    // Cleanup old metrics every hour
+    // Cleanup old metrics every 30 minutes (more frequent cleanup)
     setInterval(() => {
       this.cleanupOldMetrics();
-    }, 3600000);
+    }, 1800000);
 
     console.log('✅ [PERF_MONITOR] Performance monitoring started');
   }
@@ -194,9 +194,41 @@ class PerformanceMonitoringService {
     this.metrics.memory.total = Math.round(memUsage.heapTotal / 1024 / 1024); // MB
     this.metrics.memory.utilization = Math.round((memUsage.heapUsed / memUsage.heapTotal) * 100); // Percentage
 
-    // Alert on high memory usage
+    // Alert on high memory usage and perform cleanup
     if (this.metrics.memory.utilization > 90) {
       console.warn(`⚠️ [PERF_MONITOR] High memory usage detected: ${this.metrics.memory.utilization}%`);
+      
+      // Perform aggressive cleanup
+      this.performMemoryCleanup();
+    }
+  }
+
+  /**
+   * Perform aggressive memory cleanup
+   */
+  performMemoryCleanup() {
+    try {
+      console.log('🧹 [PERF_MONITOR] Performing aggressive memory cleanup...');
+      
+      // Clear old response time history (keep only last 50 entries)
+      if (this.metrics.requests.responseTimeHistory.length > 50) {
+        this.metrics.requests.responseTimeHistory = this.metrics.requests.responseTimeHistory.slice(-50);
+      }
+      
+      // Clear old error history (keep only last 20 entries)
+      if (this.metrics.errors.recent.length > 20) {
+        this.metrics.errors.recent = this.metrics.errors.recent.slice(-20);
+      }
+      
+      // Force garbage collection if available
+      if (global.gc) {
+        global.gc();
+        console.log('🗑️ [PERF_MONITOR] Garbage collection triggered');
+      }
+      
+      console.log('✅ [PERF_MONITOR] Memory cleanup completed');
+    } catch (error) {
+      console.error('❌ [PERF_MONITOR] Memory cleanup failed:', error.message);
     }
   }
 

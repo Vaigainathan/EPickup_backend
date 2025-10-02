@@ -285,6 +285,30 @@ class MonitoringService {
   }
 
   /**
+   * Get current metrics
+   */
+  getMetrics() {
+    const metricsData = {};
+    for (const [metricName, metricArray] of this.metrics.entries()) {
+      metricsData[metricName] = {
+        count: metricArray.length,
+        latest: metricArray[metricArray.length - 1] || null,
+        average: this.calculateAverage(metricArray)
+      };
+    }
+    return metricsData;
+  }
+
+  /**
+   * Calculate average value for metrics array
+   */
+  calculateAverage(metricsArray) {
+    if (metricsArray.length === 0) return 0;
+    const sum = metricsArray.reduce((acc, metric) => acc + metric.value, 0);
+    return sum / metricsArray.length;
+  }
+
+  /**
    * Cleanup intervals to prevent memory leaks
    */
   cleanup() {

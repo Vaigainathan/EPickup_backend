@@ -63,62 +63,6 @@ router.get('/', requireDriver, async (req, res) => {
 });
 
 /**
- * @route   GET /api/driver/profile
- * @desc    Get driver profile
- * @access  Private (Driver only)
- */
-router.get('/profile', requireDriver, async (req, res) => {
-  try {
-    const { uid } = req.user;
-    const db = getFirestore();
-    
-    const userDoc = await db.collection('users').doc(uid).get();
-    
-    if (!userDoc.exists) {
-      return res.status(404).json({
-        success: false,
-        error: {
-          code: 'PROFILE_NOT_FOUND',
-          message: 'Profile not found',
-          details: 'Driver profile does not exist'
-        },
-        timestamp: new Date().toISOString()
-      });
-    }
-
-    const userData = userDoc.data();
-    
-    res.status(200).json({
-      success: true,
-      message: 'Profile retrieved successfully',
-      data: {
-        profile: {
-          id: userData.id,
-          name: userData.name,
-          email: userData.email,
-          phone: userData.phone,
-          profilePicture: userData.profilePicture,
-          driver: userData.driver
-        }
-      },
-      timestamp: new Date().toISOString()
-    });
-
-  } catch (error) {
-    console.error('Error getting driver profile:', error);
-    res.status(500).json({
-      success: false,
-      error: {
-        code: 'PROFILE_RETRIEVAL_ERROR',
-        message: 'Failed to retrieve profile',
-        details: 'An error occurred while retrieving profile'
-      },
-      timestamp: new Date().toISOString()
-    });
-  }
-});
-
-/**
  * @route   PUT /api/driver/profile
  * @desc    Update driver profile
  * @access  Private (Driver only)
@@ -260,6 +204,14 @@ router.get('/profile', requireDriver, async (req, res) => {
     // Ensure wallet structure exists and is properly formatted
     const driverData = userData.driver || {};
     const walletData = driverData.wallet || {};
+    
+    // Debug logging for vehicle details
+    console.log('🔍 [PROFILE] Debug userData:', {
+      hasDriver: !!userData.driver,
+      driverKeys: userData.driver ? Object.keys(userData.driver) : [],
+      vehicleDetails: userData.driver?.vehicleDetails,
+      vehicleDetailsKeys: userData.driver?.vehicleDetails ? Object.keys(userData.driver.vehicleDetails) : []
+    });
     
     // Normalize wallet data
     const normalizedWallet = {

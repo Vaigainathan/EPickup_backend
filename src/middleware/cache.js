@@ -5,133 +5,34 @@
 
 const NodeCache = require('node-cache');
 
-// Create cache instances for different data types with size limits
-const userCache = new NodeCache({ 
-  stdTTL: 300, // 5 minutes
-  checkperiod: 60, // Check for expired keys every minute
-  useClones: false, // Don't clone objects for better performance
-  maxKeys: 100 // Limit to 100 user cache entries
-});
+// Redundant NodeCache instances removed - using CachingService instead
+// Keep only documentStatusCache for critical driver document status endpoint
+const documentStatusMemoryCache = new Map();
 
-const adminCache = new NodeCache({ 
-  stdTTL: 600, // 10 minutes
-  checkperiod: 120,
-  useClones: false,
-  maxKeys: 50 // Limit to 50 admin cache entries
-});
-
-const statsCache = new NodeCache({ 
-  stdTTL: 60, // 1 minute
-  checkperiod: 30,
-  useClones: false,
-  maxKeys: 20 // Limit to 20 stats cache entries
-});
+// Redundant middleware functions removed - using CachingService instead
 
 /**
- * Cache middleware for user data
- */
-const cacheUserData = (req, res, next) => {
-  const cacheKey = `user_${req.params.userId || req.user?.uid}`;
-  
-  // Check cache first
-  const cachedData = userCache.get(cacheKey);
-  if (cachedData) {
-    return res.json(cachedData);
-  }
-  
-  // Store original res.json
-  const originalJson = res.json;
-  
-  // Override res.json to cache the response
-  res.json = function(data) {
-    // Only cache successful responses
-    if (data.success) {
-      userCache.set(cacheKey, data);
-    }
-    return originalJson.call(this, data);
-  };
-  
-  next();
-};
-
-/**
- * Cache middleware for admin data
- */
-const cacheAdminData = (req, res, next) => {
-  const cacheKey = `admin_${req.route?.path}_${JSON.stringify(req.query)}`;
-  
-  // Check cache first
-  const cachedData = adminCache.get(cacheKey);
-  if (cachedData) {
-    return res.json(cachedData);
-  }
-  
-  // Store original res.json
-  const originalJson = res.json;
-  
-  // Override res.json to cache the response
-  res.json = function(data) {
-    // Only cache successful responses
-    if (data.success) {
-      adminCache.set(cacheKey, data);
-    }
-    return originalJson.call(this, data);
-  };
-  
-  next();
-};
-
-/**
- * Cache middleware for statistics
- */
-const cacheStats = (req, res, next) => {
-  const cacheKey = `stats_${req.route?.path}`;
-  
-  // Check cache first
-  const cachedData = statsCache.get(cacheKey);
-  if (cachedData) {
-    return res.json(cachedData);
-  }
-  
-  // Store original res.json
-  const originalJson = res.json;
-  
-  // Override res.json to cache the response
-  res.json = function(data) {
-    // Only cache successful responses
-    if (data.success) {
-      statsCache.set(cacheKey, data);
-    }
-    return originalJson.call(this, data);
-  };
-  
-  next();
-};
-
-/**
- * Clear cache for specific user
+ * Clear document status cache for specific user
  */
 const clearUserCache = (userId) => {
-  userCache.del(`user_${userId}`);
+  documentStatusMemoryCache.delete(`document_status_${userId}`);
 };
 
 /**
- * Clear all caches
+ * Clear all document status caches
  */
 const clearAllCaches = () => {
-  userCache.flushAll();
-  adminCache.flushAll();
-  statsCache.flushAll();
+  documentStatusMemoryCache.clear();
 };
 
 /**
- * Cache middleware for document status
+ * Cache middleware for document status - CRITICAL for driver app
  */
 const documentStatusCache = (req, res, next) => {
   const cacheKey = `document_status_${req.user?.uid}`;
   
   // Check cache first
-  const cachedData = userCache.get(cacheKey);
+  const cachedData = documentStatusMemoryCache.get(cacheKey);
   if (cachedData) {
     return res.json(cachedData);
   }
@@ -143,7 +44,11 @@ const documentStatusCache = (req, res, next) => {
   res.json = function(data) {
     // Only cache successful responses
     if (data.success) {
-      userCache.set(cacheKey, data);
+      documentStatusMemoryCache.set(cacheKey, data);
+      // Auto-cleanup after 5 minutes
+      setTimeout(() => {
+        documentStatusMemoryCache.delete(cacheKey);
+      }, 5 * 60 * 1000);
     }
     return originalJson.call(this, data);
   };
@@ -155,8 +60,7 @@ const documentStatusCache = (req, res, next) => {
  * Invalidate user cache
  */
 const invalidateUserCache = (userId) => {
-  userCache.del(`user_${userId}`);
-  userCache.del(`document_status_${userId}`);
+  documentStatusMemoryCache.delete(`document_status_${userId}`);
 };
 
 /**
@@ -164,16 +68,14 @@ const invalidateUserCache = (userId) => {
  */
 const getCacheStats = () => {
   return {
-    userCache: userCache.getStats(),
-    adminCache: adminCache.getStats(),
-    statsCache: statsCache.getStats()
+    documentStatusCache: {
+      size: documentStatusMemoryCache.size,
+      keys: Array.from(documentStatusMemoryCache.keys())
+    }
   };
 };
 
 module.exports = {
-  cacheUserData,
-  cacheAdminData,
-  cacheStats,
   documentStatusCache,
   invalidateUserCache,
   clearUserCache,

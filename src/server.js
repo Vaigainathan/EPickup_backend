@@ -66,7 +66,7 @@ const { initializeFirebase } = require('./services/firebase');
 const socketService = require('./services/socket');
 // const msg91Service = require('./services/msg91Service'); // Deprecated - using Firebase Auth instead
 const monitoringService = require('./services/monitoringService');
-const performanceMonitoringService = require('./services/performanceMonitoringService');
+// performanceMonitoringService removed - using monitoringService instead
 
 const app = express();
 const PORT = env.getServerPort();
@@ -391,16 +391,14 @@ app.use('/health', healthRoutes); // Keep both for backward compatibility
 // Performance metrics endpoint (Admin only)
 app.get('/api/admin/performance', authMiddleware, (req, res) => {
   try {
-    const metrics = performanceMonitoringService.getMetrics();
-    const summary = performanceMonitoringService.getPerformanceSummary();
-    const alerts = performanceMonitoringService.getAlerts();
+    // Use monitoringService instead of removed performanceMonitoringService
+    const metrics = monitoringService.getMetrics();
     
     res.json({
       success: true,
       data: {
         metrics,
-        summary,
-        alerts
+        message: 'Performance monitoring consolidated into monitoringService'
       },
       timestamp: new Date().toISOString()
     });
@@ -587,7 +585,7 @@ app.use((req, res, next) => {
   
   res.on('finish', () => {
     const responseTime = Date.now() - startTime;
-    performanceMonitoringService.recordApiRequest(req, res, responseTime);
+    // API request monitoring handled by monitoringService
   });
   
   next();
@@ -630,9 +628,8 @@ async function initializeServices() {
     await monitoringService.initialize();
     console.log('✅ Monitoring service initialized');
 
-    // Initialize performance monitoring
-    performanceMonitoringService.startMonitoring();
-    console.log('✅ Performance monitoring service initialized');
+    // Performance monitoring handled by monitoringService
+    console.log('✅ Performance monitoring consolidated into monitoringService');
     
     console.log('✅ All services initialized successfully');
   } catch (error) {

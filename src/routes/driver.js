@@ -4558,11 +4558,25 @@ router.post('/documents/request-verification', requireDriver, async (req, res) =
     }
 
     const userData = userDoc.data();
-    const documents = userData.driver?.documents || {};
+    const documents = userData.documents || userData.driver?.documents || {};
 
     // Check if all required documents are uploaded
     const requiredDocuments = ['drivingLicense', 'profilePhoto', 'aadhaarCard', 'bikeInsurance', 'rcBook'];
-    const uploadedDocuments = requiredDocuments.filter(doc => documents[doc]?.downloadURL || documents[doc]?.url);
+    
+    // Map camelCase to snake_case for backend proxy storage
+    const documentFieldMap = {
+      'drivingLicense': 'driving_license',
+      'profilePhoto': 'profile_photo', 
+      'aadhaarCard': 'aadhaar_card',
+      'bikeInsurance': 'bike_insurance',
+      'rcBook': 'rc_book'
+    };
+    
+    const uploadedDocuments = requiredDocuments.filter(doc => {
+      const snakeCaseKey = documentFieldMap[doc];
+      return documents[doc]?.downloadURL || documents[doc]?.url || 
+             documents[snakeCaseKey]?.downloadURL || documents[snakeCaseKey]?.url;
+    });
 
     if (uploadedDocuments.length !== requiredDocuments.length) {
       return res.status(400).json({
@@ -4570,7 +4584,11 @@ router.post('/documents/request-verification', requireDriver, async (req, res) =
         error: {
           code: 'INCOMPLETE_DOCUMENTS',
           message: 'Incomplete documents',
-          details: `Please upload all required documents. Missing: ${requiredDocuments.filter(doc => !documents[doc]?.downloadURL && !documents[doc]?.url).join(', ')}`
+          details: `Please upload all required documents. Missing: ${requiredDocuments.filter(doc => {
+            const snakeCaseKey = documentFieldMap[doc];
+            return !documents[doc]?.downloadURL && !documents[doc]?.url && 
+                   !documents[snakeCaseKey]?.downloadURL && !documents[snakeCaseKey]?.url;
+          }).join(', ')}`
         },
         timestamp: new Date().toISOString()
       });
@@ -4605,34 +4623,34 @@ router.post('/documents/request-verification', requireDriver, async (req, res) =
       driverPhone: userData.phone,
       documents: {
         drivingLicense: {
-          downloadURL: documents.drivingLicense?.downloadURL || documents.drivingLicense?.url || '',
-          verificationStatus: documents.drivingLicense?.status || 'pending',
-          uploadedAt: documents.drivingLicense?.uploadedAt || new Date(),
-          verified: documents.drivingLicense?.verified || false
+          downloadURL: documents.drivingLicense?.downloadURL || documents.drivingLicense?.url || documents.driving_license?.downloadURL || documents.driving_license?.url || '',
+          verificationStatus: documents.drivingLicense?.status || documents.driving_license?.status || 'pending',
+          uploadedAt: documents.drivingLicense?.uploadedAt || documents.driving_license?.uploadedAt || new Date(),
+          verified: documents.drivingLicense?.verified || documents.driving_license?.verified || false
         },
         aadhaarCard: {
-          downloadURL: documents.aadhaarCard?.downloadURL || documents.aadhaarCard?.url || documents.aadhaar?.url || '',
-          verificationStatus: documents.aadhaarCard?.status || documents.aadhaar?.status || 'pending',
-          uploadedAt: documents.aadhaarCard?.uploadedAt || documents.aadhaar?.uploadedAt || new Date(),
-          verified: documents.aadhaarCard?.verified || documents.aadhaar?.verified || false
+          downloadURL: documents.aadhaarCard?.downloadURL || documents.aadhaarCard?.url || documents.aadhaar_card?.downloadURL || documents.aadhaar_card?.url || '',
+          verificationStatus: documents.aadhaarCard?.status || documents.aadhaar_card?.status || 'pending',
+          uploadedAt: documents.aadhaarCard?.uploadedAt || documents.aadhaar_card?.uploadedAt || new Date(),
+          verified: documents.aadhaarCard?.verified || documents.aadhaar_card?.verified || false
         },
         bikeInsurance: {
-          downloadURL: documents.bikeInsurance?.downloadURL || documents.bikeInsurance?.url || documents.insurance?.url || '',
-          verificationStatus: documents.bikeInsurance?.status || documents.insurance?.status || 'pending',
-          uploadedAt: documents.bikeInsurance?.uploadedAt || documents.insurance?.uploadedAt || new Date(),
-          verified: documents.bikeInsurance?.verified || documents.insurance?.verified || false
+          downloadURL: documents.bikeInsurance?.downloadURL || documents.bikeInsurance?.url || documents.bike_insurance?.downloadURL || documents.bike_insurance?.url || '',
+          verificationStatus: documents.bikeInsurance?.status || documents.bike_insurance?.status || 'pending',
+          uploadedAt: documents.bikeInsurance?.uploadedAt || documents.bike_insurance?.uploadedAt || new Date(),
+          verified: documents.bikeInsurance?.verified || documents.bike_insurance?.verified || false
         },
         rcBook: {
-          downloadURL: documents.rcBook?.downloadURL || documents.rcBook?.url || '',
-          verificationStatus: documents.rcBook?.status || 'pending',
-          uploadedAt: documents.rcBook?.uploadedAt || new Date(),
-          verified: documents.rcBook?.verified || false
+          downloadURL: documents.rcBook?.downloadURL || documents.rcBook?.url || documents.rc_book?.downloadURL || documents.rc_book?.url || '',
+          verificationStatus: documents.rcBook?.status || documents.rc_book?.status || 'pending',
+          uploadedAt: documents.rcBook?.uploadedAt || documents.rc_book?.uploadedAt || new Date(),
+          verified: documents.rcBook?.verified || documents.rc_book?.verified || false
         },
         profilePhoto: {
-          downloadURL: documents.profilePhoto?.downloadURL || documents.profilePhoto?.url || '',
-          verificationStatus: documents.profilePhoto?.status || 'pending',
-          uploadedAt: documents.profilePhoto?.uploadedAt || new Date(),
-          verified: documents.profilePhoto?.verified || false
+          downloadURL: documents.profilePhoto?.downloadURL || documents.profilePhoto?.url || documents.profile_photo?.downloadURL || documents.profile_photo?.url || '',
+          verificationStatus: documents.profilePhoto?.status || documents.profile_photo?.status || 'pending',
+          uploadedAt: documents.profilePhoto?.uploadedAt || documents.profile_photo?.uploadedAt || new Date(),
+          verified: documents.profilePhoto?.verified || documents.profile_photo?.verified || false
         }
       },
       status: 'pending',

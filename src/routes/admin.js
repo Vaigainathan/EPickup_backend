@@ -157,7 +157,8 @@ router.get('/users', async (req, res) => {
           driver: {
             isOnline: data.driver?.isOnline || false,
             isAvailable: data.driver?.isAvailable || false,
-            verificationStatus: data.driver?.verificationStatus || 'pending'
+            verificationStatus: data.driver?.verificationStatus || 'pending',
+            vehicleDetails: data.driver?.vehicleDetails || null
           }
         })
       };
@@ -1539,6 +1540,7 @@ router.get('/drivers/:driverId/documents', async (req, res) => {
         driverId,
         driverName: driverData.name || 'Unknown Driver',
         verificationStatus: finalVerificationStatus,
+        vehicleDetails: driverData.driver?.vehicleDetails || null,
         // Add comprehensive data source info
         dataSource: comprehensiveVerificationData ? 'comprehensive' : 'basic',
         comprehensiveData: comprehensiveVerificationData ? {

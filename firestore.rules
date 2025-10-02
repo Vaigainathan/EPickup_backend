@@ -144,7 +144,11 @@ service cloud.firestore {
     // Users collection - enhanced security with field validation
     match /users/{userId} {
       allow read: if isAuthenticated() && 
-        (isOwner(userId) || isAdmin());
+        (isOwner(userId) || isAdmin() || 
+         // Allow customers to read their own data using roleBasedUID
+         (isCustomer() && request.auth.token.roleBasedUID == userId) ||
+         // Allow drivers to read their own data using roleBasedUID  
+         (isDriver() && request.auth.token.roleBasedUID == userId));
       
       allow create: if isAuthenticated() && 
         isValidUserType() &&
@@ -179,6 +183,10 @@ service cloud.firestore {
          request.writeFields.hasOnly(['name', 'phone', 'email', 'updatedAt', 'lastSeen']) &&
          isValidPhoneNumber(request.resource.data.phone) &&
          isValidEmail(request.resource.data.email)) ||
+        // Customers can update their customer-specific fields
+        (isCustomer() && request.auth.token.roleBasedUID == userId &&
+         request.writeFields.hasOnly(['customer', 'updatedAt', 'lastSeen']) &&
+         request.resource.data.customer.keys().hasOnly(['name', 'email', 'address', 'preferences', 'addresses', 'paymentMethods', 'emergencyContacts', 'alertHistory', 'profilePhoto'])) ||
         // Drivers can update their driver-specific fields
         (isOwner(userId) && isDriver() &&
          request.writeFields.hasOnly(['driver', 'updatedAt', 'lastSeen']) &&
@@ -476,12 +484,6 @@ service cloud.firestore {
         (resource.data.driverId == request.auth.uid && 
          request.writeFields.hasOnly(['status', 'updatedAt']))
       );
-    }
-
-    // Customers collection - admin access only
-    match /customers/{customerId} {
-      allow read, write: if request.auth != null && 
-        (request.auth.token.role == 'admin' || request.auth.token.userType == 'admin');
     }
 
     // Drivers collection - driver and admin access

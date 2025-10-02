@@ -136,6 +136,25 @@ router.post('/firebase/verify-token', async (req, res) => {
         documents: {}
       };
       
+      // Add role-specific data structure
+      if (userType === 'customer') {
+        userData.customer = {
+          name: '',
+          email: '',
+          address: '',
+          preferences: {},
+          addresses: [],
+          profilePhoto: ''
+        };
+      } else if (userType === 'driver') {
+        userData.driver = {
+          isOnline: false,
+          isAvailable: false,
+          verificationStatus: 'pending',
+          vehicleDetails: {}
+        };
+      }
+      
       // Create the user document
       await db.collection('users').doc(roleBasedUID).set(userData);
       console.log(`✅ Created new ${userType} user:`, roleBasedUID);
@@ -164,6 +183,12 @@ router.post('/firebase/verify-token', async (req, res) => {
       appType: userType,
       verified: true
     };
+
+    // For customer, use different UID structure to avoid conflicts
+    if (userType === 'customer') {
+      customClaims.customerUID = userData.id; // Customer-specific UID
+      customClaims.roleBasedUID = userData.id; // Keep for compatibility
+    }
 
     await auth.setCustomUserClaims(decodedToken.uid, customClaims);
     console.log(`✅ Custom claims set for user ${decodedToken.uid}:`, customClaims);

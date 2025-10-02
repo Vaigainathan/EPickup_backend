@@ -3485,15 +3485,15 @@ router.get('/customers', async (req, res) => {
       // Ensure proper data structure for customer display
       const customerData = {
         id: doc.id,
-        name: data.name || 'Unknown Customer',
-        email: data.email || 'Not provided',
-        phone: data.phone || 'Not provided',
+        name: data.customer?.name || data.name || 'Unknown Customer',
+        email: data.customer?.email || data.email || 'Not provided',
+        phone: data.phone || 'Not provided', // Phone is at root level
         personalInfo: {
-          name: data.name || 'Unknown Customer',
-          email: data.email || 'Not provided',
+          name: data.customer?.name || data.name || 'Unknown Customer',
+          email: data.customer?.email || data.email || 'Not provided',
           phone: data.phone || 'Not provided',
-          dateOfBirth: data.personalInfo?.dateOfBirth || 'Not provided',
-          address: data.personalInfo?.address || 'Not provided'
+          dateOfBirth: data.customer?.dateOfBirth || data.personalInfo?.dateOfBirth || 'Not provided',
+          address: data.customer?.address || data.personalInfo?.address || 'Not provided'
         },
         accountStatus: data.accountStatus || 'active',
         createdAt: data.createdAt?.toDate?.() || data.createdAt || new Date(),
@@ -3589,15 +3589,15 @@ router.get('/customers/:id', async (req, res) => {
     // Format customer data properly
     const formattedCustomerData = {
       id: customerDoc.id,
-      name: customerData.name || 'Unknown Customer',
-      email: customerData.email || 'Not provided',
+      name: customerData.customer?.name || customerData.name || 'Unknown Customer',
+      email: customerData.customer?.email || customerData.email || 'Not provided',
       phone: customerData.phone || 'Not provided',
       personalInfo: {
-        name: customerData.name || 'Unknown Customer',
-        email: customerData.email || 'Not provided',
+        name: customerData.customer?.name || customerData.name || 'Unknown Customer',
+        email: customerData.customer?.email || customerData.email || 'Not provided',
         phone: customerData.phone || 'Not provided',
-        dateOfBirth: customerData.personalInfo?.dateOfBirth || 'Not provided',
-        address: customerData.personalInfo?.address || 'Not provided'
+        dateOfBirth: customerData.customer?.dateOfBirth || customerData.personalInfo?.dateOfBirth || 'Not provided',
+        address: customerData.customer?.address || customerData.personalInfo?.address || 'Not provided'
       },
       accountStatus: customerData.accountStatus || 'active',
       createdAt: customerData.createdAt?.toDate?.() || customerData.createdAt || new Date(),

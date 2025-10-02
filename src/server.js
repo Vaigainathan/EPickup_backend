@@ -286,7 +286,25 @@ app.get('/api-docs', (req, res) => {
       customer: {
         'GET /api/customer/profile': 'Get customer profile',
         'PUT /api/customer/profile': 'Update customer profile',
-        'POST /api/customer/address': 'Add delivery address'
+        'POST /api/customer/upload-photo': 'Upload profile photo',
+        'GET /api/customer/bookings': 'Get customer bookings',
+        'POST /api/customer/bookings': 'Create new booking',
+        'PUT /api/customer/bookings/:id/cancel': 'Cancel booking',
+        'GET /api/customer/addresses': 'Get customer addresses',
+        'POST /api/customer/addresses': 'Add customer address',
+        'PUT /api/customer/addresses/:id': 'Update customer address',
+        'DELETE /api/customer/addresses/:id': 'Delete customer address',
+        'GET /api/customer/payments/methods': 'Get payment methods',
+        'POST /api/customer/payments/methods': 'Add payment method',
+        'GET /api/customer/payments/history': 'Get payment history',
+        'GET /api/customer/tracking/:bookingId': 'Get booking tracking',
+        'GET /api/customer/notifications': 'Get notifications',
+        'PUT /api/customer/notifications/:id/read': 'Mark notification as read',
+        'GET /api/customer/support/tickets': 'Get support tickets',
+        'POST /api/customer/support/tickets': 'Create support ticket',
+        'GET /api/customer/emergency/contacts': 'Get emergency contacts',
+        'POST /api/customer/emergency/contacts': 'Add emergency contact',
+        'POST /api/customer/emergency/alert': 'Send emergency alert'
       },
       driver: {
         'GET /api/driver/profile': 'Get driver profile',

@@ -5904,4 +5904,277 @@ router.post('/photo/verify', requireDriver, async (req, res) => {
   }
 });
 
+// ==================== WORK SLOTS API ENDPOINTS ====================
+
+/**
+ * @route   GET /api/driver/work-slots
+ * @desc    Get driver work slots
+ * @access  Private (Driver only)
+ */
+router.get('/work-slots', requireDriver, async (req, res) => {
+  try {
+    const { uid } = req.user;
+    const { date } = req.query;
+    const db = getFirestore();
+    
+    console.log('🔍 [WORK_SLOTS_API] Fetching work slots for driver:', uid, 'date:', date);
+    
+    let query = db.collection('workSlots').where('driverId', '==', uid);
+    
+    if (date) {
+      query = query.where('date', '==', date);
+    }
+    
+    query = query.orderBy('startTime');
+    
+    const snapshot = await query.get();
+    const slots = [];
+    
+    snapshot.forEach((doc) => {
+      slots.push({
+        id: doc.id,
+        ...doc.data(),
+        createdAt: doc.data().createdAt?.toDate?.()?.toISOString() || null,
+        updatedAt: doc.data().updatedAt?.toDate?.()?.toISOString() || null
+      });
+    });
+    
+    console.log('✅ [WORK_SLOTS_API] Retrieved work slots:', slots.length);
+    
+    res.status(200).json({
+      success: true,
+      message: 'Work slots retrieved successfully',
+      data: slots,
+      timestamp: new Date().toISOString()
+    });
+    
+  } catch (error) {
+    console.error('❌ [WORK_SLOTS_API] Error fetching work slots:', error);
+    res.status(500).json({
+      success: false,
+      error: {
+        code: 'WORK_SLOTS_ERROR',
+        message: 'Failed to retrieve work slots',
+        details: error.message
+      },
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+/**
+ * @route   POST /api/driver/work-slots
+ * @desc    Create work slots for driver
+ * @access  Private (Driver only)
+ */
+router.post('/work-slots', requireDriver, async (req, res) => {
+  try {
+    const { uid } = req.user;
+    const { slots } = req.body;
+    const db = getFirestore();
+    
+    console.log('🔍 [WORK_SLOTS_API] Creating work slots for driver:', uid, 'slots:', slots?.length);
+    
+    if (!slots || !Array.isArray(slots)) {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'INVALID_SLOTS',
+          message: 'Invalid slots data',
+          details: 'Slots must be an array'
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+    
+    const batch = db.batch();
+    const createdSlots = [];
+    
+    for (const slot of slots) {
+      const slotRef = db.collection('workSlots').doc();
+      const slotData = {
+        ...slot,
+        driverId: uid,
+        createdAt: new Date(),
+        updatedAt: new Date()
+      };
+      
+      batch.set(slotRef, slotData);
+      createdSlots.push({
+        id: slotRef.id,
+        ...slotData
+      });
+    }
+    
+    await batch.commit();
+    
+    console.log('✅ [WORK_SLOTS_API] Created work slots:', createdSlots.length);
+    
+    res.status(201).json({
+      success: true,
+      message: 'Work slots created successfully',
+      data: createdSlots,
+      timestamp: new Date().toISOString()
+    });
+    
+  } catch (error) {
+    console.error('❌ [WORK_SLOTS_API] Error creating work slots:', error);
+    res.status(500).json({
+      success: false,
+      error: {
+        code: 'WORK_SLOTS_CREATE_ERROR',
+        message: 'Failed to create work slots',
+        details: error.message
+      },
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+/**
+ * @route   PUT /api/driver/work-slots/:slotId
+ * @desc    Update work slot
+ * @access  Private (Driver only)
+ */
+router.put('/work-slots/:slotId', requireDriver, async (req, res) => {
+  try {
+    const { uid } = req.user;
+    const { slotId } = req.params;
+    const updates = req.body;
+    const db = getFirestore();
+    
+    console.log('🔍 [WORK_SLOTS_API] Updating work slot:', slotId, 'for driver:', uid);
+    
+    const slotRef = db.collection('workSlots').doc(slotId);
+    const slotDoc = await slotRef.get();
+    
+    if (!slotDoc.exists) {
+      return res.status(404).json({
+        success: false,
+        error: {
+          code: 'SLOT_NOT_FOUND',
+          message: 'Work slot not found',
+          details: 'The specified work slot does not exist'
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+    
+    const slotData = slotDoc.data();
+    
+    // Verify driver owns this slot
+    if (slotData.driverId !== uid) {
+      return res.status(403).json({
+        success: false,
+        error: {
+          code: 'SLOT_ACCESS_DENIED',
+          message: 'Access denied',
+          details: 'You can only update your own work slots'
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+    
+    const updateData = {
+      ...updates,
+      updatedAt: new Date()
+    };
+    
+    await slotRef.update(updateData);
+    
+    console.log('✅ [WORK_SLOTS_API] Updated work slot:', slotId);
+    
+    res.status(200).json({
+      success: true,
+      message: 'Work slot updated successfully',
+      data: {
+        id: slotId,
+        ...slotData,
+        ...updateData
+      },
+      timestamp: new Date().toISOString()
+    });
+    
+  } catch (error) {
+    console.error('❌ [WORK_SLOTS_API] Error updating work slot:', error);
+    res.status(500).json({
+      success: false,
+      error: {
+        code: 'WORK_SLOTS_UPDATE_ERROR',
+        message: 'Failed to update work slot',
+        details: error.message
+      },
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+/**
+ * @route   DELETE /api/driver/work-slots/:slotId
+ * @desc    Delete work slot
+ * @access  Private (Driver only)
+ */
+router.delete('/work-slots/:slotId', requireDriver, async (req, res) => {
+  try {
+    const { uid } = req.user;
+    const { slotId } = req.params;
+    const db = getFirestore();
+    
+    console.log('🔍 [WORK_SLOTS_API] Deleting work slot:', slotId, 'for driver:', uid);
+    
+    const slotRef = db.collection('workSlots').doc(slotId);
+    const slotDoc = await slotRef.get();
+    
+    if (!slotDoc.exists) {
+      return res.status(404).json({
+        success: false,
+        error: {
+          code: 'SLOT_NOT_FOUND',
+          message: 'Work slot not found',
+          details: 'The specified work slot does not exist'
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+    
+    const slotData = slotDoc.data();
+    
+    // Verify driver owns this slot
+    if (slotData.driverId !== uid) {
+      return res.status(403).json({
+        success: false,
+        error: {
+          code: 'SLOT_ACCESS_DENIED',
+          message: 'Access denied',
+          details: 'You can only delete your own work slots'
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+    
+    await slotRef.delete();
+    
+    console.log('✅ [WORK_SLOTS_API] Deleted work slot:', slotId);
+    
+    res.status(200).json({
+      success: true,
+      message: 'Work slot deleted successfully',
+      data: { id: slotId },
+      timestamp: new Date().toISOString()
+    });
+    
+  } catch (error) {
+    console.error('❌ [WORK_SLOTS_API] Error deleting work slot:', error);
+    res.status(500).json({
+      success: false,
+      error: {
+        code: 'WORK_SLOTS_DELETE_ERROR',
+        message: 'Failed to delete work slot',
+        details: error.message
+      },
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
 module.exports = router;

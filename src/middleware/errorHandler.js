@@ -146,7 +146,7 @@ const handleExternalApiError = (req, res, next) => {
 /**
  * Handle 404 errors
  */
-const handle404 = (req, res, next) => {
+const handle404 = (req, res) => {
   res.status(404).json({
     success: false,
     error: {

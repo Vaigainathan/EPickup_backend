@@ -3,8 +3,6 @@
  * Provides in-memory caching for frequently accessed data
  */
 
-const NodeCache = require('node-cache');
-
 // Redundant NodeCache instances removed - using CachingService instead
 // Keep only documentStatusCache for critical driver document status endpoint
 const documentStatusMemoryCache = new Map();

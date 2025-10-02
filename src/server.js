@@ -581,10 +581,7 @@ app.use('*', (req, res) => {
 
 // Performance monitoring middleware
 app.use((req, res, next) => {
-  const startTime = Date.now();
-  
   res.on('finish', () => {
-    const responseTime = Date.now() - startTime;
     // API request monitoring handled by monitoringService
   });
   

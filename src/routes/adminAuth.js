@@ -60,7 +60,13 @@ router.post('/login', async (req, res) => {
       
       // Check if user has admin custom claims
       customClaims = decodedToken.customClaims || {};
-      if (customClaims.userType !== 'admin' && customClaims.role !== 'super_admin') {
+      
+      // Also check if user exists in adminUsers collection as a fallback
+      const adminDoc = await db.collection('adminUsers').doc(decodedToken.uid).get();
+      const isAdminInDatabase = adminDoc.exists;
+      
+      // Check custom claims OR database presence
+      if ((customClaims.userType !== 'admin' && customClaims.role !== 'super_admin') && !isAdminInDatabase) {
         return res.status(403).json({
           success: false,
           error: {

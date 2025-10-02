@@ -126,7 +126,7 @@ const authMiddleware = async (req, res, next) => {
     }
     
     // Simplified user lookup with automatic sync
-    const userData = await this.getUserData(userId);
+    const userData = await authMiddleware.getUserData(userId);
     
     if (!userData) {
       return res.status(404).json({

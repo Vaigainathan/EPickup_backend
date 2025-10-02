@@ -166,7 +166,11 @@ router.post('/firebase/verify-token', async (req, res) => {
         roleBasedUID: userData.id
       },
       process.env.JWT_SECRET || 'fallback-secret',
-      { expiresIn: '24h' }
+      { 
+        expiresIn: '24h',
+        issuer: 'epickup-app',
+        audience: 'epickup-users'
+      }
     );
 
     console.log(`✅ ${userType} authentication successful:`, userData.id);

@@ -117,15 +117,30 @@ router.post('/firebase/verify-token', async (req, res) => {
     // Check if user exists in Firestore
     const userDoc = await db.collection('users').doc(roleBasedUID).get();
     
+    let userData;
     if (!userDoc.exists) {
-      return res.status(404).json({
-        success: false,
-        error: `${userType} user not found. Please complete registration first.`
-      });
+      console.log(`⚠️ ${userType} user not found in Firestore, creating new user:`, roleBasedUID);
+      
+      // Create new user document for first-time authentication
+      userData = {
+        id: roleBasedUID,
+        name: '', // Will be filled during onboarding
+        phone: decodedToken.phone_number,
+        userType: userType,
+        originalFirebaseUID: decodedToken.uid,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+        status: 'pending_verification',
+        documents: {}
+      };
+      
+      // Create the user document
+      await db.collection('users').doc(roleBasedUID).set(userData);
+      console.log(`✅ Created new ${userType} user:`, roleBasedUID);
+    } else {
+      userData = userDoc.data();
+      console.log(`✅ Found existing ${userType} user:`, roleBasedUID);
     }
-
-    const userData = userDoc.data();
-    console.log(`✅ Found existing ${userType} user:`, roleBasedUID);
 
     // Set dynamic custom claims on Firebase user for customer/driver
     const customClaims = {

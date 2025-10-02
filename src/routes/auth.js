@@ -494,6 +494,22 @@ router.post('/firebase/verify-token',
             updatedAt: adminData.updatedAt
           };
           
+          // Set custom claims for admin user
+          const adminCustomClaims = {
+            role: 'super_admin',
+            roleBasedUID: decodedToken.uid, // Admin uses Firebase UID as role-based UID
+            phone: decodedToken.phone_number,
+            appType: 'admin',
+            verified: true
+          };
+
+          try {
+            await firebaseAuthService.setCustomClaims(decodedToken.uid, adminCustomClaims);
+            console.log(`✅ Custom claims set for admin:`, adminCustomClaims);
+          } catch (claimsError) {
+            console.error('❌ Failed to set custom claims for admin:', claimsError);
+          }
+
           // Automatic sync to users collection for consistency
           await db.collection('users').doc(decodedToken.uid).set({
             ...userData,
@@ -538,6 +554,22 @@ router.post('/firebase/verify-token',
             lastLogin: new Date().toISOString()
           };
           
+          // Set custom claims for new admin user
+          const adminCustomClaims = {
+            role: 'super_admin',
+            roleBasedUID: decodedToken.uid, // Admin uses Firebase UID as role-based UID
+            phone: decodedToken.phone_number,
+            appType: 'admin',
+            verified: true
+          };
+
+          try {
+            await firebaseAuthService.setCustomClaims(decodedToken.uid, adminCustomClaims);
+            console.log(`✅ Custom claims set for new admin:`, adminCustomClaims);
+          } catch (claimsError) {
+            console.error('❌ Failed to set custom claims for new admin:', claimsError);
+          }
+
           // Automatic sync: Create in both collections simultaneously
           await Promise.all([
             db.collection('adminUsers').doc(decodedToken.uid).set(adminData),
@@ -554,6 +586,23 @@ router.post('/firebase/verify-token',
           userType, 
           additionalData
         );
+
+        // Set dynamic custom claims on Firebase user for customer/driver
+        const customClaims = {
+          role: userType,
+          roleBasedUID: userData.id,
+          phone: decodedToken.phone_number,
+          appType: userType,
+          verified: true
+        };
+
+        try {
+          await firebaseAuthService.setCustomClaims(decodedToken.uid, customClaims);
+          console.log(`✅ Custom claims set for ${userType}:`, customClaims);
+        } catch (claimsError) {
+          console.error('❌ Failed to set custom claims:', claimsError);
+          // Continue with authentication even if claims fail
+        }
       }
       
       // Generate backend JWT token with role-specific UID

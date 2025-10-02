@@ -297,6 +297,23 @@ router.post('/login', async (req, res) => {
       // Don't fail login for this error
     }
 
+    // Set custom claims for admin user
+    const adminCustomClaims = {
+      role: 'super_admin',
+      roleBasedUID: adminId, // Admin uses Firebase UID as role-based UID
+      phone: userRecord.phone_number,
+      appType: 'admin',
+      verified: true
+    };
+
+    try {
+      await auth.setCustomUserClaims(adminId, adminCustomClaims);
+      console.log(`✅ Custom claims set for admin:`, adminCustomClaims);
+    } catch (claimsError) {
+      console.error('❌ Failed to set custom claims for admin:', claimsError);
+      // Continue with authentication even if claims fail
+    }
+
     // Generate JWT token
     if (!process.env.JWT_SECRET) {
       return res.status(500).json({

@@ -1,34 +1,82 @@
 rules_version = '2';
 service firebase.storage {
   match /b/{bucket}/o {
-    // Driver documents - allow admin and driver access
+    // Helper functions for role-based access control
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+    
+    function isAdmin() {
+      return request.auth != null && 
+        (request.auth.token.role == 'super_admin' || 
+         request.auth.token.appType == 'admin');
+    }
+    
+    function isDriver() {
+      return request.auth != null && 
+        (request.auth.token.role == 'driver' || 
+         request.auth.token.appType == 'driver');
+    }
+    
+    function isCustomer() {
+      return request.auth != null && 
+        (request.auth.token.role == 'customer' || 
+         request.auth.token.appType == 'customer');
+    }
+    
+    function isOwner(userId) {
+      return request.auth != null && 
+        (request.auth.uid == userId || 
+         request.auth.token.roleBasedUID == userId);
+    }
+    
+    // Driver documents - role-based access control
     match /drivers/{driverId}/documents/{documentType}/{document=**} {
-      allow read: if true; // Allow public read access for admin viewing
-      allow write: if true; // Allow unauthenticated uploads for mobile app
+      allow read: if isAuthenticated() && 
+        (isDriver() && isOwner(driverId)) || 
+        isAdmin();
+      allow write: if isAuthenticated() && 
+        (isDriver() && isOwner(driverId)) || 
+        isAdmin();
     }
     
-    // Legacy driver documents path
+    // Legacy driver documents path - role-based access control
     match /driver-documents/{userId}/{document=**} {
-      allow read: if true; // Allow public read access
-      allow write: if true; // Allow unauthenticated uploads for mobile app
+      allow read: if isAuthenticated() && 
+        (isDriver() && isOwner(userId)) || 
+        isAdmin();
+      allow write: if isAuthenticated() && 
+        (isDriver() && isOwner(userId)) || 
+        isAdmin();
     }
     
-    // Profile photos - allow authenticated users to upload their own photos
+    // Profile photos - role-based access control
     match /profiles/{userId}/{document=**} {
-      allow read: if request.auth != null;
-      allow write: if request.auth != null && request.auth.uid == userId;
+      allow read: if isAuthenticated() && 
+        (isOwner(userId) || isAdmin());
+      allow write: if isAuthenticated() && 
+        (isOwner(userId) || isAdmin());
     }
     
-    // Public documents (if any)
+    // Customer documents - role-based access control
+    match /customers/{customerId}/documents/{documentType}/{document=**} {
+      allow read: if isAuthenticated() && 
+        (isCustomer() && isOwner(customerId)) || 
+        isAdmin();
+      allow write: if isAuthenticated() && 
+        (isCustomer() && isOwner(customerId)) || 
+        isAdmin();
+    }
+    
+    // Public documents (if any) - admin only write access
     match /public/{document=**} {
       allow read: if true;
-      allow write: if request.auth != null;
+      allow write: if isAuthenticated() && isAdmin();
     }
     
-    // Admin access to all driver documents
-    match /drivers/{driverId}/{allPaths=**} {
-      allow read: if true; // Allow admin to read all driver documents
-      allow write: if true; // Allow admin to manage documents
+    // Admin access to all documents
+    match /{allPaths=**} {
+      allow read, write: if isAuthenticated() && isAdmin();
     }
   }
 }

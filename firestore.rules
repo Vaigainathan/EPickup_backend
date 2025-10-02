@@ -21,8 +21,8 @@ service cloud.firestore {
     
     function isAdmin() {
       return request.auth != null && 
-        (request.auth.token.userType == 'admin' || 
-         request.auth.token.role == 'super_admin' ||
+        (request.auth.token.role == 'super_admin' || 
+         request.auth.token.appType == 'admin' ||
          // Fallback: check if user exists in adminUsers collection
          exists(/databases/$(database)/documents/adminUsers/$(request.auth.uid)) ||
          // Additional fallback: check users collection for admin users
@@ -49,15 +49,21 @@ service cloud.firestore {
     // Removed unused canCreateAdminProfile function - admin creation is handled by backend
     
     function isDriver() {
-      return request.auth.token.userType == 'driver';
+      return request.auth != null && 
+        (request.auth.token.role == 'driver' || 
+         request.auth.token.appType == 'driver');
     }
     
     function isCustomer() {
-      return request.auth.token.userType == 'customer';
+      return request.auth != null && 
+        (request.auth.token.role == 'customer' || 
+         request.auth.token.appType == 'customer');
     }
     
     function isValidUserType() {
-      return request.auth.token.userType in ['customer', 'driver', 'admin'];
+      return request.auth != null && 
+        (request.auth.token.role in ['customer', 'driver', 'super_admin'] ||
+         request.auth.token.appType in ['customer', 'driver', 'admin']);
     }
     
     function isValidPhoneNumber(phone) {

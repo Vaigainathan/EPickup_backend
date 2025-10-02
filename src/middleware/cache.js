@@ -122,6 +122,41 @@ const clearAllCaches = () => {
 };
 
 /**
+ * Cache middleware for document status
+ */
+const documentStatusCache = (req, res, next) => {
+  const cacheKey = `document_status_${req.user?.uid}`;
+  
+  // Check cache first
+  const cachedData = userCache.get(cacheKey);
+  if (cachedData) {
+    return res.json(cachedData);
+  }
+  
+  // Store original res.json
+  const originalJson = res.json;
+  
+  // Override res.json to cache the response
+  res.json = function(data) {
+    // Only cache successful responses
+    if (data.success) {
+      userCache.set(cacheKey, data);
+    }
+    return originalJson.call(this, data);
+  };
+  
+  next();
+};
+
+/**
+ * Invalidate user cache
+ */
+const invalidateUserCache = (userId) => {
+  userCache.del(`user_${userId}`);
+  userCache.del(`document_status_${userId}`);
+};
+
+/**
  * Get cache statistics
  */
 const getCacheStats = () => {
@@ -136,6 +171,8 @@ module.exports = {
   cacheUserData,
   cacheAdminData,
   cacheStats,
+  documentStatusCache,
+  invalidateUserCache,
   clearUserCache,
   clearAllCaches,
   getCacheStats

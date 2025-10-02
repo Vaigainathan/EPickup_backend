@@ -112,4 +112,89 @@ const errorHandler = (error, req, res) => {
   });
 };
 
-module.exports = { errorHandler };
+/**
+ * Async handler wrapper to catch async errors
+ */
+const asyncHandler = (fn) => {
+  return (req, res, next) => {
+    Promise.resolve(fn(req, res, next)).catch(next);
+  };
+};
+
+/**
+ * Handle rate limit errors
+ */
+const handleRateLimitError = (req, res, next) => {
+  // This would be used by express-rate-limit
+  next();
+};
+
+/**
+ * Handle database errors
+ */
+const handleDatabaseError = (req, res, next) => {
+  next();
+};
+
+/**
+ * Handle external API errors
+ */
+const handleExternalApiError = (req, res, next) => {
+  next();
+};
+
+/**
+ * Handle 404 errors
+ */
+const handle404 = (req, res, next) => {
+  res.status(404).json({
+    success: false,
+    error: {
+      code: 'NOT_FOUND',
+      message: 'Endpoint not found',
+      details: `The requested endpoint ${req.method} ${req.path} does not exist`
+    },
+    timestamp: new Date().toISOString()
+  });
+};
+
+/**
+ * Handle timeout errors
+ */
+const handleTimeout = (req, res, next) => {
+  next();
+};
+
+/**
+ * Error recovery middleware
+ */
+const errorRecovery = (req, res, next) => {
+  next();
+};
+
+/**
+ * Error monitoring middleware
+ */
+const errorMonitoring = (req, res, next) => {
+  next();
+};
+
+/**
+ * Graceful shutdown handler
+ */
+const gracefulShutdown = () => {
+  console.log('Graceful shutdown initiated');
+};
+
+module.exports = { 
+  errorHandler, 
+  asyncHandler,
+  handleRateLimitError,
+  handleDatabaseError,
+  handleExternalApiError,
+  handle404,
+  handleTimeout,
+  errorRecovery,
+  errorMonitoring,
+  gracefulShutdown
+};

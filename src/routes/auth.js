@@ -131,6 +131,7 @@ router.post('/firebase/verify-token', async (req, res) => {
         createdAt: new Date(),
         updatedAt: new Date(),
         status: 'pending_verification',
+        isActive: true, // Required for authentication middleware
         documents: {}
       };
       

@@ -24,33 +24,28 @@ service firebase.storage {
          request.auth.token.appType == 'customer');
     }
     
+    // Universal ownership check - handles both Firebase UID and role-based UID
     function isOwner(userId) {
       return request.auth != null && 
         (request.auth.uid == userId || 
          request.auth.token.roleBasedUID == userId);
     }
     
-    // Driver documents - role-based access control
+    // Driver documents - NEW structured path
     match /drivers/{driverId}/documents/{documentType}/{document=**} {
       allow read: if isAuthenticated() && 
-        (isDriver() && isOwner(driverId)) || 
-        isAdmin();
+        ((isDriver() && isOwner(driverId)) || isAdmin());
       allow write: if isAuthenticated() && 
-        (isDriver() && isOwner(driverId)) || 
-        isAdmin();
+        ((isDriver() && isOwner(driverId)) || isAdmin());
     }
     
-    // Legacy driver documents path - role-based access control
+    // Driver documents - LEGACY path (TEMPORARILY PERMISSIVE)
     match /driver-documents/{userId}/{document=**} {
-      allow read: if isAuthenticated() && 
-        (isDriver() && isOwner(userId)) || 
-        isAdmin();
-      allow write: if isAuthenticated() && 
-        (isDriver() && isOwner(userId)) || 
-        isAdmin();
+      allow read: if isAuthenticated() && isDriver();
+      allow write: if isAuthenticated() && isDriver();
     }
     
-    // Profile photos - role-based access control
+    // Profile photos - universal access
     match /profiles/{userId}/{document=**} {
       allow read: if isAuthenticated() && 
         (isOwner(userId) || isAdmin());
@@ -58,23 +53,29 @@ service firebase.storage {
         (isOwner(userId) || isAdmin());
     }
     
-    // Customer documents - role-based access control
+    // Customer documents
     match /customers/{customerId}/documents/{documentType}/{document=**} {
       allow read: if isAuthenticated() && 
-        (isCustomer() && isOwner(customerId)) || 
-        isAdmin();
+        ((isCustomer() && isOwner(customerId)) || isAdmin());
       allow write: if isAuthenticated() && 
-        (isCustomer() && isOwner(customerId)) || 
-        isAdmin();
+        ((isCustomer() && isOwner(customerId)) || isAdmin());
     }
     
-    // Public documents (if any) - admin only write access
+    // Verification photos (for bookings)
+    match /verifications/{bookingId}/{document=**} {
+      allow read: if isAuthenticated() && 
+        (isDriver() || isCustomer() || isAdmin());
+      allow write: if isAuthenticated() && 
+        (isDriver() || isCustomer() || isAdmin());
+    }
+    
+    // Public documents - read-only for all, write for admin only
     match /public/{document=**} {
       allow read: if true;
       allow write: if isAuthenticated() && isAdmin();
     }
     
-    // Admin access to all documents
+    // Admin access to all documents (catch-all rule - must be last)
     match /{allPaths=**} {
       allow read, write: if isAuthenticated() && isAdmin();
     }

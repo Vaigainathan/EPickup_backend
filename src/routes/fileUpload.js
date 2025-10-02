@@ -1,499 +1,493 @@
 const express = require('express');
 const multer = require('multer');
-const FileUploadService = require('../services/fileUploadService');
-const { requireRole } = require('../middleware/auth');
-
+const { getStorage } = require('firebase-admin/storage');
+const { getFirestore } = require('firebase-admin/firestore');
 const router = express.Router();
-const fileUploadService = new FileUploadService();
 
-// Configure multer for file uploads
-const storage = multer.memoryStorage();
+// Configure multer for memory storage
 const upload = multer({
-  storage: storage,
+  storage: multer.memoryStorage(),
   limits: {
-    fileSize: 10 * 1024 * 1024, // 10MB max file size
-    files: 1 // Only allow 1 file at a time
+    fileSize: 10 * 1024 * 1024, // 10MB limit
   },
-  fileFilter: (req, file, cb) => {
-    // Check file type
-    const allowedTypes = ['image/jpeg', 'image/png', 'image/webp', 'application/pdf'];
-    if (allowedTypes.includes(file.mimetype)) {
-      cb(null, true);
-    } else {
-      cb(new Error('Invalid file type. Only JPEG, PNG, WebP, and PDF files are allowed.'), false);
+});
+
+/**
+ * @route POST /api/file-upload/driver-document
+ * @desc Upload driver document via backend proxy
+ * @access Private (Driver)
+ */
+router.post('/driver-document', upload.single('document'), async (req, res) => {
+  try {
+    console.log('📤 [BACKEND PROXY] Driver document upload request received');
+    
+    const { driverId, documentType } = req.body;
+    const file = req.file;
+
+    // Validate file
+    if (!file) {
+      console.log('❌ [BACKEND PROXY] No file provided');
+      return res.status(400).json({
+        success: false,
+        error: 'No file provided'
+      });
     }
+
+    // Validate required fields
+    if (!driverId || !documentType) {
+      console.log('❌ [BACKEND PROXY] Missing required fields:', { driverId, documentType });
+      return res.status(400).json({
+        success: false,
+        error: 'Driver ID and document type are required'
+      });
+    }
+
+    // Validate document type
+    const validDocumentTypes = ['driving_license', 'profile_photo', 'aadhaar_card', 'bike_insurance', 'rc_book'];
+    if (!validDocumentTypes.includes(documentType)) {
+      console.log('❌ [BACKEND PROXY] Invalid document type:', documentType);
+      return res.status(400).json({
+        success: false,
+        error: `Invalid document type. Must be one of: ${validDocumentTypes.join(', ')}`
+      });
+    }
+
+    console.log('📤 [BACKEND PROXY] Uploading document:', { driverId, documentType, fileSize: file.size });
+
+    // Get Firebase Storage instance
+    const bucket = getStorage().bucket();
+    
+    // Generate unique filename
+    const timestamp = Date.now();
+    const fileName = `${timestamp}_${documentType}.jpg`;
+    const filePath = `drivers/${driverId}/documents/${documentType}/${fileName}`;
+    
+    console.log('📤 [BACKEND PROXY] File path:', filePath);
+    
+    // Create file reference
+    const fileRef = bucket.file(filePath);
+    
+    // Upload file
+    await fileRef.save(file.buffer, {
+      metadata: {
+        contentType: file.mimetype,
+        customMetadata: {
+          driverId: driverId,
+          documentType: documentType,
+          uploadedAt: new Date().toISOString(),
+          uploadedBy: 'backend_proxy',
+          originalFileName: file.originalname || fileName
+        }
+      }
+    });
+
+    console.log('✅ [BACKEND PROXY] File uploaded to Firebase Storage');
+
+    // Get download URL
+    const [downloadURL] = await fileRef.getSignedUrl({
+      action: 'read',
+      expires: '03-01-2500' // Far future date
+    });
+
+    // Update user document in Firestore
+    try {
+      const db = getFirestore();
+      const userRef = db.collection('users').doc(driverId);
+      
+      await userRef.update({
+        [`documents.${documentType}`]: {
+          fileName: fileName,
+          filePath: filePath,
+          downloadURL: downloadURL,
+          uploadedAt: new Date().toISOString(),
+          status: 'uploaded',
+          uploadedBy: 'backend_proxy'
+        },
+        updatedAt: new Date()
+      });
+      
+      console.log('✅ [BACKEND PROXY] User document updated in Firestore');
+    } catch (firestoreError) {
+      console.error('⚠️ [BACKEND PROXY] Error updating Firestore:', firestoreError);
+      // Don't fail the upload for Firestore errors
+    }
+
+    console.log('✅ [BACKEND PROXY] Driver document upload completed successfully');
+
+    res.json({
+      success: true,
+      data: {
+        fileName: fileName,
+        filePath: filePath,
+        downloadURL: downloadURL,
+        size: file.size,
+        uploadedAt: new Date().toISOString(),
+        documentType: documentType,
+        driverId: driverId
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ [BACKEND PROXY] Error uploading driver document:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to upload document',
+      details: error.message
+    });
   }
 });
 
 /**
- * @route POST /api/file-upload/upload
- * @desc Upload a driver document
- * @access Private (Driver)
+ * @route GET /api/file-upload/driver-documents/:driverId
+ * @desc Get all driver documents via backend proxy
+ * @access Private (Driver/Admin)
  */
-router.post('/upload', 
-  requireRole(['driver']),
-  upload.single('document'),
-  async (req, res) => {
-    try {
-      const { documentType, documentUrl, documentNumber } = req.body;
-      const driverId = req.user.uid;
+router.get('/driver-documents/:driverId', async (req, res) => {
+  try {
+    console.log('📥 [BACKEND PROXY] Getting driver documents for:', req.params.driverId);
+    
+    const { driverId } = req.params;
 
-      if (!documentType) {
-        return res.status(400).json({
-          success: false,
-          error: {
-            code: 'DOCUMENT_TYPE_REQUIRED',
-            message: 'Document type is required'
-          }
-        });
-      }
-
-      // Handle direct file upload
-      if (req.file) {
-        // Validate file before processing
-        const validation = fileUploadService.validateFile(req.file, documentType);
-        if (!validation.isValid) {
-          return res.status(400).json({
-            success: false,
-            error: {
-              code: 'FILE_VALIDATION_FAILED',
-              message: 'File validation failed',
-              details: validation.errors,
-              warnings: validation.warnings
-            }
-          });
-        }
-
-        // Upload document
-        const result = await fileUploadService.uploadDocument(
-          req.file,
-          documentType,
-          driverId,
-          {
-            originalName: req.file.originalname,
-            uploadedBy: driverId,
-            ipAddress: req.ip,
-            userAgent: req.get('User-Agent')
-          }
-        );
-
-        res.status(201).json(result);
-      } 
-      // Handle document URL registration (from mobile app)
-      else if (documentUrl) {
-        const result = await fileUploadService.registerDocumentFromUrl(
-          driverId,
-          documentType,
-          documentUrl,
-          documentNumber
-        );
-
-        res.status(201).json(result);
-      } else {
-        return res.status(400).json({
-          success: false,
-          error: {
-            code: 'NO_FILE_OR_URL_PROVIDED',
-            message: 'Either a file or document URL must be provided'
-          }
-        });
-      }
-
-    } catch (error) {
-      console.error('Document upload error:', error);
-      res.status(500).json({
+    if (!driverId) {
+      return res.status(400).json({
         success: false,
-        error: {
-          code: 'UPLOAD_FAILED',
-          message: error.message
-        }
+        error: 'Driver ID is required'
       });
     }
+
+    // Get Firebase Storage instance
+    const bucket = getStorage().bucket();
+    
+    // List all files in the driver's documents folder
+    const [files] = await bucket.getFiles({
+      prefix: `drivers/${driverId}/documents/`,
+    });
+
+    const documents = {};
+
+    for (const file of files) {
+      try {
+        // Get download URL
+        const [downloadURL] = await file.getSignedUrl({
+          action: 'read',
+          expires: '03-01-2500'
+        });
+
+        // Get file metadata
+        const [metadata] = await file.getMetadata();
+        
+        // Extract document type from path
+        const pathParts = file.name.split('/');
+        const documentType = pathParts[pathParts.length - 2]; // Second to last part
+
+        documents[documentType] = {
+          fileName: file.name.split('/').pop(),
+          filePath: file.name,
+          downloadURL: downloadURL,
+          size: metadata.size,
+          uploadedAt: metadata.timeCreated,
+          contentType: metadata.contentType,
+          customMetadata: metadata.customMetadata || {}
+        };
+      } catch (fileError) {
+        console.error(`❌ [BACKEND PROXY] Error processing file ${file.name}:`, fileError);
+      }
+    }
+
+    console.log('✅ [BACKEND PROXY] Retrieved documents:', Object.keys(documents));
+
+    res.json({
+      success: true,
+      data: {
+        driverId: driverId,
+        documents: documents,
+        totalDocuments: Object.keys(documents).length
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ [BACKEND PROXY] Error getting driver documents:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to get documents',
+      details: error.message
+    });
   }
-);
+});
 
 /**
- * @route GET /api/file-upload/documents/:driverId
- * @desc Get driver's documents
- * @access Private (Driver, Admin)
+ * @route GET /api/file-upload/driver-document/:driverId/:documentType
+ * @desc Get specific driver document via backend proxy
+ * @access Private (Driver/Admin)
  */
-router.get('/documents/:driverId', 
-  requireRole(['driver', 'admin']),
-  async (req, res) => {
-    try {
-      const { driverId } = req.params;
-      const { documentType } = req.query;
+router.get('/driver-document/:driverId/:documentType', async (req, res) => {
+  try {
+    console.log('📥 [BACKEND PROXY] Getting specific document:', req.params);
+    
+    const { driverId, documentType } = req.params;
 
-      // Drivers can only access their own documents
-      if (req.user.role === 'driver' && req.user.uid !== driverId) {
-        return res.status(403).json({
-          success: false,
-          error: {
-            code: 'ACCESS_DENIED',
-            message: 'You can only access your own documents'
-          }
-        });
+    if (!driverId || !documentType) {
+      return res.status(400).json({
+        success: false,
+        error: 'Driver ID and document type are required'
+      });
+    }
+
+    // Get Firebase Storage instance
+    const bucket = getStorage().bucket();
+    
+    // List files in the specific document type folder
+    const [files] = await bucket.getFiles({
+      prefix: `drivers/${driverId}/documents/${documentType}/`,
+      maxResults: 1 // Get the latest file
+    });
+
+    if (files.length === 0) {
+      return res.status(404).json({
+        success: false,
+        error: 'Document not found'
+      });
+    }
+
+    const file = files[0];
+    
+    // Get download URL
+    const [downloadURL] = await file.getSignedUrl({
+      action: 'read',
+      expires: '03-01-2500'
+    });
+
+    // Get file metadata
+    const [metadata] = await file.getMetadata();
+
+    console.log('✅ [BACKEND PROXY] Retrieved document:', documentType);
+
+    res.json({
+      success: true,
+      data: {
+        fileName: file.name.split('/').pop(),
+        filePath: file.name,
+        downloadURL: downloadURL,
+        size: metadata.size,
+        uploadedAt: metadata.timeCreated,
+        contentType: metadata.contentType,
+        documentType: documentType,
+        driverId: driverId,
+        customMetadata: metadata.customMetadata || {}
       }
+    });
 
-      const documents = await fileUploadService.getDriverDocuments(driverId, documentType);
-
-      res.json({
-        success: true,
-        data: {
-          documents,
-          total: documents.length
-        }
-      });
-
-    } catch (error) {
-      console.error('Get documents error:', error);
-      res.status(500).json({
-        success: false,
-        error: {
-          code: 'DOCUMENTS_RETRIEVAL_FAILED',
-          message: error.message
-        }
-      });
-    }
+  } catch (error) {
+    console.error('❌ [BACKEND PROXY] Error getting driver document:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to get document',
+      details: error.message
+    });
   }
-);
+});
 
 /**
- * @route GET /api/file-upload/documents
- * @desc Get current user's documents
- * @access Private (Driver)
+ * @route POST /api/file-upload/customer-document
+ * @desc Upload customer document via backend proxy
+ * @access Private (Customer)
  */
-router.get('/documents', 
-  requireRole(['driver']),
-  async (req, res) => {
-    try {
-      const driverId = req.user.uid;
-      const { documentType } = req.query;
+router.post('/customer-document', upload.single('document'), async (req, res) => {
+  try {
+    console.log('📤 [BACKEND PROXY] Customer document upload request received');
+    
+    const { customerId, documentType } = req.body;
+    const file = req.file;
 
-      const documents = await fileUploadService.getDriverDocuments(driverId, documentType);
-
-      res.json({
-        success: true,
-        data: {
-          documents,
-          total: documents.length
-        }
-      });
-
-    } catch (error) {
-      console.error('Get documents error:', error);
-      res.status(500).json({
+    // Validate file
+    if (!file) {
+      console.log('❌ [BACKEND PROXY] No file provided');
+      return res.status(400).json({
         success: false,
-        error: {
-          code: 'DOCUMENTS_RETRIEVAL_FAILED',
-          message: error.message
-        }
+        error: 'No file provided'
       });
     }
-  }
-);
 
-/**
- * @route POST /api/file-upload/verify/:documentId
- * @desc Verify a document (Admin only)
- * @access Private (Admin)
- */
-router.post('/verify/:documentId', 
-  requireRole(['admin']),
-  async (req, res) => {
-    try {
-      const { documentId } = req.params;
-      const { status, comments, rejectionReason } = req.body;
-      const adminId = req.user.uid;
+    // Validate required fields
+    if (!customerId || !documentType) {
+      console.log('❌ [BACKEND PROXY] Missing required fields:', { customerId, documentType });
+      return res.status(400).json({
+        success: false,
+        error: 'Customer ID and document type are required'
+      });
+    }
 
-      if (!status || !['verified', 'rejected'].includes(status)) {
-        return res.status(400).json({
-          success: false,
-          error: {
-            code: 'INVALID_STATUS',
-            message: 'Status must be either "verified" or "rejected"'
-          }
-        });
+    // Validate document type
+    const validDocumentTypes = ['profile_photo', 'id_proof', 'address_proof'];
+    if (!validDocumentTypes.includes(documentType)) {
+      console.log('❌ [BACKEND PROXY] Invalid document type:', documentType);
+      return res.status(400).json({
+        success: false,
+        error: `Invalid document type. Must be one of: ${validDocumentTypes.join(', ')}`
+      });
+    }
+
+    console.log('📤 [BACKEND PROXY] Uploading customer document:', { customerId, documentType, fileSize: file.size });
+
+    // Get Firebase Storage instance
+    const bucket = getStorage().bucket();
+    
+    // Generate unique filename
+    const timestamp = Date.now();
+    const fileName = `${timestamp}_${documentType}.jpg`;
+    const filePath = `customers/${customerId}/documents/${documentType}/${fileName}`;
+    
+    console.log('📤 [BACKEND PROXY] File path:', filePath);
+    
+    // Create file reference
+    const fileRef = bucket.file(filePath);
+    
+    // Upload file
+    await fileRef.save(file.buffer, {
+      metadata: {
+        contentType: file.mimetype,
+        customMetadata: {
+          customerId: customerId,
+          documentType: documentType,
+          uploadedAt: new Date().toISOString(),
+          uploadedBy: 'backend_proxy',
+          originalFileName: file.originalname || fileName
+        }
       }
+    });
 
-      if (status === 'rejected' && !rejectionReason) {
-        return res.status(400).json({
-          success: false,
-          error: {
-            code: 'REJECTION_REASON_REQUIRED',
-            message: 'Rejection reason is required when rejecting a document'
-          }
-        });
+    console.log('✅ [BACKEND PROXY] Customer file uploaded to Firebase Storage');
+
+    // Get download URL
+    const [downloadURL] = await fileRef.getSignedUrl({
+      action: 'read',
+      expires: '03-01-2500' // Far future date
+    });
+
+    // Update user document in Firestore
+    try {
+      const db = getFirestore();
+      const userRef = db.collection('users').doc(customerId);
+      
+      await userRef.update({
+        [`documents.${documentType}`]: {
+          fileName: fileName,
+          filePath: filePath,
+          downloadURL: downloadURL,
+          uploadedAt: new Date().toISOString(),
+          status: 'uploaded',
+          uploadedBy: 'backend_proxy'
+        },
+        updatedAt: new Date()
+      });
+      
+      console.log('✅ [BACKEND PROXY] Customer user document updated in Firestore');
+    } catch (firestoreError) {
+      console.error('⚠️ [BACKEND PROXY] Error updating Firestore:', firestoreError);
+      // Don't fail the upload for Firestore errors
+    }
+
+    console.log('✅ [BACKEND PROXY] Customer document upload completed successfully');
+
+    res.json({
+      success: true,
+      data: {
+        fileName: fileName,
+        filePath: filePath,
+        downloadURL: downloadURL,
+        size: file.size,
+        uploadedAt: new Date().toISOString(),
+        documentType: documentType,
+        customerId: customerId
       }
+    });
 
-      const result = await fileUploadService.verifyDocument(
-        documentId,
-        adminId,
-        status,
-        comments,
-        rejectionReason
-      );
-
-      res.json(result);
-
-    } catch (error) {
-      console.error('Document verification error:', error);
-      res.status(500).json({
-        success: false,
-        error: {
-          code: 'VERIFICATION_FAILED',
-          message: error.message
-        }
-      });
-    }
+  } catch (error) {
+    console.error('❌ [BACKEND PROXY] Error uploading customer document:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to upload document',
+      details: error.message
+    });
   }
-);
+});
 
 /**
- * @route DELETE /api/file-upload/documents/:documentId
- * @desc Delete a document
- * @access Private (Admin)
+ * @route GET /api/file-upload/customer-documents/:customerId
+ * @desc Get all customer documents via backend proxy
+ * @access Private (Customer/Admin)
  */
-router.delete('/documents/:documentId', 
-  requireRole(['admin']),
-  async (req, res) => {
-    try {
-      const { documentId } = req.params;
-      const adminId = req.user.uid;
+router.get('/customer-documents/:customerId', async (req, res) => {
+  try {
+    console.log('📥 [BACKEND PROXY] Getting customer documents for:', req.params.customerId);
+    
+    const { customerId } = req.params;
 
-      const result = await fileUploadService.deleteDocument(documentId, adminId);
-
-      res.json(result);
-
-    } catch (error) {
-      console.error('Document deletion error:', error);
-      res.status(500).json({
+    if (!customerId) {
+      return res.status(400).json({
         success: false,
-        error: {
-          code: 'DELETION_FAILED',
-          message: error.message
-        }
+        error: 'Customer ID is required'
       });
     }
-  }
-);
 
-/**
- * @route GET /api/file-upload/verification-queue
- * @desc Get documents pending verification
- * @access Private (Admin)
- */
-router.get('/verification-queue', 
-  requireRole(['admin']),
-  async (req, res) => {
-    try {
-      const { limit = 20, offset = 0, documentType, driverId } = req.query;
+    // Get Firebase Storage instance
+    const bucket = getStorage().bucket();
+    
+    // List all files in the customer's documents folder
+    const [files] = await bucket.getFiles({
+      prefix: `customers/${customerId}/documents/`,
+    });
 
-      const queue = await fileUploadService.getVerificationQueue(
-        { documentType, driverId },
-        parseInt(limit),
-        parseInt(offset)
-      );
+    const documents = {};
 
-      res.json({
-        success: true,
-        data: queue
-      });
-
-    } catch (error) {
-      console.error('Get verification queue error:', error);
-      res.status(500).json({
-        success: false,
-        error: {
-          code: 'QUEUE_RETRIEVAL_FAILED',
-          message: error.message
-        }
-      });
-    }
-  }
-);
-
-/**
- * @route GET /api/file-upload/statistics
- * @desc Get document statistics
- * @access Private (Admin)
- */
-router.get('/statistics', 
-  requireRole(['admin']),
-  async (req, res) => {
-    try {
-      const { documentType, status, verificationStatus } = req.query;
-
-      const filters = {};
-      if (documentType) filters.documentType = documentType;
-      if (status) filters.status = status;
-      if (verificationStatus) filters.verificationStatus = verificationStatus;
-
-      const stats = await fileUploadService.getDocumentStatistics(filters);
-
-      res.json({
-        success: true,
-        data: stats
-      });
-
-    } catch (error) {
-      console.error('Get statistics error:', error);
-      res.status(500).json({
-        success: false,
-        error: {
-          code: 'STATISTICS_RETRIEVAL_FAILED',
-          message: error.message
-        }
-      });
-    }
-  }
-);
-
-/**
- * @route POST /api/file-upload/cleanup
- * @desc Clean up expired documents
- * @access Private (Admin)
- */
-router.post('/cleanup', 
-  requireRole(['admin']),
-  async (req, res) => {
-    try {
-      const { maxAge } = req.body;
-      const maxAgeMs = maxAge ? parseInt(maxAge) * 24 * 60 * 60 * 1000 : 30 * 24 * 60 * 60 * 1000;
-
-      const result = await fileUploadService.cleanupExpiredDocuments(maxAgeMs);
-
-      res.json(result);
-
-    } catch (error) {
-      console.error('Document cleanup error:', error);
-      res.status(500).json({
-        success: false,
-        error: {
-          code: 'CLEANUP_FAILED',
-          message: error.message
-        }
-      });
-    }
-  }
-);
-
-/**
- * @route GET /api/file-upload/signed-url/:documentId
- * @desc Generate signed URL for secure document access
- * @access Private (Driver, Admin)
- */
-router.get('/signed-url/:documentId', 
-  requireRole(['driver', 'admin']),
-  async (req, res) => {
-    try {
-      const { documentId } = req.params;
-      const { expirationTime = 3600 } = req.query;
-
-      // Get document details
-      const documents = await fileUploadService.getDriverDocuments();
-      const document = documents.find(doc => doc.id === documentId);
-
-      if (!document) {
-        return res.status(404).json({
-          success: false,
-          error: {
-            code: 'DOCUMENT_NOT_FOUND',
-            message: 'Document not found'
-          }
+    for (const file of files) {
+      try {
+        // Get download URL
+        const [downloadURL] = await file.getSignedUrl({
+          action: 'read',
+          expires: '03-01-2500'
         });
+
+        // Get file metadata
+        const [metadata] = await file.getMetadata();
+        
+        // Extract document type from path
+        const pathParts = file.name.split('/');
+        const documentType = pathParts[pathParts.length - 2]; // Second to last part
+
+        documents[documentType] = {
+          fileName: file.name.split('/').pop(),
+          filePath: file.name,
+          downloadURL: downloadURL,
+          size: metadata.size,
+          uploadedAt: metadata.timeCreated,
+          contentType: metadata.contentType,
+          customMetadata: metadata.customMetadata || {}
+        };
+      } catch (fileError) {
+        console.error(`❌ [BACKEND PROXY] Error processing file ${file.name}:`, fileError);
       }
-
-      // Check access permissions
-      if (req.user.role === 'driver' && document.driverId !== req.user.uid) {
-        return res.status(403).json({
-          success: false,
-          error: {
-            code: 'ACCESS_DENIED',
-            message: 'You can only access your own documents'
-          }
-        });
-      }
-
-      const signedUrl = await fileUploadService.generateSignedUrl(
-        document.uploadDetails.filePath,
-        parseInt(expirationTime)
-      );
-
-      res.json({
-        success: true,
-        data: {
-          signedUrl,
-          expiresIn: parseInt(expirationTime),
-          documentId
-        }
-      });
-
-    } catch (error) {
-      console.error('Generate signed URL error:', error);
-      res.status(500).json({
-        success: false,
-        error: {
-          code: 'SIGNED_URL_GENERATION_FAILED',
-          message: error.message
-        }
-      });
     }
-  }
-);
 
-/**
- * @route POST /api/file-upload/validate
- * @desc Validate a file before upload
- * @access Private (Driver)
- */
-router.post('/validate', 
-  requireRole(['driver']),
-  upload.single('document'),
-  async (req, res) => {
-    try {
-      if (!req.file) {
-        return res.status(400).json({
-          success: false,
-          error: {
-            code: 'NO_FILE_PROVIDED',
-            message: 'No file provided'
-          }
-        });
+    console.log('✅ [BACKEND PROXY] Retrieved customer documents:', Object.keys(documents));
+
+    res.json({
+      success: true,
+      data: {
+        customerId: customerId,
+        documents: documents,
+        totalDocuments: Object.keys(documents).length
       }
+    });
 
-      const { documentType } = req.body;
-
-      if (!documentType) {
-        return res.status(400).json({
-          success: false,
-          error: {
-            code: 'DOCUMENT_TYPE_REQUIRED',
-            message: 'Document type is required'
-          }
-        });
-      }
-
-      const validation = fileUploadService.validateFile(req.file, documentType);
-
-      res.json({
-        success: true,
-        data: validation
-      });
-
-    } catch (error) {
-      console.error('File validation error:', error);
-      res.status(500).json({
-        success: false,
-        error: {
-          code: 'VALIDATION_FAILED',
-          message: error.message
-        }
-      });
-    }
+  } catch (error) {
+    console.error('❌ [BACKEND PROXY] Error getting customer documents:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to get documents',
+      details: error.message
+    });
   }
-);
-
-// Health check moved to server.js to avoid authentication middleware
+});
 
 module.exports = router;

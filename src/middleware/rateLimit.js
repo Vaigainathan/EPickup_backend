@@ -88,11 +88,10 @@ const adminLimiter = rateLimit({
 const speedLimiter = slowDown({
   windowMs: 15 * 60 * 1000, // 15 minutes
   delayAfter: 50, // allow 50 requests per windowMs without delay
-  delayMs: 500, // add 500ms delay per request after delayAfter
+  delayMs: () => 500, // add 500ms delay per request after delayAfter
   maxDelayMs: 20000, // max delay of 20 seconds
-  onLimitReached: (req) => {
-    console.log(`Rate limit reached for IP: ${req.ip}`);
-  }
+  skipSuccessfulRequests: false,
+  skipFailedRequests: false
 });
 
 // Brute force protection for login attempts

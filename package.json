@@ -73,6 +73,7 @@
     "moment": "^2.29.4",
     "morgan": "^1.10.0",
     "multer": "^2.0.0-rc.4",
+    "node-cache": "^5.1.2",
     "nodemailer": "^6.9.7",
     "rate-limit-redis": "^3.0.0",
     "razorpay": "^2.8.6",

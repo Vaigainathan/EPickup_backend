@@ -28,7 +28,7 @@ router.post('/login', async (req, res) => {
     const auth = getAuth();
     const db = getFirestore();
     
-    let decodedToken, userRecord, customClaims;
+    let decodedToken, userRecord, customClaims, adminUserData;
     
     try {
       // Validate token format before verification
@@ -61,21 +61,110 @@ router.post('/login', async (req, res) => {
       // Check if user has admin custom claims
       customClaims = decodedToken.customClaims || {};
       
-      // Also check if user exists in adminUsers collection as a fallback
-      const adminDoc = await db.collection('adminUsers').doc(decodedToken.uid).get();
-      const isAdminInDatabase = adminDoc.exists;
+      // Comprehensive admin user lookup with multiple fallbacks
+      let isAdminUser = false;
+      let adminUserData = null;
+      let adminSource = '';
       
-      // Check custom claims OR database presence
-      if ((customClaims.userType !== 'admin' && customClaims.role !== 'super_admin') && !isAdminInDatabase) {
+      // Method 1: Check custom claims
+      if (customClaims.userType === 'admin' || customClaims.role === 'super_admin') {
+        isAdminUser = true;
+        adminSource = 'custom_claims';
+        console.log('✅ [ADMIN LOGIN] Admin privileges found via custom claims');
+      }
+      
+      // Method 2: Check adminUsers collection
+      if (!isAdminUser) {
+        try {
+          const adminDoc = await db.collection('adminUsers').doc(decodedToken.uid).get();
+          if (adminDoc.exists) {
+            adminUserData = adminDoc.data();
+            isAdminUser = true;
+            adminSource = 'adminUsers_collection';
+            console.log('✅ [ADMIN LOGIN] Admin privileges found via adminUsers collection');
+          }
+        } catch (error) {
+          console.error('❌ [ADMIN LOGIN] Error checking adminUsers collection:', error);
+        }
+      }
+      
+      // Method 3: Check users collection for admin users
+      if (!isAdminUser) {
+        try {
+          const userDoc = await db.collection('users').doc(decodedToken.uid).get();
+          if (userDoc.exists) {
+            const userData = userDoc.data();
+            if (userData.userType === 'admin' || userData.role === 'super_admin') {
+              adminUserData = userData;
+              isAdminUser = true;
+              adminSource = 'users_collection';
+              console.log('✅ [ADMIN LOGIN] Admin privileges found via users collection');
+            }
+          }
+        } catch (error) {
+          console.error('❌ [ADMIN LOGIN] Error checking users collection:', error);
+        }
+      }
+      
+      // Method 4: Check users collection with query (fallback for edge cases)
+      if (!isAdminUser) {
+        try {
+          const adminQuery = await db.collection('users')
+            .where('uid', '==', decodedToken.uid)
+            .where('userType', '==', 'admin')
+            .limit(1)
+            .get();
+          
+          if (!adminQuery.empty) {
+            adminUserData = adminQuery.docs[0].data();
+            isAdminUser = true;
+            adminSource = 'users_query';
+            console.log('✅ [ADMIN LOGIN] Admin privileges found via users query');
+          }
+        } catch (error) {
+          console.error('❌ [ADMIN LOGIN] Error checking users query:', error);
+        }
+      }
+      
+      // Debug logging
+      console.log('🔍 [ADMIN LOGIN] Comprehensive debug info:', {
+        uid: decodedToken.uid,
+        email: decodedToken.email,
+        customClaims: customClaims,
+        isAdminUser: isAdminUser,
+        adminSource: adminSource,
+        adminUserData: adminUserData ? {
+          id: adminUserData.id || adminUserData.uid,
+          userType: adminUserData.userType,
+          role: adminUserData.role,
+          email: adminUserData.email
+        } : null
+      });
+      
+      if (!isAdminUser) {
+        console.log('❌ [ADMIN LOGIN] Access denied - no admin privileges found:', {
+          uid: decodedToken.uid,
+          email: decodedToken.email,
+          customClaims: customClaims,
+          checkedSources: ['custom_claims', 'adminUsers_collection', 'users_collection', 'users_query']
+        });
+        
         return res.status(403).json({
           success: false,
           error: {
             code: 'INSUFFICIENT_PRIVILEGES',
-            message: 'This account does not have admin privileges'
+            message: 'This account does not have admin privileges. Please contact support if you believe this is an error.',
+            details: {
+              uid: decodedToken.uid,
+              email: decodedToken.email,
+              checkedSources: ['custom_claims', 'adminUsers_collection', 'users_collection', 'users_query']
+            }
           },
           timestamp: new Date().toISOString()
         });
       }
+      
+      console.log(`✅ [ADMIN LOGIN] Admin privileges confirmed via ${adminSource}`);
 
       // Get user record for additional info
       userRecord = await auth.getUser(decodedToken.uid);
@@ -108,46 +197,104 @@ router.post('/login', async (req, res) => {
       });
     }
 
-    // Create or get admin user in database
+    // Create or get admin user in database with comprehensive recovery
     const adminId = decodedToken.uid; // Use Firebase UID as admin ID
     
-    // Check if admin user already exists
-    const existingAdminQuery = await db.collection('users')
-      .where('uid', '==', adminId)
-      .where('userType', '==', 'admin')
-      .limit(1)
-      .get();
-
-    let adminUser;
-    if (!existingAdminQuery.empty) {
-      adminUser = existingAdminQuery.docs[0].data();
-      adminUser.id = existingAdminQuery.docs[0].id;
-      
-      // Update last login
-      await db.collection('users').doc(adminId).update({
-        lastLogin: new Date(),
-        updatedAt: new Date()
-      });
-    } else {
-      // Create new admin user
-      const adminUserData = {
-        id: adminId,
-        uid: adminId,
-        email: userRecord.email,
-        name: userRecord.displayName || 'Admin User',
-        userType: 'admin',
-        role: customClaims.role || 'super_admin',
-        permissions: customClaims.permissions || ['all'],
-        isActive: true,
-        isVerified: true,
-        createdAt: new Date(),
+    let adminUser = null; // Will be populated from lookup or recovery
+    
+    // Use admin user data from previous lookup if available
+    if (adminUserData) {
+      // Ensure admin user data has all required fields
+      adminUser = {
+        id: adminUserData.id || adminUserData.uid,
+        uid: adminUserData.uid,
+        email: adminUserData.email || userRecord.email,
+        name: adminUserData.name || adminUserData.displayName || userRecord.displayName || 'Admin User',
+        userType: adminUserData.userType || 'admin',
+        role: adminUserData.role || 'super_admin',
+        permissions: adminUserData.permissions || ['all'],
+        isActive: adminUserData.isActive !== undefined ? adminUserData.isActive : true,
+        isVerified: adminUserData.isVerified !== undefined ? adminUserData.isVerified : true,
+        createdAt: adminUserData.createdAt || new Date(),
         updatedAt: new Date(),
         lastLogin: new Date()
       };
+      console.log('✅ [ADMIN LOGIN] Using admin user data from lookup');
+    } else {
+      console.log('🔧 [ADMIN LOGIN] Admin user data not found, attempting recovery...');
+      
+      // Try to find existing admin user
+      const existingAdminQuery = await db.collection('users')
+        .where('uid', '==', adminId)
+        .where('userType', '==', 'admin')
+        .limit(1)
+        .get();
 
-      const adminRef = db.collection('users').doc(adminId);
-      await adminRef.set(adminUserData);
-      adminUser = adminUserData;
+      if (!existingAdminQuery.empty) {
+        adminUser = existingAdminQuery.docs[0].data();
+        adminUser.id = existingAdminQuery.docs[0].id;
+        console.log('✅ [ADMIN LOGIN] Found existing admin user in database');
+      } else {
+        // Create new admin user as recovery mechanism
+        console.log('🔧 [ADMIN LOGIN] Creating admin user as recovery mechanism...');
+        const newAdminUserData = {
+          id: adminId,
+          uid: adminId,
+          email: userRecord.email,
+          name: userRecord.displayName || 'Admin User',
+          userType: 'admin',
+          role: customClaims.role || 'super_admin',
+          permissions: customClaims.permissions || ['all'],
+          isActive: true,
+          isVerified: true,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+          lastLogin: new Date()
+        };
+
+        // Create in both collections for consistency
+        try {
+          await Promise.all([
+            db.collection('users').doc(adminId).set(newAdminUserData),
+            db.collection('adminUsers').doc(adminId).set(newAdminUserData)
+          ]);
+          
+          adminUser = newAdminUserData;
+          console.log('✅ [ADMIN LOGIN] Admin user created successfully in both collections');
+        } catch (createError) {
+          console.error('❌ [ADMIN LOGIN] Error creating admin user:', createError);
+          
+          // Try to create in just users collection as fallback
+          try {
+            await db.collection('users').doc(adminId).set(newAdminUserData);
+            adminUser = newAdminUserData;
+            console.log('✅ [ADMIN LOGIN] Admin user created in users collection (fallback)');
+          } catch (fallbackError) {
+            console.error('❌ [ADMIN LOGIN] Fallback creation also failed:', fallbackError);
+            throw new Error('Failed to create admin user in database');
+          }
+        }
+      }
+    }
+    
+    // Update last login
+    try {
+      await Promise.all([
+        db.collection('users').doc(adminId).update({
+          lastLogin: new Date(),
+          updatedAt: new Date()
+        }),
+        db.collection('adminUsers').doc(adminId).update({
+          lastLogin: new Date(),
+          updatedAt: new Date()
+        }).catch(() => {
+          // Ignore if adminUsers collection doesn't exist
+        })
+      ]);
+      console.log('✅ [ADMIN LOGIN] Last login updated successfully');
+    } catch (error) {
+      console.error('⚠️ [ADMIN LOGIN] Error updating last login:', error);
+      // Don't fail login for this error
     }
 
     // Generate JWT token

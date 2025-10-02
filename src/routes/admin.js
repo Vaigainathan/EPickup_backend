@@ -2961,23 +2961,37 @@ router.get('/analytics/revenue', async (req, res) => {
     const start = new Date(startDate);
     const end = new Date(endDate);
 
-    // Get revenue data from payments collection
-    const paymentsSnapshot = await db.collection('payments')
-      .where('createdAt', '>=', start)
-      .where('createdAt', '<=', end)
-      .where('status', '==', 'COMPLETED')
-      .get();
+    // Get revenue data from payments collection with simplified query
+    let paymentsSnapshot;
+    try {
+      // Try the complex query first
+      paymentsSnapshot = await db.collection('payments')
+        .where('createdAt', '>=', start)
+        .where('createdAt', '<=', end)
+        .where('status', '==', 'COMPLETED')
+        .get();
+    } catch (indexError) {
+      console.log('⚠️ Complex query failed, using simplified query:', indexError.message);
+      // Fallback to simpler query without status filter
+      paymentsSnapshot = await db.collection('payments')
+        .where('createdAt', '>=', start)
+        .where('createdAt', '<=', end)
+        .get();
+    }
 
     const payments = paymentsSnapshot.docs.map(doc => doc.data());
     
-    // Calculate revenue metrics
-    const totalRevenue = payments.reduce((sum, payment) => sum + payment.amount, 0);
+    // Filter completed payments in code (fallback for when status filter fails)
+    const completedPayments = payments.filter(payment => payment.status === 'COMPLETED');
+    
+    // Calculate revenue metrics using completed payments
+    const totalRevenue = completedPayments.reduce((sum, payment) => sum + (payment.amount || 0), 0);
     const today = new Date();
     today.setHours(0, 0, 0, 0);
     
-    const todayRevenue = payments
-      .filter(payment => payment.createdAt.toDate() >= today)
-      .reduce((sum, payment) => sum + payment.amount, 0);
+    const todayRevenue = completedPayments
+      .filter(payment => payment.createdAt && payment.createdAt.toDate && payment.createdAt.toDate() >= today)
+      .reduce((sum, payment) => sum + (payment.amount || 0), 0);
 
     // Generate time series data
     const timeSeriesData = [];
@@ -2989,12 +3003,13 @@ router.get('/analytics/revenue', async (req, res) => {
       const dayEnd = new Date(currentDate);
       dayEnd.setHours(23, 59, 59, 999);
       
-      const dayRevenue = payments
+      const dayRevenue = completedPayments
         .filter(payment => {
-          const paymentDate = payment.createdAt.toDate();
+          if (!payment.createdAt) return false;
+          const paymentDate = payment.createdAt.toDate ? payment.createdAt.toDate() : new Date(payment.createdAt);
           return paymentDate >= dayStart && paymentDate <= dayEnd;
         })
-        .reduce((sum, payment) => sum + payment.amount, 0);
+        .reduce((sum, payment) => sum + (payment.amount || 0), 0);
 
       timeSeriesData.push({
         date: currentDate.toISOString().split('T')[0],

@@ -208,7 +208,7 @@ router.get('/bookings', authenticateToken, async (req, res) => {
  * @desc Create new booking
  * @access Private (Customer only)
  */
-router.post('/bookings', authenticateToken, async (req, res) => {
+router.post('/bookings', async (req, res) => {
   try {
     const { uid: userId } = req.user;
     const bookingData = req.body;

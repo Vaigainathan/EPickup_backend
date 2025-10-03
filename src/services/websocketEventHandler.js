@@ -1391,6 +1391,10 @@ class WebSocketEventHandler {
       if (!this.io || !this.db) return;
 
       console.log(`🔔 Notifying drivers of new booking: ${bookingData.id}`);
+      
+      if (process.env.ENABLE_REAL_TIME_TESTING === 'true') {
+        console.log('⚠️ Real-time testing mode enabled - enhanced logging active');
+      }
 
       // Get available drivers in the area
       const driversQuery = this.db.collection('users')
@@ -1441,6 +1445,15 @@ class WebSocketEventHandler {
       });
 
       console.log(`✅ New booking notification sent to ${driversSnapshot.size} drivers`);
+      
+      if (process.env.ENABLE_REAL_TIME_TESTING === 'true') {
+        console.log('📊 Real-time testing metrics:', {
+          totalDrivers: driversSnapshot.size,
+          bookingId: bookingData.id,
+          pickupLocation: bookingData.pickup.coordinates,
+          timestamp: new Date().toISOString()
+        });
+      }
 
     } catch (error) {
       console.error('Error notifying drivers of new booking:', error);

@@ -230,8 +230,8 @@ class EnvironmentConfig {
         DEFAULT_METERS: 25000 // 25 km - default service radius
       },
       VALIDATION: {
-        ENABLED: true, // Enable service area validation
-        STRICT_MODE: true, // Reject bookings outside service area
+        ENABLED: !process.env.BYPASS_LOCATION_VALIDATION, // Enable service area validation (can be bypassed)
+        STRICT_MODE: !process.env.BYPASS_LOCATION_VALIDATION, // Reject bookings outside service area (can be bypassed)
         WARNING_THRESHOLD: 26000 // Warn when approaching boundary
       }
     };

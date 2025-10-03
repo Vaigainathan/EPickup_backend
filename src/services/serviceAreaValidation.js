@@ -39,6 +39,9 @@ class ServiceAreaValidationService {
    */
   validateLocation(latitude, longitude) {
     if (!this.validationConfig.ENABLED) {
+      if (process.env.BYPASS_LOCATION_VALIDATION === 'true') {
+        console.log('⚠️ Location validation bypassed for development');
+      }
       return {
         isValid: true,
         distance: 0,

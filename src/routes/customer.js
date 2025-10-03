@@ -227,11 +227,63 @@ router.post('/bookings', async (req, res) => {
       });
     }
     
-    // Add customer ID to booking data
+    // Calculate fare using the dedicated fare calculation service
+    const fareCalculationService = require('../services/fareCalculationService');
+    
+    let fareDetails;
+    let distance;
+    
+    try {
+      // Calculate distance and fare using the proper service
+      const pickupCoords = {
+        lat: bookingData.pickup.coordinates.latitude,
+        lng: bookingData.pickup.coordinates.longitude
+      };
+      const dropoffCoords = {
+        lat: bookingData.dropoff.coordinates.latitude,
+        lng: bookingData.dropoff.coordinates.longitude
+      };
+      
+      const distanceAndFare = await fareCalculationService.calculateDistanceAndFare(pickupCoords, dropoffCoords);
+      fareDetails = distanceAndFare.fare;
+      distance = distanceAndFare.distanceKm;
+      
+      console.log(`💰 Calculated fare for booking: ₹${fareDetails.baseFare} (${distance}km)`);
+    } catch (error) {
+      console.error('❌ Error calculating fare, using fallback:', error);
+      // Fallback to basic calculation if service fails
+      distance = 5; // Default distance
+      fareDetails = fareCalculationService.calculateFare(distance);
+    }
+    
+    // Add customer ID and fare information to booking data
     const newBooking = {
       ...bookingData,
       customerId: userId,
       status: 'pending',
+      paymentStatus: 'pending',
+      fare: {
+        baseFare: fareDetails.baseFare,
+        distanceFare: fareDetails.baseFare - fareCalculationService.MINIMUM_FARE,
+        totalFare: fareDetails.baseFare,
+        currency: 'INR',
+        commission: fareDetails.commission,
+        driverNet: fareDetails.driverNet,
+        companyRevenue: fareDetails.companyRevenue
+      },
+      pricing: {
+        baseFare: fareDetails.baseFare,
+        distanceFare: fareDetails.baseFare - fareCalculationService.MINIMUM_FARE,
+        totalFare: fareDetails.baseFare,
+        currency: 'INR',
+        commission: fareDetails.commission,
+        driverNet: fareDetails.driverNet,
+        companyRevenue: fareDetails.companyRevenue
+      },
+      distance: distance,
+      exactDistance: fareDetails.exactDistanceKm,
+      roundedDistance: fareDetails.roundedDistanceKm,
+      fareBreakdown: fareDetails.breakdown,
       createdAt: new Date(),
       updatedAt: new Date()
     };

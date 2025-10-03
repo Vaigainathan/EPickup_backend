@@ -196,7 +196,7 @@ class WalletService {
         driverId,
         amount,
         paymentMethod,
-        paymentGateway: paymentDetails.gateway || 'razorpay',
+        paymentGateway: paymentDetails.gateway || 'phonepe',
         transactionId,
         gatewayTransactionId: paymentDetails.gatewayTransactionId || null,
         status: 'pending',

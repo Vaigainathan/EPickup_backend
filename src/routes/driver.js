@@ -3180,16 +3180,12 @@ router.post('/wallet/add-money', [
     .isFloat({ min: 10, max: 10000 })
     .withMessage('Amount must be between 10 and 10,000'),
   body('paymentMethod')
-    .isIn(['upi', 'card', 'netbanking'])
-    .withMessage('Payment method must be one of: upi, card, netbanking'),
+    .isIn(['upi'])
+    .withMessage('Payment method must be upi'),
   body('upiId')
     .optional()
     .isString()
     .withMessage('UPI ID must be a string'),
-  body('cardDetails')
-    .optional()
-    .isObject()
-    .withMessage('Card details must be an object')
 ], async (req, res) => {
   try {
     const errors = validationResult(req);
@@ -3206,7 +3202,7 @@ router.post('/wallet/add-money', [
     }
 
     const { uid } = req.user;
-    const { amount, paymentMethod, upiId, cardDetails } = req.body;
+    const { amount, paymentMethod, upiId } = req.body;
     const db = getFirestore();
     
     const userRef = db.collection('users').doc(uid);
@@ -3240,11 +3236,7 @@ router.post('/wallet/add-money', [
       paymentMethod: paymentMethod,
       status: 'pending',
       metadata: {
-        upiId,
-        cardDetails: cardDetails ? {
-          last4: cardDetails.last4,
-          brand: cardDetails.brand
-        } : null
+        upiId
       },
       createdAt: new Date(),
       updatedAt: new Date()
@@ -5193,8 +5185,8 @@ router.post('/bookings/:id/payment', [
     .isNumeric()
     .withMessage('Amount must be a number'),
   body('paymentMethod')
-    .isIn(['cash', 'upi', 'card'])
-    .withMessage('Payment method must be cash, upi, or card'),
+    .isIn(['cash', 'upi'])
+    .withMessage('Payment method must be cash or upi'),
   body('collectedAt')
     .isISO8601()
     .withMessage('Collected at must be a valid date')

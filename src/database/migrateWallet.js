@@ -46,8 +46,8 @@ const walletCollections = {
     fields: {
       driverId: 'string',
       amount: 'number',
-      paymentMethod: 'string', // 'upi', 'card', 'netbanking', 'cash'
-      paymentGateway: 'string', // 'razorpay', 'paytm', 'phonepe', 'cash'
+      paymentMethod: 'string', // 'upi', 'cash'
+      paymentGateway: 'string', // 'phonepe', 'cash'
       transactionId: 'string',
       gatewayTransactionId: 'string',
       status: 'string', // 'pending', 'completed', 'failed', 'cancelled'
@@ -160,9 +160,9 @@ async function createSampleWalletData() {
       driverId: 'sample_driver_001',
       amount: 100,
       paymentMethod: 'upi',
-      paymentGateway: 'razorpay',
+      paymentGateway: 'phonepe',
       transactionId: 'sample_recharge_001',
-      gatewayTransactionId: 'rzp_sample_001',
+      gatewayTransactionId: 'phonepe_sample_001',
       status: 'completed',
       walletBalanceBefore: 494.8,
       walletBalanceAfter: 594.8,

@@ -205,8 +205,8 @@ const collections = {
     fields: {
       driverId: 'string',
       amount: 'number',
-      paymentMethod: 'string', // 'upi', 'card', 'netbanking', 'cash'
-      paymentGateway: 'string', // 'razorpay', 'paytm', 'phonepe', 'cash'
+      paymentMethod: 'string', // 'upi', 'cash'
+      paymentGateway: 'string', // 'phonepe', 'cash'
       transactionId: 'string',
       gatewayTransactionId: 'string',
       status: 'string', // 'pending', 'completed', 'failed', 'cancelled'

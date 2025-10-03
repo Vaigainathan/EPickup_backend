@@ -76,7 +76,6 @@
     "node-cache": "^5.1.2",
     "nodemailer": "^6.9.7",
     "rate-limit-redis": "^3.0.0",
-    "razorpay": "^2.8.6",
     "sanitize-html": "^2.17.0",
     "sharp": "^0.33.5",
     "socket.io": "^4.7.4",

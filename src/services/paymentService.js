@@ -1,6 +1,7 @@
 const { getFirestore } = require('./firebase');
 const axios = require('axios');
 const crypto = require('crypto');
+const phonepeConfig = require('./phonepeConfigService');
 
 /**
  * Payment Service for EPickup delivery platform
@@ -8,13 +9,8 @@ const crypto = require('crypto');
  */
 class PaymentService {
   constructor() {
-    this.phonepeConfig = {
-      merchantId: process.env.PHONEPE_MERCHANT_ID || 'PGTESTPAYUAT',
-      saltKey: process.env.PHONEPE_SALT_KEY || '099eb0cd-02cf-4e2a-8aca-3e6c6aff0399',
-      saltIndex: process.env.PHONEPE_SALT_INDEX || '1',
-      baseUrl: process.env.PHONEPE_BASE_URL || 'https://api.phonepe.com/apis/pg-sandbox',
-      redirectUrl: process.env.PHONEPE_REDIRECT_URL || 'https://epickup-app.web.app/payment/callback'
-    };
+    // Use centralized PhonePe configuration
+    this.phonepeConfig = phonepeConfig.getConfig();
     
     console.log('🔧 Payment Service initialized with PhonePe config:', {
       merchantId: this.phonepeConfig.merchantId,
@@ -46,14 +42,6 @@ class PaymentService {
         supported: true,
         gateway: 'phonepe'
       },
-      online: {
-        name: 'Online Payment',
-        code: 'online',
-        description: 'Pay using cards or net banking',
-        requiresPrePayment: true,
-        supported: false,
-        reason: 'Coming soon'
-      }
     };
   }
 
@@ -209,9 +197,9 @@ class PaymentService {
         merchantId: this.phonepeConfig.merchantId,
         merchantTransactionId: transactionId,
         amount: Math.round(amount * 100), // Convert to paise
-        redirectUrl: redirectUrl || this.phonepeConfig.redirectUrl,
+        redirectUrl: redirectUrl || phonepeConfig.getRedirectUrl(),
         redirectMode: 'POST',
-        callbackUrl: `${process.env.BACKEND_URL}/api/payments/phonepe/callback`,
+        callbackUrl: phonepeConfig.getCallbackUrl(),
         merchantUserId: customerId,
         mobileNumber: customerPhone,
         paymentInstrument: {
@@ -225,7 +213,7 @@ class PaymentService {
 
       // Make API call to PhonePe
       const response = await axios.post(
-        `${this.phonepeConfig.baseUrl}/pg/v1/pay`,
+        `${phonepeConfig.getBaseUrl()}/pg/v1/pay`,
         {
           request: base64Payload
         },
@@ -387,9 +375,9 @@ class PaymentService {
    * @returns {string} Checksum
    */
   generatePhonePeChecksum(payload) {
-    const string = payload + '/pg/v1/pay' + this.phonepeConfig.saltKey;
+    const string = payload + '/pg/v1/pay' + phonepeConfig.getSaltKey();
     const sha256 = crypto.createHash('sha256').update(string).digest('hex');
-    return sha256 + '###' + this.phonepeConfig.saltIndex;
+    return sha256 + '###' + phonepeConfig.getSaltIndex();
   }
 
   /**
@@ -400,9 +388,9 @@ class PaymentService {
   verifyWebhookSignature(webhookData) {
     try {
       const { merchantTransactionId } = webhookData;
-      const string = `/pg/v1/status/${this.phonepeConfig.merchantId}/${merchantTransactionId}` + this.phonepeConfig.saltKey;
+      const string = `/pg/v1/status/${phonepeConfig.getMerchantId()}/${merchantTransactionId}` + phonepeConfig.getSaltKey();
       const sha256 = crypto.createHash('sha256').update(string).digest('hex');
-      const checksum = sha256 + '###' + this.phonepeConfig.saltIndex;
+      const checksum = sha256 + '###' + phonepeConfig.getSaltIndex();
       
       return checksum === webhookData.checksum;
     } catch (error) {

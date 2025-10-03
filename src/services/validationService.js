@@ -272,7 +272,7 @@ class ValidationService {
     const schema = Joi.object({
       amount: this.schemas.price,
       currency: Joi.string().valid('INR').default('INR'),
-      paymentMethod: Joi.string().valid('upi', 'card', 'netbanking', 'wallet').required(),
+      paymentMethod: Joi.string().valid('upi', 'wallet').required(),
       paymentId: Joi.string().min(1).max(100).required(),
       bookingId: Joi.string().min(1).max(100).required()
     });

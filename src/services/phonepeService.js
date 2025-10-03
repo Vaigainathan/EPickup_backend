@@ -3,6 +3,7 @@ const axios = require('axios');
 const { getFirestore } = require('./firebase');
 const errorHandlingService = require('./errorHandlingService');
 const monitoringService = require('./monitoringService');
+const phonepeConfig = require('./phonepeConfigService');
 
 /**
  * PhonePe Payment Service for EPickup
@@ -12,15 +13,11 @@ class PhonePeService {
   constructor() {
     this.db = getFirestore();
     
-    // PhonePe Sandbox Configuration
-    this.config = {
-      merchantId: process.env.PHONEPE_MERCHANT_ID || 'EPICKUP',
-      saltKey: process.env.PHONEPE_SALT_KEY || '099eb0cd-02cf-4e2a-8aca-3c6faf0c5f3d',
-      saltIndex: process.env.PHONEPE_SALT_INDEX || '1',
-      baseUrl: process.env.PHONEPE_BASE_URL || 'https://api-preprod.phonepe.com/apis/pg-sandbox',
-      redirectUrl: process.env.PHONEPE_REDIRECT_URL || 'https://epickup.com/payment/callback',
-      callbackUrl: process.env.PHONEPE_CALLBACK_URL || 'https://epickup.com/api/payments/phonepe/callback'
-    };
+    // Use centralized PhonePe configuration
+    this.config = phonepeConfig.getConfig();
+    
+    // Log configuration for debugging
+    phonepeConfig.logConfig();
   }
 
   /**
@@ -74,9 +71,9 @@ class PhonePeService {
         merchantTransactionId: transactionId,
         merchantUserId: customerId,
         amount: amountInPaise,
-        redirectUrl: this.config.redirectUrl,
+        redirectUrl: phonepeConfig.getRedirectUrl(),
         redirectMode: 'POST',
-        callbackUrl: this.config.callbackUrl,
+        callbackUrl: phonepeConfig.getCallbackUrl(),
         mobileNumber: customerPhone,
         paymentInstrument: {
           type: 'PAY_PAGE'
@@ -94,7 +91,7 @@ class PhonePeService {
 
       // Make API call to PhonePe
       const response = await axios.post(
-        `${this.config.baseUrl}/pg/v1/pay`,
+        `${phonepeConfig.getBaseUrl()}/pg/v1/pay`,
         requestPayload,
         {
           headers: {
@@ -161,7 +158,7 @@ class PhonePeService {
       const checksum = this.generateChecksum(payloadString);
 
       const response = await axios.get(
-        `${this.config.baseUrl}/pg/v1/status/${this.config.merchantId}/${transactionId}`,
+        `${phonepeConfig.getBaseUrl()}/pg/v1/status/${phonepeConfig.getMerchantId()}/${transactionId}`,
         {
           headers: {
             'Content-Type': 'application/json',
@@ -223,7 +220,7 @@ class PhonePeService {
       } = decodedResponse;
 
       // Verify the callback
-      if (merchantId !== this.config.merchantId) {
+      if (merchantId !== phonepeConfig.getMerchantId()) {
         throw new Error('Invalid merchant ID in callback');
       }
 
@@ -283,19 +280,19 @@ class PhonePeService {
       const amountInPaise = Math.round(refundAmount * 100);
 
       const payload = {
-        merchantId: this.config.merchantId,
+        merchantId: phonepeConfig.getMerchantId(),
         merchantUserId: refundedBy,
         originalTransactionId: transactionId,
         merchantRefundId: `REF_${transactionId}_${Date.now()}`,
         amount: amountInPaise,
-        callbackUrl: this.config.callbackUrl
+        callbackUrl: phonepeConfig.getCallbackUrl()
       };
 
       const payloadString = JSON.stringify(payload);
       const checksum = this.generateChecksum(payloadString);
 
       const response = await axios.post(
-        `${this.config.baseUrl}/pg/v1/refund`,
+        `${phonepeConfig.getBaseUrl()}/pg/v1/refund`,
         {
           request: Buffer.from(payloadString).toString('base64')
         },

@@ -55,16 +55,22 @@ class EnvironmentConfig {
     // Payment Gateway Configuration
     this.config.payment = {
       phonepe: {
-        merchantId: process.env.PHONEPE_MERCHANT_ID,
-        saltKey: process.env.PHONEPE_SALT_KEY,
-        saltIndex: process.env.PHONEPE_SALT_INDEX,
-        baseUrl: process.env.PHONEPE_BASE_URL,
-        redirectUrl: process.env.PHONEPE_REDIRECT_URL
+        merchantId: process.env.PHONEPE_MERCHANT_ID || 'EPICKUP',
+        saltKey: process.env.PHONEPE_SALT_KEY || '099eb0cd-02cf-4e2a-8aca-3c6faf0c5f3d',
+        saltIndex: process.env.PHONEPE_SALT_INDEX || '1',
+        baseUrl: process.env.PHONEPE_BASE_URL || 'https://api-preprod.phonepe.com/apis/pg-sandbox',
+        redirectUrl: process.env.PHONEPE_REDIRECT_URL || 'https://epickup-app.web.app/payment/callback',
+        callbackUrl: process.env.PHONEPE_CALLBACK_URL || 'https://epickup-app.web.app/api/payments/phonepe/callback'
       },
-      razorpay: {
-        keyId: process.env.RAZORPAY_KEY_ID,
-        keySecret: process.env.RAZORPAY_KEY_SECRET
-      }
+    };
+
+    // Application URLs Configuration
+    this.config.urls = {
+      backend: process.env.BACKEND_URL || 'http://localhost:3000',
+      frontend: process.env.FRONTEND_URL || 'https://epickup-app.web.app',
+      customerApp: process.env.CUSTOMER_APP_URL || 'https://epickup-app.web.app',
+      driverApp: process.env.DRIVER_APP_URL || 'https://epickup-driver.web.app',
+      adminDashboard: process.env.ADMIN_DASHBOARD_URL || 'https://epickup-admin.web.app'
     };
 
     // Google Maps Configuration
@@ -123,7 +129,7 @@ class EnvironmentConfig {
       user: process.env.EMAIL_USER,
       password: process.env.EMAIL_PASSWORD,
       fromAddress: process.env.EMAIL_FROM_ADDRESS || 'noreply@epickup.com',
-      frontendUrl: process.env.FRONTEND_URL || 'https://epickup.com'
+      frontendUrl: process.env.FRONTEND_URL || this.config.urls?.frontend || 'https://epickup-app.web.app'
     };
 
     // File Storage Configuration

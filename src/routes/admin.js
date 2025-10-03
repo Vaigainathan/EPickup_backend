@@ -835,12 +835,62 @@ router.get('/bookings', async (req, res) => {
 
     snapshot.forEach(doc => {
       const data = doc.data();
-      bookings.push({
+      
+      // Map the actual booking data structure to admin-friendly format
+      const mappedBooking = {
         id: doc.id,
-        ...data,
+        bookingId: data.bookingId || doc.id,
+        customerId: data.customerId || '',
+        driverId: data.driverId,
+        // Map customer info from pickup data
+        customerInfo: {
+          name: data.pickup?.name || 'Unknown Customer',
+          phone: data.pickup?.phone || '',
+          email: ''
+        },
+        // Map driver info if available
+        driverInfo: data.driverId ? {
+          name: data.driverInfo?.name || 'Driver Assigned',
+          phone: data.driverInfo?.phone || '',
+          rating: data.driverInfo?.rating || 0
+        } : undefined,
+        // Map pickup location
+        pickupLocation: {
+          address: data.pickup?.address || 'No pickup address',
+          latitude: data.pickup?.coordinates?.latitude || 0,
+          longitude: data.pickup?.coordinates?.longitude || 0
+        },
+        // Map dropoff location
+        dropoffLocation: {
+          address: data.dropoff?.address || 'No dropoff address',
+          latitude: data.dropoff?.coordinates?.latitude || 0,
+          longitude: data.dropoff?.coordinates?.longitude || 0
+        },
+        // Map package details
+        packageDetails: {
+          weight: data.package?.weight || 0,
+          description: data.package?.description || '',
+          value: data.package?.value || 0
+        },
+        status: data.status || 'pending',
+        // Map fare information
+        fare: data.fare || data.pricing || {
+          baseFare: 0,
+          distanceFare: 0,
+          totalFare: 0,
+          currency: 'INR'
+        },
+        paymentStatus: data.paymentStatus || 'pending',
+        estimatedDuration: data.estimatedDuration,
+        actualDuration: data.actualDuration,
+        distance: data.distance,
         createdAt: data.createdAt?.toDate?.() || data.createdAt,
-        updatedAt: data.updatedAt?.toDate?.() || data.updatedAt
-      });
+        updatedAt: data.updatedAt?.toDate?.() || data.updatedAt,
+        // Include original data for debugging
+        originalData: data
+      };
+      
+      bookings.push(mappedBooking);
     });
 
     res.json({

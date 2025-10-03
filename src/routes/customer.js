@@ -1168,4 +1168,256 @@ router.post('/emergency/alert', authenticateToken, async (req, res) => {
   }
 });
 
+/**
+ * @route POST /api/customer/bookings/:id/confirm-payment
+ * @desc Confirm cash payment received by driver
+ * @access Private (Customer only)
+ */
+router.post('/bookings/:id/confirm-payment', authenticateToken, async (req, res) => {
+  try {
+    const { uid: userId } = req.user;
+    const { id: bookingId } = req.params;
+    const { amount, paymentMethod = 'cash' } = req.body;
+    const db = getFirestore();
+    
+    console.log(`💰 [PAYMENT_CONFIRM] Confirming payment for booking ${bookingId} by customer ${userId}`);
+    
+    if (!amount || amount <= 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'Valid payment amount is required'
+      });
+    }
+    
+    // Get booking details
+    const bookingDoc = await db.collection('bookings').doc(bookingId).get();
+    if (!bookingDoc.exists) {
+      return res.status(404).json({
+        success: false,
+        error: 'Booking not found'
+      });
+    }
+    
+    const bookingData = bookingDoc.data();
+    
+    // Verify customer owns this booking
+    if (bookingData.customerId !== userId) {
+      return res.status(403).json({
+        success: false,
+        error: 'Access denied - this booking does not belong to you'
+      });
+    }
+    
+    // Verify booking is in money collection status
+    if (bookingData.status !== 'money_collection') {
+      return res.status(400).json({
+        success: false,
+        error: 'Payment can only be confirmed during money collection phase'
+      });
+    }
+    
+    // Create payment record
+    const paymentData = {
+      bookingId,
+      customerId: userId,
+      driverId: bookingData.driverId,
+      amount: parseFloat(amount),
+      paymentMethod,
+      status: 'confirmed',
+      confirmedAt: new Date(),
+      createdAt: new Date()
+    };
+    
+    // Update booking status to delivered
+    await db.collection('bookings').doc(bookingId).update({
+      status: 'delivered',
+      paymentConfirmed: true,
+      paymentData,
+      updatedAt: new Date()
+    });
+    
+    // Add payment record
+    await db.collection('payments').add(paymentData);
+    
+    console.log(`✅ [PAYMENT_CONFIRM] Payment confirmed for booking ${bookingId}: ₹${amount}`);
+    
+    res.json({
+      success: true,
+      message: 'Payment confirmed successfully',
+      data: {
+        paymentId: paymentData.id,
+        amount: paymentData.amount,
+        status: 'confirmed'
+      }
+    });
+    
+  } catch (error) {
+    console.error('Error confirming payment:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to confirm payment'
+    });
+  }
+});
+
+/**
+ * @route POST /api/customer/bookings/:id/rate
+ * @desc Submit driver rating and feedback
+ * @access Private (Customer only)
+ */
+router.post('/bookings/:id/rate', authenticateToken, async (req, res) => {
+  try {
+    const { uid: userId } = req.user;
+    const { id: bookingId } = req.params;
+    const { rating, feedback, categories } = req.body;
+    const db = getFirestore();
+    
+    console.log(`⭐ [RATING] Submitting rating for booking ${bookingId} by customer ${userId}`);
+    
+    if (!rating || rating < 1 || rating > 5) {
+      return res.status(400).json({
+        success: false,
+        error: 'Rating must be between 1 and 5 stars'
+      });
+    }
+    
+    // Get booking details
+    const bookingDoc = await db.collection('bookings').doc(bookingId).get();
+    if (!bookingDoc.exists) {
+      return res.status(404).json({
+        success: false,
+        error: 'Booking not found'
+      });
+    }
+    
+    const bookingData = bookingDoc.data();
+    
+    // Verify customer owns this booking
+    if (bookingData.customerId !== userId) {
+      return res.status(403).json({
+        success: false,
+        error: 'Access denied - this booking does not belong to you'
+      });
+    }
+    
+    // Verify booking is completed
+    if (bookingData.status !== 'delivered') {
+      return res.status(400).json({
+        success: false,
+        error: 'Rating can only be submitted for completed bookings'
+      });
+    }
+    
+    // Check if rating already exists
+    const existingRatingQuery = await db.collection('ratings')
+      .where('bookingId', '==', bookingId)
+      .where('customerId', '==', userId)
+      .limit(1)
+      .get();
+    
+    if (!existingRatingQuery.empty) {
+      return res.status(400).json({
+        success: false,
+        error: 'Rating already submitted for this booking'
+      });
+    }
+    
+    // Create rating record
+    const ratingData = {
+      bookingId,
+      customerId: userId,
+      driverId: bookingData.driverId,
+      rating: parseInt(rating),
+      feedback: feedback || '',
+      categories: categories || {},
+      createdAt: new Date(),
+      updatedAt: new Date()
+    };
+    
+    // Add rating record
+    const ratingRef = await db.collection('ratings').add(ratingData);
+    
+    // Update driver's average rating
+    const driverRatingsQuery = await db.collection('ratings')
+      .where('driverId', '==', bookingData.driverId)
+      .get();
+    
+    const ratings = driverRatingsQuery.docs.map(doc => doc.data().rating);
+    const averageRating = ratings.reduce((sum, rating) => sum + rating, 0) / ratings.length;
+    
+    await db.collection('users').doc(bookingData.driverId).update({
+      'driver.averageRating': averageRating,
+      'driver.totalRatings': ratings.length,
+      updatedAt: new Date()
+    });
+    
+    console.log(`✅ [RATING] Rating submitted for booking ${bookingId}: ${rating} stars`);
+    
+    res.json({
+      success: true,
+      message: 'Rating submitted successfully',
+      data: {
+        ratingId: ratingRef.id,
+        rating: ratingData.rating,
+        averageRating: averageRating
+      }
+    });
+    
+  } catch (error) {
+    console.error('Error submitting rating:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to submit rating'
+    });
+  }
+});
+
+/**
+ * @route GET /api/customer/bookings/:id/rating
+ * @desc Get rating for a specific booking
+ * @access Private (Customer only)
+ */
+router.get('/bookings/:id/rating', authenticateToken, async (req, res) => {
+  try {
+    const { uid: userId } = req.user;
+    const { id: bookingId } = req.params;
+    const db = getFirestore();
+    
+    // Get rating for this booking
+    const ratingQuery = await db.collection('ratings')
+      .where('bookingId', '==', bookingId)
+      .where('customerId', '==', userId)
+      .limit(1)
+      .get();
+    
+    if (ratingQuery.empty) {
+      return res.json({
+        success: true,
+        data: null,
+        message: 'No rating found for this booking'
+      });
+    }
+    
+    const ratingData = ratingQuery.docs[0].data();
+    
+    res.json({
+      success: true,
+      data: {
+        ratingId: ratingQuery.docs[0].id,
+        rating: ratingData.rating,
+        feedback: ratingData.feedback,
+        categories: ratingData.categories,
+        createdAt: ratingData.createdAt
+      }
+    });
+    
+  } catch (error) {
+    console.error('Error getting rating:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to get rating'
+    });
+  }
+});
+
 module.exports = router;

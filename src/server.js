@@ -517,7 +517,8 @@ if (process.env.NODE_ENV === 'development' || process.env.ENABLE_TEST_ENDPOINTS 
   // Create test booking in database
   app.post('/api/test/create-booking', async (req, res) => {
     try {
-      const { db } = require('./database/firebase');
+      const { getFirestore } = require('./services/firebase');
+      const db = getFirestore();
       
       const testBooking = {
         customerId: 'test-customer-123',

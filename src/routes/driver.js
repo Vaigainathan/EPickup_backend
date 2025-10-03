@@ -1791,15 +1791,104 @@ router.get('/bookings/test-backdoor', requireDriver, async (req, res) => {
     
     console.log('🔍 [TEST_BACKDOOR] Found bookings in database:', snapshot.size);
     
-    snapshot.forEach(doc => {
-      const bookingData = doc.data();
-      allBookings.push({
-        id: doc.id,
-        ...bookingData,
-        distanceFromDriver: 0, // Set to 0 for testing
-        estimatedPickupTime: bookingData.estimatedPickupTime || new Date(Date.now() + 15 * 60 * 1000).toISOString()
+    // If no bookings exist, create a test booking
+    if (snapshot.empty) {
+      console.log('📝 [TEST_BACKDOOR] No bookings found, creating test booking...');
+      
+      const testBooking = {
+        customerId: 'test-customer-123',
+        driverId: null,
+        status: 'pending',
+        pickup: {
+          name: 'Anjuu',
+          phone: '+919876543210',
+          address: 'Adiyur Lake, Tirupathur, Tamil Nadu',
+          coordinates: {
+            latitude: 12.4950,
+            longitude: 78.5678
+          },
+          instructions: 'Call when you arrive'
+        },
+        dropoff: {
+          name: 'Test Recipient',
+          phone: '+919876543211',
+          address: '456 Park Avenue, Tirupathur, Tamil Nadu',
+          coordinates: {
+            latitude: 12.5000,
+            longitude: 78.5700
+          },
+          instructions: 'Leave at reception'
+        },
+        package: {
+          weight: 11.5,
+          weightUnit: 'kg',
+          description: 'Package delivery',
+          dimensions: null,
+          isFragile: false,
+          requiresSpecialHandling: false
+        },
+        vehicle: {
+          type: '2_wheeler',
+          required: false
+        },
+        fare: {
+          base: 50,
+          distance: 25,
+          time: 15,
+          total: 90,
+          currency: 'INR'
+        },
+        paymentMethod: 'cash',
+        paymentStatus: 'pending',
+        timing: {
+          createdAt: new Date(),
+          estimatedPickupTime: new Date(Date.now() + 15 * 60 * 1000).toISOString(),
+          estimatedDeliveryTime: new Date(Date.now() + 45 * 60 * 1000).toISOString()
+        },
+        distance: {
+          total: 2.5,
+          unit: 'km'
+        },
+        rating: {
+          customerRating: null,
+          customerFeedback: null,
+          driverRating: null,
+          driverFeedback: null
+        },
+        cancellation: {
+          cancelledBy: null,
+          reason: null,
+          cancelledAt: null,
+          refundAmount: null
+        },
+        createdAt: new Date(),
+        updatedAt: new Date(),
+        distanceFromDriver: 0.5,
+        estimatedPickupTime: new Date(Date.now() + 15 * 60 * 1000).toISOString()
+      };
+
+      try {
+        const docRef = await db.collection('bookings').add(testBooking);
+        console.log('✅ [TEST_BACKDOOR] Test booking created with ID:', docRef.id);
+        
+        allBookings.push({
+          id: docRef.id,
+          ...testBooking
+        });
+      } catch (error) {
+        console.error('❌ [TEST_BACKDOOR] Error creating test booking:', error);
+      }
+    } else {
+      snapshot.forEach(doc => {
+        const bookingData = doc.data();
+        allBookings.push({
+          id: doc.id,
+          ...bookingData,
+          distanceFromDriver: 0, // Set to 0 for testing
+          estimatedPickupTime: bookingData.estimatedPickupTime || new Date(Date.now() + 15 * 60 * 1000).toISOString()
+        });
       });
-    });
+    }
 
     console.log('✅ [TEST_BACKDOOR] Returning bookings:', allBookings.length);
 

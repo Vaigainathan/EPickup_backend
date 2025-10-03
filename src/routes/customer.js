@@ -3,8 +3,6 @@ const router = express.Router();
 const { getFirestore } = require('firebase-admin/firestore');
 const { authenticateToken } = require('../middleware/auth');
 
-const db = getFirestore();
-
 /**
  * @route GET /api/customer/profile
  * @desc Get customer profile (backend handles UID mapping)
@@ -13,6 +11,7 @@ const db = getFirestore();
 router.get('/profile', authenticateToken, async (req, res) => {
   try {
     const { uid: userId } = req.user; // This is the customer UID from JWT
+    const db = getFirestore();
     
     console.log(`📋 Getting customer profile for: ${userId}`);
     
@@ -69,6 +68,7 @@ router.put('/profile', authenticateToken, async (req, res) => {
   try {
     const { uid: userId } = req.user;
     const { name, email, address, preferences } = req.body;
+    const db = getFirestore();
     
     console.log(`📝 Updating customer profile for: ${userId}`);
     
@@ -119,6 +119,7 @@ router.post('/upload-photo', authenticateToken, async (req, res) => {
   try {
     const { uid: userId } = req.user;
     const { photoUrl } = req.body;
+    const db = getFirestore();
     
     console.log(`📸 Uploading customer photo for: ${userId}`);
     
@@ -155,6 +156,7 @@ router.get('/bookings', authenticateToken, async (req, res) => {
   try {
     const { uid: userId } = req.user;
     const { status, limit = 20, offset = 0 } = req.query;
+    const db = getFirestore();
     
     console.log(`📋 Getting bookings for customer: ${userId}`);
     
@@ -212,6 +214,7 @@ router.post('/bookings', async (req, res) => {
   try {
     const { uid: userId } = req.user;
     const bookingData = req.body;
+    const db = getFirestore();
     
     console.log(`📝 Creating booking for customer: ${userId}`);
     
@@ -267,6 +270,7 @@ router.put('/bookings/:bookingId/cancel', authenticateToken, async (req, res) =>
     const { uid: userId } = req.user;
     const { bookingId } = req.params;
     const { reason } = req.body;
+    const db = getFirestore();
     
     console.log(`❌ Cancelling booking ${bookingId} for customer: ${userId}`);
     
@@ -322,6 +326,7 @@ router.put('/bookings/:bookingId/cancel', authenticateToken, async (req, res) =>
 router.get('/addresses', authenticateToken, async (req, res) => {
   try {
     const { uid: userId } = req.user;
+    const db = getFirestore();
     
     console.log(`📍 Getting addresses for customer: ${userId}`);
     
@@ -363,6 +368,7 @@ router.post('/addresses', authenticateToken, async (req, res) => {
   try {
     const { uid: userId } = req.user;
     const addressData = req.body;
+    const db = getFirestore();
     
     console.log(`📍 Adding address for customer: ${userId}`);
     
@@ -414,6 +420,7 @@ router.put('/addresses/:addressId', authenticateToken, async (req, res) => {
     const { uid: userId } = req.user;
     const { addressId } = req.params;
     const addressData = req.body;
+    const db = getFirestore();
     
     console.log(`📍 Updating address ${addressId} for customer: ${userId}`);
     
@@ -471,6 +478,7 @@ router.delete('/addresses/:addressId', authenticateToken, async (req, res) => {
   try {
     const { uid: userId } = req.user;
     const { addressId } = req.params;
+    const db = getFirestore();
     
     console.log(`📍 Deleting address ${addressId} for customer: ${userId}`);
     
@@ -513,6 +521,7 @@ router.delete('/addresses/:addressId', authenticateToken, async (req, res) => {
 router.get('/payments/methods', authenticateToken, async (req, res) => {
   try {
     const { uid: userId } = req.user;
+    const db = getFirestore();
     
     console.log(`💳 Getting payment methods for customer: ${userId}`);
     
@@ -554,6 +563,7 @@ router.post('/payments/methods', authenticateToken, async (req, res) => {
   try {
     const { uid: userId } = req.user;
     const paymentMethodData = req.body;
+    const db = getFirestore();
     
     console.log(`💳 Adding payment method for customer: ${userId}`);
     
@@ -605,6 +615,7 @@ router.get('/payments/history', authenticateToken, async (req, res) => {
   try {
     const { uid: userId } = req.user;
     const { limit = 20, offset = 0, startDate, endDate } = req.query;
+    const db = getFirestore();
     
     console.log(`💳 Getting payment history for customer: ${userId}`);
     
@@ -666,6 +677,7 @@ router.get('/tracking/:bookingId', authenticateToken, async (req, res) => {
   try {
     const { uid: userId } = req.user;
     const { bookingId } = req.params;
+    const db = getFirestore();
     
     console.log(`📍 Getting tracking info for booking ${bookingId} for customer: ${userId}`);
     
@@ -740,6 +752,7 @@ router.get('/notifications', authenticateToken, async (req, res) => {
   try {
     const { uid: userId } = req.user;
     const { limit = 20, offset = 0, unreadOnly } = req.query;
+    const db = getFirestore();
     
     console.log(`🔔 Getting notifications for customer: ${userId}`);
     
@@ -797,6 +810,7 @@ router.put('/notifications/:notificationId/read', authenticateToken, async (req,
   try {
     const { uid: userId } = req.user;
     const { notificationId } = req.params;
+    const db = getFirestore();
     
     console.log(`🔔 Marking notification ${notificationId} as read for customer: ${userId}`);
     
@@ -852,6 +866,7 @@ router.get('/support/tickets', authenticateToken, async (req, res) => {
   try {
     const { uid: userId } = req.user;
     const { status, limit = 20, offset = 0 } = req.query;
+    const db = getFirestore();
     
     console.log(`🎫 Getting support tickets for customer: ${userId}`);
     
@@ -909,6 +924,7 @@ router.post('/support/tickets', authenticateToken, async (req, res) => {
   try {
     const { uid: userId } = req.user;
     const ticketData = req.body;
+    const db = getFirestore();
     
     console.log(`🎫 Creating support ticket for customer: ${userId}`);
     
@@ -953,6 +969,7 @@ router.post('/support/tickets', authenticateToken, async (req, res) => {
 router.get('/emergency/contacts', authenticateToken, async (req, res) => {
   try {
     const { uid: userId } = req.user;
+    const db = getFirestore();
     
     console.log(`🚨 Getting emergency contacts for customer: ${userId}`);
     
@@ -994,6 +1011,7 @@ router.post('/emergency/contacts', authenticateToken, async (req, res) => {
   try {
     const { uid: userId } = req.user;
     const contactData = req.body;
+    const db = getFirestore();
     
     console.log(`🚨 Adding emergency contact for customer: ${userId}`);
     
@@ -1044,6 +1062,7 @@ router.post('/emergency/alert', authenticateToken, async (req, res) => {
   try {
     const { uid: userId } = req.user;
     const { location, message, bookingId } = req.body;
+    const db = getFirestore();
     
     console.log(`🚨 Sending emergency alert for customer: ${userId}`);
     

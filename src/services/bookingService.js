@@ -1,4 +1,5 @@
 const { getFirestore } = require('./firebase');
+const { GeoPoint } = require('firebase-admin/firestore');
 const axios = require('axios');
 const serviceAreaValidation = require('./serviceAreaValidation');
 
@@ -60,11 +61,11 @@ class BookingService {
           customerId,
           pickup: {
             ...pickup,
-            coordinates: new this.db.GeoPoint(pickup.coordinates.latitude, pickup.coordinates.longitude)
+            coordinates: new GeoPoint(pickup.coordinates.latitude, pickup.coordinates.longitude)
           },
           dropoff: {
             ...dropoff,
-            coordinates: new this.db.GeoPoint(dropoff.coordinates.latitude, dropoff.coordinates.longitude)
+            coordinates: new GeoPoint(dropoff.coordinates.latitude, dropoff.coordinates.longitude)
           },
           package: packageInfo,
           vehicle,

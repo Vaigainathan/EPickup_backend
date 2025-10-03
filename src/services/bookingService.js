@@ -73,8 +73,8 @@ class BookingService {
           status: 'pending', // Initial status - waiting for driver acceptance
           pricing,
           distance: {
-            value: distance.value,
-            text: distance.text
+            value: distance,
+            text: `${distance} km`
           },
           estimatedPickupTime: estimatedPickupTime ? new Date(estimatedPickupTime) : null,
           estimatedDeliveryTime: estimatedDeliveryTime ? new Date(estimatedDeliveryTime) : null,
@@ -97,8 +97,8 @@ class BookingService {
         // Set booking document in transaction
         transaction.set(bookingRef, booking);
 
-        // Update customer's booking count
-        const customerRef = this.db.collection('customers').doc(customerId);
+        // Update customer's booking count in users collection
+        const customerRef = this.db.collection('users').doc(customerId);
         transaction.update(customerRef, {
           totalBookings: this.db.FieldValue.increment(1),
           lastBookingAt: new Date(),

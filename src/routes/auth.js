@@ -85,7 +85,7 @@ router.post('/firebase/verify-token', async (req, res) => {
     const db = getFirestore();
     const auth = getAuth();
     
-    const { idToken, userType } = req.body;
+    const { idToken, userType, name } = req.body;
 
     if (!idToken) {
       return res.status(400).json({
@@ -124,7 +124,7 @@ router.post('/firebase/verify-token', async (req, res) => {
       // Create new user document for first-time authentication
       userData = {
         id: roleBasedUID,
-        name: '', // Will be filled during onboarding
+        name: name || '', // Use provided name or empty string
         phone: decodedToken.phone_number,
         userType: userType,
         originalFirebaseUID: decodedToken.uid,
@@ -139,7 +139,7 @@ router.post('/firebase/verify-token', async (req, res) => {
       // Add role-specific data structure
       if (userType === 'customer') {
         userData.customer = {
-          name: '',
+          name: name || '', // Use provided name or empty string
           email: '',
           address: '',
           preferences: {},

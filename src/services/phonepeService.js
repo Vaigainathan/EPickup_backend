@@ -236,8 +236,18 @@ class PhonePeService {
       // Update booking status based on payment status
       if (state === 'COMPLETED') {
         await this.updateBookingPaymentStatus(merchantTransactionId, 'PAID');
+        
+        // Check if this is a wallet top-up payment
+        if (merchantTransactionId.startsWith('WALLET_')) {
+          await this.processWalletTopupPayment(merchantTransactionId, amount);
+        }
       } else if (state === 'FAILED') {
         await this.updateBookingPaymentStatus(merchantTransactionId, 'FAILED');
+        
+        // Update wallet transaction status if it's a wallet top-up
+        if (merchantTransactionId.startsWith('WALLET_')) {
+          await this.updateWalletTransactionStatus(merchantTransactionId, 'failed');
+        }
       }
 
       await monitoringService.logPayment('payment_callback_processed', {
@@ -434,6 +444,123 @@ class PhonePeService {
     } catch (error) {
       console.error('Get customer payments error:', error);
       return [];
+    }
+  }
+
+  /**
+   * Process wallet top-up payment
+   * @param {string} transactionId - Transaction ID
+   * @param {number} amount - Amount in paise
+   */
+  async processWalletTopupPayment(transactionId, amount) {
+    try {
+      console.log(`💰 Processing wallet top-up payment: ${transactionId}`);
+      
+      // Find wallet transaction record
+      const walletTransactionsSnapshot = await this.db.collection('driverWalletTransactions')
+        .where('phonepeTransactionId', '==', transactionId)
+        .limit(1)
+        .get();
+
+      if (walletTransactionsSnapshot.empty) {
+        console.error(`❌ Wallet transaction not found for PhonePe transaction: ${transactionId}`);
+        return;
+      }
+
+      const walletTransactionDoc = walletTransactionsSnapshot.docs[0];
+      const walletTransactionData = walletTransactionDoc.data();
+      const driverId = walletTransactionData.driverId;
+
+      // Update wallet transaction status
+      await walletTransactionDoc.ref.update({
+        status: 'completed',
+        phonepePaymentId: transactionId,
+        completedAt: new Date(),
+        updatedAt: new Date()
+      });
+
+      // Update driver wallet balance
+      const userRef = this.db.collection('users').doc(driverId);
+      const userDoc = await userRef.get();
+      
+      if (userDoc.exists) {
+        const userData = userDoc.data();
+        const currentBalance = userData.driver?.wallet?.balance || 0;
+        const newBalance = currentBalance + walletTransactionData.amount;
+
+        await userRef.update({
+          'driver.wallet.balance': newBalance,
+          'driver.wallet.lastUpdated': new Date(),
+          updatedAt: new Date()
+        });
+
+        // Update wallet transaction with final balance
+        await walletTransactionDoc.ref.update({
+          newBalance: newBalance,
+          updatedAt: new Date()
+        });
+
+        console.log(`✅ Wallet top-up completed for driver ${driverId}: +${walletTransactionData.amount} INR (New balance: ${newBalance} INR)`);
+
+        // Send notification to driver
+        await this.sendWalletTopupNotification(driverId, walletTransactionData.amount, newBalance);
+      }
+
+    } catch (error) {
+      console.error('Error processing wallet top-up payment:', error);
+    }
+  }
+
+  /**
+   * Update wallet transaction status
+   * @param {string} transactionId - Transaction ID
+   * @param {string} status - New status
+   */
+  async updateWalletTransactionStatus(transactionId, status) {
+    try {
+      const walletTransactionsSnapshot = await this.db.collection('driverWalletTransactions')
+        .where('phonepeTransactionId', '==', transactionId)
+        .limit(1)
+        .get();
+
+      if (!walletTransactionsSnapshot.empty) {
+        const walletTransactionDoc = walletTransactionsSnapshot.docs[0];
+        await walletTransactionDoc.ref.update({
+          status: status,
+          updatedAt: new Date()
+        });
+
+        console.log(`✅ Updated wallet transaction ${transactionId} status to ${status}`);
+      }
+    } catch (error) {
+      console.error('Error updating wallet transaction status:', error);
+    }
+  }
+
+  /**
+   * Send wallet top-up notification to driver
+   * @param {string} driverId - Driver ID
+   * @param {number} amount - Amount added
+   * @param {number} newBalance - New wallet balance
+   */
+  async sendWalletTopupNotification(driverId, amount, newBalance) {
+    try {
+      const notificationService = require('./notificationService');
+      
+      await notificationService.sendToUser(driverId, {
+        type: 'wallet_topup_success',
+        title: 'Wallet Top-up Successful!',
+        body: `₹${amount} has been added to your wallet. New balance: ₹${newBalance}`,
+        data: {
+          amount: amount,
+          newBalance: newBalance,
+          type: 'wallet_topup_success'
+        }
+      });
+      
+      console.log(`✅ Sent wallet top-up notification to driver ${driverId}`);
+    } catch (error) {
+      console.error('Error sending wallet top-up notification:', error);
     }
   }
 

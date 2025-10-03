@@ -3311,9 +3311,11 @@ router.post('/wallet/add-money', [
 
     const userData = userDoc.data();
     const currentBalance = userData.driver?.wallet?.balance || 0;
-    const newBalance = currentBalance + amount;
 
-    // Create wallet transaction
+    // Generate unique transaction ID for PhonePe
+    const transactionId = `WALLET_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+
+    // Create wallet transaction record (pending status)
     const transactionRef = db.collection('driverWalletTransactions').doc();
     const transactionData = {
       id: transactionRef.id,
@@ -3321,11 +3323,14 @@ router.post('/wallet/add-money', [
       type: 'credit',
       amount: amount,
       previousBalance: currentBalance,
-      newBalance: newBalance,
+      newBalance: currentBalance, // Will be updated after successful payment
       paymentMethod: paymentMethod,
       status: 'pending',
+      phonepeTransactionId: transactionId,
       metadata: {
-        upiId
+        upiId: upiId || null,
+        source: 'wallet_topup',
+        gateway: 'phonepe'
       },
       createdAt: new Date(),
       updatedAt: new Date()
@@ -3333,22 +3338,59 @@ router.post('/wallet/add-money', [
 
     await transactionRef.set(transactionData);
 
-    // Update wallet balance
-    await userRef.update({
-      'driver.wallet.balance': newBalance,
-      'driver.wallet.currency': 'INR',
-      updatedAt: new Date()
-    });
+    // Initiate PhonePe payment for wallet top-up
+    const phonepeService = require('../services/phonepeService');
+    const paymentData = {
+      transactionId,
+      amount,
+      customerId: uid,
+      bookingId: `wallet_topup_${uid}`,
+      customerPhone: userData.phone || userData.driver?.phone,
+      customerEmail: userData.email,
+      customerName: userData.name || userData.driver?.name
+    };
 
-    res.status(200).json({
-      success: true,
-      message: 'Money added to wallet successfully',
-      data: {
-        transaction: transactionData,
-        newBalance: newBalance
-      },
-      timestamp: new Date().toISOString()
-    });
+    const paymentResult = await phonepeService.createPayment(paymentData);
+
+    if (paymentResult.success) {
+      // Update transaction with PhonePe details
+      await transactionRef.update({
+        phonepePaymentUrl: paymentResult.data.paymentUrl,
+        phonepeMerchantId: paymentResult.data.merchantId,
+        updatedAt: new Date()
+      });
+
+      res.status(200).json({
+        success: true,
+        message: 'Payment initiated successfully',
+        data: {
+          transactionId: transactionRef.id,
+          phonepeTransactionId: transactionId,
+          paymentUrl: paymentResult.data.paymentUrl,
+          amount: amount,
+          status: 'pending',
+          instructions: 'Complete payment using the provided URL to add money to your wallet'
+        },
+        timestamp: new Date().toISOString()
+      });
+    } else {
+      // Update transaction status to failed
+      await transactionRef.update({
+        status: 'failed',
+        failureReason: paymentResult.error?.message || 'Payment initiation failed',
+        updatedAt: new Date()
+      });
+
+      res.status(400).json({
+        success: false,
+        error: {
+          code: 'PAYMENT_INITIATION_ERROR',
+          message: 'Failed to initiate payment',
+          details: paymentResult.error?.message || 'Payment gateway error'
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
 
   } catch (error) {
     console.error('Error adding money to wallet:', error);
@@ -3358,6 +3400,106 @@ router.post('/wallet/add-money', [
         code: 'WALLET_ADD_MONEY_ERROR',
         message: 'Failed to add money to wallet',
         details: 'An error occurred while adding money to wallet'
+      },
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+/**
+ * @route   GET /api/driver/wallet/payment-status/:transactionId
+ * @desc    Check wallet payment status
+ * @access  Private (Driver only)
+ */
+router.get('/wallet/payment-status/:transactionId', requireDriver, async (req, res) => {
+  try {
+    const { uid } = req.user;
+    const { transactionId } = req.params;
+    const db = getFirestore();
+
+    // Get wallet transaction
+    const transactionDoc = await db.collection('driverWalletTransactions').doc(transactionId).get();
+    
+    if (!transactionDoc.exists) {
+      return res.status(404).json({
+        success: false,
+        error: {
+          code: 'TRANSACTION_NOT_FOUND',
+          message: 'Transaction not found',
+          details: 'Wallet transaction does not exist'
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    const transactionData = transactionDoc.data();
+
+    // Verify driver owns this transaction
+    if (transactionData.driverId !== uid) {
+      return res.status(403).json({
+        success: false,
+        error: {
+          code: 'ACCESS_DENIED',
+          message: 'Access denied',
+          details: 'You can only check your own transactions'
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    // If payment is still pending, check with PhonePe
+    if (transactionData.status === 'pending' && transactionData.phonepeTransactionId) {
+      const phonepeService = require('../services/phonepeService');
+      const verificationResult = await phonepeService.verifyPayment(transactionData.phonepeTransactionId);
+      
+      if (verificationResult.success) {
+        // Update transaction status based on PhonePe response
+        const phonepeStatus = verificationResult.data.status;
+        let newStatus = 'pending';
+        
+        if (phonepeStatus === 'COMPLETED') {
+          newStatus = 'completed';
+        } else if (phonepeStatus === 'FAILED') {
+          newStatus = 'failed';
+        }
+
+        await transactionDoc.ref.update({
+          status: newStatus,
+          phonepeStatus: phonepeStatus,
+          lastChecked: new Date(),
+          updatedAt: new Date()
+        });
+
+        transactionData.status = newStatus;
+        transactionData.phonepeStatus = phonepeStatus;
+      }
+    }
+
+    res.status(200).json({
+      success: true,
+      data: {
+        transactionId: transactionData.id,
+        status: transactionData.status,
+        amount: transactionData.amount,
+        paymentMethod: transactionData.paymentMethod,
+        phonepeTransactionId: transactionData.phonepeTransactionId,
+        phonepeStatus: transactionData.phonepeStatus,
+        paymentUrl: transactionData.phonepePaymentUrl,
+        createdAt: transactionData.createdAt,
+        completedAt: transactionData.completedAt,
+        failureReason: transactionData.failureReason
+      },
+      timestamp: new Date().toISOString()
+    });
+
+  } catch (error) {
+    console.error('Error checking wallet payment status:', error);
+    res.status(500).json({
+      success: false,
+      error: {
+        code: 'PAYMENT_STATUS_ERROR',
+        message: 'Failed to check payment status',
+        details: 'An error occurred while checking payment status'
       },
       timestamp: new Date().toISOString()
     });

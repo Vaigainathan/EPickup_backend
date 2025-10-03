@@ -1,5 +1,5 @@
 const { getFirestore } = require('./firebase');
-const { GeoPoint } = require('firebase-admin/firestore');
+const { GeoPoint, FieldValue } = require('firebase-admin/firestore');
 const axios = require('axios');
 const serviceAreaValidation = require('./serviceAreaValidation');
 
@@ -100,7 +100,7 @@ class BookingService {
         // Update customer's booking count in users collection
         const customerRef = this.db.collection('users').doc(customerId);
         transaction.update(customerRef, {
-          totalBookings: this.db.FieldValue.increment(1),
+          totalBookings: FieldValue.increment(1),
           lastBookingAt: new Date(),
           updatedAt: new Date()
         });

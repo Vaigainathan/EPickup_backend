@@ -67,10 +67,11 @@ router.get('/profile', authenticateToken, async (req, res) => {
 router.put('/profile', authenticateToken, async (req, res) => {
   try {
     const { uid: userId } = req.user;
-    const { name, email, address, preferences } = req.body;
+    const { name, email, phone, address, preferences } = req.body;
     const db = getFirestore();
     
     console.log(`📝 Updating customer profile for: ${userId}`);
+    console.log(`📝 Update data received:`, { name, email, phone, address, preferences });
     
     // Validate email format if provided
     if (email && !email.includes('@')) {
@@ -88,6 +89,7 @@ router.put('/profile', authenticateToken, async (req, res) => {
     
     if (name !== undefined) updateData['customer.name'] = name;
     if (email !== undefined) updateData['customer.email'] = email;
+    if (phone !== undefined) updateData['phone'] = phone; // Update phone at root level
     if (address !== undefined) updateData['customer.address'] = address;
     if (preferences !== undefined) updateData['customer.preferences'] = preferences;
     
@@ -105,6 +107,126 @@ router.put('/profile', authenticateToken, async (req, res) => {
     res.status(500).json({
       success: false,
       error: 'Failed to update customer profile',
+      details: error.message
+    });
+  }
+});
+
+/**
+ * @route POST /api/customer/set-password
+ * @desc Set customer password
+ * @access Private (Customer only)
+ */
+router.post('/set-password', authenticateToken, async (req, res) => {
+  try {
+    const { uid: userId } = req.user;
+    const { password } = req.body;
+    const db = getFirestore();
+    
+    console.log(`🔐 Setting password for customer: ${userId}`);
+    
+    if (!password || password.length < 6) {
+      return res.status(400).json({
+        success: false,
+        error: 'Password must be at least 6 characters long'
+      });
+    }
+    
+    // Update customer data to indicate password is set
+    await db.collection('users').doc(userId).update({
+      'customer.hasPassword': true,
+      'customer.passwordSetAt': new Date(),
+      updatedAt: new Date()
+    });
+    
+    console.log(`✅ Password set for customer: ${userId}`);
+    
+    res.json({
+      success: true,
+      message: 'Password set successfully'
+    });
+    
+  } catch (error) {
+    console.error('❌ Error setting password:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to set password',
+      details: error.message
+    });
+  }
+});
+
+/**
+ * @route POST /api/customer/deactivate-account
+ * @desc Deactivate customer account
+ * @access Private (Customer only)
+ */
+router.post('/deactivate-account', authenticateToken, async (req, res) => {
+  try {
+    const { uid: userId } = req.user;
+    const { reason } = req.body;
+    const db = getFirestore();
+    
+    console.log(`⏸️ Deactivating customer account: ${userId}`);
+    
+    // Update customer account status
+    await db.collection('users').doc(userId).update({
+      accountStatus: 'inactive',
+      deactivatedAt: new Date(),
+      deactivationReason: reason || 'User requested deactivation',
+      updatedAt: new Date()
+    });
+    
+    console.log(`✅ Customer account deactivated: ${userId}`);
+    
+    res.json({
+      success: true,
+      message: 'Account deactivated successfully'
+    });
+    
+  } catch (error) {
+    console.error('❌ Error deactivating account:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to deactivate account',
+      details: error.message
+    });
+  }
+});
+
+/**
+ * @route DELETE /api/customer/delete-account
+ * @desc Delete customer account permanently
+ * @access Private (Customer only)
+ */
+router.delete('/delete-account', authenticateToken, async (req, res) => {
+  try {
+    const { uid: userId } = req.user;
+    const { reason } = req.body;
+    const db = getFirestore();
+    
+    console.log(`🗑️ Deleting customer account: ${userId}`);
+    
+    // Update account status to deleted (soft delete for data retention)
+    await db.collection('users').doc(userId).update({
+      accountStatus: 'deleted',
+      deletedAt: new Date(),
+      deletionReason: reason || 'User requested permanent deletion',
+      updatedAt: new Date()
+    });
+    
+    console.log(`✅ Customer account deleted: ${userId}`);
+    
+    res.json({
+      success: true,
+      message: 'Account deleted successfully'
+    });
+    
+  } catch (error) {
+    console.error('❌ Error deleting account:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to delete account',
       details: error.message
     });
   }

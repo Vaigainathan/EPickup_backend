@@ -57,10 +57,7 @@ class AssignmentEdgeCaseHandler {
         };
       }
     } catch (error) {
-      await monitoringService.logError(error, {
-        bookingId,
-        pickupLocation
-      }, 'assignment_edge_case_handler');
+      console.error('❌ Error in AssignmentEdgeCaseHandler.handleNoDriversAvailable:', error);
       throw error;
     }
   }
@@ -127,11 +124,7 @@ class AssignmentEdgeCaseHandler {
         };
       }
     } catch (error) {
-      await monitoringService.logError(error, {
-        bookingId,
-        driverId,
-        reason
-      }, 'assignment_edge_case_handler');
+      console.error('❌ Error in AssignmentEdgeCaseHandler.handleDriverRejection:', error);
       throw error;
     }
   }
@@ -174,10 +167,7 @@ class AssignmentEdgeCaseHandler {
         return await this.handleNoDriversAvailable(bookingId, booking.pickup.coordinates);
       }
     } catch (error) {
-      await monitoringService.logError(error, {
-        bookingId,
-        driverId
-      }, 'assignment_edge_case_handler');
+      console.error('❌ Error in AssignmentEdgeCaseHandler.handleDriverTimeout:', error);
       throw error;
     }
   }
@@ -217,9 +207,7 @@ class AssignmentEdgeCaseHandler {
         reassignedBookings: activeBookings.length
       };
     } catch (error) {
-      await monitoringService.logError(error, {
-        driverId
-      }, 'assignment_edge_case_handler');
+      console.error('❌ Error in AssignmentEdgeCaseHandler.handleDriverDisconnection:', error);
       throw error;
     }
   }
@@ -284,11 +272,8 @@ class AssignmentEdgeCaseHandler {
         rejectedDrivers: result.otherDrivers
       };
     } catch (error) {
-      await monitoringService.logError(error, {
-        bookingId,
-        driverIds
-      }, 'assignment_edge_case_handler');
-      throw error
+      console.error('❌ Error in AssignmentEdgeCaseHandler.handleConcurrentAcceptance:', error);
+      throw error;
     }
   }
 

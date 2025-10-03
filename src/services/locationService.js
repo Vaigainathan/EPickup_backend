@@ -257,11 +257,7 @@ class LocationService {
 
       return nearbyDrivers;
     } catch (error) {
-      await monitoringService.logError(error, {
-        pickupLocation,
-        maxDistance,
-        options
-      }, 'location_service');
+      console.error('❌ Error in LocationService.findNearbyDrivers:', error);
       throw error;
     }
   }
@@ -336,10 +332,7 @@ class LocationService {
         data: locationData
       };
     } catch (error) {
-      await monitoringService.logError(error, {
-        driverId,
-        location
-      }, 'location_service');
+      console.error('❌ Error in LocationService.updateDriverLocation:', error);
       throw error;
     }
   }

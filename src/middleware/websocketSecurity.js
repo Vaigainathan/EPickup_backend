@@ -51,11 +51,6 @@ class WebSocketSecurity {
       next();
     } catch (error) {
       console.error('WebSocket authentication error:', error);
-      
-      await monitoringService.logError(error, {
-        socketId: socket.id,
-        handshake: socket.handshake
-      }, 'websocket_security');
 
       next(new Error('Authentication failed'));
     }
@@ -228,12 +223,6 @@ class WebSocketSecurity {
    */
   async handleError(socket, error) {
     console.error('WebSocket error:', error);
-    
-    await monitoringService.logError(error, {
-      socketId: socket.id,
-      userId: socket.user?.uid,
-      userType: socket.user?.userType
-    }, 'websocket_security');
 
     // Send error to client
     socket.emit('error', {

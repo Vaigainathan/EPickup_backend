@@ -2,6 +2,7 @@ const { getFirestore } = require('./firebase');
 const { GeoPoint, FieldValue } = require('firebase-admin/firestore');
 const axios = require('axios');
 const serviceAreaValidation = require('./serviceAreaValidation');
+const walletService = require('./walletService');
 
 /**
  * Booking Service for EPickup delivery platform
@@ -718,12 +719,76 @@ class BookingService {
         case 'picked_up':
           updateData['timing.pickedUpAt'] = new Date();
           break;
-        case 'delivered':
-          updateData['timing.deliveredAt'] = new Date();
-          break;
-      }
+      case 'delivered':
+        updateData['timing.deliveredAt'] = new Date();
+        
+        // Deduct commission when trip is delivered
+        try {
+          const bookingData = bookingDoc.data();
+          const driverId = bookingData.driverId;
+          
+          if (driverId) {
+            // Get the actual fare amount paid by customer
+            const tripFare = bookingData.fare?.totalFare || bookingData.fare || 0;
+            const exactDistanceKm = bookingData.distance?.total || 0;
+            
+            if (tripFare > 0) {
+              console.log(`💰 Deducting commission for trip ${bookingId}: Fare ₹${tripFare}`);
+              
+              // Calculate commission based on fare amount (not raw distance)
+              // Commission = (Fare ÷ ₹10/km) × ₹1/km
+              // This ensures commission matches the rounded fare calculation
+              const fareCalculationService = require('./fareCalculationService');
+              const fareBreakdown = fareCalculationService.calculateFare(exactDistanceKm);
+              const commissionAmount = fareBreakdown.commission;
+              const roundedDistanceKm = fareBreakdown.roundedDistanceKm;
+              
+              console.log(`📊 Fare breakdown: ${exactDistanceKm}km → ${roundedDistanceKm}km → ₹${tripFare} → Commission ₹${commissionAmount}`);
+              
+              // Prepare trip details for commission transaction
+              const tripDetails = {
+                pickupLocation: bookingData.pickup || {},
+                dropoffLocation: bookingData.dropoff || {},
+                tripFare: tripFare,
+                exactDistanceKm: exactDistanceKm,
+                roundedDistanceKm: roundedDistanceKm
+              };
+              
+              // Deduct commission from driver wallet
+              const commissionResult = await walletService.deductCommission(
+                driverId,
+                bookingId,
+                roundedDistanceKm, // Use rounded distance for commission calculation
+                commissionAmount,
+                tripDetails
+              );
+              
+              if (commissionResult.success) {
+                console.log(`✅ Commission deducted: ₹${commissionAmount} for ${roundedDistanceKm}km (fare: ₹${tripFare})`);
+                updateData.commissionDeducted = {
+                  amount: commissionAmount,
+                  exactDistanceKm: exactDistanceKm,
+                  roundedDistanceKm: roundedDistanceKm,
+                  tripFare: tripFare,
+                  transactionId: commissionResult.transactionId,
+                  deductedAt: new Date()
+                };
+              } else {
+                console.error('❌ Commission deduction failed:', commissionResult.error);
+                updateData.commissionError = commissionResult.error;
+              }
+            } else {
+              console.log(`⚠️ No fare amount found for trip ${bookingId}, skipping commission deduction`);
+            }
+          }
+        } catch (commissionError) {
+          console.error('❌ Error processing commission:', commissionError);
+          updateData.commissionError = commissionError.message;
+        }
+        break;
+    }
 
-      await bookingRef.update(updateData);
+    await bookingRef.update(updateData);
 
       // Update trip tracking
       await this.db.collection('tripTracking').doc(bookingId).update({

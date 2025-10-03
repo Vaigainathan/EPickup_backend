@@ -2262,18 +2262,27 @@ router.get('/analytics', async (req, res) => {
       db.collection('users').where('userType', '==', 'driver').get()
     ]);
 
-    // Calculate revenue
-    let revenue = 0;
-    completedBookings.forEach(doc => {
-      const data = doc.data();
-      revenue += data.fare?.totalFare || data.fare || 0;
-    });
+    // Calculate revenue from commission system
+    const revenueService = require('../services/revenueService');
+    let platformRevenue = 0;
+    let totalDriverEarnings = 0;
+    
+    try {
+      const revenueSummary = await revenueService.getCurrentMonthRevenue();
+      platformRevenue = revenueSummary.totalCommission;
+    } catch (error) {
+      console.error('Error calculating platform revenue:', error);
+      // Fallback to old calculation if commission data not available
+      completedBookings.forEach(doc => {
+        const data = doc.data();
+        platformRevenue += (data.fare?.commission || data.fare?.companyRevenue || 0);
+      });
+    }
 
     // Calculate driver earnings
-    let totalDriverEarnings = 0;
     driverEarnings.forEach(doc => {
       const data = doc.data();
-      totalDriverEarnings += data.driver?.wallet?.balance || 0;
+      totalDriverEarnings += data.driver?.earnings?.total || data.driver?.wallet?.balance || 0;
     });
 
     const analytics = {
@@ -2295,10 +2304,12 @@ router.get('/analytics', async (req, res) => {
         completionRate: totalBookings.size > 0 ? (completedBookings.size / totalBookings.size * 100).toFixed(2) : 0
       },
       revenue: {
-        total: revenue,
-        averagePerBooking: completedBookings.size > 0 ? (revenue / completedBookings.size).toFixed(2) : 0,
+        total: platformRevenue,
+        averagePerBooking: completedBookings.size > 0 ? (platformRevenue / completedBookings.size).toFixed(2) : 0,
         driverEarnings: totalDriverEarnings,
-        platformCommission: revenue - totalDriverEarnings
+        platformCommission: platformRevenue,
+        commissionPerKm: 1, // ₹1 per km commission rate
+        revenueSource: 'commission_system'
       },
       timestamp: new Date().toISOString()
     };
@@ -2992,11 +3003,12 @@ router.get('/system/backups', async (req, res) => {
 
 /**
  * @route   GET /api/admin/analytics/revenue
- * @desc    Get revenue analytics
+ * @desc    Get revenue analytics based on commission system
  * @access  Private (Admin)
  */
 router.get('/analytics/revenue', async (req, res) => {
   try {
+    const revenueService = require('../services/revenueService');
     const { startDate, endDate } = req.query;
     
     if (!startDate || !endDate) {
@@ -3009,77 +3021,15 @@ router.get('/analytics/revenue', async (req, res) => {
       });
     }
 
-    const db = getFirestore();
     const start = new Date(startDate);
     const end = new Date(endDate);
 
-    // Get revenue data from payments collection with simplified query
-    let paymentsSnapshot;
-    try {
-      // Try the complex query first
-      paymentsSnapshot = await db.collection('payments')
-        .where('createdAt', '>=', start)
-        .where('createdAt', '<=', end)
-        .where('status', '==', 'COMPLETED')
-        .get();
-    } catch (indexError) {
-      console.log('⚠️ Complex query failed, using simplified query:', indexError.message);
-      // Fallback to simpler query without status filter
-      paymentsSnapshot = await db.collection('payments')
-        .where('createdAt', '>=', start)
-        .where('createdAt', '<=', end)
-        .get();
-    }
-
-    const payments = paymentsSnapshot.docs.map(doc => doc.data());
-    
-    // Filter completed payments in code (fallback for when status filter fails)
-    const completedPayments = payments.filter(payment => payment.status === 'COMPLETED');
-    
-    // Calculate revenue metrics using completed payments
-    const totalRevenue = completedPayments.reduce((sum, payment) => sum + (payment.amount || 0), 0);
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    
-    const todayRevenue = completedPayments
-      .filter(payment => payment.createdAt && payment.createdAt.toDate && payment.createdAt.toDate() >= today)
-      .reduce((sum, payment) => sum + (payment.amount || 0), 0);
-
-    // Generate time series data
-    const timeSeriesData = [];
-    const currentDate = new Date(start);
-    
-    while (currentDate <= end) {
-      const dayStart = new Date(currentDate);
-      dayStart.setHours(0, 0, 0, 0);
-      const dayEnd = new Date(currentDate);
-      dayEnd.setHours(23, 59, 59, 999);
-      
-      const dayRevenue = completedPayments
-        .filter(payment => {
-          if (!payment.createdAt) return false;
-          const paymentDate = payment.createdAt.toDate ? payment.createdAt.toDate() : new Date(payment.createdAt);
-          return paymentDate >= dayStart && paymentDate <= dayEnd;
-        })
-        .reduce((sum, payment) => sum + (payment.amount || 0), 0);
-
-      timeSeriesData.push({
-        date: currentDate.toISOString().split('T')[0],
-        value: dayRevenue,
-        label: currentDate.toLocaleDateString()
-      });
-
-      currentDate.setDate(currentDate.getDate() + 1);
-    }
+    const revenue = await revenueService.calculateRevenue(start, end);
 
     res.json({
       success: true,
-      data: {
-        totalRevenue,
-        todayRevenue,
-        timeSeriesData,
-        averageDailyRevenue: totalRevenue / timeSeriesData.length
-      }
+      data: revenue,
+      timestamp: new Date().toISOString()
     });
 
   } catch (error) {
@@ -3089,6 +3039,66 @@ router.get('/analytics/revenue', async (req, res) => {
       error: {
         code: 'ANALYTICS_ERROR',
         message: 'Failed to get revenue analytics',
+        details: error.message
+      }
+    });
+  }
+});
+
+/**
+ * @route   GET /api/admin/revenue/summary
+ * @desc    Get revenue summary for dashboard
+ * @access  Private (Admin)
+ */
+router.get('/revenue/summary', async (req, res) => {
+  try {
+    const revenueService = require('../services/revenueService');
+    
+    const revenueSummary = await revenueService.getRevenueSummary();
+
+    res.json({
+      success: true,
+      data: revenueSummary,
+      timestamp: new Date().toISOString()
+    });
+
+  } catch (error) {
+    console.error('Get revenue summary error:', error);
+    res.status(500).json({
+      success: false,
+      error: {
+        code: 'REVENUE_SUMMARY_ERROR',
+        message: 'Failed to get revenue summary',
+        details: error.message
+      }
+    });
+  }
+});
+
+/**
+ * @route   GET /api/admin/revenue/trends
+ * @desc    Get revenue trends (last 30 days)
+ * @access  Private (Admin)
+ */
+router.get('/revenue/trends', async (req, res) => {
+  try {
+    const revenueService = require('../services/revenueService');
+    
+    const revenueTrends = await revenueService.getRevenueTrends();
+
+    res.json({
+      success: true,
+      data: revenueTrends,
+      timestamp: new Date().toISOString()
+    });
+
+  } catch (error) {
+    console.error('Get revenue trends error:', error);
+    res.status(500).json({
+      success: false,
+      error: {
+        code: 'REVENUE_TRENDS_ERROR',
+        message: 'Failed to get revenue trends',
         details: error.message
       }
     });

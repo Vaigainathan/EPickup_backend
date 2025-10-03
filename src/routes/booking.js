@@ -96,9 +96,6 @@ router.post('/', [
         try {
           console.log(`🚗 Processing driver assignment for booking ${result.data.booking.id}`);
           
-          // Add booking to driver assignment queue
-          driverAssignmentService.addBooking(result.data.booking);
-          
           // Notify available drivers of new booking
           const wsEventHandler = new WebSocketEventHandler();
           await wsEventHandler.initialize();

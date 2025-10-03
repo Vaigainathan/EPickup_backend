@@ -5361,6 +5361,53 @@ router.post('/bookings/:id/payment', [
 
     await bookingRef.update(updateData);
 
+    // Deduct commission from driver wallet
+    try {
+      const walletService = require('../services/walletService');
+      const fareCalculationService = require('../services/fareCalculationService');
+      
+      const exactDistanceKm = bookingData.distance?.total || 0;
+      const tripFare = parseFloat(amount);
+      
+      if (tripFare > 0 && exactDistanceKm > 0) {
+        console.log(`💰 Deducting commission for payment collection: Fare ₹${tripFare}`);
+        
+        // Calculate commission based on fare amount (not raw distance)
+        // Use the same fare calculation logic to ensure consistency
+        const fareBreakdown = fareCalculationService.calculateFare(exactDistanceKm);
+        const commissionAmount = fareBreakdown.commission;
+        const roundedDistanceKm = fareBreakdown.roundedDistanceKm;
+        
+        console.log(`📊 Fare breakdown: ${exactDistanceKm}km → ${roundedDistanceKm}km → ₹${tripFare} → Commission ₹${commissionAmount}`);
+        
+        // Prepare trip details for commission transaction
+        const tripDetails = {
+          pickupLocation: bookingData.pickup || {},
+          dropoffLocation: bookingData.dropoff || {},
+          tripFare: tripFare,
+          exactDistanceKm: exactDistanceKm,
+          roundedDistanceKm: roundedDistanceKm
+        };
+        
+        // Deduct commission from driver wallet
+        const commissionResult = await walletService.deductCommission(
+          uid,
+          id,
+          roundedDistanceKm, // Use rounded distance for commission calculation
+          commissionAmount,
+          tripDetails
+        );
+        
+        if (commissionResult.success) {
+          console.log(`✅ Commission deducted: ₹${commissionAmount} for ${roundedDistanceKm}km (fare: ₹${tripFare})`);
+        } else {
+          console.error('❌ Commission deduction failed:', commissionResult.error);
+        }
+      }
+    } catch (commissionError) {
+      console.error('❌ Error processing commission:', commissionError);
+    }
+
     // Update driver earnings
     const driverRef = db.collection('users').doc(uid);
     const driverDoc = await driverRef.get();

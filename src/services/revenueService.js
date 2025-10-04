@@ -126,11 +126,13 @@ class RevenueService {
   /**
    * Calculate monthly revenue breakdown
    * @param {Array} commissionBreakdown - Commission transactions
-   * @param {Date} startDate - Start date
-   * @param {Date} endDate - End date
+   * @param {Date} startDate - Start date (reserved for future filtering)
+   * @param {Date} endDate - End date (reserved for future filtering)
    * @returns {Array} Monthly revenue data
    */
+  // eslint-disable-next-line no-unused-vars
   calculateMonthlyRevenue(commissionBreakdown, startDate, endDate) {
+    // Note: startDate and endDate parameters reserved for future date filtering logic
     const monthlyRevenue = {};
     
     commissionBreakdown.forEach(transaction => {

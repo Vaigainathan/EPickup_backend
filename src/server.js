@@ -25,6 +25,7 @@ const trackingRoutes = require('./routes/tracking');
 const notificationRoutes = require('./routes/notification');
 const fileUploadRoutes = require('./routes/fileUpload');
 const supportRoutes = require('./routes/support');
+const chatRoutes = require('./routes/chat');
 const googleMapsRoutes = require('./routes/googleMaps');
 const realtimeRoutes = require('./routes/realtime');
 const fcmTokenRoutes = require('./routes/fcmTokens');
@@ -297,6 +298,7 @@ app.get('/api-docs', (req, res) => {
         'GET /api/customer/payments/methods': 'Get payment methods',
         'POST /api/customer/payments/methods': 'Add payment method',
         'GET /api/customer/payments/history': 'Get payment history',
+        'GET /api/customer/invoice/:bookingId': 'Download invoice for completed booking',
         'GET /api/customer/tracking/:bookingId': 'Get booking tracking',
         'GET /api/customer/notifications': 'Get notifications',
         'PUT /api/customer/notifications/:id/read': 'Mark notification as read',
@@ -318,13 +320,30 @@ app.get('/api-docs', (req, res) => {
         'PUT /api/bookings/:id/status': 'Update booking status'
       },
       payments: {
-        'POST /api/payments/initiate': 'Initiate payment',
-        'POST /api/payments/verify': 'Verify payment',
-        'GET /api/payments/history': 'Get payment history'
+        'GET /api/payments/methods': 'Get available payment methods',
+        'POST /api/payments/create': 'Create payment request',
+        'POST /api/payments/phonepe/initiate': 'Initiate PhonePe payment',
+        'GET /api/payments/verify/:transactionId': 'Verify payment status',
+        'POST /api/payments/phonepe/callback': 'Handle PhonePe callback',
+        'POST /api/payments/refund': 'Process refund',
+        'GET /api/payments/history': 'Get payment history',
+        'GET /api/payments/statistics': 'Get payment statistics (Admin)',
+        'GET /api/payments/:transactionId': 'Get payment details'
       },
       tracking: {
         'GET /api/tracking/:bookingId': 'Get real-time tracking',
         'POST /api/tracking/update': 'Update location'
+      },
+      chat: {
+        'POST /api/chat/send': 'Send message to driver/customer',
+        'GET /api/chat/:bookingId': 'Get chat messages for booking'
+      },
+      support: {
+        'POST /api/support/report-issue': 'Report an issue',
+        'POST /api/support/ticket': 'Create support ticket',
+        'GET /api/support/tickets': 'Get user support tickets',
+        'GET /api/support/faq': 'Get frequently asked questions',
+        'POST /api/support/feedback': 'Submit feedback'
       },
       notifications: {
         'POST /api/notifications/send': 'Send notification',
@@ -381,6 +400,7 @@ app.use('/api/tracking', authMiddleware, trackingRoutes);
 app.use('/api/notifications', authMiddleware, notificationRoutes);
 app.use('/api/file-upload', authMiddleware, fileUploadRoutes);
 app.use('/api/support', authMiddleware, supportRoutes);
+app.use('/api/chat', authMiddleware, chatRoutes);
 app.use('/api/google-maps', googleMapsRoutes); // No auth required for Google Maps API
 app.use('/api/realtime', authMiddleware, realtimeRoutes);
 app.use('/api/fcm-tokens', authMiddleware, fcmTokenRoutes);

@@ -452,7 +452,9 @@ class PhonePeService {
    * @param {string} transactionId - Transaction ID
    * @param {number} amount - Amount in paise
    */
+  // eslint-disable-next-line no-unused-vars
   async processWalletTopupPayment(transactionId, amount) {
+    // Note: amount parameter is kept for future validation logic
     try {
       console.log(`💰 Processing wallet top-up payment: ${transactionId}`);
       

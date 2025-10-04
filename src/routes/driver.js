@@ -4,6 +4,7 @@ const { getFirestore } = require('../services/firebase');
 const { requireDriver } = require('../middleware/auth');
 const { documentStatusRateLimit } = require('../middleware/rateLimiter');
 const { documentStatusCache, invalidateUserCache } = require('../middleware/cache');
+const admin = require('firebase-admin');
 
 const router = express.Router();
 
@@ -790,6 +791,270 @@ router.get('/earnings', requireDriver, async (req, res) => {
         code: 'EARNINGS_RETRIEVAL_ERROR',
         message: 'Failed to retrieve earnings',
         details: 'An error occurred while retrieving earnings'
+      },
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+/**
+ * @route   GET /api/driver/earnings/today
+ * @desc    Get driver's today's earnings
+ * @access  Private (Driver only)
+ */
+router.get('/earnings/today', requireDriver, async (req, res) => {
+  try {
+    const { uid } = req.user;
+    const db = getFirestore();
+    
+    // Get today's date range
+    const today = new Date();
+    const startOfDay = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+    const endOfDay = new Date(today.getFullYear(), today.getMonth(), today.getDate() + 1);
+    
+    console.log('📊 [EARNINGS_TODAY] Fetching today\'s earnings for driver:', uid);
+    console.log('📊 [EARNINGS_TODAY] Date range:', { startOfDay, endOfDay });
+    
+    // Get today's completed trips
+    const tripsSnapshot = await db.collection('bookings')
+      .where('driverId', '==', uid)
+      .where('status', '==', 'completed')
+      .where('completedAt', '>=', startOfDay)
+      .where('completedAt', '<', endOfDay)
+      .get();
+    
+    let todayEarnings = 0;
+    let todayTrips = 0;
+    const tripDetails = [];
+    
+    tripsSnapshot.forEach((doc) => {
+      const trip = doc.data();
+      const fare = trip.fare?.total || 0;
+      todayEarnings += fare;
+      todayTrips += 1;
+      
+      tripDetails.push({
+        id: doc.id,
+        fare: fare,
+        completedAt: trip.completedAt?.toDate?.()?.toISOString() || null,
+        pickupLocation: trip.pickup?.address || 'Unknown',
+        dropoffLocation: trip.dropoff?.address || 'Unknown'
+      });
+    });
+    
+    // Get today's payments
+    const paymentsSnapshot = await db.collection('payments')
+      .where('driverId', '==', uid)
+      .where('status', '==', 'completed')
+      .where('createdAt', '>=', startOfDay)
+      .where('createdAt', '<', endOfDay)
+      .get();
+    
+    let todayPayments = 0;
+    paymentsSnapshot.forEach((doc) => {
+      const payment = doc.data();
+      todayPayments += payment.amount || 0;
+    });
+    
+    const result = {
+      todayEarnings: todayEarnings,
+      todayTrips: todayTrips,
+      todayPayments: todayPayments,
+      averageEarningsPerTrip: todayTrips > 0 ? Math.round(todayEarnings / todayTrips) : 0,
+      tripDetails: tripDetails,
+      date: today.toISOString().split('T')[0], // YYYY-MM-DD format
+      lastUpdated: new Date().toISOString()
+    };
+    
+    console.log('✅ [EARNINGS_TODAY] Today\'s earnings calculated:', result);
+    
+    res.status(200).json({
+      success: true,
+      message: 'Today\'s earnings retrieved successfully',
+      data: result,
+      timestamp: new Date().toISOString()
+    });
+    
+  } catch (error) {
+    console.error('❌ [EARNINGS_TODAY] Error getting today\'s earnings:', error);
+    res.status(500).json({
+      success: false,
+      error: {
+        code: 'TODAY_EARNINGS_RETRIEVAL_ERROR',
+        message: 'Failed to retrieve today\'s earnings',
+        details: 'An error occurred while retrieving today\'s earnings'
+      },
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+/**
+ * @route   GET /api/driver/earnings/breakdown
+ * @desc    Get detailed earnings breakdown for a trip
+ * @access  Private (Driver only)
+ */
+router.get('/earnings/breakdown', requireDriver, async (req, res) => {
+  try {
+    const { uid } = req.user;
+    const { bookingId, period = 'today' } = req.query;
+    const db = getFirestore();
+    
+    console.log('📊 [EARNINGS_BREAKDOWN] Fetching earnings breakdown for driver:', uid, 'bookingId:', bookingId);
+    
+    if (bookingId) {
+      // Get breakdown for specific booking
+      const bookingDoc = await db.collection('bookings').doc(bookingId).get();
+      
+      if (!bookingDoc.exists) {
+        return res.status(404).json({
+          success: false,
+          error: {
+            code: 'BOOKING_NOT_FOUND',
+            message: 'Booking not found',
+            details: 'The specified booking does not exist'
+          },
+          timestamp: new Date().toISOString()
+        });
+      }
+      
+      const booking = bookingDoc.data();
+      
+      // Verify driver owns this booking
+      if (booking.driverId !== uid) {
+        return res.status(403).json({
+          success: false,
+          error: {
+            code: 'UNAUTHORIZED',
+            message: 'Unauthorized access',
+            details: 'You can only view your own booking earnings'
+          },
+          timestamp: new Date().toISOString()
+        });
+      }
+      
+      const fare = booking.fare || {};
+      const breakdown = {
+        bookingId: bookingId,
+        totalEarnings: fare.total || 0,
+        baseFare: fare.base || 0,
+        distanceFare: fare.distance || 0,
+        timeFare: fare.time || 0,
+        surgeMultiplier: fare.surgeMultiplier || 1,
+        platformFee: fare.platformFee || 0,
+        driverEarnings: fare.driverEarnings || fare.total || 0,
+        tripDetails: {
+          distance: booking.distance || 0,
+          duration: booking.duration || 0,
+          pickupLocation: booking.pickup?.address || 'Unknown',
+          dropoffLocation: booking.dropoff?.address || 'Unknown',
+          completedAt: booking.completedAt?.toDate?.()?.toISOString() || null
+        },
+        paymentMethod: booking.paymentMethod || 'cash',
+        status: booking.status || 'unknown'
+      };
+      
+      res.status(200).json({
+        success: true,
+        message: 'Earnings breakdown retrieved successfully',
+        data: breakdown,
+        timestamp: new Date().toISOString()
+      });
+      
+    } else {
+      // Get breakdown for period (today, week, month)
+      const now = new Date();
+      let startDate, endDate;
+      
+      switch (period) {
+        case 'today':
+          startDate = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+          endDate = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
+          break;
+        case 'week':
+          startDate = new Date(now.getTime() - (7 * 24 * 60 * 60 * 1000));
+          endDate = now;
+          break;
+        case 'month':
+          startDate = new Date(now.getFullYear(), now.getMonth(), 1);
+          endDate = now;
+          break;
+        default:
+          startDate = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+          endDate = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
+      }
+      
+      // Get completed trips for the period
+      const tripsSnapshot = await db.collection('bookings')
+        .where('driverId', '==', uid)
+        .where('status', '==', 'completed')
+        .where('completedAt', '>=', startDate)
+        .where('completedAt', '<', endDate)
+        .get();
+      
+      let totalEarnings = 0;
+      let totalBaseFare = 0;
+      let totalDistanceFare = 0;
+      let totalTimeFare = 0;
+      let totalPlatformFee = 0;
+      let tripCount = 0;
+      const tripBreakdowns = [];
+      
+      tripsSnapshot.forEach((doc) => {
+        const trip = doc.data();
+        const fare = trip.fare || {};
+        
+        totalEarnings += fare.total || 0;
+        totalBaseFare += fare.base || 0;
+        totalDistanceFare += fare.distance || 0;
+        totalTimeFare += fare.time || 0;
+        totalPlatformFee += fare.platformFee || 0;
+        tripCount += 1;
+        
+        tripBreakdowns.push({
+          bookingId: doc.id,
+          totalEarnings: fare.total || 0,
+          baseFare: fare.base || 0,
+          distanceFare: fare.distance || 0,
+          timeFare: fare.time || 0,
+          completedAt: trip.completedAt?.toDate?.()?.toISOString() || null
+        });
+      });
+      
+      const periodBreakdown = {
+        period: period,
+        dateRange: {
+          start: startDate.toISOString(),
+          end: endDate.toISOString()
+        },
+        summary: {
+          totalEarnings: totalEarnings,
+          totalBaseFare: totalBaseFare,
+          totalDistanceFare: totalDistanceFare,
+          totalTimeFare: totalTimeFare,
+          totalPlatformFee: totalPlatformFee,
+          tripCount: tripCount,
+          averageEarningsPerTrip: tripCount > 0 ? Math.round(totalEarnings / tripCount) : 0
+        },
+        tripBreakdowns: tripBreakdowns
+      };
+      
+      res.status(200).json({
+        success: true,
+        message: 'Period earnings breakdown retrieved successfully',
+        data: periodBreakdown,
+        timestamp: new Date().toISOString()
+      });
+    }
+    
+  } catch (error) {
+    console.error('❌ [EARNINGS_BREAKDOWN] Error getting earnings breakdown:', error);
+    res.status(500).json({
+      success: false,
+      error: {
+        code: 'EARNINGS_BREAKDOWN_ERROR',
+        message: 'Failed to retrieve earnings breakdown',
+        details: 'An error occurred while retrieving earnings breakdown'
       },
       timestamp: new Date().toISOString()
     });
@@ -2662,6 +2927,426 @@ router.put('/bookings/:id/status', [
         code: 'STATUS_UPDATE_ERROR',
         message: 'Failed to update booking status',
         details: 'An error occurred while updating booking status'
+      },
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+/**
+ * @route   POST /api/driver/confirm-pickup
+ * @desc    Confirm pickup completion with photo verification
+ * @access  Private (Driver only)
+ */
+router.post('/confirm-pickup', [
+  requireDriver,
+  body('bookingId')
+    .isString()
+    .notEmpty()
+    .withMessage('Booking ID is required'),
+  body('location')
+    .isObject()
+    .withMessage('Location is required'),
+  body('location.latitude')
+    .isFloat({ min: -90, max: 90 })
+    .withMessage('Valid latitude is required'),
+  body('location.longitude')
+    .isFloat({ min: -180, max: 180 })
+    .withMessage('Valid longitude is required'),
+  body('photoUrl')
+    .optional()
+    .isString()
+    .withMessage('Photo URL must be a string'),
+  body('notes')
+    .optional()
+    .isLength({ min: 5, max: 200 })
+    .withMessage('Notes must be between 5 and 200 characters')
+], async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'VALIDATION_ERROR',
+          message: 'Validation failed',
+          details: errors.array()
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    const { uid } = req.user;
+    const { bookingId, location, photoUrl, notes } = req.body;
+    const db = getFirestore();
+    
+    console.log('📦 [CONFIRM_PICKUP] Confirming pickup for booking:', bookingId, 'driver:', uid);
+    
+    const bookingRef = db.collection('bookings').doc(bookingId);
+    const bookingDoc = await bookingRef.get();
+    
+    if (!bookingDoc.exists) {
+      return res.status(404).json({
+        success: false,
+        error: {
+          code: 'BOOKING_NOT_FOUND',
+          message: 'Booking not found',
+          details: 'Booking with this ID does not exist'
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    const bookingData = bookingDoc.data();
+    
+    // Check if driver is assigned to this booking
+    if (bookingData.driverId !== uid) {
+      return res.status(403).json({
+        success: false,
+        error: {
+          code: 'ACCESS_DENIED',
+          message: 'Access denied',
+          details: 'You can only confirm pickup for bookings assigned to you'
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    // Validate radius for pickup confirmation
+    const pickupLocation = bookingData.pickup?.coordinates;
+    if (pickupLocation) {
+      const distance = calculateDistance(
+        location.latitude,
+        location.longitude,
+        pickupLocation.latitude,
+        pickupLocation.longitude
+      );
+      
+      // Check if within 100 meters (0.1 km)
+      if (distance > 0.1) {
+        return res.status(400).json({
+          success: false,
+          error: {
+            code: 'OUTSIDE_RADIUS',
+            message: 'Outside pickup radius',
+            details: `You must be within 100m of the pickup location to confirm. You are currently ${(distance * 1000).toFixed(0)}m away.`
+          },
+          timestamp: new Date().toISOString()
+        });
+      }
+    }
+
+    // Update booking status to picked_up
+    const updateData = {
+      status: 'picked_up',
+      'timing.pickedUpAt': new Date(),
+      'driver.currentLocation': {
+        ...location,
+        timestamp: new Date()
+      },
+      updatedAt: new Date()
+    };
+
+    // Add photo verification if provided
+    if (photoUrl) {
+      updateData['pickupVerification'] = {
+        photoUrl: photoUrl,
+        verifiedAt: new Date(),
+        verifiedBy: uid,
+        location: location
+      };
+    }
+
+    // Add notes if provided
+    if (notes) {
+      updateData['driver.pickupNotes'] = notes;
+    }
+
+    await bookingRef.update(updateData);
+
+    // Create pickup verification record
+    const verificationRef = db.collection('pickupVerifications').doc();
+    await verificationRef.set({
+      id: verificationRef.id,
+      bookingId: bookingId,
+      driverId: uid,
+      customerId: bookingData.customerId,
+      location: location,
+      photoUrl: photoUrl || null,
+      notes: notes || null,
+      verifiedAt: new Date(),
+      status: 'verified'
+    });
+
+    // Update trip tracking
+    const tripTrackingRef = db.collection('tripTracking').doc(bookingId);
+    await tripTrackingRef.set({
+      tripId: bookingId,
+      bookingId: bookingId,
+      driverId: uid,
+      customerId: bookingData.customerId,
+      currentStatus: 'picked_up',
+      pickupConfirmedAt: new Date(),
+      lastUpdated: new Date()
+    }, { merge: true });
+
+    console.log('✅ [CONFIRM_PICKUP] Pickup confirmed successfully for booking:', bookingId);
+
+    res.status(200).json({
+      success: true,
+      message: 'Pickup confirmed successfully',
+      data: {
+        bookingId: bookingId,
+        status: 'picked_up',
+        location: location,
+        photoUrl: photoUrl,
+        notes: notes,
+        verifiedAt: new Date().toISOString()
+      },
+      timestamp: new Date().toISOString()
+    });
+
+  } catch (error) {
+    console.error('❌ [CONFIRM_PICKUP] Error confirming pickup:', error);
+    res.status(500).json({
+      success: false,
+      error: {
+        code: 'PICKUP_CONFIRMATION_ERROR',
+        message: 'Failed to confirm pickup',
+        details: 'An error occurred while confirming pickup'
+      },
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+/**
+ * @route   POST /api/driver/complete-delivery
+ * @desc    Complete delivery process with final confirmation
+ * @access  Private (Driver only)
+ */
+router.post('/complete-delivery', [
+  requireDriver,
+  body('bookingId')
+    .isString()
+    .notEmpty()
+    .withMessage('Booking ID is required'),
+  body('location')
+    .isObject()
+    .withMessage('Location is required'),
+  body('location.latitude')
+    .isFloat({ min: -90, max: 90 })
+    .withMessage('Valid latitude is required'),
+  body('location.longitude')
+    .isFloat({ min: -180, max: 180 })
+    .withMessage('Valid longitude is required'),
+  body('photoUrl')
+    .optional()
+    .isString()
+    .withMessage('Photo URL must be a string'),
+  body('notes')
+    .optional()
+    .isLength({ min: 5, max: 200 })
+    .withMessage('Notes must be between 5 and 200 characters'),
+  body('recipientName')
+    .optional()
+    .isString()
+    .withMessage('Recipient name must be a string'),
+  body('recipientPhone')
+    .optional()
+    .isString()
+    .withMessage('Recipient phone must be a string')
+], async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'VALIDATION_ERROR',
+          message: 'Validation failed',
+          details: errors.array()
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    const { uid } = req.user;
+    const { bookingId, location, photoUrl, notes, recipientName, recipientPhone } = req.body;
+    const db = getFirestore();
+    
+    console.log('📦 [COMPLETE_DELIVERY] Completing delivery for booking:', bookingId, 'driver:', uid);
+    
+    const bookingRef = db.collection('bookings').doc(bookingId);
+    const bookingDoc = await bookingRef.get();
+    
+    if (!bookingDoc.exists) {
+      return res.status(404).json({
+        success: false,
+        error: {
+          code: 'BOOKING_NOT_FOUND',
+          message: 'Booking not found',
+          details: 'Booking with this ID does not exist'
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    const bookingData = bookingDoc.data();
+    
+    // Check if driver is assigned to this booking
+    if (bookingData.driverId !== uid) {
+      return res.status(403).json({
+        success: false,
+        error: {
+          code: 'ACCESS_DENIED',
+          message: 'Access denied',
+          details: 'You can only complete delivery for bookings assigned to you'
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    // Validate radius for delivery confirmation
+    const dropoffLocation = bookingData.dropoff?.coordinates;
+    if (dropoffLocation) {
+      const distance = calculateDistance(
+        location.latitude,
+        location.longitude,
+        dropoffLocation.latitude,
+        dropoffLocation.longitude
+      );
+      
+      // Check if within 100 meters (0.1 km)
+      if (distance > 0.1) {
+        return res.status(400).json({
+          success: false,
+          error: {
+            code: 'OUTSIDE_RADIUS',
+            message: 'Outside delivery radius',
+            details: `You must be within 100m of the dropoff location to complete delivery. You are currently ${(distance * 1000).toFixed(0)}m away.`
+          },
+          timestamp: new Date().toISOString()
+        });
+      }
+    }
+
+    // Calculate final trip metrics
+    const startTime = bookingData.timing?.pickedUpAt?.toDate?.() || new Date();
+    const endTime = new Date();
+    const duration = Math.round((endTime - startTime) / 1000 / 60); // minutes
+
+    // Update booking status to delivered
+    const updateData = {
+      status: 'delivered',
+      'timing.deliveredAt': new Date(),
+      'timing.actualDeliveryTime': endTime.toISOString(),
+      'timing.actualDuration': duration,
+      'driver.currentLocation': {
+        ...location,
+        timestamp: new Date()
+      },
+      updatedAt: new Date()
+    };
+
+    // Add delivery verification if provided
+    if (photoUrl) {
+      updateData['deliveryVerification'] = {
+        photoUrl: photoUrl,
+        verifiedAt: new Date(),
+        verifiedBy: uid,
+        location: location
+      };
+    }
+
+    // Add recipient information
+    if (recipientName || recipientPhone) {
+      updateData['recipient'] = {
+        name: recipientName || bookingData.recipient?.name || 'Unknown',
+        phone: recipientPhone || bookingData.recipient?.phone || null,
+        confirmedAt: new Date(),
+        confirmedBy: uid
+      };
+    }
+
+    // Add notes if provided
+    if (notes) {
+      updateData['driver.deliveryNotes'] = notes;
+    }
+
+    await bookingRef.update(updateData);
+
+    // Create delivery verification record
+    const verificationRef = db.collection('deliveryVerifications').doc();
+    await verificationRef.set({
+      id: verificationRef.id,
+      bookingId: bookingId,
+      driverId: uid,
+      customerId: bookingData.customerId,
+      location: location,
+      photoUrl: photoUrl || null,
+      notes: notes || null,
+      recipientName: recipientName || null,
+      recipientPhone: recipientPhone || null,
+      deliveredAt: new Date(),
+      status: 'verified'
+    });
+
+    // Update trip tracking
+    const tripTrackingRef = db.collection('tripTracking').doc(bookingId);
+    await tripTrackingRef.set({
+      tripId: bookingId,
+      bookingId: bookingId,
+      driverId: uid,
+      customerId: bookingData.customerId,
+      currentStatus: 'delivered',
+      deliveredAt: new Date(),
+      actualDuration: duration,
+      lastUpdated: new Date()
+    }, { merge: true });
+
+    // Calculate and update driver earnings
+    const fare = bookingData.fare || {};
+    const driverEarnings = fare.driverEarnings || fare.total || 0;
+    
+    // Update driver's total earnings
+    const driverRef = db.collection('users').doc(uid);
+    await driverRef.update({
+      'driver.earnings.total': admin.firestore.FieldValue.increment(driverEarnings),
+      'driver.earnings.thisMonth': admin.firestore.FieldValue.increment(driverEarnings),
+      'driver.earnings.thisWeek': admin.firestore.FieldValue.increment(driverEarnings),
+      'driver.tripsCompleted': admin.firestore.FieldValue.increment(1),
+      updatedAt: new Date()
+    });
+
+    console.log('✅ [COMPLETE_DELIVERY] Delivery completed successfully for booking:', bookingId);
+
+    res.status(200).json({
+      success: true,
+      message: 'Delivery completed successfully',
+      data: {
+        bookingId: bookingId,
+        status: 'delivered',
+        location: location,
+        photoUrl: photoUrl,
+        notes: notes,
+        recipientName: recipientName,
+        recipientPhone: recipientPhone,
+        deliveredAt: new Date().toISOString(),
+        duration: duration,
+        earnings: driverEarnings
+      },
+      timestamp: new Date().toISOString()
+    });
+
+  } catch (error) {
+    console.error('❌ [COMPLETE_DELIVERY] Error completing delivery:', error);
+    res.status(500).json({
+      success: false,
+      error: {
+        code: 'DELIVERY_COMPLETION_ERROR',
+        message: 'Failed to complete delivery',
+        details: 'An error occurred while completing delivery'
       },
       timestamp: new Date().toISOString()
     });

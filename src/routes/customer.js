@@ -1542,4 +1542,233 @@ router.get('/bookings/:id/rating', authenticateToken, async (req, res) => {
   }
 });
 
+/**
+ * @route GET /api/customer/invoice/:bookingId
+ * @desc Download invoice for completed booking
+ * @access Private (Customer only)
+ */
+router.get('/invoice/:bookingId', authenticateToken, async (req, res) => {
+  try {
+    const { uid: userId } = req.user;
+    const { bookingId } = req.params;
+    const db = getFirestore();
+    
+    console.log(`📄 Generating invoice for booking ${bookingId} for customer: ${userId}`);
+    
+    // Get booking details
+    const bookingDoc = await db.collection('bookings').doc(bookingId).get();
+    
+    if (!bookingDoc.exists) {
+      return res.status(404).json({
+        success: false,
+        error: 'Booking not found'
+      });
+    }
+    
+    const bookingData = bookingDoc.data();
+    
+    // Verify booking belongs to customer
+    if (bookingData.customerId !== userId) {
+      return res.status(403).json({
+        success: false,
+        error: 'Access denied'
+      });
+    }
+    
+    // Only allow invoice download for completed bookings
+    if (bookingData.status !== 'completed' && bookingData.status !== 'delivered') {
+      return res.status(400).json({
+        success: false,
+        error: 'Invoice is only available for completed bookings'
+      });
+    }
+    
+    // Get customer details
+    let customerData = {};
+    try {
+      const customerDoc = await db.collection('users').doc(userId).get();
+      if (customerDoc.exists) {
+        customerData = customerDoc.data();
+      } else {
+        console.warn(`⚠️ Customer document not found for user: ${userId}`);
+      }
+    } catch (error) {
+      console.error(`❌ Error fetching customer data for user ${userId}:`, error);
+      // Continue with empty customer data rather than failing
+    }
+    
+    // Get driver details if available
+    let driverData = null;
+    if (bookingData.driverId) {
+      try {
+        const driverDoc = await db.collection('drivers').doc(bookingData.driverId).get();
+        if (driverDoc.exists) {
+          driverData = driverDoc.data();
+        } else {
+          console.warn(`⚠️ Driver document not found for driver: ${bookingData.driverId}`);
+        }
+      } catch (error) {
+        console.error(`❌ Error fetching driver data for driver ${bookingData.driverId}:`, error);
+        // Continue without driver data rather than failing
+      }
+    }
+    
+    // Generate invoice data
+    const invoiceData = {
+      invoiceId: `INV-${bookingId.substring(0, 8).toUpperCase()}`,
+      invoiceDate: new Date().toISOString(),
+      bookingId: bookingId,
+      bookingDate: bookingData.createdAt?.toDate?.()?.toISOString() || bookingData.createdAt,
+      completedDate: bookingData.completedAt?.toDate?.()?.toISOString() || bookingData.updatedAt,
+      
+      // Customer details
+      customer: {
+        name: bookingData.pickup?.name || customerData.name || 'Customer',
+        phone: bookingData.pickup?.phone || customerData.phoneNumber || '',
+        email: customerData.email || ''
+      },
+      
+      // Driver details
+      driver: driverData ? {
+        name: driverData.personalInfo?.name || 'Driver',
+        phone: driverData.personalInfo?.phone || '',
+        vehicleNumber: driverData.vehicleInfo?.plateNumber || 'N/A'
+      } : null,
+      
+      // Booking details
+      pickup: {
+        address: bookingData.pickup?.address || 'Pickup address',
+        name: bookingData.pickup?.name || 'Sender',
+        phone: bookingData.pickup?.phone || ''
+      },
+      
+      dropoff: {
+        address: bookingData.dropoff?.address || 'Dropoff address',
+        name: bookingData.dropoff?.name || 'Recipient',
+        phone: bookingData.dropoff?.phone || ''
+      },
+      
+      // Package details
+      package: {
+        weight: bookingData.package?.weight || 0,
+        description: bookingData.package?.description || 'Package',
+        value: bookingData.package?.value || 0
+      },
+      
+      // Fare details
+      fare: {
+        baseFare: bookingData.fare?.base || bookingData.pricing?.baseFare || bookingData.baseFare || 0,
+        distanceFare: bookingData.fare?.distance || bookingData.pricing?.distanceFare || bookingData.distanceFare || 0,
+        totalFare: bookingData.fare?.total || bookingData.pricing?.totalFare || bookingData.totalFare || bookingData.amount || 0,
+        currency: bookingData.fare?.currency || bookingData.currency || 'INR'
+      },
+      
+      // Distance and timing
+      distance: bookingData.distance?.value || bookingData.distance || 0,
+      estimatedTime: bookingData.estimatedDuration || 0,
+      actualTime: bookingData.actualDuration || 0,
+      
+      // Payment details
+      paymentMethod: bookingData.paymentMethod || 'cash',
+      paymentStatus: bookingData.paymentStatus || 'completed'
+    };
+    
+    // Check if client wants PDF format
+    const format = req.query.format || 'json';
+    
+    if (format === 'pdf') {
+      // Generate PDF invoice (requires pdfkit or similar library)
+      try {
+        const PDFDocument = require('pdfkit');
+        const doc = new PDFDocument();
+        
+        // Set response headers for PDF download
+        res.setHeader('Content-Type', 'application/pdf');
+        res.setHeader('Content-Disposition', `attachment; filename="invoice-${invoiceData.invoiceId}.pdf"`);
+        
+        // Pipe PDF to response
+        doc.pipe(res);
+        
+        // Add invoice content to PDF
+        doc.fontSize(20).text('EPickup Invoice', 50, 50);
+        doc.fontSize(12).text(`Invoice ID: ${invoiceData.invoiceId}`, 50, 80);
+        doc.text(`Date: ${new Date(invoiceData.invoiceDate).toLocaleDateString()}`, 50, 100);
+        doc.text(`Booking ID: ${invoiceData.bookingId}`, 50, 120);
+        
+        // Customer details
+        doc.text('Customer Details:', 50, 160);
+        doc.text(`Name: ${invoiceData.customer.name}`, 70, 180);
+        doc.text(`Phone: ${invoiceData.customer.phone}`, 70, 200);
+        doc.text(`Email: ${invoiceData.customer.email}`, 70, 220);
+        
+        // Driver details
+        if (invoiceData.driver) {
+          doc.text('Driver Details:', 50, 260);
+          doc.text(`Name: ${invoiceData.driver.name}`, 70, 280);
+          doc.text(`Phone: ${invoiceData.driver.phone}`, 70, 300);
+          doc.text(`Vehicle: ${invoiceData.driver.vehicleNumber}`, 70, 320);
+        }
+        
+        // Pickup details
+        doc.text('Pickup Details:', 50, 360);
+        doc.text(`Address: ${invoiceData.pickup.address}`, 70, 380);
+        doc.text(`Contact: ${invoiceData.pickup.name} (${invoiceData.pickup.phone})`, 70, 400);
+        
+        // Dropoff details
+        doc.text('Dropoff Details:', 50, 440);
+        doc.text(`Address: ${invoiceData.dropoff.address}`, 70, 460);
+        doc.text(`Contact: ${invoiceData.dropoff.name} (${invoiceData.dropoff.phone})`, 70, 480);
+        
+        // Package details
+        doc.text('Package Details:', 50, 520);
+        doc.text(`Weight: ${invoiceData.package.weight} kg`, 70, 540);
+        doc.text(`Description: ${invoiceData.package.description}`, 70, 560);
+        
+        // Fare breakdown
+        doc.text('Fare Breakdown:', 50, 600);
+        doc.text(`Base Fare: ₹${invoiceData.fare.baseFare}`, 70, 620);
+        doc.text(`Distance Fare: ₹${invoiceData.fare.distanceFare}`, 70, 640);
+        doc.fontSize(14).text(`Total: ₹${invoiceData.fare.totalFare}`, 70, 670);
+        
+        // Payment details
+        doc.fontSize(12).text('Payment Details:', 50, 710);
+        doc.text(`Method: ${invoiceData.paymentMethod}`, 70, 730);
+        doc.text(`Status: ${invoiceData.paymentStatus}`, 70, 750);
+        
+        // Footer
+        doc.text('Thank you for using EPickup!', 50, 790);
+        
+        doc.end();
+        
+        console.log(`✅ Generated PDF invoice ${invoiceData.invoiceId} for booking ${bookingId}`);
+        return;
+        
+      } catch (error) {
+        console.error('❌ Error generating PDF invoice:', error);
+        // Fallback to JSON if PDF generation fails
+      }
+    }
+    
+    // Default JSON response
+    res.setHeader('Content-Type', 'application/json');
+    res.setHeader('Content-Disposition', `attachment; filename="invoice-${invoiceData.invoiceId}.json"`);
+    
+    console.log(`✅ Generated invoice ${invoiceData.invoiceId} for booking ${bookingId}`);
+    
+    res.json({
+      success: true,
+      data: invoiceData,
+      message: 'Invoice generated successfully'
+    });
+    
+  } catch (error) {
+    console.error('❌ Error generating invoice:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to generate invoice',
+      details: error.message
+    });
+  }
+});
+
 module.exports = router;

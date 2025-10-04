@@ -1122,6 +1122,92 @@ router.get('/health', (req, res) => {
 });
 
 /**
+ * @route   POST /api/support/report-issue
+ * @desc    Report an issue
+ * @access  Private (Customer, Driver)
+ */
+router.post('/report-issue', [
+  body('bookingId').optional().isString().withMessage('Booking ID must be a string'),
+  body('issueType').isIn(['driver_matching', 'payment', 'delivery', 'app_technical', 'driver_behavior', 'other']).withMessage('Invalid issue type'),
+  body('description').isLength({ min: 10, max: 1000 }).withMessage('Description must be between 10 and 1000 characters'),
+  body('priority').optional().isIn(['low', 'medium', 'high', 'urgent']).withMessage('Invalid priority'),
+  body('timestamp').optional().isISO8601().withMessage('Timestamp must be valid ISO8601 format')
+], async (req, res) => {
+  try {
+    // Check validation errors
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'VALIDATION_ERROR',
+          message: 'Validation failed',
+          details: errors.array()
+        }
+      });
+    }
+
+    const { bookingId, issueType, description, priority = 'medium', timestamp } = req.body;
+    const userId = req.user.uid;
+    const userType = req.user.userType || 'customer';
+
+    console.log(`🚨 Issue reported by ${userType} ${userId}: ${issueType}`);
+
+    // Create issue report
+    const issueData = {
+      id: `issue_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+      userId,
+      userType,
+      bookingId: bookingId || null,
+      issueType,
+      description: description.trim(),
+      priority,
+      status: 'open',
+      createdAt: timestamp ? new Date(timestamp) : new Date(),
+      updatedAt: new Date(),
+      assignedTo: null,
+      resolution: null,
+      resolvedAt: null
+    };
+
+    // Save to database
+    await getDb().collection('issueReports').doc(issueData.id).set(issueData);
+
+    // Send notification to support team
+    sendToTopic('issue_reports', {
+      type: 'new_issue',
+      issueId: issueData.id,
+      userId,
+      userType,
+      issueType,
+      priority,
+      description: description.substring(0, 100) + (description.length > 100 ? '...' : '')
+    });
+
+    res.status(201).json({
+      success: true,
+      message: 'Issue reported successfully',
+      data: {
+        issueId: issueData.id,
+        status: issueData.status,
+        createdAt: issueData.createdAt
+      }
+    });
+
+  } catch (error) {
+    console.error('Report issue error:', error);
+    res.status(500).json({
+      success: false,
+      error: {
+        code: 'ISSUE_REPORT_ERROR',
+        message: 'Failed to report issue',
+        details: error.message
+      }
+    });
+  }
+});
+
+/**
  * @route   POST /api/support/message
  * @desc    Send a support message
  * @access  Private

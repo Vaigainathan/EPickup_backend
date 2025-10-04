@@ -318,6 +318,88 @@ router.post('/refund',
 );
 
 /**
+ * @route GET /api/payments/methods
+ * @desc Get available payment methods
+ * @access Private (Customer/Driver)
+ */
+router.get('/methods',
+  authMiddleware,
+  async (req, res) => {
+    try {
+      const userId = req.user.id;
+      const userType = req.user.userType;
+
+      console.log(`💳 Getting payment methods for ${userType}: ${userId}`);
+
+      // Default payment methods available to all users
+      const defaultMethods = {
+        cash: {
+          name: 'Cash on Delivery',
+          code: 'cash',
+          supported: true,
+          description: 'Pay when your package is delivered',
+          icon: 'cash-outline'
+        },
+        upi: {
+          name: 'UPI Payment',
+          code: 'upi',
+          supported: true,
+          description: 'Pay using UPI apps like PhonePe, Google Pay',
+          icon: 'phone-portrait-outline'
+        }
+      };
+
+      // For customers, check if they have saved payment methods
+      let customerMethods = [];
+      if (userType === 'customer') {
+        try {
+          const { getFirestore } = require('../services/firebase');
+          const db = getFirestore();
+          const customerDoc = await db.collection('users').doc(userId).get();
+          
+          if (customerDoc.exists) {
+            const customerData = customerDoc.data();
+            customerMethods = customerData.customer?.paymentMethods || [];
+            console.log(`📋 Found ${customerMethods.length} saved payment methods for customer: ${userId}`);
+          } else {
+            console.warn(`⚠️ Customer document not found for user: ${userId}`);
+          }
+        } catch (error) {
+          console.error(`❌ Error fetching customer payment methods for user ${userId}:`, error);
+          // Continue with empty customer methods rather than failing
+        }
+      }
+
+      const response = {
+        success: true,
+        data: {
+          methods: defaultMethods,
+          customerMethods: customerMethods,
+          testingMode: process.env.NODE_ENV === 'development'
+        },
+        message: 'Payment methods retrieved successfully',
+        timestamp: new Date().toISOString()
+      };
+
+      console.log(`✅ Retrieved payment methods for ${userType}: ${userId}`);
+      res.json(response);
+
+    } catch (error) {
+      console.error('❌ Error getting payment methods:', error);
+      res.status(500).json({
+        success: false,
+        message: 'Internal server error',
+        error: {
+          code: 'PAYMENT_METHODS_ERROR',
+          message: error.message
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+  }
+);
+
+/**
  * @route GET /api/payments/history
  * @desc Get payment history
  * @access Private (Customer/Driver)
@@ -462,6 +544,145 @@ router.get('/:transactionId',
         error: {
           code: 'PAYMENT_DETAILS_ERROR',
           message: error.message
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+  }
+);
+
+/**
+ * @route POST /api/payments/confirm
+ * @desc Confirm payment received by driver
+ * @access Private (Driver only)
+ */
+router.post('/confirm',
+  authMiddleware,
+  paymentRateLimit,
+  body('transactionId').isString().withMessage('Transaction ID is required').notEmpty().withMessage('Transaction ID cannot be empty'),
+  body('bookingId').isString().withMessage('Booking ID is required').notEmpty().withMessage('Booking ID cannot be empty'),
+  body('amount').isNumeric().withMessage('Amount must be a number').isFloat({ min: 1 }).withMessage('Amount must be at least 1'),
+  body('paymentMethod').optional().isString().withMessage('Payment method must be a string'),
+  body('notes').optional().isString().withMessage('Notes must be a string'),
+  checkValidation,
+  async (req, res) => {
+    try {
+      const { transactionId, bookingId, amount, paymentMethod = 'cash', notes } = req.body;
+      const driverId = req.user.id;
+      const db = require('../database/firestore').getFirestore();
+
+      console.log('💰 [PAYMENT_CONFIRM] Confirming payment:', { transactionId, bookingId, amount, driverId });
+
+      // Verify booking exists and driver is assigned
+      const bookingRef = db.collection('bookings').doc(bookingId);
+      const bookingDoc = await bookingRef.get();
+
+      if (!bookingDoc.exists) {
+        return res.status(404).json({
+          success: false,
+          error: {
+            code: 'BOOKING_NOT_FOUND',
+            message: 'Booking not found',
+            details: 'Booking with this ID does not exist'
+          },
+          timestamp: new Date().toISOString()
+        });
+      }
+
+      const bookingData = bookingDoc.data();
+
+      // Check if driver is assigned to this booking
+      if (bookingData.driverId !== driverId) {
+        return res.status(403).json({
+          success: false,
+          error: {
+            code: 'ACCESS_DENIED',
+            message: 'Access denied',
+            details: 'You can only confirm payments for bookings assigned to you'
+          },
+          timestamp: new Date().toISOString()
+        });
+      }
+
+      // Check if booking is in correct status for payment confirmation
+      if (!['picked_up', 'in_transit', 'arrived_dropoff'].includes(bookingData.status)) {
+        return res.status(400).json({
+          success: false,
+          error: {
+            code: 'INVALID_BOOKING_STATUS',
+            message: 'Invalid booking status for payment confirmation',
+            details: `Booking must be in picked_up, in_transit, or arrived_dropoff status. Current status: ${bookingData.status}`
+          },
+          timestamp: new Date().toISOString()
+        });
+      }
+
+      // Create payment confirmation record
+      const paymentRef = db.collection('payments').doc();
+      await paymentRef.set({
+        id: paymentRef.id,
+        transactionId: transactionId,
+        bookingId: bookingId,
+        driverId: driverId,
+        customerId: bookingData.customerId,
+        amount: amount,
+        paymentMethod: paymentMethod,
+        status: 'confirmed',
+        confirmedAt: new Date(),
+        confirmedBy: driverId,
+        notes: notes || null,
+        createdAt: new Date(),
+        updatedAt: new Date()
+      });
+
+      // Update booking with payment confirmation
+      await bookingRef.update({
+        'payment.confirmed': true,
+        'payment.confirmedAt': new Date(),
+        'payment.confirmedBy': driverId,
+        'payment.amount': amount,
+        'payment.method': paymentMethod,
+        'payment.transactionId': transactionId,
+        'payment.notes': notes || null,
+        updatedAt: new Date()
+      });
+
+      // Update trip tracking
+      const tripTrackingRef = db.collection('tripTracking').doc(bookingId);
+      await tripTrackingRef.set({
+        tripId: bookingId,
+        bookingId: bookingId,
+        driverId: driverId,
+        customerId: bookingData.customerId,
+        paymentConfirmed: true,
+        paymentConfirmedAt: new Date(),
+        lastUpdated: new Date()
+      }, { merge: true });
+
+      console.log('✅ [PAYMENT_CONFIRM] Payment confirmed successfully:', transactionId);
+
+      res.status(200).json({
+        success: true,
+        message: 'Payment confirmed successfully',
+        data: {
+          transactionId: transactionId,
+          bookingId: bookingId,
+          amount: amount,
+          paymentMethod: paymentMethod,
+          confirmedAt: new Date().toISOString(),
+          confirmedBy: driverId
+        },
+        timestamp: new Date().toISOString()
+      });
+
+    } catch (error) {
+      console.error('❌ [PAYMENT_CONFIRM] Error confirming payment:', error);
+      res.status(500).json({
+        success: false,
+        error: {
+          code: 'PAYMENT_CONFIRMATION_ERROR',
+          message: 'Failed to confirm payment',
+          details: 'An error occurred while confirming payment'
         },
         timestamp: new Date().toISOString()
       });

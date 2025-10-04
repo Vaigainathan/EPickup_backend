@@ -17,6 +17,7 @@ const { securityHeaders } = require('./middleware/security');
 
 // Import routes
 const authRoutes = require('./routes/auth');
+const refreshTokenRoutes = require('./routes/refreshToken');
 const customerRoutes = require('./routes/customer');
 const driverRoutes = require('./routes/driver');
 const bookingRoutes = require('./routes/booking');
@@ -56,6 +57,7 @@ const {
 // Import standardized error handler
 const { errorHandler: standardizedErrorHandler } = require('./middleware/errorHandler');
 const { authMiddleware } = require('./middleware/auth');
+const appCheckMiddleware = require('./middleware/appCheckAuth');
 // const { firebaseAdminAuthMiddleware } = require('./middleware/firebaseAuth'); // No longer used - using firebaseIdTokenAuth instead
 
 // Import services
@@ -404,25 +406,26 @@ app.get('/metrics', (req, res) => {
 
 // API Routes
 app.use('/api/auth', authLimiter, authRoutes);
-app.use('/api/customer', authMiddleware, customerRoutes);
-app.use('/api/driver', authMiddleware, driverRoutes);
-app.use('/api/bookings', authMiddleware, bookingRoutes);
-app.use('/api/payments', authMiddleware, paymentRoutes);
-app.use('/api/tracking', authMiddleware, trackingRoutes);
-app.use('/api/notifications', authMiddleware, notificationRoutes);
-app.use('/api/file-upload', authMiddleware, fileUploadRoutes);
-app.use('/api/support', authMiddleware, supportRoutes);
-app.use('/api/chat', authMiddleware, chatRoutes);
+app.use('/api/auth', refreshTokenRoutes); // Add refresh token route
+app.use('/api/customer', appCheckMiddleware.middleware(), authMiddleware, customerRoutes);
+app.use('/api/driver', appCheckMiddleware.middleware(), authMiddleware, driverRoutes);
+app.use('/api/bookings', appCheckMiddleware.middleware(), authMiddleware, bookingRoutes);
+app.use('/api/payments', appCheckMiddleware.middleware(), authMiddleware, paymentRoutes);
+app.use('/api/tracking', appCheckMiddleware.middleware(), authMiddleware, trackingRoutes);
+app.use('/api/notifications', appCheckMiddleware.middleware(), authMiddleware, notificationRoutes);
+app.use('/api/file-upload', appCheckMiddleware.middleware(), authMiddleware, fileUploadRoutes);
+app.use('/api/support', appCheckMiddleware.middleware(), authMiddleware, supportRoutes);
+app.use('/api/chat', appCheckMiddleware.middleware(), authMiddleware, chatRoutes);
 app.use('/api/google-maps', googleMapsRoutes); // No auth required for Google Maps API
-app.use('/api/realtime', authMiddleware, realtimeRoutes);
-app.use('/api/fcm-tokens', authMiddleware, fcmTokenRoutes);
-app.use('/api/emergency', authMiddleware, emergencyRoutes);
+app.use('/api/realtime', appCheckMiddleware.middleware(), authMiddleware, realtimeRoutes);
+app.use('/api/fcm-tokens', appCheckMiddleware.middleware(), authMiddleware, fcmTokenRoutes);
+app.use('/api/emergency', appCheckMiddleware.middleware(), authMiddleware, emergencyRoutes);
 app.use('/api/service-area', serviceAreaRoutes); // No auth required for service area validation
 app.use('/service-area', serviceAreaRoutes); // Alternative path for service area validation
-app.use('/api/wallet', walletRoutes);
-app.use('/api/fare', fareCalculationRoutes);
-app.use('/api/slots', workSlotsRoutes);
-app.use('/api/location-tracking', authMiddleware, locationTrackingRoutes);
+app.use('/api/wallet', appCheckMiddleware.middleware(), walletRoutes);
+app.use('/api/fare', appCheckMiddleware.middleware(), fareCalculationRoutes);
+app.use('/api/slots', appCheckMiddleware.middleware(), workSlotsRoutes);
+app.use('/api/location-tracking', appCheckMiddleware.middleware(), authMiddleware, locationTrackingRoutes);
 app.use('/api/admin/auth', adminAuthRoutes); // No auth required for admin login
 app.use('/api/admin/signup', adminSignupRoutes); // Admin signup route (no auth required)
 // Import admin role validation

@@ -188,6 +188,9 @@ router.get('/profile', requireDriver, async (req, res) => {
 
     const userData = userDoc.data();
     
+    // Ensure wallet structure exists and is properly formatted
+    const driverData = userData.driver || {};
+    
     // CRITICAL FIX: Get verification data from verification service for comprehensive status
     const verificationService = require('../services/verificationService');
     let comprehensiveVerificationData;
@@ -202,8 +205,6 @@ router.get('/profile', requireDriver, async (req, res) => {
       console.error('❌ [PROFILE] Verification service error details:', verificationError);
     }
     
-    // Ensure wallet structure exists and is properly formatted
-    const driverData = userData.driver || {};
     const walletData = driverData.wallet || {};
     
     // Debug logging for vehicle details
@@ -6504,118 +6505,6 @@ router.get('/availability', requireDriver, async (req, res) => {
       error: {
         code: 'GET_AVAILABILITY_ERROR',
         message: 'Failed to get driver availability',
-        details: error.message
-      },
-      timestamp: new Date().toISOString()
-    });
-  }
-});
-
-/**
- * @route   GET /api/driver/earnings/detailed
- * @desc    Get detailed driver earnings breakdown
- * @access  Private (Driver only)
- */
-router.get('/earnings/detailed', requireDriver, async (req, res) => {
-  try {
-    const { uid } = req.user;
-    const { period = '30d' } = req.query;
-    const db = getFirestore();
-    
-    // Calculate date range
-    const endDate = new Date();
-    const startDate = new Date();
-    switch (period) {
-      case '7d':
-        startDate.setDate(endDate.getDate() - 7);
-        break;
-      case '30d':
-        startDate.setDate(endDate.getDate() - 30);
-        break;
-      case '90d':
-        startDate.setDate(endDate.getDate() - 90);
-        break;
-      default:
-        startDate.setDate(endDate.getDate() - 30);
-    }
-
-    // Get completed bookings for the period
-    const bookingsSnapshot = await db.collection('bookings')
-      .where('driverId', '==', uid)
-      .where('status', '==', 'completed')
-      .where('completedAt', '>=', startDate)
-      .where('completedAt', '<=', endDate)
-      .orderBy('completedAt', 'desc')
-      .get();
-
-    let totalEarnings = 0;
-    let totalTrips = 0;
-    const dailyEarnings = {};
-    const tripDetails = [];
-
-    bookingsSnapshot.forEach(doc => {
-      const data = doc.data();
-      const earnings = data.driverEarnings || data.fare?.totalFare || 0;
-      totalEarnings += earnings;
-      totalTrips++;
-
-      // Group by date
-      const date = new Date(data.completedAt).toDateString();
-      if (!dailyEarnings[date]) {
-        dailyEarnings[date] = { earnings: 0, trips: 0 };
-      }
-      dailyEarnings[date].earnings += earnings;
-      dailyEarnings[date].trips += 1;
-
-      tripDetails.push({
-        id: doc.id,
-        completedAt: data.completedAt,
-        earnings: earnings,
-        distance: data.distance || 0,
-        duration: data.actualDuration || 0,
-        customerName: data.customerInfo?.name || 'Unknown'
-      });
-    });
-
-    // Get wallet balance
-    const userDoc = await db.collection('users').doc(uid).get();
-    const userData = userDoc.data();
-    const walletBalance = userData.driver?.wallet?.balance || 0;
-
-    const detailedEarnings = {
-      period,
-      dateRange: {
-        start: startDate.toISOString(),
-        end: endDate.toISOString()
-      },
-      summary: {
-        totalEarnings,
-        totalTrips,
-        averagePerTrip: totalTrips > 0 ? (totalEarnings / totalTrips).toFixed(2) : 0,
-        walletBalance
-      },
-      dailyBreakdown: Object.entries(dailyEarnings).map(([date, data]) => ({
-        date,
-        earnings: data.earnings,
-        trips: data.trips
-      })),
-      recentTrips: tripDetails.slice(0, 10), // Last 10 trips
-      timestamp: new Date().toISOString()
-    };
-
-    res.status(200).json({
-      success: true,
-      data: detailedEarnings,
-      timestamp: new Date().toISOString()
-    });
-
-  } catch (error) {
-    console.error('Error getting detailed earnings:', error);
-    res.status(500).json({
-      success: false,
-      error: {
-        code: 'GET_DETAILED_EARNINGS_ERROR',
-        message: 'Failed to get detailed earnings',
         details: error.message
       },
       timestamp: new Date().toISOString()

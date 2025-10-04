@@ -4,8 +4,8 @@ const crypto = require('crypto');
 class JWTService {
   constructor() {
     this.secret = process.env.JWT_SECRET;
-    this.expiresIn = process.env.JWT_EXPIRES_IN || '7d';
-    this.refreshExpiresIn = process.env.JWT_REFRESH_EXPIRES_IN || '30d';
+    this.expiresIn = process.env.JWT_EXPIRES_IN || '7d'; // Access token: 7 days
+    this.refreshExpiresIn = process.env.JWT_REFRESH_EXPIRES_IN || '90d'; // Refresh token: 90 days
     
     if (!this.secret) {
       throw new Error('JWT_SECRET environment variable is required');

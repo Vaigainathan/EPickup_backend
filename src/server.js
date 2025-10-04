@@ -311,7 +311,18 @@ app.get('/api-docs', (req, res) => {
       driver: {
         'GET /api/driver/profile': 'Get driver profile',
         'PUT /api/driver/profile': 'Update driver profile',
-        'POST /api/driver/location': 'Update driver location'
+        'POST /api/driver/location': 'Update driver location',
+        'GET /api/driver/earnings': 'Get driver earnings',
+        'GET /api/driver/earnings/detailed': 'Get detailed driver earnings',
+        'POST /api/driver/earnings/report': 'Generate earnings report (PDF/CSV)',
+        'GET /api/driver/bookings': 'Get driver bookings',
+        'POST /api/driver/bookings/:id/accept': 'Accept booking',
+        'POST /api/driver/bookings/:id/reject': 'Reject booking',
+        'POST /api/driver/bookings/:id/photo-verification': 'Upload photo verification',
+        'GET /api/driver/documents/status': 'Get document verification status',
+        'POST /api/driver/documents/submit': 'Submit documents for verification',
+        'GET /api/driver/documents/:type/download': 'Download individual document',
+        'GET /api/driver/documents/download-all': 'Download all documents'
       },
       bookings: {
         'POST /api/bookings': 'Create new booking',
@@ -336,7 +347,8 @@ app.get('/api-docs', (req, res) => {
       },
       chat: {
         'POST /api/chat/send': 'Send message to driver/customer',
-        'GET /api/chat/:bookingId': 'Get chat messages for booking'
+        'GET /api/chat/:bookingId': 'Get chat messages for booking',
+        'GET /api/chat/:bookingId/instructions': 'Get customer instructions for driver'
       },
       support: {
         'POST /api/support/report-issue': 'Report an issue',

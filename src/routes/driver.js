@@ -566,6 +566,159 @@ router.put('/documents/:type', [
 });
 
 /**
+ * @route   POST /api/driver/earnings/report
+ * @desc    Generate earnings report (PDF/CSV)
+ * @access  Private (Driver only)
+ */
+router.post('/earnings/report', requireDriver, async (req, res) => {
+  try {
+    const { uid } = req.user;
+    const { format = 'pdf', period = '30d' } = req.body;
+    const db = getFirestore();
+    
+    console.log(`📊 Generating ${format} earnings report for driver ${uid} (${period})`);
+    
+    // Calculate date range
+    const endDate = new Date();
+    const startDate = new Date();
+    switch (period) {
+      case '7d':
+        startDate.setDate(endDate.getDate() - 7);
+        break;
+      case '30d':
+        startDate.setDate(endDate.getDate() - 30);
+        break;
+      case '90d':
+        startDate.setDate(endDate.getDate() - 90);
+        break;
+      default:
+        startDate.setDate(endDate.getDate() - 30);
+    }
+
+    // Get completed bookings for the period
+    const bookingsSnapshot = await db.collection('bookings')
+      .where('driverId', '==', uid)
+      .where('status', '==', 'completed')
+      .where('completedAt', '>=', startDate)
+      .where('completedAt', '<=', endDate)
+      .orderBy('completedAt', 'desc')
+      .get();
+
+    let totalEarnings = 0;
+    let totalTrips = 0;
+    const tripDetails = [];
+
+    bookingsSnapshot.forEach(doc => {
+      const data = doc.data();
+      const earnings = data.driverEarnings || data.fare?.totalFare || 0;
+      totalEarnings += earnings;
+      totalTrips++;
+
+      tripDetails.push({
+        id: doc.id,
+        completedAt: data.completedAt,
+        customerName: data.pickup?.name || 'Unknown',
+        pickupLocation: data.pickup?.address || 'Unknown',
+        dropoffLocation: data.dropoff?.address || 'Unknown',
+        fare: data.fare?.totalFare || 0,
+        driverEarnings: earnings,
+        commission: (data.fare?.totalFare || 0) * 0.2,
+        distance: data.distance || 0,
+        duration: data.actualDuration || 0,
+        rating: data.rating?.customerRating || 0
+      });
+    });
+
+    // Get driver info
+    const userDoc = await db.collection('users').doc(uid).get();
+    const userData = userDoc.data();
+    const driverName = userData.driver?.personalInfo?.name || 'Driver';
+
+    if (format === 'pdf') {
+      try {
+        const PDFDocument = require('pdfkit');
+        const doc = new PDFDocument();
+        
+        res.setHeader('Content-Type', 'application/pdf');
+        res.setHeader('Content-Disposition', `attachment; filename="earnings-report-${period}-${Date.now()}.pdf"`);
+        
+        doc.pipe(res);
+        
+        // Header
+        doc.fontSize(20).text('EPickup Driver Earnings Report', 50, 50);
+        doc.fontSize(12).text(`Driver: ${driverName}`, 50, 80);
+        doc.text(`Period: ${period} (${startDate.toLocaleDateString()} - ${endDate.toLocaleDateString()})`, 50, 100);
+        doc.text(`Generated: ${new Date().toLocaleString()}`, 50, 120);
+        
+        // Summary
+        doc.text('Summary:', 50, 160);
+        doc.text(`Total Trips: ${totalTrips}`, 70, 180);
+        doc.text(`Total Earnings: ₹${totalEarnings.toFixed(2)}`, 70, 200);
+        doc.text(`Driver Earnings (80%): ₹${(totalEarnings * 0.8).toFixed(2)}`, 70, 220);
+        doc.text(`Platform Commission (20%): ₹${(totalEarnings * 0.2).toFixed(2)}`, 70, 240);
+        
+        // Trip Details
+        doc.text('Trip Details:', 50, 280);
+        let yPosition = 300;
+        
+        tripDetails.forEach((trip, index) => {
+          if (yPosition > 700) {
+            doc.addPage();
+            yPosition = 50;
+          }
+          
+          doc.text(`Trip ${index + 1}:`, 70, yPosition);
+          doc.text(`  Customer: ${trip.customerName}`, 90, yPosition + 15);
+          doc.text(`  From: ${trip.pickupLocation}`, 90, yPosition + 30);
+          doc.text(`  To: ${trip.dropoffLocation}`, 90, yPosition + 45);
+          doc.text(`  Fare: ₹${trip.fare.toFixed(2)}`, 90, yPosition + 60);
+          doc.text(`  Earnings: ₹${trip.driverEarnings.toFixed(2)}`, 90, yPosition + 75);
+          doc.text(`  Date: ${new Date(trip.completedAt).toLocaleString()}`, 90, yPosition + 90);
+          
+          yPosition += 120;
+        });
+        
+        doc.text('Thank you for using EPickup!', 50, yPosition + 20);
+        
+        doc.end();
+        
+        console.log(`✅ Generated PDF earnings report for driver ${uid}`);
+        return;
+        
+      } catch (error) {
+        console.error('❌ Error generating PDF report:', error);
+      }
+    }
+    
+    // Default JSON response
+    res.json({
+      success: true,
+      data: {
+        driverName,
+        period,
+        summary: {
+          totalTrips,
+          totalEarnings,
+          driverEarnings: totalEarnings * 0.8,
+          platformCommission: totalEarnings * 0.2
+        },
+        trips: tripDetails,
+        generatedAt: new Date().toISOString()
+      },
+      message: 'Earnings report generated successfully'
+    });
+
+  } catch (error) {
+    console.error('❌ Error generating earnings report:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to generate earnings report',
+      details: error.message
+    });
+  }
+});
+
+/**
  * @route   GET /api/driver/earnings/detailed
  * @desc    Get detailed driver earnings breakdown
  * @access  Private (Driver only)
@@ -4442,16 +4595,20 @@ router.post('/bookings/:id/photo-verification', [
     };
 
     if (photoType === 'pickup') {
-      updateData['photos.pickup'] = {
-        url: photoUrl,
-        uploadedAt: new Date(),
-        verificationId: photoVerificationRef.id
+      updateData['pickupVerification'] = {
+        photoUrl: photoUrl,
+        verifiedAt: new Date(),
+        verifiedBy: uid,
+        location: location,
+        notes: notes
       };
     } else if (photoType === 'delivery') {
-      updateData['photos.delivery'] = {
-        url: photoUrl,
-        uploadedAt: new Date(),
-        verificationId: photoVerificationRef.id
+      updateData['deliveryVerification'] = {
+        photoUrl: photoUrl,
+        verifiedAt: new Date(),
+        verifiedBy: uid,
+        location: location,
+        notes: notes
       };
     }
 
@@ -4669,16 +4826,20 @@ router.put('/bookings/:id/photo-verifications/:photoId', [
     };
 
     if (photoData.photoType === 'pickup') {
-      bookingUpdateData['photos.pickup'] = {
-        url: photoUrl,
-        uploadedAt: new Date(),
-        verificationId: photoId
+      bookingUpdateData['pickupVerification'] = {
+        photoUrl: photoUrl,
+        verifiedAt: new Date(),
+        verifiedBy: uid,
+        location: location,
+        notes: notes
       };
     } else if (photoData.photoType === 'delivery') {
-      bookingUpdateData['photos.delivery'] = {
-        url: photoUrl,
-        uploadedAt: new Date(),
-        verificationId: photoId
+      bookingUpdateData['deliveryVerification'] = {
+        photoUrl: photoUrl,
+        verifiedAt: new Date(),
+        verifiedBy: uid,
+        location: location,
+        notes: notes
       };
     }
 
@@ -6824,11 +6985,21 @@ router.post('/photo/verify', requireDriver, async (req, res) => {
     };
 
     if (type === 'pickup') {
-      updateData.pickupPhoto = photoVerification;
-      updateData.pickupVerifiedAt = new Date();
+      updateData.pickupVerification = {
+        photoUrl: photoUrl,
+        verifiedAt: new Date(),
+        verifiedBy: uid,
+        location: null,
+        notes: notes
+      };
     } else if (type === 'delivery') {
-      updateData.deliveryPhoto = photoVerification;
-      updateData.deliveryVerifiedAt = new Date();
+      updateData.deliveryVerification = {
+        photoUrl: photoUrl,
+        verifiedAt: new Date(),
+        verifiedBy: uid,
+        location: null,
+        notes: notes
+      };
     }
 
     await bookingRef.update(updateData);
@@ -7126,6 +7297,174 @@ router.delete('/work-slots/:slotId', requireDriver, async (req, res) => {
         code: 'WORK_SLOTS_DELETE_ERROR',
         message: 'Failed to delete work slot',
         details: error.message
+      },
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+/**
+ * @route   GET /api/driver/documents/:type/download
+ * @desc    Download driver document
+ * @access  Private (Driver only)
+ */
+router.get('/documents/:type/download', requireDriver, async (req, res) => {
+  try {
+    const { uid } = req.user;
+    const { type } = req.params;
+    const db = getFirestore();
+    
+    console.log(`📥 Driver ${uid} requesting download for document type: ${type}`);
+    
+    // Validate document type
+    const validTypes = ['drivingLicense', 'profilePhoto', 'aadhaarCard', 'bikeInsurance', 'rcBook'];
+    if (!validTypes.includes(type)) {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'INVALID_DOCUMENT_TYPE',
+          message: 'Invalid document type',
+          details: `Document type must be one of: ${validTypes.join(', ')}`
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+    
+    const userDoc = await db.collection('users').doc(uid).get();
+    
+    if (!userDoc.exists) {
+      return res.status(404).json({
+        success: false,
+        error: {
+          code: 'DRIVER_NOT_FOUND',
+          message: 'Driver not found',
+          details: 'Driver profile does not exist'
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    const userData = userDoc.data();
+    const documents = userData.driver?.documents || {};
+    const document = documents[type];
+    
+    if (!document || !document.url) {
+      return res.status(404).json({
+        success: false,
+        error: {
+          code: 'DOCUMENT_NOT_FOUND',
+          message: 'Document not found',
+          details: `${type} document has not been uploaded`
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    // Get document metadata
+    const documentInfo = {
+      type: type,
+      displayName: getDocumentDisplayName(type),
+      url: document.url,
+      number: document.number || '',
+      uploadedAt: document.uploadedAt?.toDate?.()?.toISOString() || document.uploadedAt || '',
+      status: document.status || document.verificationStatus || 'pending',
+      fileSize: document.fileSize || null,
+      lastModified: document.lastModified || document.uploadedAt
+    };
+
+    // Return document info with download URL
+    res.status(200).json({
+      success: true,
+      message: 'Document download info retrieved successfully',
+      data: {
+        document: documentInfo,
+        downloadUrl: document.url, // Firebase Storage URL - accessible directly
+        expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString() // 24 hours
+      },
+      timestamp: new Date().toISOString()
+    });
+
+  } catch (error) {
+    console.error('❌ Error getting document download info:', error);
+    res.status(500).json({
+      success: false,
+      error: {
+        code: 'DOCUMENT_DOWNLOAD_ERROR',
+        message: 'Failed to get document download info',
+        details: 'An error occurred while retrieving document download information'
+      },
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+/**
+ * @route   GET /api/driver/documents/download-all
+ * @desc    Get download URLs for all driver documents
+ * @access  Private (Driver only)
+ */
+router.get('/documents/download-all', requireDriver, async (req, res) => {
+  try {
+    const { uid } = req.user;
+    const db = getFirestore();
+    
+    console.log(`📥 Driver ${uid} requesting download URLs for all documents`);
+    
+    const userDoc = await db.collection('users').doc(uid).get();
+    
+    if (!userDoc.exists) {
+      return res.status(404).json({
+        success: false,
+        error: {
+          code: 'DRIVER_NOT_FOUND',
+          message: 'Driver not found',
+          details: 'Driver profile does not exist'
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    const userData = userDoc.data();
+    const documents = userData.driver?.documents || {};
+    
+    const documentTypes = ['drivingLicense', 'profilePhoto', 'aadhaarCard', 'bikeInsurance', 'rcBook'];
+    const downloadableDocuments = [];
+    
+    documentTypes.forEach(type => {
+      const document = documents[type];
+      if (document && document.url) {
+        downloadableDocuments.push({
+          type: type,
+          displayName: getDocumentDisplayName(type),
+          url: document.url,
+          number: document.number || '',
+          uploadedAt: document.uploadedAt?.toDate?.()?.toISOString() || document.uploadedAt || '',
+          status: document.status || document.verificationStatus || 'pending',
+          fileSize: document.fileSize || null,
+          lastModified: document.lastModified || document.uploadedAt
+        });
+      }
+    });
+
+    res.status(200).json({
+      success: true,
+      message: 'Document download URLs retrieved successfully',
+      data: {
+        documents: downloadableDocuments,
+        totalDocuments: downloadableDocuments.length,
+        expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString() // 24 hours
+      },
+      timestamp: new Date().toISOString()
+    });
+
+  } catch (error) {
+    console.error('❌ Error getting all document download URLs:', error);
+    res.status(500).json({
+      success: false,
+      error: {
+        code: 'DOCUMENTS_DOWNLOAD_ERROR',
+        message: 'Failed to get document download URLs',
+        details: 'An error occurred while retrieving document download URLs'
       },
       timestamp: new Date().toISOString()
     });

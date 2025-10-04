@@ -365,6 +365,22 @@ service cloud.firestore {
         (request.auth.token.role == 'admin' || request.auth.token.userType == 'admin');
     }
     
+    // Photo verifications - allow drivers to create/read their own verifications, admins full access
+    match /photoVerifications/{verificationId} {
+      allow read: if request.auth != null && 
+        (resource.data.driverId == request.auth.uid || 
+         resource.data.customerId == request.auth.uid ||
+         request.auth.token.role == 'admin' || 
+         request.auth.token.userType == 'admin');
+      allow create: if request.auth != null && 
+        request.resource.data.driverId == request.auth.uid &&
+        request.resource.data.keys().hasAll(['bookingId', 'driverId', 'customerId', 'photoType', 'photoUrl', 'status']) &&
+        request.auth.token.userType == 'driver';
+      allow update: if request.auth != null && 
+        (request.auth.token.role == 'admin' || request.auth.token.userType == 'admin') &&
+        request.writeFields.hasOnly(['status', 'verifiedAt', 'verifiedBy', 'updatedAt']);
+    }
+    
     // Support tickets - allow users to create and read their own tickets, admins full access
     match /supportTickets/{ticketId} {
       allow read: if request.auth != null && 

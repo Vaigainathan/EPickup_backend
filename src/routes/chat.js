@@ -171,4 +171,88 @@ router.get('/:bookingId', [
   }
 });
 
+/**
+ * @route GET /api/chat/:bookingId/instructions
+ * @desc Get customer instructions for driver
+ * @access Private (Driver only)
+ */
+router.get('/:bookingId/instructions', [
+  authMiddleware
+], async (req, res) => {
+  try {
+    const { bookingId } = req.params;
+    const userId = req.user.uid;
+    const db = getFirestore();
+
+    console.log(`📋 Getting instructions for driver ${userId} for booking ${bookingId}`);
+
+    // Verify booking exists and user is the driver
+    const bookingDoc = await db.collection('bookings').doc(bookingId).get();
+    if (!bookingDoc.exists) {
+      return res.status(404).json({
+        success: false,
+        error: 'Booking not found'
+      });
+    }
+
+    const bookingData = bookingDoc.data();
+    
+    // Check if user is the driver for this booking
+    if (bookingData.driverId !== userId) {
+      return res.status(403).json({
+        success: false,
+        error: 'Access denied - only the assigned driver can view instructions'
+      });
+    }
+
+    // Get customer messages (instructions) only
+    const messagesSnapshot = await db.collection('chat_messages')
+      .where('bookingId', '==', bookingId)
+      .where('senderType', '==', 'customer')
+      .orderBy('timestamp', 'asc')
+      .get();
+
+    const instructions = [];
+    messagesSnapshot.forEach(doc => {
+      const messageData = doc.data();
+      instructions.push({
+        id: messageData.id,
+        message: messageData.message,
+        timestamp: messageData.timestamp,
+        createdAt: messageData.createdAt,
+        read: messageData.read
+      });
+    });
+
+    // Mark instructions as read
+    if (instructions.length > 0) {
+      const batch = db.batch();
+      instructions.forEach(instruction => {
+        const messageRef = db.collection('chat_messages').doc(instruction.id);
+        batch.update(messageRef, { read: true, readAt: new Date() });
+      });
+      await batch.commit();
+    }
+
+    console.log(`✅ Retrieved ${instructions.length} instructions for driver ${userId}`);
+
+    res.json({
+      success: true,
+      data: {
+        instructions,
+        count: instructions.length,
+        bookingId
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ Error fetching driver instructions:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fetch instructions',
+      details: error.message
+    });
+  }
+});
+
 module.exports = router;

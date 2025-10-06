@@ -280,8 +280,52 @@ class MonitoringService {
       if (health.status === 'unhealthy') {
         this.createAlert('system_unhealthy', 'System health check failed', health, 'critical');
       }
+      
+      // Perform memory cleanup
+      await this.performMemoryCleanup();
     }, 5 * 60 * 1000);
     this.intervals.push(interval);
+  }
+
+  /**
+   * Perform memory cleanup
+   */
+  async performMemoryCleanup() {
+    try {
+      // Force garbage collection if available
+      if (global.gc) {
+        global.gc();
+        console.log('🧹 Forced garbage collection');
+      }
+
+      // Clear old metrics (keep only last 100 entries)
+      if (this.metrics.size > 100) {
+        const entries = Array.from(this.metrics.entries());
+        const toDelete = entries.slice(0, entries.length - 100);
+        toDelete.forEach(([key]) => this.metrics.delete(key));
+        console.log(`🧹 Cleaned up ${toDelete.length} old metrics`);
+      }
+
+      // Clear old alerts (keep only last 50 entries)
+      if (this.alerts.length > 50) {
+        this.alerts = this.alerts.slice(-50);
+        console.log('🧹 Cleaned up old alerts');
+      }
+
+      // Log memory usage
+      const memUsage = process.memoryUsage();
+      const memUsageMB = {
+        rss: Math.round(memUsage.rss / 1024 / 1024),
+        heapTotal: Math.round(memUsage.heapTotal / 1024 / 1024),
+        heapUsed: Math.round(memUsage.heapUsed / 1024 / 1024),
+        external: Math.round(memUsage.external / 1024 / 1024)
+      };
+
+      console.log(`💾 Memory usage: RSS=${memUsageMB.rss}MB, Heap=${memUsageMB.heapUsed}/${memUsageMB.heapTotal}MB, External=${memUsageMB.external}MB`);
+
+    } catch (error) {
+      console.error('❌ Memory cleanup failed:', error);
+    }
   }
 
   /**

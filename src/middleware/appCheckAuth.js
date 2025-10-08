@@ -123,15 +123,23 @@ class AppCheckMiddleware {
           if (decodedToken) {
             req.appCheckToken = decodedToken;
             console.log(`🔒 Optional App Check validation passed for app: ${decodedToken.app_id}`);
+          } else {
+            console.warn('⚠️ App Check token provided but validation failed (continuing without it)');
           }
         } else {
           console.log('ℹ️ No App Check token provided (optional validation)');
+          // In development, warn about missing App Check token
+          if (process.env.NODE_ENV === 'development') {
+            console.warn('⚠️ [DEV] No App Check token in request - this is expected for development builds');
+            console.warn('⚠️ [DEV] Make sure Firebase Console App Check enforcement is set to "Unenforced"');
+          }
         }
         
         next();
       } catch (error) {
         console.error('❌ Optional App Check middleware error:', error);
         // Don't fail the request for optional validation
+        console.warn('⚠️ App Check validation error - continuing without App Check protection');
         next();
       }
     };

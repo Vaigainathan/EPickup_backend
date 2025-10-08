@@ -174,7 +174,7 @@ class RoleBasedAuthService {
           },
           currentLocation: null,
           welcomeBonusGiven: false,
-          welcomeBonusAmount: 500,
+          welcomeBonusAmount: 0,
           welcomeBonusGivenAt: null,
           documents: {},
           verificationRequests: []

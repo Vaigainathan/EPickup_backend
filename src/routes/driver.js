@@ -3,6 +3,7 @@ const { body, validationResult } = require('express-validator');
 const { getFirestore } = require('../services/firebase');
 const { requireDriver } = require('../middleware/auth');
 const { documentStatusRateLimit } = require('../middleware/rateLimiter');
+const { speedLimiter } = require('../middleware/rateLimit');
 const { documentStatusCache, invalidateUserCache } = require('../middleware/cache');
 const admin = require('firebase-admin');
 
@@ -205,23 +206,34 @@ router.get('/profile', requireDriver, async (req, res) => {
       console.error('❌ [PROFILE] Verification service error details:', verificationError);
     }
     
-    const walletData = driverData.wallet || {};
+    // Get points wallet data
+    const pointsService = require('../services/walletService');
+    let pointsWalletData = {
+      pointsBalance: 0,
+      currency: 'points',
+      requiresTopUp: true,
+      canWork: false,
+      lastUpdated: new Date()
+    };
+    
+    try {
+      const pointsResult = await pointsService.getPointsBalance(uid);
+      if (pointsResult.success) {
+        pointsWalletData = pointsResult.data;
+      }
+    } catch (pointsError) {
+      console.warn('⚠️ [PROFILE] Failed to get points wallet data:', pointsError.message);
+    }
     
     // Debug logging for vehicle details
     console.log('🔍 [PROFILE] Debug userData:', {
       hasDriver: !!userData.driver,
       driverKeys: userData.driver ? Object.keys(userData.driver) : [],
       vehicleDetails: userData.driver?.vehicleDetails,
-      vehicleDetailsKeys: userData.driver?.vehicleDetails ? Object.keys(userData.driver.vehicleDetails) : []
+      vehicleDetailsKeys: userData.driver?.vehicleDetails ? Object.keys(userData.driver.vehicleDetails) : [],
+      pointsBalance: pointsWalletData.pointsBalance,
+      requiresTopUp: pointsWalletData.requiresTopUp
     });
-    
-    // Normalize wallet data
-    const normalizedWallet = {
-      balance: walletData.balance || 0,
-      currency: walletData.currency || 'INR',
-      lastUpdated: walletData.lastUpdated || new Date(),
-      transactions: walletData.transactions || []
-    };
     
     // Use comprehensive verification data if available, otherwise fall back to basic data
     const finalVerificationStatus = comprehensiveVerificationData?.verificationStatus || driverData.verificationStatus || 'pending';
@@ -235,15 +247,14 @@ router.get('/profile', requireDriver, async (req, res) => {
       hasComprehensiveData: !!comprehensiveVerificationData
     });
     
-    // Normalize driver data with proper wallet structure and updated verification status
+    // Normalize driver data with points wallet and updated verification status
     const normalizedDriver = {
       ...driverData,
-      wallet: normalizedWallet,
+      pointsWallet: pointsWalletData,
       verificationStatus: finalVerificationStatus,
       isVerified: finalIsVerified,
-      welcomeBonusGiven: driverData.welcomeBonusGiven || false,
-      welcomeBonusAmount: driverData.welcomeBonusAmount || 0,
-      welcomeBonusGivenAt: driverData.welcomeBonusGivenAt || null
+      requiresTopUp: pointsWalletData.requiresTopUp,
+      canWork: pointsWalletData.canWork
     };
     
     res.status(200).json({
@@ -257,10 +268,9 @@ router.get('/profile', requireDriver, async (req, res) => {
         profilePicture: userData.profilePicture,
         verificationStatus: finalVerificationStatus,
         isVerified: finalIsVerified,
-        wallet: normalizedDriver.wallet,
-        welcomeBonusGiven: normalizedDriver.welcomeBonusGiven,
-        welcomeBonusAmount: normalizedDriver.welcomeBonusAmount,
-        welcomeBonusGivenAt: normalizedDriver.welcomeBonusGivenAt,
+        pointsWallet: pointsWalletData,
+        requiresTopUp: pointsWalletData.requiresTopUp,
+        canWork: pointsWalletData.canWork,
         driver: {
           vehicleDetails: normalizedDriver.vehicleDetails || {
             type: 'motorcycle',
@@ -278,11 +288,10 @@ router.get('/profile', requireDriver, async (req, res) => {
             thisMonth: 0,
             thisWeek: 0
           },
-          wallet: normalizedDriver.wallet,
+          pointsWallet: pointsWalletData,
           currentLocation: normalizedDriver.currentLocation || null,
-          welcomeBonusGiven: normalizedDriver.welcomeBonusGiven,
-          welcomeBonusAmount: normalizedDriver.welcomeBonusAmount,
-          welcomeBonusGivenAt: normalizedDriver.welcomeBonusGivenAt
+          requiresTopUp: pointsWalletData.requiresTopUp,
+          canWork: pointsWalletData.canWork
         }
       },
       timestamp: new Date().toISOString()
@@ -2396,9 +2405,10 @@ router.get('/bookings/available', requireDriver, async (req, res) => {
     console.log('✅ [DRIVER_API] Driver is available and online');
 
     // Get available bookings (pending status, not assigned to any driver)
+    // Note: Firestore cannot query for null values with == operator
+    // We'll fetch all pending bookings and filter in memory
     const query = db.collection('bookings')
       .where('status', '==', 'pending')
-      .where('driverId', '==', null)
       .orderBy('createdAt', 'desc')
       .limit(parseInt(limit) + parseInt(offset));
     
@@ -2414,7 +2424,17 @@ router.get('/bookings/available', requireDriver, async (req, res) => {
     
     snapshot.forEach(doc => {
       const bookingData = doc.data();
-      console.log('🔍 [DRIVER_API] Processing booking:', {
+      
+      // Filter out bookings that are already assigned to a driver
+      if (bookingData.driverId !== null && bookingData.driverId !== undefined) {
+        console.log('🔍 [DRIVER_API] Skipping assigned booking:', {
+          id: doc.id,
+          driverId: bookingData.driverId
+        });
+        return; // Skip this booking
+      }
+      
+      console.log('🔍 [DRIVER_API] Processing available booking:', {
         id: doc.id,
         status: bookingData.status,
         hasPickup: !!bookingData.pickup,
@@ -2629,6 +2649,24 @@ router.post('/bookings/:id/accept', requireDriver, async (req, res) => {
       });
     }
 
+    // Check if driver has sufficient points to work
+    const pointsService = require('../services/walletService');
+    const canWorkResult = await pointsService.canDriverWork(uid);
+    
+    if (!canWorkResult.success || !canWorkResult.canWork) {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'INSUFFICIENT_POINTS',
+          message: 'Insufficient points balance',
+          details: 'Driver must top-up points wallet to accept bookings. Minimum balance required for commission deduction.',
+          currentBalance: canWorkResult.currentBalance || 0,
+          requiredBalance: 250
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
     // Accept booking using Firestore transaction for conflict resolution
     const transaction = db.runTransaction(async (transaction) => {
       // Re-read booking to ensure it's still available
@@ -2678,7 +2716,7 @@ router.post('/bookings/:id/accept', requireDriver, async (req, res) => {
       transaction.update(bookingRef, {
         driverId: uid,
         status: 'driver_assigned',
-        'timing.driverAssignedAt': new Date(),
+        'timing.assignedAt': new Date(),
         updatedAt: new Date()
       });
 
@@ -2875,7 +2913,7 @@ router.post('/bookings/:id/reject', [
     await bookingRef.update({
       status: 'pending',
       driverId: null,
-      'timing.driverAssignedAt': null,
+      'timing.assignedAt': null,
       'cancellation.cancelledBy': 'driver',
       'cancellation.reason': reason || 'Rejected by driver',
       'cancellation.cancelledAt': new Date(),
@@ -3650,114 +3688,197 @@ router.post('/bookings/:id/validate-radius', [
 
 /**
  * @route   GET /api/driver/wallet
- * @desc    Get driver wallet balance and transactions
+ * @desc    Get driver points wallet balance and transactions
  * @access  Private (Driver only)
  */
 router.get('/wallet', requireDriver, async (req, res) => {
   try {
     const { uid } = req.user;
     const { limit = 20, offset = 0 } = req.query;
-    const db = getFirestore();
     
-    const userDoc = await db.collection('users').doc(uid).get();
+    const pointsService = require('../services/walletService');
     
-    if (!userDoc.exists) {
-      return res.status(404).json({
+    // Get points wallet balance
+    const balanceResult = await pointsService.getPointsBalance(uid);
+    
+    if (!balanceResult.success) {
+      return res.status(400).json({
         success: false,
         error: {
-          code: 'USER_NOT_FOUND',
-          message: 'User not found',
-          details: 'Driver does not exist'
+          code: 'POINTS_WALLET_ERROR',
+          message: 'Failed to retrieve points wallet',
+          details: balanceResult.error
         },
         timestamp: new Date().toISOString()
       });
     }
 
-    const userData = userDoc.data();
-    const driverData = userData.driver || {};
-    const walletData = driverData.wallet || {};
-    
-    // Debug logging
-    console.log('🔍 [WALLET_API] Debug wallet data:', {
-      userId: uid,
-      hasDriverData: !!driverData,
-      driverKeys: Object.keys(driverData),
-      hasWalletData: !!walletData,
-      walletKeys: Object.keys(walletData),
-      walletBalance: walletData.balance,
-      welcomeBonusGiven: driverData.welcomeBonusGiven,
-      welcomeBonusAmount: driverData.welcomeBonusAmount
+    // Get points transaction history
+    const transactionsResult = await pointsService.getTransactionHistory(uid, {
+      limit: parseInt(limit),
+      offset: parseInt(offset)
     });
-    
-    // Ensure wallet structure exists
-    const walletBalance = walletData.balance || 0;
-    const walletCurrency = walletData.currency || 'INR';
-    const welcomeBonusGiven = driverData.welcomeBonusGiven || false;
-    const welcomeBonusAmount = driverData.welcomeBonusAmount || 0;
-
-    // Get wallet transactions with error handling
-    let transactions = [];
-    let totalCount = 0;
-    
-    try {
-      const transactionsQuery = db.collection('driverWalletTransactions')
-        .where('driverId', '==', uid)
-        .orderBy('createdAt', 'desc')
-        .limit(parseInt(limit))
-        .offset(parseInt(offset));
-
-      const transactionsSnapshot = await transactionsQuery.get();
-
-      transactionsSnapshot.forEach(doc => {
-        transactions.push({
-          id: doc.id,
-          ...doc.data()
-        });
-      });
-
-      // Get total transaction count
-      const totalQuery = db.collection('driverWalletTransactions')
-        .where('driverId', '==', uid);
-      const totalSnapshot = await totalQuery.get();
-      totalCount = totalSnapshot.size;
-    } catch (error) {
-      console.error('Error getting wallet transactions:', error);
-      // If index is not ready, return empty transactions but still return wallet balance
-      transactions = [];
-      totalCount = 0;
-    }
 
     const responseData = {
-      balance: walletBalance,
-      currency: walletCurrency,
-      welcomeBonusGiven: welcomeBonusGiven,
-      welcomeBonusAmount: welcomeBonusAmount,
-      lastUpdated: walletData.lastUpdated || new Date(),
-      transactions,
-      pagination: {
+      pointsBalance: balanceResult.wallet.pointsBalance,
+      currency: 'points', // Points are virtual currency
+      requiresTopUp: balanceResult.wallet.requiresTopUp,
+      canWork: balanceResult.wallet.canWork,
+      lastUpdated: balanceResult.wallet.lastUpdated,
+      transactions: transactionsResult.success ? transactionsResult.transactions : [],
+      pagination: transactionsResult.success ? transactionsResult.pagination : {
         limit: parseInt(limit),
         offset: parseInt(offset),
-        total: totalCount
+        total: 0
       }
     };
     
-    console.log('🔍 [WALLET_API] Response data:', responseData);
+    console.log('🔍 [POINTS_WALLET_API] Response data:', responseData);
     
     res.status(200).json({
       success: true,
-      message: 'Wallet information retrieved successfully',
+      message: 'Points wallet information retrieved successfully',
       data: responseData,
       timestamp: new Date().toISOString()
     });
 
   } catch (error) {
-    console.error('Error getting driver wallet:', error);
+    console.error('Error getting driver points wallet:', error);
     res.status(500).json({
       success: false,
       error: {
-        code: 'WALLET_RETRIEVAL_ERROR',
-        message: 'Failed to retrieve wallet information',
-        details: 'An error occurred while retrieving wallet information'
+        code: 'POINTS_WALLET_RETRIEVAL_ERROR',
+        message: 'Failed to retrieve points wallet information',
+        details: 'An error occurred while retrieving points wallet information'
+      },
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+/**
+ * @route   POST /api/driver/wallet/top-up
+ * @desc    Top-up driver points wallet with real money
+ * @access  Private (Driver only)
+ */
+router.post('/wallet/top-up', [
+  requireDriver,
+  speedLimiter, // Rate limit for sensitive financial operations
+  body('amount')
+    .isFloat({ min: 250, max: 10000 })
+    .withMessage('Amount must be between 250 and 10,000'),
+  body('paymentMethod')
+    .isIn(['phonepe', 'upi', 'card'])
+    .withMessage('Payment method must be phonepe, upi, or card'),
+  body('paymentDetails')
+    .optional()
+    .isObject()
+    .withMessage('Payment details must be an object')
+], async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'VALIDATION_ERROR',
+          message: 'Validation failed',
+          details: errors.array()
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    const { uid } = req.user;
+    const { amount, paymentMethod, paymentDetails } = req.body;
+    
+    // Sanitize payment details
+    const sanitizedPaymentDetails = {
+      timestamp: new Date().toISOString(),
+      driverId: uid,
+      // Only allow safe fields from paymentDetails
+      ...(paymentDetails && typeof paymentDetails === 'object' ? {
+        transactionId: paymentDetails.transactionId ? String(paymentDetails.transactionId).slice(0, 100) : undefined,
+        referenceId: paymentDetails.referenceId ? String(paymentDetails.referenceId).slice(0, 100) : undefined,
+        gatewayResponse: paymentDetails.gatewayResponse ? String(paymentDetails.gatewayResponse).slice(0, 500) : undefined
+      } : {})
+    };
+    
+    // Create PhonePe payment for wallet top-up
+    const phonepeService = require('../services/phonepeService');
+    const transactionId = `WALLET_${uid}_${Date.now()}`;
+    
+    // Store pending wallet transaction in driverTopUps collection
+    const db = require('../config/firebase').getFirestore();
+    const walletTransactionRef = db.collection('driverTopUps').doc(transactionId);
+    
+    await walletTransactionRef.set({
+      id: transactionId,
+      driverId: uid,
+      amount: amount,
+      realMoneyAmount: amount,
+      paymentMethod: paymentMethod,
+      status: 'pending',
+      phonepeTransactionId: null,
+      pointsAwarded: 0,
+      newPointsBalance: 0,
+      paymentDetails: sanitizedPaymentDetails,
+      createdAt: new Date(),
+      updatedAt: new Date()
+    });
+    
+    // Create PhonePe payment request
+    const paymentResult = await phonepeService.createPayment({
+      transactionId: transactionId,
+      amount: amount,
+      customerId: uid,
+      bookingId: 'wallet-topup',
+      customerPhone: req.user.phone || '9999999999' // Use test phone for sandbox
+    });
+    
+    if (paymentResult.success) {
+      // Update transaction with PhonePe details
+      await walletTransactionRef.update({
+        phonepeTransactionId: paymentResult.data.merchantTransactionId,
+        phonepePaymentUrl: paymentResult.data.paymentUrl,
+        updatedAt: new Date()
+      });
+      
+      res.status(200).json({
+        success: true,
+        message: 'Payment request created successfully',
+        data: {
+          transactionId: transactionId,
+          paymentUrl: paymentResult.data.paymentUrl,
+          merchantTransactionId: paymentResult.data.merchantTransactionId,
+          amount: amount,
+          paymentMethod: paymentMethod
+        },
+        timestamp: new Date().toISOString()
+      });
+    } else {
+      // Clean up failed transaction
+      await walletTransactionRef.delete();
+      
+      res.status(400).json({
+        success: false,
+        error: {
+          code: 'PAYMENT_CREATION_ERROR',
+          message: 'Failed to create payment request',
+          details: paymentResult.error
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
+  } catch (error) {
+    console.error('Error topping up points wallet:', error);
+    res.status(500).json({
+      success: false,
+      error: {
+        code: 'POINTS_TOPUP_ERROR',
+        message: 'Failed to top-up points wallet',
+        details: 'An error occurred while topping up points wallet'
       },
       timestamp: new Date().toISOString()
     });
@@ -3766,145 +3887,116 @@ router.get('/wallet', requireDriver, async (req, res) => {
 
 /**
  * @route   POST /api/driver/wallet/process-welcome-bonus-direct
- * @desc    Process welcome bonus directly using verification service data
+ * @desc    DEPRECATED - Welcome bonus removed, use points top-up instead
  * @access  Private (Driver only)
  */
 router.post('/wallet/process-welcome-bonus-direct', requireDriver, async (req, res) => {
+  return res.status(410).json({
+    success: false,
+    error: {
+      code: 'DEPRECATED_FEATURE',
+      message: 'Welcome bonus feature has been removed. Please use points top-up instead.',
+      details: 'The welcome bonus system has been replaced with a mandatory points top-up system. Drivers must top-up their points wallet to start working.'
+    },
+    timestamp: new Date().toISOString()
+  });
+});
+
+/**
+ * @route   GET /api/driver/wallet/can-work
+ * @desc    Check if driver can work based on points balance
+ * @access  Private (Driver only)
+ */
+router.get('/wallet/can-work', requireDriver, async (req, res) => {
   try {
     const { uid } = req.user;
-    const db = getFirestore();
     
-    console.log('🎁 [WALLET_API] Processing welcome bonus directly for driver:', uid);
+    const pointsService = require('../services/walletService');
     
-    // Get verification data directly from verification service
-    const verificationService = require('../services/verificationService');
-    let comprehensiveVerificationData;
-    
-    try {
-      comprehensiveVerificationData = await verificationService.getDriverVerificationData(uid);
-      console.log('📊 [WALLET_API] Direct verification data:', comprehensiveVerificationData);
-    } catch (verificationError) {
-      console.error('❌ [WALLET_API] Failed to get verification data:', verificationError);
-      return res.status(500).json({
-        success: false,
-        error: {
-          code: 'VERIFICATION_SERVICE_ERROR',
-          message: 'Failed to get verification data',
-          details: verificationError.message
-        },
-        timestamp: new Date().toISOString()
-      });
-    }
-    
-    // Check if driver is verified using comprehensive data
-    const isVerified = comprehensiveVerificationData?.verificationStatus === 'verified' || comprehensiveVerificationData?.verificationStatus === 'approved';
-    
-    if (!isVerified) {
-      console.log('❌ [WALLET_API] Driver not verified (direct check):', {
-        uid,
-        verificationStatus: comprehensiveVerificationData?.verificationStatus,
-        isVerified
-      });
-      return res.status(400).json({
-        success: false,
-        error: {
-          code: 'NOT_VERIFIED',
-          message: 'Driver not verified',
-          details: 'Welcome bonus can only be given to verified drivers'
-        },
-        timestamp: new Date().toISOString()
-      });
-    }
-    
-    // Get user data to check if welcome bonus already given
-    const userRef = db.collection('users').doc(uid);
-    const userDoc = await userRef.get();
-    
-    if (!userDoc.exists) {
-      return res.status(404).json({
-        success: false,
-        error: {
-          code: 'USER_NOT_FOUND',
-          message: 'User not found'
-        },
-        timestamp: new Date().toISOString()
-      });
-    }
-    
-    const userData = userDoc.data();
-    const driverData = userData.driver || {};
-    const welcomeBonusGiven = driverData.welcomeBonusGiven || false;
-    const currentBalance = driverData.wallet?.balance || 0;
-    
-    if (welcomeBonusGiven) {
-      console.log('✅ [WALLET_API] Welcome bonus already given (direct check):', uid);
-      return res.status(200).json({
-        success: true,
-        message: 'Welcome bonus already given',
-        data: {
-          welcomeBonusGiven: true,
-          welcomeBonusAmount: driverData.welcomeBonusAmount || 0,
-          currentBalance: currentBalance
-        },
-        timestamp: new Date().toISOString()
-      });
-    }
-    
-    // Give welcome bonus using atomic transaction
-    const newBalance = currentBalance + 500;
-    const batch = db.batch();
-    
-    // Update user document
-    batch.update(userRef, {
-      'driver.welcomeBonusGiven': true,
-      'driver.welcomeBonusAmount': 500,
-      'driver.welcomeBonusGivenAt': new Date(),
-      'driver.wallet.balance': newBalance,
-      'driver.wallet.lastUpdated': new Date(),
-      'driver.wallet.transactions': [
-        ...(driverData.wallet?.transactions || []),
-        {
-          id: `welcome_bonus_${Date.now()}`,
-          type: 'credit',
-          amount: 500,
-          description: 'Welcome Bonus - Driver Verification',
-          timestamp: new Date(),
-          status: 'completed',
-          reference: 'WELCOME_BONUS'
-        }
-      ]
-    });
-    
-    await batch.commit();
-    
-    console.log('✅ [WALLET_API] Welcome bonus processed successfully (direct):', {
-      uid,
-      previousBalance: currentBalance,
-      newBalance,
-      bonusAmount: 500
-    });
+    // Check if driver can work
+    const canWorkResult = await pointsService.canDriverWork(uid);
     
     res.status(200).json({
       success: true,
-      message: 'Welcome bonus processed successfully',
+      message: 'Driver work status retrieved successfully',
       data: {
-        welcomeBonusGiven: true,
-        welcomeBonusAmount: 500,
-        previousBalance: currentBalance,
-        newBalance: newBalance,
-        bonusProcessed: true
+        canWork: canWorkResult,
+        driverId: uid
       },
       timestamp: new Date().toISOString()
     });
-    
+
   } catch (error) {
-    console.error('❌ [WALLET_API] Error processing welcome bonus (direct):', error);
+    console.error('Error checking driver work status:', error);
     res.status(500).json({
       success: false,
       error: {
-        code: 'WELCOME_BONUS_ERROR',
-        message: 'Failed to process welcome bonus',
-        details: error.message
+        code: 'WORK_STATUS_ERROR',
+        message: 'Failed to check work status',
+        details: 'An error occurred while checking if driver can work'
+      },
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+/**
+ * @route   GET /api/driver/wallet/remaining-trips
+ * @desc    Get remaining trips based on points balance
+ * @access  Private (Driver only)
+ */
+router.get('/wallet/remaining-trips', requireDriver, async (req, res) => {
+  try {
+    const { uid } = req.user;
+    const { distance = 5 } = req.query; // Default 5km trip
+    
+    const pointsService = require('../services/walletService');
+    const fareCalculationService = require('../services/fareCalculationService');
+    
+    // Get points balance
+    const balanceResult = await pointsService.getPointsBalance(uid);
+    
+    if (!balanceResult.success) {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'POINTS_WALLET_ERROR',
+          message: 'Failed to retrieve points balance',
+          details: balanceResult.error
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+    
+    // Calculate commission for the given distance
+    const fareBreakdown = fareCalculationService.calculateFare(parseFloat(distance));
+    const commissionPerTrip = fareBreakdown.commission;
+    
+    // Calculate remaining trips
+    const pointsBalance = balanceResult.wallet.pointsBalance;
+    const remainingTrips = Math.floor(pointsBalance / commissionPerTrip);
+    
+    res.status(200).json({
+      success: true,
+      message: 'Remaining trips calculated successfully',
+      data: {
+        pointsBalance: pointsBalance,
+        commissionPerTrip: commissionPerTrip,
+        tripDistance: parseFloat(distance),
+        remainingTrips: remainingTrips,
+        canWork: remainingTrips > 0
+      },
+      timestamp: new Date().toISOString()
+    });
+
+  } catch (error) {
+    console.error('Error calculating remaining trips:', error);
+    res.status(500).json({
+      success: false,
+      error: {
+        code: 'REMAINING_TRIPS_ERROR',
+        message: 'Failed to calculate remaining trips',
+        details: 'An error occurred while calculating remaining trips'
       },
       timestamp: new Date().toISOString()
     });
@@ -3913,567 +4005,23 @@ router.post('/wallet/process-welcome-bonus-direct', requireDriver, async (req, r
 
 /**
  * @route   POST /api/driver/wallet/ensure-welcome-bonus
- * @desc    Ensure welcome bonus is given to verified drivers
+ * @desc    DEPRECATED - Welcome bonus removed, use points top-up instead
  * @access  Private (Driver only)
  */
 router.post('/wallet/ensure-welcome-bonus', requireDriver, async (req, res) => {
-  try {
-    const { uid } = req.user;
-    const db = getFirestore();
-    
-    console.log('🎁 [WALLET_API] Processing welcome bonus for driver:', uid);
-    
-    const userRef = db.collection('users').doc(uid);
-    const userDoc = await userRef.get();
-    
-    if (!userDoc.exists) {
-      console.log('❌ [WALLET_API] User not found:', uid);
-      return res.status(404).json({
-        success: false,
-        error: {
-          code: 'USER_NOT_FOUND',
-          message: 'User not found',
-          details: 'Driver does not exist'
-        },
-        timestamp: new Date().toISOString()
-      });
-    }
-
-    const userData = userDoc.data();
-    const driverData = userData.driver || {};
-    
-    // CRITICAL FIX: Get verification data from verification service for comprehensive status
-    const verificationService = require('../services/verificationService');
-    let comprehensiveVerificationData;
-    
-    try {
-      comprehensiveVerificationData = await verificationService.getDriverVerificationData(uid);
-      console.log('📊 [WALLET_API] Comprehensive verification data:', comprehensiveVerificationData);
-    } catch (verificationError) {
-      console.warn('⚠️ [WALLET_API] Failed to get comprehensive verification data, using basic data:', verificationError.message);
-    }
-    
-    // Use comprehensive verification data if available, otherwise fall back to basic data
-    const finalVerificationStatus = comprehensiveVerificationData?.verificationStatus || driverData.verificationStatus || 'pending';
-    const isVerified = finalVerificationStatus === 'verified' || finalVerificationStatus === 'approved';
-    const welcomeBonusGiven = driverData.welcomeBonusGiven || false;
-    const currentBalance = driverData.wallet?.balance || 0;
-    
-    console.log('🔍 [WALLET_API] Driver status check:', {
-      uid,
-      isVerified,
-      verificationStatus: finalVerificationStatus,
-      originalVerificationStatus: driverData.verificationStatus,
-      welcomeBonusGiven,
-      currentBalance
-    });
-    
-    if (!isVerified) {
-      console.log('❌ [WALLET_API] Driver not verified:', uid);
-      return res.status(400).json({
-        success: false,
-        error: {
-          code: 'NOT_VERIFIED',
-          message: 'Driver not verified',
-          details: 'Welcome bonus can only be given to verified drivers'
-        },
-        timestamp: new Date().toISOString()
-      });
-    }
-    
-    if (welcomeBonusGiven) {
-      console.log('✅ [WALLET_API] Welcome bonus already given:', uid);
-      return res.status(200).json({
-        success: true,
-        message: 'Welcome bonus already given',
-        data: {
-          welcomeBonusGiven: true,
-          welcomeBonusAmount: driverData.welcomeBonusAmount || 0,
-          currentBalance: currentBalance
-        },
-        timestamp: new Date().toISOString()
-      });
-    }
-    
-    // Give welcome bonus
-    const newBalance = currentBalance + 500;
-    console.log('💰 [WALLET_API] Processing welcome bonus:', {
-      uid,
-      previousBalance: currentBalance,
-      newBalance,
-      bonusAmount: 500
-    });
-    
-    // Use transaction to ensure atomicity
-    const batch = db.batch();
-    
-    // Update wallet with welcome bonus
-    batch.update(userRef, {
-      'driver.wallet': {
-        balance: newBalance,
-        currency: 'INR',
-        lastUpdated: new Date(),
-        transactions: driverData.wallet?.transactions || []
-      },
-      'driver.welcomeBonusGiven': true,
-      'driver.welcomeBonusAmount': 500,
-      'driver.welcomeBonusGivenAt': new Date(),
-      updatedAt: new Date()
-    });
-
-    // Create welcome bonus transaction record
-    const transactionRef = db.collection('driverWalletTransactions').doc();
-    batch.set(transactionRef, {
-      id: transactionRef.id,
-      driverId: uid,
-      type: 'credit',
-      amount: 500,
-      previousBalance: currentBalance,
-      newBalance: newBalance,
-      paymentMethod: 'welcome_bonus',
-      status: 'completed',
-      metadata: {
-        source: 'welcome_bonus',
-        description: 'Welcome bonus for completing verification',
-        triggeredBy: 'api_call'
-      },
-      createdAt: new Date(),
-      updatedAt: new Date()
-    });
-
-    // Commit the transaction
-    await batch.commit();
-    
-    console.log('✅ [WALLET_API] Welcome bonus processed successfully:', {
-      uid,
-      transactionId: transactionRef.id,
-      newBalance
-    });
-
-    res.status(200).json({
-      success: true,
-      message: 'Welcome bonus processed successfully',
-      data: {
-        welcomeBonusGiven: true,
-        welcomeBonusAmount: 500,
-        previousBalance: currentBalance,
-        newBalance: newBalance,
-        transactionId: transactionRef.id
-      },
-      timestamp: new Date().toISOString()
-    });
-
-  } catch (error) {
-    console.error('❌ [WALLET_API] Error processing welcome bonus:', error);
-    
-    // Provide more specific error details
-    let errorCode = 'WELCOME_BONUS_ERROR';
-    let errorMessage = 'Failed to process welcome bonus';
-    let errorDetails = 'An error occurred while processing welcome bonus';
-    
-    if (error.code === 'permission-denied') {
-      errorCode = 'PERMISSION_DENIED';
-      errorMessage = 'Permission denied';
-      errorDetails = 'Insufficient permissions to update wallet';
-    } else if (error.code === 'unavailable') {
-      errorCode = 'SERVICE_UNAVAILABLE';
-      errorMessage = 'Service temporarily unavailable';
-      errorDetails = 'Database service is temporarily unavailable';
-    } else if (error.message && error.message.includes('transaction')) {
-      errorCode = 'TRANSACTION_ERROR';
-      errorMessage = 'Transaction failed';
-      errorDetails = 'Failed to create wallet transaction';
-    }
-    
-    res.status(500).json({
-      success: false,
-      error: {
-        code: errorCode,
-        message: errorMessage,
-        details: errorDetails
-      },
-      timestamp: new Date().toISOString()
-    });
-  }
+  return res.status(410).json({
+    success: false,
+    error: {
+      code: 'DEPRECATED_FEATURE',
+      message: 'Welcome bonus feature has been removed. Please use points top-up instead.',
+      details: 'The welcome bonus system has been replaced with a mandatory points top-up system. Drivers must top-up their points wallet to start working.'
+    },
+    timestamp: new Date().toISOString()
+  });
 });
 
-/**
- * @route   POST /api/driver/wallet/add-money
- * @desc    Add money to driver wallet
- * @access  Private (Driver only)
- */
-router.post('/wallet/add-money', [
-  requireDriver,
-  body('amount')
-    .isFloat({ min: 10, max: 10000 })
-    .withMessage('Amount must be between 10 and 10,000'),
-  body('paymentMethod')
-    .isIn(['upi'])
-    .withMessage('Payment method must be upi'),
-  body('upiId')
-    .optional()
-    .isString()
-    .withMessage('UPI ID must be a string'),
-], async (req, res) => {
-  try {
-    const errors = validationResult(req);
-    if (!errors.isEmpty()) {
-      return res.status(400).json({
-        success: false,
-        error: {
-          code: 'VALIDATION_ERROR',
-          message: 'Validation failed',
-          details: errors.array()
-        },
-        timestamp: new Date().toISOString()
-      });
-    }
-
-    const { uid } = req.user;
-    const { amount, paymentMethod, upiId } = req.body;
-    const db = getFirestore();
-    
-    const userRef = db.collection('users').doc(uid);
-    const userDoc = await userRef.get();
-    
-    if (!userDoc.exists) {
-      return res.status(404).json({
-        success: false,
-        error: {
-          code: 'USER_NOT_FOUND',
-          message: 'User not found',
-          details: 'Driver does not exist'
-        },
-        timestamp: new Date().toISOString()
-      });
-    }
-
-    const userData = userDoc.data();
-    const currentBalance = userData.driver?.wallet?.balance || 0;
-
-    // Generate unique transaction ID for PhonePe
-    const transactionId = `WALLET_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-
-    // Create wallet transaction record (pending status)
-    const transactionRef = db.collection('driverWalletTransactions').doc();
-    const transactionData = {
-      id: transactionRef.id,
-      driverId: uid,
-      type: 'credit',
-      amount: amount,
-      previousBalance: currentBalance,
-      newBalance: currentBalance, // Will be updated after successful payment
-      paymentMethod: paymentMethod,
-      status: 'pending',
-      phonepeTransactionId: transactionId,
-      metadata: {
-        upiId: upiId || null,
-        source: 'wallet_topup',
-        gateway: 'phonepe'
-      },
-      createdAt: new Date(),
-      updatedAt: new Date()
-    };
-
-    await transactionRef.set(transactionData);
-
-    // Initiate PhonePe payment for wallet top-up
-    const phonepeService = require('../services/phonepeService');
-    const paymentData = {
-      transactionId,
-      amount,
-      customerId: uid,
-      bookingId: `wallet_topup_${uid}`,
-      customerPhone: userData.phone || userData.driver?.phone,
-      customerEmail: userData.email,
-      customerName: userData.name || userData.driver?.name
-    };
-
-    const paymentResult = await phonepeService.createPayment(paymentData);
-
-    if (paymentResult.success) {
-      // Update transaction with PhonePe details
-      await transactionRef.update({
-        phonepePaymentUrl: paymentResult.data.paymentUrl,
-        phonepeMerchantId: paymentResult.data.merchantId,
-        updatedAt: new Date()
-      });
-
-      res.status(200).json({
-        success: true,
-        message: 'Payment initiated successfully',
-        data: {
-          transactionId: transactionRef.id,
-          phonepeTransactionId: transactionId,
-          paymentUrl: paymentResult.data.paymentUrl,
-          amount: amount,
-          status: 'pending',
-          instructions: 'Complete payment using the provided URL to add money to your wallet'
-        },
-        timestamp: new Date().toISOString()
-      });
-    } else {
-      // Update transaction status to failed
-      await transactionRef.update({
-        status: 'failed',
-        failureReason: paymentResult.error?.message || 'Payment initiation failed',
-        updatedAt: new Date()
-      });
-
-      res.status(400).json({
-        success: false,
-        error: {
-          code: 'PAYMENT_INITIATION_ERROR',
-          message: 'Failed to initiate payment',
-          details: paymentResult.error?.message || 'Payment gateway error'
-        },
-        timestamp: new Date().toISOString()
-      });
-    }
-
-  } catch (error) {
-    console.error('Error adding money to wallet:', error);
-    res.status(500).json({
-      success: false,
-      error: {
-        code: 'WALLET_ADD_MONEY_ERROR',
-        message: 'Failed to add money to wallet',
-        details: 'An error occurred while adding money to wallet'
-      },
-      timestamp: new Date().toISOString()
-    });
-  }
-});
-
-/**
- * @route   GET /api/driver/wallet/payment-status/:transactionId
- * @desc    Check wallet payment status
- * @access  Private (Driver only)
- */
-router.get('/wallet/payment-status/:transactionId', requireDriver, async (req, res) => {
-  try {
-    const { uid } = req.user;
-    const { transactionId } = req.params;
-    const db = getFirestore();
-
-    // Get wallet transaction
-    const transactionDoc = await db.collection('driverWalletTransactions').doc(transactionId).get();
-    
-    if (!transactionDoc.exists) {
-      return res.status(404).json({
-        success: false,
-        error: {
-          code: 'TRANSACTION_NOT_FOUND',
-          message: 'Transaction not found',
-          details: 'Wallet transaction does not exist'
-        },
-        timestamp: new Date().toISOString()
-      });
-    }
-
-    const transactionData = transactionDoc.data();
-
-    // Verify driver owns this transaction
-    if (transactionData.driverId !== uid) {
-      return res.status(403).json({
-        success: false,
-        error: {
-          code: 'ACCESS_DENIED',
-          message: 'Access denied',
-          details: 'You can only check your own transactions'
-        },
-        timestamp: new Date().toISOString()
-      });
-    }
-
-    // If payment is still pending, check with PhonePe
-    if (transactionData.status === 'pending' && transactionData.phonepeTransactionId) {
-      const phonepeService = require('../services/phonepeService');
-      const verificationResult = await phonepeService.verifyPayment(transactionData.phonepeTransactionId);
-      
-      if (verificationResult.success) {
-        // Update transaction status based on PhonePe response
-        const phonepeStatus = verificationResult.data.status;
-        let newStatus = 'pending';
-        
-        if (phonepeStatus === 'COMPLETED') {
-          newStatus = 'completed';
-        } else if (phonepeStatus === 'FAILED') {
-          newStatus = 'failed';
-        }
-
-        await transactionDoc.ref.update({
-          status: newStatus,
-          phonepeStatus: phonepeStatus,
-          lastChecked: new Date(),
-          updatedAt: new Date()
-        });
-
-        transactionData.status = newStatus;
-        transactionData.phonepeStatus = phonepeStatus;
-      }
-    }
-
-    res.status(200).json({
-      success: true,
-      data: {
-        transactionId: transactionData.id,
-        status: transactionData.status,
-        amount: transactionData.amount,
-        paymentMethod: transactionData.paymentMethod,
-        phonepeTransactionId: transactionData.phonepeTransactionId,
-        phonepeStatus: transactionData.phonepeStatus,
-        paymentUrl: transactionData.phonepePaymentUrl,
-        createdAt: transactionData.createdAt,
-        completedAt: transactionData.completedAt,
-        failureReason: transactionData.failureReason
-      },
-      timestamp: new Date().toISOString()
-    });
-
-  } catch (error) {
-    console.error('Error checking wallet payment status:', error);
-    res.status(500).json({
-      success: false,
-      error: {
-        code: 'PAYMENT_STATUS_ERROR',
-        message: 'Failed to check payment status',
-        details: 'An error occurred while checking payment status'
-      },
-      timestamp: new Date().toISOString()
-    });
-  }
-});
-
-/**
- * @route   POST /api/driver/wallet/withdraw
- * @desc    Withdraw money from driver wallet
- * @access  Private (Driver only)
- */
-router.post('/wallet/withdraw', [
-  requireDriver,
-  body('amount')
-    .isFloat({ min: 100, max: 50000 })
-    .withMessage('Amount must be between 100 and 50,000'),
-  body('bankDetails')
-    .isObject()
-    .withMessage('Bank details are required'),
-  body('bankDetails.accountNumber')
-    .isString()
-    .isLength({ min: 9, max: 18 })
-    .withMessage('Valid account number is required'),
-  body('bankDetails.ifscCode')
-    .isString()
-    .isLength({ min: 11, max: 11 })
-    .withMessage('Valid IFSC code is required'),
-  body('bankDetails.accountHolderName')
-    .isString()
-    .isLength({ min: 2, max: 50 })
-    .withMessage('Valid account holder name is required')
-], async (req, res) => {
-  try {
-    const errors = validationResult(req);
-    if (!errors.isEmpty()) {
-      return res.status(400).json({
-        success: false,
-        error: {
-          code: 'VALIDATION_ERROR',
-          message: 'Validation failed',
-          details: errors.array()
-        },
-        timestamp: new Date().toISOString()
-      });
-    }
-
-    const { uid } = req.user;
-    const { amount, bankDetails } = req.body;
-    const db = getFirestore();
-    
-    const userRef = db.collection('users').doc(uid);
-    const userDoc = await userRef.get();
-    
-    if (!userDoc.exists) {
-      return res.status(404).json({
-        success: false,
-        error: {
-          code: 'USER_NOT_FOUND',
-          message: 'User not found',
-          details: 'Driver does not exist'
-        },
-        timestamp: new Date().toISOString()
-      });
-    }
-
-    const userData = userDoc.data();
-    const currentBalance = userData.driver?.wallet?.balance || 0;
-
-    if (currentBalance < amount) {
-      return res.status(400).json({
-        success: false,
-        error: {
-          code: 'INSUFFICIENT_BALANCE',
-          message: 'Insufficient balance',
-          details: 'Wallet balance is insufficient for this withdrawal'
-        },
-        timestamp: new Date().toISOString()
-      });
-    }
-
-    const newBalance = currentBalance - amount;
-
-    // Create withdrawal transaction
-    const transactionRef = db.collection('driverWalletTransactions').doc();
-    const transactionData = {
-      id: transactionRef.id,
-      driverId: uid,
-      type: 'debit',
-      amount: amount,
-      previousBalance: currentBalance,
-      newBalance: newBalance,
-      paymentMethod: 'bank_transfer',
-      status: 'pending',
-      metadata: {
-        bankDetails: {
-          accountNumber: bankDetails.accountNumber,
-          ifscCode: bankDetails.ifscCode,
-          accountHolderName: bankDetails.accountHolderName
-        }
-      },
-      createdAt: new Date(),
-      updatedAt: new Date()
-    };
-
-    await transactionRef.set(transactionData);
-
-    // Update wallet balance
-    await userRef.update({
-      'driver.wallet.balance': newBalance,
-      updatedAt: new Date()
-    });
-
-    res.status(200).json({
-      success: true,
-      message: 'Withdrawal request submitted successfully',
-      data: {
-        transaction: transactionData,
-        newBalance: newBalance
-      },
-      timestamp: new Date().toISOString()
-    });
-
-  } catch (error) {
-    console.error('Error withdrawing from wallet:', error);
-    res.status(500).json({
-      success: false,
-      error: {
-        code: 'WALLET_WITHDRAWAL_ERROR',
-        message: 'Failed to process withdrawal',
-        details: 'An error occurred while processing withdrawal'
-      },
-      timestamp: new Date().toISOString()
-    });
-  }
-});
+module.exports = router;
+  
 
 /**
  * @route   POST /api/driver/bookings/:id/photo-verification
@@ -6350,52 +5898,52 @@ router.post('/bookings/:id/payment', [
 
     await bookingRef.update(updateData);
 
-    // Deduct commission from driver wallet
-    try {
-      const walletService = require('../services/walletService');
-      const fareCalculationService = require('../services/fareCalculationService');
-      
-      const exactDistanceKm = bookingData.distance?.total || 0;
-      const tripFare = parseFloat(amount);
-      
-      if (tripFare > 0 && exactDistanceKm > 0) {
-        console.log(`💰 Deducting commission for payment collection: Fare ₹${tripFare}`);
-        
-        // Calculate commission based on fare amount (not raw distance)
-        // Use the same fare calculation logic to ensure consistency
-        const fareBreakdown = fareCalculationService.calculateFare(exactDistanceKm);
-        const commissionAmount = fareBreakdown.commission;
-        const roundedDistanceKm = fareBreakdown.roundedDistanceKm;
-        
-        console.log(`📊 Fare breakdown: ${exactDistanceKm}km → ${roundedDistanceKm}km → ₹${tripFare} → Commission ₹${commissionAmount}`);
-        
-        // Prepare trip details for commission transaction
-        const tripDetails = {
-          pickupLocation: bookingData.pickup || {},
-          dropoffLocation: bookingData.dropoff || {},
-          tripFare: tripFare,
-          exactDistanceKm: exactDistanceKm,
-          roundedDistanceKm: roundedDistanceKm
-        };
-        
-        // Deduct commission from driver wallet
-        const commissionResult = await walletService.deductCommission(
-          uid,
-          id,
-          roundedDistanceKm, // Use rounded distance for commission calculation
-          commissionAmount,
-          tripDetails
-        );
-        
-        if (commissionResult.success) {
-          console.log(`✅ Commission deducted: ₹${commissionAmount} for ${roundedDistanceKm}km (fare: ₹${tripFare})`);
-        } else {
-          console.error('❌ Commission deduction failed:', commissionResult.error);
+        // Deduct commission from driver points wallet
+        try {
+          const pointsService = require('../services/walletService');
+          const fareCalculationService = require('../services/fareCalculationService');
+          
+          const exactDistanceKm = bookingData.distance?.total || 0;
+          const tripFare = parseFloat(amount);
+          
+          if (tripFare > 0 && exactDistanceKm > 0) {
+            console.log(`💰 Deducting commission from points for payment collection: Fare ₹${tripFare}`);
+            
+            // Calculate commission based on fare amount (not raw distance)
+            // Use the same fare calculation logic to ensure consistency
+            const fareBreakdown = fareCalculationService.calculateFare(exactDistanceKm);
+            const commissionAmount = fareBreakdown.commission; // This is now in points
+            const roundedDistanceKm = fareBreakdown.roundedDistanceKm;
+            
+            console.log(`📊 Fare breakdown: ${exactDistanceKm}km → ${roundedDistanceKm}km → ₹${tripFare} → Commission ${commissionAmount} points`);
+            
+            // Prepare trip details for commission transaction
+            const tripDetails = {
+              pickupLocation: bookingData.pickup || {},
+              dropoffLocation: bookingData.dropoff || {},
+              tripFare: tripFare,
+              exactDistanceKm: exactDistanceKm,
+              roundedDistanceKm: roundedDistanceKm
+            };
+            
+            // Deduct commission from driver points wallet
+            const commissionResult = await pointsService.deductPoints(
+              uid,
+              id,
+              roundedDistanceKm, // Use rounded distance for commission calculation
+              commissionAmount, // Points to deduct
+              tripDetails
+            );
+            
+            if (commissionResult.success) {
+              console.log(`✅ Commission deducted from points: ${commissionAmount} points for ${roundedDistanceKm}km (fare: ₹${tripFare})`);
+            } else {
+              console.error('❌ Commission deduction from points failed:', commissionResult.error);
+            }
+          }
+        } catch (commissionError) {
+          console.error('❌ Error processing commission from points:', commissionError);
         }
-      }
-    } catch (commissionError) {
-      console.error('❌ Error processing commission:', commissionError);
-    }
 
     // Update driver earnings
     const driverRef = db.collection('users').doc(uid);

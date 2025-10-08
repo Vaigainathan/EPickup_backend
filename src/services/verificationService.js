@@ -674,15 +674,15 @@ class VerificationService {
           priority: 'high',
           actionRequired: false,
           nextSteps: [
-            'Start accepting ride requests',
-            'Complete your first ride to earn welcome bonus',
+            'Top-up your wallet to start accepting rides',
+            'Complete rides to earn commission',
             'Check your earnings in the wallet section'
           ],
           welcomeBonus: {
-            amount: 500,
+            amount: 0,
             currency: 'INR',
-            eligible: true,
-            message: 'You\'ve earned ₹500 welcome bonus!'
+            eligible: false,
+            message: 'No welcome bonus - Top-up required to start working'
           },
           documentSummary: {
             total: verificationStatus.totalWithDocuments,
@@ -848,12 +848,7 @@ class VerificationService {
       const batch = this.db.batch();
       const driverRef = this.db.collection('users').doc(driverId);
       
-      // Get current driver data to check welcome bonus eligibility
-      const driverDoc = await driverRef.get();
-      const driverData = driverDoc.data();
-      
-      // Check if welcome bonus has already been given
-      const welcomeBonusGiven = driverData.driver?.welcomeBonusGiven || false;
+      // Driver reference for batch operations
       
       // Update driver status
       batch.update(driverRef, {
@@ -886,62 +881,31 @@ class VerificationService {
 
       await batch.commit();
       
-      // Initialize wallet and give welcome bonus if eligible
-      const currentBalance = driverData.driver?.wallet?.balance || 0;
-      const newBalance = currentBalance + (welcomeBonusGiven ? 0 : 500);
+      // Initialize points wallet with 0 points (no welcome bonus)
+      const pointsService = require('./walletService');
+      await pointsService.createOrGetPointsWallet(driverId, 0);
       
-      // Update wallet with welcome bonus
+      // Update driver to require top-up
       await driverRef.update({
-        'driver.wallet': {
-          balance: newBalance,
-          currency: 'INR',
-          lastUpdated: new Date(),
-          transactions: driverData.driver?.wallet?.transactions || []
-        },
-        'driver.welcomeBonusGiven': true,
-        'driver.welcomeBonusAmount': welcomeBonusGiven ? (driverData.driver?.welcomeBonusAmount || 0) : 500,
-        'driver.welcomeBonusGivenAt': welcomeBonusGiven ? (driverData.driver?.welcomeBonusGivenAt || null) : new Date()
+        'driver.requiresTopUp': true,
+        'driver.pointsWalletId': driverId,
+        'driver.lastTopUpDate': null,
+        'driver.welcomeBonusGiven': false, // No welcome bonus
+        'driver.welcomeBonusAmount': 0
       });
 
-      // Create welcome bonus transaction record
-      if (!welcomeBonusGiven) {
-        const transactionRef = this.db.collection('driverWalletTransactions').doc();
-        await transactionRef.set({
-          id: transactionRef.id,
-          driverId: driverId,
-          type: 'credit',
-          amount: 500,
-          previousBalance: currentBalance,
-          newBalance: newBalance,
-          paymentMethod: 'welcome_bonus',
-          status: 'completed',
-          metadata: {
-            source: 'welcome_bonus',
-            description: 'Welcome bonus for completing verification',
-            adminId: adminId
-          },
-          createdAt: new Date(),
-          updatedAt: new Date()
-        });
-      }
-
-      // Send welcome bonus notification
-      if (!welcomeBonusGiven) {
-        await this.sendWelcomeBonusNotification(driverId, 500);
-      }
-
-      console.log(`✅ Driver approved: ${driverId}${welcomeBonusGiven ? ' (welcome bonus already given)' : ' (welcome bonus credited)'}`);
+      console.log(`✅ Driver approved: ${driverId} (points wallet initialized, top-up required)`);
       
       return {
         success: true,
-        message: 'Driver approved successfully',
+        message: 'Driver approved successfully - Top-up required to start working',
         data: {
           driverId,
           status: 'approved',
           approvedAt: new Date(),
           approvedBy: adminId,
-          welcomeBonusGiven: !welcomeBonusGiven,
-          welcomeBonusAmount: welcomeBonusGiven ? 0 : 500
+          requiresTopUp: true,
+          welcomeBonusAmount: 0
         }
       };
 

@@ -407,25 +407,70 @@ app.get('/metrics', (req, res) => {
 // API Routes
 app.use('/api/auth', authLimiter, authRoutes);
 app.use('/api/auth', refreshTokenRoutes); // Add refresh token route
-app.use('/api/customer', appCheckMiddleware.middleware(), authMiddleware, customerRoutes);
-app.use('/api/driver', appCheckMiddleware.middleware(), authMiddleware, driverRoutes);
-app.use('/api/bookings', appCheckMiddleware.middleware(), authMiddleware, bookingRoutes);
-app.use('/api/payments', appCheckMiddleware.middleware(), authMiddleware, paymentRoutes);
-app.use('/api/tracking', appCheckMiddleware.middleware(), authMiddleware, trackingRoutes);
-app.use('/api/notifications', appCheckMiddleware.middleware(), authMiddleware, notificationRoutes);
-app.use('/api/file-upload', appCheckMiddleware.middleware(), authMiddleware, fileUploadRoutes);
-app.use('/api/support', appCheckMiddleware.middleware(), authMiddleware, supportRoutes);
-app.use('/api/chat', appCheckMiddleware.middleware(), authMiddleware, chatRoutes);
+
+// =============================================================================
+// APP CHECK MIDDLEWARE CONFIGURATION
+// =============================================================================
+// DEBUG MODE: Using optionalMiddleware() for debug tokens (allows requests without App Check headers)
+// PRODUCTION MODE: Switch to middleware() for Play Integrity enforcement
+//
+// TO SWITCH TO PRODUCTION MODE:
+// 1. Comment out all lines with optionalMiddleware()
+// 2. Uncomment all lines with middleware() 
+// 3. Update frontend to send real App Check tokens instead of null
+// =============================================================================
+app.use('/api/customer', appCheckMiddleware.optionalMiddleware(), authMiddleware, customerRoutes);
+// app.use('/api/customer', appCheckMiddleware.middleware(), authMiddleware, customerRoutes); // Production mode
+
+app.use('/api/driver', appCheckMiddleware.optionalMiddleware(), authMiddleware, driverRoutes);
+// app.use('/api/driver', appCheckMiddleware.middleware(), authMiddleware, driverRoutes); // Production mode
+
+app.use('/api/bookings', appCheckMiddleware.optionalMiddleware(), authMiddleware, bookingRoutes);
+// app.use('/api/bookings', appCheckMiddleware.middleware(), authMiddleware, bookingRoutes); // Production mode
+
+app.use('/api/payments', appCheckMiddleware.optionalMiddleware(), authMiddleware, paymentRoutes);
+// app.use('/api/payments', appCheckMiddleware.middleware(), authMiddleware, paymentRoutes); // Production mode
+
+app.use('/api/tracking', appCheckMiddleware.optionalMiddleware(), authMiddleware, trackingRoutes);
+// app.use('/api/tracking', appCheckMiddleware.middleware(), authMiddleware, trackingRoutes); // Production mode
+
+app.use('/api/notifications', appCheckMiddleware.optionalMiddleware(), authMiddleware, notificationRoutes);
+// app.use('/api/notifications', appCheckMiddleware.middleware(), authMiddleware, notificationRoutes); // Production mode
+
+app.use('/api/file-upload', appCheckMiddleware.optionalMiddleware(), authMiddleware, fileUploadRoutes);
+// app.use('/api/file-upload', appCheckMiddleware.middleware(), authMiddleware, fileUploadRoutes); // Production mode
+
+app.use('/api/support', appCheckMiddleware.optionalMiddleware(), authMiddleware, supportRoutes);
+// app.use('/api/support', appCheckMiddleware.middleware(), authMiddleware, supportRoutes); // Production mode
+
+app.use('/api/chat', appCheckMiddleware.optionalMiddleware(), authMiddleware, chatRoutes);
+// app.use('/api/chat', appCheckMiddleware.middleware(), authMiddleware, chatRoutes); // Production mode
+
 app.use('/api/google-maps', googleMapsRoutes); // No auth required for Google Maps API
-app.use('/api/realtime', appCheckMiddleware.middleware(), authMiddleware, realtimeRoutes);
-app.use('/api/fcm-tokens', appCheckMiddleware.middleware(), authMiddleware, fcmTokenRoutes);
-app.use('/api/emergency', appCheckMiddleware.middleware(), authMiddleware, emergencyRoutes);
+
+app.use('/api/realtime', appCheckMiddleware.optionalMiddleware(), authMiddleware, realtimeRoutes);
+// app.use('/api/realtime', appCheckMiddleware.middleware(), authMiddleware, realtimeRoutes); // Production mode
+
+app.use('/api/fcm-tokens', appCheckMiddleware.optionalMiddleware(), authMiddleware, fcmTokenRoutes);
+// app.use('/api/fcm-tokens', appCheckMiddleware.middleware(), authMiddleware, fcmTokenRoutes); // Production mode
+
+app.use('/api/emergency', appCheckMiddleware.optionalMiddleware(), authMiddleware, emergencyRoutes);
+// app.use('/api/emergency', appCheckMiddleware.middleware(), authMiddleware, emergencyRoutes); // Production mode
+
 app.use('/api/service-area', serviceAreaRoutes); // No auth required for service area validation
 app.use('/service-area', serviceAreaRoutes); // Alternative path for service area validation
-app.use('/api/wallet', appCheckMiddleware.middleware(), walletRoutes);
-app.use('/api/fare', appCheckMiddleware.middleware(), fareCalculationRoutes);
-app.use('/api/slots', appCheckMiddleware.middleware(), workSlotsRoutes);
-app.use('/api/location-tracking', appCheckMiddleware.middleware(), authMiddleware, locationTrackingRoutes);
+// Wallet and fare calculation routes
+app.use('/api/wallet', appCheckMiddleware.optionalMiddleware(), walletRoutes);
+// app.use('/api/wallet', appCheckMiddleware.middleware(), walletRoutes); // Production mode
+
+app.use('/api/fare', appCheckMiddleware.optionalMiddleware(), fareCalculationRoutes);
+// app.use('/api/fare', appCheckMiddleware.middleware(), fareCalculationRoutes); // Production mode
+
+app.use('/api/slots', appCheckMiddleware.optionalMiddleware(), workSlotsRoutes);
+// app.use('/api/slots', appCheckMiddleware.middleware(), workSlotsRoutes); // Production mode
+
+app.use('/api/location-tracking', appCheckMiddleware.optionalMiddleware(), authMiddleware, locationTrackingRoutes);
+// app.use('/api/location-tracking', appCheckMiddleware.middleware(), authMiddleware, locationTrackingRoutes); // Production mode
 app.use('/api/admin/auth', adminAuthRoutes); // No auth required for admin login
 app.use('/api/admin/signup', adminSignupRoutes); // Admin signup route (no auth required)
 // Import admin role validation

@@ -361,7 +361,7 @@ class DriverAssignmentService {
       const bookingRef = this.db.collection('bookings').doc(bookingId);
       batch.update(bookingRef, {
         driverId,
-        bookingStatus: 'assigned',
+        status: 'driver_assigned',
         assignedAt: new Date(),
         assignedBy,
         updatedAt: new Date()
@@ -438,7 +438,7 @@ class DriverAssignmentService {
       const bookingRef = this.db.collection('bookings').doc(bookingId);
       batch.update(bookingRef, {
         driverId: null,
-        bookingStatus: 'confirmed',
+        status: 'pending',
         unassignedAt: new Date(),
         unassignedBy,
         updatedAt: new Date()
@@ -527,7 +527,7 @@ class DriverAssignmentService {
     try {
       const snapshot = await this.db.collection('bookings')
         .where('driverId', '==', driverId)
-        .where('bookingStatus', 'in', ['assigned', 'picked_up', 'delivering'])
+        .where('status', 'in', ['driver_assigned', 'picked_up', 'in_transit'])
         .get();
 
       return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));

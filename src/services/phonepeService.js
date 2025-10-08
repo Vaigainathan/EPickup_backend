@@ -142,62 +142,7 @@ class PhonePeService {
     });
   }
 
-  /**
-   * Verify payment status
-   * @param {string} transactionId - Transaction ID
-   * @returns {Object} Payment verification result
-   */
-  async verifyPayment(transactionId) {
-    return errorHandlingService.executeWithRetry(async () => {
-      const payload = {
-        merchantId: this.config.merchantId,
-        merchantTransactionId: transactionId
-      };
-
-      const payloadString = JSON.stringify(payload);
-      const checksum = this.generateChecksum(payloadString);
-
-      const response = await axios.get(
-        `${phonepeConfig.getBaseUrl()}/pg/v1/status/${phonepeConfig.getMerchantId()}/${transactionId}`,
-        {
-          headers: {
-            'Content-Type': 'application/json',
-            'X-VERIFY': `${checksum}###${this.config.saltIndex}`,
-            'accept': 'application/json'
-          }
-        }
-      );
-
-      if (response.data.success) {
-        const paymentData = response.data.data;
-        
-        // Update payment record in Firestore
-        await this.updatePaymentStatus(transactionId, {
-          status: paymentData.state,
-          paymentId: paymentData.paymentId,
-          responseCode: paymentData.responseCode,
-          responseMessage: paymentData.responseMessage,
-          updatedAt: new Date()
-        });
-
-        return {
-          success: true,
-          data: {
-            transactionId,
-            status: paymentData.state,
-            paymentId: paymentData.paymentId,
-            responseCode: paymentData.responseCode,
-            responseMessage: paymentData.responseMessage
-          }
-        };
-      } else {
-        throw new Error(response.data.message || 'Payment verification failed');
-      }
-    }, {
-      context: 'Verify PhonePe payment',
-      maxRetries: 2
-    });
-  }
+  // Note: verifyPayment function moved to line 468 to avoid duplication
 
   /**
    * Handle payment callback/webhook
@@ -233,15 +178,28 @@ class PhonePeService {
         updatedAt: new Date()
       });
 
-      // Update booking status based on payment status
-      if (state === 'COMPLETED') {
+      // Verify payment with PhonePe before processing
+      const verificationResult = await this.verifyPayment(merchantTransactionId);
+      
+      if (!verificationResult.success) {
+        console.error(`❌ Payment verification failed for: ${merchantTransactionId}`);
+        return {
+          success: false,
+          error: 'Payment verification failed'
+        };
+      }
+      
+      const verifiedState = verificationResult.data.state;
+      
+      // Update booking status based on verified payment status
+      if (verifiedState === 'COMPLETED') {
         await this.updateBookingPaymentStatus(merchantTransactionId, 'PAID');
         
         // Check if this is a wallet top-up payment
         if (merchantTransactionId.startsWith('WALLET_')) {
           await this.processWalletTopupPayment(merchantTransactionId, amount);
         }
-      } else if (state === 'FAILED') {
+      } else if (verifiedState === 'FAILED') {
         await this.updateBookingPaymentStatus(merchantTransactionId, 'FAILED');
         
         // Update wallet transaction status if it's a wallet top-up
@@ -448,6 +406,56 @@ class PhonePeService {
   }
 
   /**
+   * Verify payment status with PhonePe
+   * @param {string} merchantTransactionId - Merchant transaction ID
+   * @returns {Object} Payment verification result
+   */
+  async verifyPayment(merchantTransactionId) {
+    try {
+      console.log(`🔍 Verifying payment status for: ${merchantTransactionId}`);
+      
+      const payload = {
+        merchantId: this.config.merchantId,
+        merchantTransactionId: merchantTransactionId,
+        merchantUserId: 'EPICKUP_USER'
+      };
+      
+      const payloadString = JSON.stringify(payload);
+      const checksum = this.generateChecksum(payloadString);
+      
+      const response = await axios.get(
+        `${phonepeConfig.getBaseUrl()}/pg/v1/status/${this.config.merchantId}/${merchantTransactionId}`,
+        {
+          headers: {
+            'Content-Type': 'application/json',
+            'X-VERIFY': `${checksum}###${this.config.saltIndex}`,
+            'X-MERCHANT-ID': this.config.merchantId
+          }
+        }
+      );
+      
+      if (response.data.success) {
+        const decodedResponse = JSON.parse(Buffer.from(response.data.data, 'base64').toString());
+        return {
+          success: true,
+          data: decodedResponse
+        };
+      } else {
+        return {
+          success: false,
+          error: 'Payment verification failed'
+        };
+      }
+    } catch (error) {
+      console.error('Payment verification error:', error);
+      return {
+        success: false,
+        error: error.message
+      };
+    }
+  }
+
+  /**
    * Process wallet top-up payment
    * @param {string} transactionId - Transaction ID
    * @param {number} amount - Amount in paise
@@ -458,8 +466,8 @@ class PhonePeService {
     try {
       console.log(`💰 Processing wallet top-up payment: ${transactionId}`);
       
-      // Find wallet transaction record
-      const walletTransactionsSnapshot = await this.db.collection('driverWalletTransactions')
+      // Find wallet transaction record in driverTopUps collection
+      const walletTransactionsSnapshot = await this.db.collection('driverTopUps')
         .where('phonepeTransactionId', '==', transactionId)
         .limit(1)
         .get();
@@ -481,31 +489,33 @@ class PhonePeService {
         updatedAt: new Date()
       });
 
-      // Update driver wallet balance
-      const userRef = this.db.collection('users').doc(driverId);
-      const userDoc = await userRef.get();
-      
-      if (userDoc.exists) {
-        const userData = userDoc.data();
-        const currentBalance = userData.driver?.wallet?.balance || 0;
-        const newBalance = currentBalance + walletTransactionData.amount;
+      // Convert real money to points using points service
+      const pointsService = require('./walletService');
+      const pointsResult = await pointsService.addPoints(
+        driverId,
+        walletTransactionData.amount,
+        walletTransactionData.paymentMethod || 'phonepe',
+        {
+          transactionId,
+          phonepeTransactionId: transactionId,
+          originalTransaction: walletTransactionData
+        }
+      );
 
-        await userRef.update({
-          'driver.wallet.balance': newBalance,
-          'driver.wallet.lastUpdated': new Date(),
-          updatedAt: new Date()
-        });
-
-        // Update wallet transaction with final balance
+      if (pointsResult.success) {
+        // Update wallet transaction with points data
         await walletTransactionDoc.ref.update({
-          newBalance: newBalance,
+          pointsAwarded: pointsResult.data.pointsAdded,
+          newPointsBalance: pointsResult.data.newBalance,
           updatedAt: new Date()
         });
 
-        console.log(`✅ Wallet top-up completed for driver ${driverId}: +${walletTransactionData.amount} INR (New balance: ${newBalance} INR)`);
+        console.log(`✅ Points top-up completed for driver ${driverId}: +${pointsResult.data.pointsAdded} points for ₹${walletTransactionData.amount}`);
 
         // Send notification to driver
-        await this.sendWalletTopupNotification(driverId, walletTransactionData.amount, newBalance);
+        await this.sendWalletTopupNotification(driverId, walletTransactionData.amount, pointsResult.data.newBalance);
+      } else {
+        console.error(`❌ Failed to convert top-up to points: ${pointsResult.error}`);
       }
 
     } catch (error) {
@@ -520,19 +530,22 @@ class PhonePeService {
    */
   async updateWalletTransactionStatus(transactionId, status) {
     try {
-      const walletTransactionsSnapshot = await this.db.collection('driverWalletTransactions')
+      console.log(`📝 Updating wallet transaction status: ${transactionId} -> ${status}`);
+      
+      const walletTransactionSnapshot = await this.db.collection('driverTopUps')
         .where('phonepeTransactionId', '==', transactionId)
         .limit(1)
         .get();
 
-      if (!walletTransactionsSnapshot.empty) {
-        const walletTransactionDoc = walletTransactionsSnapshot.docs[0];
+      if (!walletTransactionSnapshot.empty) {
+        const walletTransactionDoc = walletTransactionSnapshot.docs[0];
         await walletTransactionDoc.ref.update({
           status: status,
           updatedAt: new Date()
         });
-
-        console.log(`✅ Updated wallet transaction ${transactionId} status to ${status}`);
+        console.log(`✅ Wallet transaction status updated: ${transactionId} -> ${status}`);
+      } else {
+        console.error(`❌ Wallet transaction not found for status update: ${transactionId}`);
       }
     } catch (error) {
       console.error('Error updating wallet transaction status:', error);

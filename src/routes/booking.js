@@ -1102,7 +1102,7 @@ router.get('/:id/driver', [
         message: 'No driver assigned yet',
         data: {
           assignment: null,
-          bookingStatus: bookingData.status,
+          status: bookingData.status,
           searchingForDriver: bookingData.status === 'pending'
         },
         timestamp: new Date().toISOString()
@@ -1143,7 +1143,7 @@ router.get('/:id/driver', [
         isAvailable: driverData.driver?.isAvailable || false
       },
       status: bookingData.status,
-      assignedAt: bookingData.timing?.driverAssignedAt || bookingData.createdAt,
+      assignedAt: bookingData.timing?.assignedAt || bookingData.createdAt,
       estimatedArrival: bookingData.timing?.estimatedPickupTime ? 
         Math.ceil((new Date(bookingData.timing.estimatedPickupTime) - new Date()) / (1000 * 60)) : 5
     };
@@ -1153,7 +1153,7 @@ router.get('/:id/driver', [
       message: 'Driver assignment retrieved successfully',
       data: {
         assignment,
-        bookingStatus: bookingData.status
+        status: bookingData.status
       },
       timestamp: new Date().toISOString()
     });

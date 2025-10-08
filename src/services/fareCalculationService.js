@@ -3,7 +3,7 @@ const axios = require('axios');
 class FareCalculationService {
     constructor() {
         this.BASE_FARE_PER_KM = 10; // ₹10 per km (updated from previous rate)
-        this.COMMISSION_PER_KM = 1; // ₹1 per km commission
+        this.COMMISSION_PER_KM = 2; // 2 points per km commission (increased from 1)
         this.MINIMUM_FARE = 50; // Minimum fare for any trip
         this.GOOGLE_MAPS_API_KEY = process.env.GOOGLE_MAPS_API_KEY;
     }
@@ -136,11 +136,11 @@ class FareCalculationService {
      */
     async processTripCompletion(tripId, fareDetails, driverId, tripDetails = {}) {
         try {
-            // Deduct commission from driver's wallet
-            const walletUpdate = await this.deductCommissionFromWallet(
+            // Deduct commission from driver's points wallet
+            const walletUpdate = await this.deductCommissionFromPoints(
                 driverId, 
                 tripId, 
-                fareDetails.fare.distanceKm, 
+                fareDetails.fare.roundedDistanceKm, 
                 fareDetails.fare.commission,
                 {
                     pickupLocation: tripDetails.pickupLocation || {},
@@ -188,10 +188,10 @@ class FareCalculationService {
      * @param {Object} tripDetails - Trip details for transaction record
      * @returns {Promise<Object>} Updated wallet details
      */
-    async deductCommissionFromWallet(driverId, tripId, distanceKm, commissionAmount, tripDetails = {}) {
+    async deductCommissionFromPoints(driverId, tripId, distanceKm, commissionAmount, tripDetails = {}) {
         try {
-            const walletService = require('./walletService');
-            const result = await walletService.deductCommission(
+            const pointsService = require('./walletService');
+            const result = await pointsService.deductPoints(
                 driverId, 
                 tripId, 
                 distanceKm, 
@@ -203,28 +203,25 @@ class FareCalculationService {
                 return {
                     success: true,
                     driverId: driverId,
-                    commissionDeducted: result.commissionDeducted,
-                    newBalance: result.newBalance,
-                    canWork: result.canWork,
-                    isLowBalance: result.isLowBalance,
-                    remainingTrips: result.remainingTrips,
-                    transactionId: result.transactionId,
+                    pointsDeducted: result.data.pointsDeducted,
+                    newBalance: result.data.newBalance,
+                    transactionId: result.data.transactionId,
                     status: 'success'
                 };
             } else {
                 return {
                     success: false,
                     error: result.error,
-                    required: result.required,
-                    available: result.available,
+                    currentBalance: result.currentBalance,
+                    requiredAmount: result.requiredAmount,
                     status: 'failed'
                 };
             }
         } catch (error) {
-            console.error('Error deducting commission from wallet:', error);
+            console.error('Error deducting commission from points:', error);
             return {
                 success: false,
-                error: 'Failed to deduct commission from wallet',
+                error: 'Failed to deduct commission from points',
                 status: 'error'
             };
         }

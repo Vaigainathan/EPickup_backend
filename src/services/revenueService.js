@@ -2,17 +2,17 @@ const { getFirestore } = require('./firebase');
 
 /**
  * Revenue Service for EPickup Platform
- * Calculates platform revenue based on commission system
- * Commission: ₹1 per km from driver wallet
+ * Calculates platform revenue based on prepaid points system
+ * Real money from top-ups + Commission from points (₹2 per km)
  */
 class RevenueService {
   constructor() {
-    this.COMMISSION_PER_KM = 1; // ₹1 per km commission
+    this.COMMISSION_PER_KM = 2; // ₹2 per km commission (in points)
     this.db = getFirestore();
   }
 
   /**
-   * Calculate total platform revenue from commission transactions
+   * Calculate total platform revenue from real money top-ups and points commission
    * @param {Date} startDate - Start date for calculation
    * @param {Date} endDate - End date for calculation
    * @returns {Promise<Object>} Revenue breakdown
@@ -21,49 +21,92 @@ class RevenueService {
     try {
       console.log(`💰 Calculating revenue from ${startDate.toISOString()} to ${endDate.toISOString()}`);
 
-      // Get commission transactions from the period
-      const commissionSnapshot = await this.db
-        .collection('commissionTransactions')
+      // Get real money from top-ups (primary revenue source)
+      const topUpsSnapshot = await this.db
+        .collection('driverTopUps')
         .where('createdAt', '>=', startDate)
         .where('createdAt', '<=', endDate)
         .where('status', '==', 'completed')
         .get();
 
-      let totalCommission = 0;
-      let totalDistance = 0;
-      let totalTrips = 0;
-      const commissionBreakdown = [];
+      let totalRealMoney = 0;
+      let totalTopUps = 0;
+      const topUpsBreakdown = [];
 
-      commissionSnapshot.forEach(doc => {
+      topUpsSnapshot.forEach(doc => {
         const data = doc.data();
-        totalCommission += data.commissionAmount || 0;
-        totalDistance += data.distanceKm || 0;
-        totalTrips += 1;
+        totalRealMoney += data.realMoneyAmount || 0;
+        totalTopUps += 1;
         
-        commissionBreakdown.push({
+        topUpsBreakdown.push({
           id: doc.id,
           driverId: data.driverId,
-          tripId: data.tripId,
-          distanceKm: data.distanceKm,
-          commissionAmount: data.commissionAmount,
+          realMoneyAmount: data.realMoneyAmount,
+          pointsAwarded: data.pointsAwarded,
+          paymentMethod: data.paymentMethod,
           createdAt: data.createdAt?.toDate?.() || data.createdAt
         });
       });
 
+      // Get points commission transactions (secondary revenue tracking)
+      const pointsCommissionSnapshot = await this.db
+        .collection('pointsTransactions')
+        .where('createdAt', '>=', startDate)
+        .where('createdAt', '<=', endDate)
+        .where('type', '==', 'debit')
+        .get();
+
+      let totalPointsCommission = 0;
+      let totalDistance = 0;
+      let totalTrips = 0;
+      const commissionBreakdown = [];
+
+      pointsCommissionSnapshot.forEach(doc => {
+        const data = doc.data();
+        
+        // Filter for commission transactions in memory (since Firestore doesn't support 'like' operator)
+        if (data.description && data.description.toLowerCase().includes('commission')) {
+          totalPointsCommission += data.amount || 0;
+          totalDistance += data.distanceKm || 0;
+          totalTrips += 1;
+          
+          commissionBreakdown.push({
+            id: doc.id,
+            driverId: data.driverId,
+            tripId: data.tripId,
+            distanceKm: data.distanceKm,
+            pointsDeducted: data.amount,
+            createdAt: data.createdAt?.toDate?.() || data.createdAt
+          });
+        }
+      });
+
       // Calculate daily revenue breakdown
-      const dailyRevenue = this.calculateDailyRevenue(commissionBreakdown, startDate, endDate);
+      const dailyRevenue = this.calculateDailyRevenue(topUpsBreakdown, startDate, endDate);
 
       // Calculate monthly revenue (if period spans multiple months)
-      const monthlyRevenue = this.calculateMonthlyRevenue(commissionBreakdown, startDate, endDate);
+      const monthlyRevenue = this.calculateMonthlyRevenue(topUpsBreakdown, startDate, endDate);
 
       const revenue = {
-        totalCommission: totalCommission,
+        // Real money revenue (primary)
+        totalRealMoney: totalRealMoney,
+        totalTopUps: totalTopUps,
+        averageTopUpAmount: totalTopUps > 0 ? (totalRealMoney / totalTopUps).toFixed(2) : 0,
+        
+        // Points commission tracking (secondary)
+        totalPointsCommission: totalPointsCommission,
         totalDistance: totalDistance,
         totalTrips: totalTrips,
-        averageCommissionPerTrip: totalTrips > 0 ? (totalCommission / totalTrips).toFixed(2) : 0,
-        averageCommissionPerKm: totalDistance > 0 ? (totalCommission / totalDistance).toFixed(2) : 0,
+        averageCommissionPerTrip: totalTrips > 0 ? (totalPointsCommission / totalTrips).toFixed(2) : 0,
+        averageCommissionPerKm: totalDistance > 0 ? (totalPointsCommission / totalDistance).toFixed(2) : 0,
+        
+        // Breakdown data
+        topUpsBreakdown: topUpsBreakdown,
+        commissionBreakdown: commissionBreakdown,
         dailyRevenue: dailyRevenue,
         monthlyRevenue: monthlyRevenue,
+        
+        // Period info
         period: {
           start: startDate.toISOString(),
           end: endDate.toISOString(),
@@ -72,7 +115,7 @@ class RevenueService {
         calculatedAt: new Date().toISOString()
       };
 
-      console.log(`✅ Revenue calculated: ₹${totalCommission} from ${totalTrips} trips`);
+      console.log(`✅ Revenue calculated: ₹${totalRealMoney} real money from ${totalTopUps} top-ups, ${totalPointsCommission} points commission from ${totalTrips} trips`);
       return revenue;
 
     } catch (error) {
@@ -88,22 +131,22 @@ class RevenueService {
    * @param {Date} endDate - End date
    * @returns {Array} Daily revenue data
    */
-  calculateDailyRevenue(commissionBreakdown, startDate, endDate) {
+  calculateDailyRevenue(topUpsBreakdown, startDate, endDate) {
     const dailyRevenue = {};
     
-    commissionBreakdown.forEach(transaction => {
+    topUpsBreakdown.forEach(transaction => {
       const date = transaction.createdAt.toISOString().split('T')[0];
       if (!dailyRevenue[date]) {
         dailyRevenue[date] = {
           date: date,
-          commission: 0,
-          trips: 0,
-          distance: 0
+          realMoney: 0,
+          topUps: 0,
+          pointsAwarded: 0
         };
       }
-      dailyRevenue[date].commission += transaction.commissionAmount;
-      dailyRevenue[date].trips += 1;
-      dailyRevenue[date].distance += transaction.distanceKm;
+      dailyRevenue[date].realMoney += transaction.realMoneyAmount || 0;
+      dailyRevenue[date].topUps += 1;
+      dailyRevenue[date].pointsAwarded += transaction.pointsAwarded || 0;
     });
 
     // Fill in missing days with zero revenue
@@ -125,29 +168,29 @@ class RevenueService {
 
   /**
    * Calculate monthly revenue breakdown
-   * @param {Array} commissionBreakdown - Commission transactions
+   * @param {Array} topUpsBreakdown - Top-up transactions
    * @param {Date} startDate - Start date (reserved for future filtering)
    * @param {Date} endDate - End date (reserved for future filtering)
    * @returns {Array} Monthly revenue data
    */
   // eslint-disable-next-line no-unused-vars
-  calculateMonthlyRevenue(commissionBreakdown, startDate, endDate) {
+  calculateMonthlyRevenue(topUpsBreakdown, startDate, endDate) {
     // Note: startDate and endDate parameters reserved for future date filtering logic
     const monthlyRevenue = {};
     
-    commissionBreakdown.forEach(transaction => {
+    topUpsBreakdown.forEach(transaction => {
       const month = transaction.createdAt.toISOString().substring(0, 7); // YYYY-MM
       if (!monthlyRevenue[month]) {
         monthlyRevenue[month] = {
           month: month,
-          commission: 0,
-          trips: 0,
-          distance: 0
+          realMoney: 0,
+          topUps: 0,
+          pointsAwarded: 0
         };
       }
-      monthlyRevenue[month].commission += transaction.commissionAmount;
-      monthlyRevenue[month].trips += 1;
-      monthlyRevenue[month].distance += transaction.distanceKm;
+      monthlyRevenue[month].realMoney += transaction.realMoneyAmount || 0;
+      monthlyRevenue[month].topUps += 1;
+      monthlyRevenue[month].pointsAwarded += transaction.pointsAwarded || 0;
     });
 
     return Object.values(monthlyRevenue);
@@ -212,6 +255,80 @@ class RevenueService {
     } catch (error) {
       console.error('❌ Error getting revenue summary:', error);
       throw new Error('Failed to get revenue summary');
+    }
+  }
+
+  /**
+   * Get real money revenue summary (from top-ups)
+   * @returns {Promise<Object>} Real money revenue summary
+   */
+  async getRealMoneyRevenueSummary() {
+    try {
+      const now = new Date();
+      const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+      const endOfMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999);
+      
+      // Get all top-ups for current month
+      const topUpsSnapshot = await this.db
+        .collection('companyRevenue')
+        .where('createdAt', '>=', startOfMonth)
+        .where('createdAt', '<=', endOfMonth)
+        .where('source', '==', 'driver_topup')
+        .get();
+
+      let totalRealMoney = 0;
+      let totalTopUps = 0;
+      const topUpsByDriver = {};
+      const topUpsByPaymentMethod = {};
+
+      topUpsSnapshot.forEach(doc => {
+        const data = doc.data();
+        totalRealMoney += data.amount || 0;
+        totalTopUps += 1;
+        
+        // Group by driver
+        const driverId = data.driverId;
+        if (!topUpsByDriver[driverId]) {
+          topUpsByDriver[driverId] = {
+            driverId: driverId,
+            totalAmount: 0,
+            topUpCount: 0
+          };
+        }
+        topUpsByDriver[driverId].totalAmount += data.amount || 0;
+        topUpsByDriver[driverId].topUpCount += 1;
+        
+        // Group by payment method
+        const paymentMethod = data.paymentMethod || 'unknown';
+        if (!topUpsByPaymentMethod[paymentMethod]) {
+          topUpsByPaymentMethod[paymentMethod] = {
+            method: paymentMethod,
+            totalAmount: 0,
+            topUpCount: 0
+          };
+        }
+        topUpsByPaymentMethod[paymentMethod].totalAmount += data.amount || 0;
+        topUpsByPaymentMethod[paymentMethod].topUpCount += 1;
+      });
+
+      return {
+        totalRealMoney: totalRealMoney,
+        totalTopUps: totalTopUps,
+        averageTopUpAmount: totalTopUps > 0 ? (totalRealMoney / totalTopUps).toFixed(2) : 0,
+        topUpsByDriver: Object.values(topUpsByDriver),
+        topUpsByPaymentMethod: Object.values(topUpsByPaymentMethod),
+        period: {
+          start: startOfMonth.toISOString(),
+          end: endOfMonth.toISOString(),
+          month: now.getMonth() + 1,
+          year: now.getFullYear()
+        },
+        calculatedAt: new Date().toISOString()
+      };
+
+    } catch (error) {
+      console.error('❌ Error getting real money revenue summary:', error);
+      throw new Error('Failed to get real money revenue summary');
     }
   }
 

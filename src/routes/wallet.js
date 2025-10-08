@@ -1,16 +1,16 @@
 const express = require('express');
 const router = express.Router();
-const walletService = require('../services/walletService');
+const pointsService = require('../services/walletService');
 const { authenticateToken } = require('../middleware/auth');
 
 /**
  * @route   POST /api/wallet/create
- * @desc    Create or get driver wallet
+ * @desc    Create or get driver points wallet
  * @access  Private
  */
 router.post('/create', authenticateToken, async (req, res) => {
   try {
-    const { driverId, initialCredit = 500 } = req.body;
+    const { driverId, initialPoints = 0 } = req.body;
     
     if (!driverId) {
       return res.status(400).json({
@@ -19,7 +19,7 @@ router.post('/create', authenticateToken, async (req, res) => {
       });
     }
     
-    const result = await walletService.createOrGetWallet(driverId, initialCredit);
+    const result = await pointsService.createOrGetPointsWallet(driverId, initialPoints);
     
     if (result.success) {
       res.status(200).json(result);
@@ -27,7 +27,7 @@ router.post('/create', authenticateToken, async (req, res) => {
       res.status(400).json(result);
     }
   } catch (error) {
-    console.error('Error creating wallet:', error);
+    console.error('Error creating points wallet:', error);
     res.status(500).json({
       success: false,
       error: 'Internal server error'
@@ -37,14 +37,14 @@ router.post('/create', authenticateToken, async (req, res) => {
 
 /**
  * @route   GET /api/wallet/balance/:driverId
- * @desc    Get wallet balance and details
+ * @desc    Get points wallet balance and details
  * @access  Private
  */
 router.get('/balance/:driverId', authenticateToken, async (req, res) => {
   try {
     const { driverId } = req.params;
     
-    const result = await walletService.getWalletBalance(driverId);
+    const result = await pointsService.getPointsBalance(driverId);
     
     if (result.success) {
       res.status(200).json(result);
@@ -52,7 +52,7 @@ router.get('/balance/:driverId', authenticateToken, async (req, res) => {
       res.status(404).json(result);
     }
   } catch (error) {
-    console.error('Error getting wallet balance:', error);
+    console.error('Error getting points balance:', error);
     res.status(500).json({
       success: false,
       error: 'Internal server error'
@@ -62,7 +62,7 @@ router.get('/balance/:driverId', authenticateToken, async (req, res) => {
 
 /**
  * @route   POST /api/wallet/deduct-commission
- * @desc    Deduct commission from wallet
+ * @desc    Deduct commission from points wallet
  * @access  Private
  */
 router.post('/deduct-commission', authenticateToken, async (req, res) => {
@@ -82,7 +82,7 @@ router.post('/deduct-commission', authenticateToken, async (req, res) => {
       });
     }
     
-    const result = await walletService.deductCommission(
+    const result = await pointsService.deductPoints(
       driverId, 
       tripId, 
       distanceKm, 
@@ -96,7 +96,7 @@ router.post('/deduct-commission', authenticateToken, async (req, res) => {
       res.status(400).json(result);
     }
   } catch (error) {
-    console.error('Error deducting commission:', error);
+    console.error('Error deducting commission from points:', error);
     res.status(500).json({
       success: false,
       error: 'Internal server error'
@@ -105,11 +105,11 @@ router.post('/deduct-commission', authenticateToken, async (req, res) => {
 });
 
 /**
- * @route   POST /api/wallet/recharge
- * @desc    Process wallet recharge
+ * @route   POST /api/wallet/top-up
+ * @desc    Convert real money to points
  * @access  Private
  */
-router.post('/recharge', authenticateToken, async (req, res) => {
+router.post('/top-up', authenticateToken, async (req, res) => {
   try {
     const { 
       driverId, 
@@ -132,7 +132,7 @@ router.post('/recharge', authenticateToken, async (req, res) => {
       });
     }
     
-    const result = await walletService.processRecharge(
+    const result = await pointsService.addPoints(
       driverId, 
       amount, 
       paymentMethod, 
@@ -145,7 +145,7 @@ router.post('/recharge', authenticateToken, async (req, res) => {
       res.status(400).json(result);
     }
   } catch (error) {
-    console.error('Error processing recharge:', error);
+    console.error('Error processing points top-up:', error);
     res.status(500).json({
       success: false,
       error: 'Internal server error'
@@ -155,7 +155,7 @@ router.post('/recharge', authenticateToken, async (req, res) => {
 
 /**
  * @route   GET /api/wallet/transactions/:driverId
- * @desc    Get transaction history
+ * @desc    Get points transaction history
  * @access  Private
  */
 router.get('/transactions/:driverId', authenticateToken, async (req, res) => {
@@ -163,10 +163,9 @@ router.get('/transactions/:driverId', authenticateToken, async (req, res) => {
     const { driverId } = req.params;
     const { limit = 20, offset = 0 } = req.query;
     
-    const result = await walletService.getTransactionHistory(
+    const result = await pointsService.getTransactionHistory(
       driverId, 
-      parseInt(limit), 
-      parseInt(offset)
+      { limit: parseInt(limit), offset: parseInt(offset) }
     );
     
     if (result.success) {
@@ -175,7 +174,7 @@ router.get('/transactions/:driverId', authenticateToken, async (req, res) => {
       res.status(404).json(result);
     }
   } catch (error) {
-    console.error('Error getting transaction history:', error);
+    console.error('Error getting points transaction history:', error);
     res.status(500).json({
       success: false,
       error: 'Internal server error'
@@ -185,14 +184,14 @@ router.get('/transactions/:driverId', authenticateToken, async (req, res) => {
 
 /**
  * @route   GET /api/wallet/stats/:driverId
- * @desc    Get wallet statistics
+ * @desc    Get points wallet statistics
  * @access  Private
  */
 router.get('/stats/:driverId', authenticateToken, async (req, res) => {
   try {
     const { driverId } = req.params;
     
-    const result = await walletService.getWalletStats(driverId);
+    const result = await pointsService.getWalletStats(driverId);
     
     if (result.success) {
       res.status(200).json(result);
@@ -200,7 +199,7 @@ router.get('/stats/:driverId', authenticateToken, async (req, res) => {
       res.status(404).json(result);
     }
   } catch (error) {
-    console.error('Error getting wallet stats:', error);
+    console.error('Error getting points wallet stats:', error);
     res.status(500).json({
       success: false,
       error: 'Internal server error'
@@ -210,7 +209,7 @@ router.get('/stats/:driverId', authenticateToken, async (req, res) => {
 
 /**
  * @route   PUT /api/wallet/status/:driverId
- * @desc    Update wallet status
+ * @desc    Update points wallet status
  * @access  Private
  */
 router.put('/status/:driverId', authenticateToken, async (req, res) => {
@@ -225,7 +224,7 @@ router.put('/status/:driverId', authenticateToken, async (req, res) => {
       });
     }
     
-    const result = await walletService.updateWalletStatus(driverId, status);
+    const result = await pointsService.updateWalletStatus(driverId, status);
     
     if (result.success) {
       res.status(200).json(result);
@@ -233,7 +232,7 @@ router.put('/status/:driverId', authenticateToken, async (req, res) => {
       res.status(404).json(result);
     }
   } catch (error) {
-    console.error('Error updating wallet status:', error);
+    console.error('Error updating points wallet status:', error);
     res.status(500).json({
       success: false,
       error: 'Internal server error'
@@ -243,14 +242,14 @@ router.put('/status/:driverId', authenticateToken, async (req, res) => {
 
 /**
  * @route   GET /api/wallet/can-work/:driverId
- * @desc    Check if driver can work
+ * @desc    Check if driver can work (has sufficient points)
  * @access  Private
  */
 router.get('/can-work/:driverId', authenticateToken, async (req, res) => {
   try {
     const { driverId } = req.params;
     
-    const result = await walletService.canDriverWork(driverId);
+    const result = await pointsService.canDriverWork(driverId);
     
     if (result.success) {
       res.status(200).json(result);
@@ -268,23 +267,23 @@ router.get('/can-work/:driverId', authenticateToken, async (req, res) => {
 
 /**
  * @route   GET /api/wallet/remaining-trips/:driverId
- * @desc    Get remaining trips based on wallet balance
+ * @desc    Get remaining trips based on points balance
  * @access  Private
  */
 router.get('/remaining-trips/:driverId', authenticateToken, async (req, res) => {
   try {
     const { driverId } = req.params;
-    const { commissionPerTrip = 1 } = req.query;
+    const { commissionPerTrip = 2 } = req.query; // Default 2 points per km
     
-    const result = await walletService.getWalletBalance(driverId);
+    const result = await pointsService.getPointsBalance(driverId);
     
     if (result.success) {
-      const remainingTrips = Math.floor(result.wallet.currentBalance / commissionPerTrip);
+      const remainingTrips = Math.floor(result.wallet.pointsBalance / commissionPerTrip);
       
       res.status(200).json({
         success: true,
         remainingTrips,
-        currentBalance: result.wallet.currentBalance,
+        currentBalance: result.wallet.pointsBalance,
         commissionPerTrip: parseFloat(commissionPerTrip)
       });
     } else {

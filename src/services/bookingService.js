@@ -83,8 +83,8 @@ class BookingService {
           updatedAt: new Date(),
           // Driver assignment fields (initially null)
           driverId: null,
-          driverAssignedAt: null,
-          driverAcceptedAt: null,
+          assignedAt: null,
+          acceptedAt: null,
           // Timing fields
           timing: {
             createdAt: new Date(),
@@ -181,13 +181,13 @@ class BookingService {
           ...booking,
           driverId: driverId,
           status: 'driver_assigned',
-          driverAssignedAt: new Date(),
-          driverAcceptedAt: new Date(),
+          assignedAt: new Date(),
+          acceptedAt: new Date(),
           updatedAt: new Date(),
           timing: {
             ...booking.timing,
-            driverAssignedAt: new Date(),
-            driverAcceptedAt: new Date(),
+            assignedAt: new Date(),
+            acceptedAt: new Date(),
             estimatedArrival: estimatedArrival || null
           }
         };
@@ -708,7 +708,7 @@ class BookingService {
           updateData['timing.confirmedAt'] = new Date();
           break;
         case 'driver_assigned':
-          updateData['timing.driverAssignedAt'] = new Date();
+          updateData['timing.assignedAt'] = new Date();
           break;
         case 'driver_enroute':
           updateData['timing.driverEnrouteAt'] = new Date();

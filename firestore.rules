@@ -238,6 +238,36 @@ service cloud.firestore {
       allow write: if request.auth != null && 
         (request.auth.token.role == 'admin' || request.auth.token.userType == 'admin');
     }
+
+    // Driver points wallets collection - allow drivers to read their own points wallet, admin access for all
+    match /driverPointsWallets/{driverId} {
+      allow read: if request.auth != null && 
+        (resource.data.driverId == request.auth.uid || 
+         request.auth.token.role == 'admin' || 
+         request.auth.token.userType == 'admin');
+      allow write: if request.auth != null && 
+        (request.auth.token.role == 'admin' || request.auth.token.userType == 'admin');
+    }
+
+    // Driver top-ups collection - real money transactions, admin access only for security
+    match /driverTopUps/{topUpId} {
+      allow read: if request.auth != null && 
+        (resource.data.driverId == request.auth.uid || 
+         request.auth.token.role == 'admin' || 
+         request.auth.token.userType == 'admin');
+      allow write: if request.auth != null && 
+        (request.auth.token.role == 'admin' || request.auth.token.userType == 'admin');
+    }
+
+    // Points transactions collection - allow drivers to read their own points transactions, admin access for all
+    match /pointsTransactions/{transactionId} {
+      allow read: if request.auth != null && 
+        (resource.data.driverId == request.auth.uid || 
+         request.auth.token.role == 'admin' || 
+         request.auth.token.userType == 'admin');
+      allow write: if request.auth != null && 
+        (request.auth.token.role == 'admin' || request.auth.token.userType == 'admin');
+    }
     
     // Emergency alerts - allow admin access only
     match /emergencyAlerts/{alertId} {

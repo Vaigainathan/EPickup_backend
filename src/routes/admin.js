@@ -2,6 +2,7 @@ const express = require('express');
 const { getFirestore } = require('firebase-admin/firestore');
 const verificationService = require('../services/verificationService');
 const { sanitizeInput, validateEmail, checkValidation } = require('../middleware/validation');
+const { requireAdmin } = require('../middleware/auth');
 const router = express.Router();
 
 // Apply input sanitization to all admin routes
@@ -2262,27 +2263,29 @@ router.get('/analytics', async (req, res) => {
       db.collection('users').where('userType', '==', 'driver').get()
     ]);
 
-    // Calculate revenue from commission system
+    // Calculate revenue from prepaid points system
     const revenueService = require('../services/revenueService');
-    let platformRevenue = 0;
+    let realMoneyRevenue = 0;
+    let totalTopUps = 0;
     let totalDriverEarnings = 0;
     
     try {
-      const revenueSummary = await revenueService.getCurrentMonthRevenue();
-      platformRevenue = revenueSummary.totalCommission;
+      const realMoneySummary = await revenueService.getRealMoneyRevenueSummary();
+      realMoneyRevenue = realMoneySummary.totalRealMoney;
+      totalTopUps = realMoneySummary.totalTopUps;
     } catch (error) {
-      console.error('Error calculating platform revenue:', error);
-      // Fallback to old calculation if commission data not available
+      console.error('Error calculating real money revenue:', error);
+      // Fallback to old calculation if revenue data not available
       completedBookings.forEach(doc => {
         const data = doc.data();
-        platformRevenue += (data.fare?.commission || data.fare?.companyRevenue || 0);
+        realMoneyRevenue += (data.fare?.commission || data.fare?.companyRevenue || 0);
       });
     }
 
-    // Calculate driver earnings
+    // Calculate driver earnings (now from points system)
     driverEarnings.forEach(doc => {
       const data = doc.data();
-      totalDriverEarnings += data.driver?.earnings?.total || data.driver?.wallet?.balance || 0;
+      totalDriverEarnings += data.driver?.earnings?.total || 0;
     });
 
     const analytics = {
@@ -2304,12 +2307,13 @@ router.get('/analytics', async (req, res) => {
         completionRate: totalBookings.size > 0 ? (completedBookings.size / totalBookings.size * 100).toFixed(2) : 0
       },
       revenue: {
-        total: platformRevenue,
-        averagePerBooking: completedBookings.size > 0 ? (platformRevenue / completedBookings.size).toFixed(2) : 0,
+        total: realMoneyRevenue,
+        totalTopUps: totalTopUps,
+        averageTopUpAmount: totalTopUps > 0 ? (realMoneyRevenue / totalTopUps).toFixed(2) : 0,
         driverEarnings: totalDriverEarnings,
-        platformCommission: platformRevenue,
-        commissionPerKm: 1, // ₹1 per km commission rate
-        revenueSource: 'commission_system'
+        realMoneyRevenue: realMoneyRevenue,
+        commissionPerKm: 2, // ₹2 per km commission rate (in points)
+        revenueSource: 'prepaid_points_system'
       },
       timestamp: new Date().toISOString()
     };
@@ -3106,6 +3110,36 @@ router.get('/revenue/trends', async (req, res) => {
 });
 
 /**
+ * @route   GET /api/admin/revenue/real-money
+ * @desc    Get real money revenue from top-ups
+ * @access  Private (Admin)
+ */
+router.get('/revenue/real-money', requireAdmin, async (req, res) => {
+  try {
+    const revenueService = require('../services/revenueService');
+    
+    const realMoneyRevenue = await revenueService.getRealMoneyRevenueSummary();
+
+    res.json({
+      success: true,
+      data: realMoneyRevenue,
+      timestamp: new Date().toISOString()
+    });
+
+  } catch (error) {
+    console.error('Get real money revenue error:', error);
+    res.status(500).json({
+      success: false,
+      error: {
+        code: 'REAL_MONEY_REVENUE_ERROR',
+        message: 'Failed to get real money revenue',
+        details: error.message
+      }
+    });
+  }
+});
+
+/**
  * @route   GET /api/admin/analytics/drivers
  * @desc    Get driver analytics
  * @access  Private (Admin)
@@ -3221,10 +3255,10 @@ router.get('/analytics/bookings', async (req, res) => {
 
     // Calculate booking metrics
     const totalBookings = bookings.length;
-    const completedBookings = bookings.filter(booking => booking.bookingStatus === 'completed').length;
-    const cancelledBookings = bookings.filter(booking => booking.bookingStatus === 'cancelled').length;
+    const completedBookings = bookings.filter(booking => booking.status === 'completed').length;
+    const cancelledBookings = bookings.filter(booking => booking.status === 'cancelled').length;
     const activeBookings = bookings.filter(booking => 
-      ['pending', 'assigned', 'accepted', 'picked_up', 'in_transit'].includes(booking.bookingStatus)
+      ['pending', 'driver_assigned', 'accepted', 'picked_up', 'in_transit'].includes(booking.status)
     ).length;
 
     const completionRate = totalBookings > 0 ? Math.round((completedBookings / totalBookings) * 100) : 0;

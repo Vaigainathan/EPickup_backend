@@ -1,278 +1,311 @@
-const DriverWallet = require('../models/DriverWallet');
-const CommissionTransaction = require('../models/CommissionTransaction');
-const RechargeTransaction = require('../models/RechargeTransaction');
+const { getFirestore } = require('firebase-admin/firestore');
 const { v4: uuidv4 } = require('uuid');
 
-class WalletService {
-  /**
-   * Create or get driver wallet
-   * @param {string} driverId - Driver ID
-   * @param {number} initialCredit - Initial credit amount (default: 500)
-   * @returns {Promise<Object>} Wallet details
-   */
-  async createOrGetWallet(driverId, initialCredit = 500) {
-    try {
-      let wallet = await DriverWallet.findOne({ driverId });
-      
-      if (!wallet) {
-        wallet = await DriverWallet.create({
-          
-          driverId,
-          initialCredit,
-          currentBalance: initialCredit
-        });
-      }
-      
-      return {
-        success: true,
-        wallet: {
-          driverId: wallet.driverId,
-          initialCredit: wallet.initialCredit,
-          commissionUsed: wallet.commissionUsed,
-          recharges: wallet.recharges,
-          currentBalance: wallet.currentBalance,
-          status: wallet.status,
-          canWork: wallet.canWork(),
-          isLowBalance: wallet.isLowBalance(),
-          remainingTrips: wallet.getRemainingTrips()
-        }
-      };
-    } catch (error) {
-      console.error('Error creating/getting wallet:', error);
-      return {
-        success: false,
-        error: 'Failed to create or get wallet'
-      };
-    }
+class PointsService {
+  constructor() {
+    this.db = getFirestore();
   }
 
   /**
-   * Get wallet balance and details
+   * Create or get driver points wallet
    * @param {string} driverId - Driver ID
-   * @returns {Promise<Object>} Wallet details
+   * @param {number} initialPoints - Initial points (default: 0 - no welcome bonus)
+   * @returns {Promise<Object>} Result object
    */
-  async getWalletBalance(driverId) {
+  async createOrGetPointsWallet(driverId, initialPoints = 0) {
     try {
-      const wallet = await DriverWallet.findOne({ driverId });
+      console.info(`[WALLET_SERVICE] Creating or getting points wallet for driver: ${driverId}`);
       
-      if (!wallet) {
+      // Check if points wallet already exists
+      const walletDoc = await this.db.collection('driverPointsWallets').doc(driverId).get();
+      
+      if (walletDoc.exists) {
+        console.info(`[WALLET_SERVICE] Points wallet already exists for driver: ${driverId}`);
         return {
-          success: false,
-          error: 'Wallet not found'
+          success: true,
+          message: 'Points wallet already exists',
+          wallet: walletDoc.data()
         };
       }
-      
+
+      // Create new points wallet
+      const walletData = {
+        driverId,
+        pointsBalance: initialPoints,
+        totalPointsEarned: initialPoints,
+        totalPointsSpent: 0,
+        status: 'active',
+        requiresTopUp: initialPoints === 0, // Requires top-up if no initial points
+        createdAt: new Date(),
+        lastUpdated: new Date(),
+        transactions: []
+      };
+
+      await this.db.collection('driverPointsWallets').doc(driverId).set(walletData);
+
+      console.info(`[WALLET_SERVICE] Points wallet created successfully for driver: ${driverId}`);
       return {
         success: true,
-        wallet: {
-          driverId: wallet.driverId,
-          initialCredit: wallet.initialCredit,
-          commissionUsed: wallet.commissionUsed,
-          recharges: wallet.recharges,
-          currentBalance: wallet.currentBalance,
-          status: wallet.status,
-          canWork: wallet.canWork(),
-          isLowBalance: wallet.isLowBalance(),
-          remainingTrips: wallet.getRemainingTrips(),
-          lastRechargeDate: wallet.lastRechargeDate,
-          lastCommissionDeduction: wallet.lastCommissionDeduction
-        }
+        message: 'Points wallet created successfully',
+        wallet: walletData
       };
+
     } catch (error) {
-      console.error('Error getting wallet balance:', error);
+      console.error('Error creating points wallet:', error);
       return {
         success: false,
-        error: 'Failed to get wallet balance'
+        error: 'Failed to create points wallet'
       };
     }
   }
 
   /**
-   * Deduct commission from wallet
+   * Get points wallet balance and details
+   * @param {string} driverId - Driver ID
+   * @returns {Promise<Object>} Result object
+   */
+  async getPointsBalance(driverId) {
+    try {
+      const walletDoc = await this.db.collection('driverPointsWallets').doc(driverId).get();
+      
+      if (!walletDoc.exists) {
+        return {
+          success: false,
+          error: 'Points wallet not found'
+        };
+      }
+
+      const walletData = walletDoc.data();
+      
+      // Get work eligibility status
+      const canWorkResult = await this.canDriverWork(driverId);
+      const canWork = canWorkResult.success ? canWorkResult.canWork : false;
+      
+      return {
+        success: true,
+        wallet: {
+          driverId: walletData.driverId,
+          pointsBalance: walletData.pointsBalance,
+          totalPointsEarned: walletData.totalPointsEarned,
+          totalPointsSpent: walletData.totalPointsSpent,
+          status: walletData.status,
+          requiresTopUp: walletData.requiresTopUp,
+          canWork: canWork,
+          isLowBalance: this.isLowBalance(walletData.pointsBalance),
+          remainingTrips: this.getRemainingTrips(walletData.pointsBalance),
+          lastUpdated: walletData.lastUpdated
+        }
+      };
+    } catch (error) {
+      console.error('Error getting points balance:', error);
+      return {
+        success: false,
+        error: 'Failed to get points balance'
+      };
+    }
+  }
+
+  /**
+   * Add points to driver wallet (from real money top-up)
+   * @param {string} driverId - Driver ID
+   * @param {number} realMoneyAmount - Real money amount paid
+   * @param {string} paymentMethod - Payment method used
+   * @param {Object} paymentDetails - Payment details
+   * @returns {Promise<Object>} Result object
+   */
+  async addPoints(driverId, realMoneyAmount, paymentMethod, paymentDetails = {}) {
+    const batch = this.db.batch();
+    
+    try {
+      console.info(`[WALLET_SERVICE] Adding points for driver: ${driverId}, amount: ₹${realMoneyAmount}`);
+      
+      // 1:1 conversion rate (1 rupee = 1 point)
+      const pointsToAdd = realMoneyAmount;
+      
+      // Get current wallet
+      const walletDoc = await this.db.collection('driverPointsWallets').doc(driverId).get();
+      
+      let currentWallet;
+      if (!walletDoc.exists) {
+        // Create wallet if it doesn't exist
+        await this.createOrGetPointsWallet(driverId, 0);
+        // Fetch the newly created wallet data
+        const newWalletDoc = await this.db.collection('driverPointsWallets').doc(driverId).get();
+        currentWallet = newWalletDoc.data();
+      } else {
+        currentWallet = walletDoc.data();
+      }
+      
+      const newPointsBalance = (currentWallet?.pointsBalance || 0) + pointsToAdd;
+      const newTotalEarned = (currentWallet?.totalPointsEarned || 0) + pointsToAdd;
+
+      // Update points wallet
+      const walletRef = this.db.collection('driverPointsWallets').doc(driverId);
+      batch.update(walletRef, {
+        pointsBalance: newPointsBalance,
+        totalPointsEarned: newTotalEarned,
+        requiresTopUp: false,
+        lastUpdated: new Date()
+      });
+
+      // Create points transaction
+      const transactionId = uuidv4();
+      const transactionRef = this.db.collection('pointsTransactions').doc(transactionId);
+      batch.set(transactionRef, {
+        id: transactionId,
+        driverId,
+        type: 'credit',
+        pointsAmount: pointsToAdd,
+        realMoneyAmount: realMoneyAmount,
+        previousBalance: currentWallet?.pointsBalance || 0,
+        newBalance: newPointsBalance,
+        paymentMethod,
+        paymentDetails,
+        status: 'completed',
+        createdAt: new Date()
+      });
+
+      // Create real money revenue record for company
+      const revenueId = uuidv4();
+      const revenueRef = this.db.collection('companyRevenue').doc(revenueId);
+      batch.set(revenueRef, {
+        id: revenueId,
+        source: 'driver_topup',
+        amount: realMoneyAmount,
+        driverId,
+        paymentMethod,
+        paymentDetails,
+        pointsAwarded: pointsToAdd,
+        createdAt: new Date()
+      });
+
+      // Commit all operations atomically
+      await batch.commit();
+
+      console.info(`[WALLET_SERVICE] Points added successfully: ${pointsToAdd} points for ₹${realMoneyAmount}`);
+      
+      return {
+        success: true,
+        message: 'Points added successfully',
+        data: {
+          pointsAdded: pointsToAdd,
+          newBalance: newPointsBalance,
+          realMoneyAmount: realMoneyAmount,
+          transactionId
+        }
+      };
+
+    } catch (error) {
+      console.error('Error adding points:', error);
+      
+      // No rollback needed - Firestore batch operations are atomic
+      // If batch.commit() fails, no changes are applied
+      
+      // Return detailed error information
+      return {
+        success: false,
+        error: 'Failed to add points',
+        details: error.message,
+        code: 'POINTS_ADD_ERROR',
+        timestamp: new Date().toISOString()
+      };
+    }
+  }
+
+  /**
+   * Deduct points for commission
    * @param {string} driverId - Driver ID
    * @param {string} tripId - Trip ID
    * @param {number} distanceKm - Distance in kilometers
-   * @param {number} commissionAmount - Commission amount to deduct
-   * @param {Object} tripDetails - Trip details for transaction record
-   * @returns {Promise<Object>} Deduction result
+   * @param {number} pointsAmount - Points to deduct
+   * @param {Object} tripDetails - Trip details
+   * @returns {Promise<Object>} Result object
    */
-  async deductCommission(driverId, tripId, distanceKm, commissionAmount, tripDetails = {}) {
+  async deductPoints(driverId, tripId, distanceKm, pointsAmount, tripDetails = {}) {
+    const batch = this.db.batch();
+    
     try {
-      const wallet = await DriverWallet.findOne({ driverId });
+      console.info(`[WALLET_SERVICE] Deducting points for driver: ${driverId}, amount: ${pointsAmount} points`);
       
-      if (!wallet) {
+      // Get current wallet
+      const walletDoc = await this.db.collection('driverPointsWallets').doc(driverId).get();
+      
+      if (!walletDoc.exists) {
         return {
           success: false,
-          error: 'Wallet not found'
+          error: 'Points wallet not found'
         };
       }
-      
-      if (wallet.status !== 'active') {
+
+      const currentWallet = walletDoc.data();
+      const currentBalance = currentWallet.pointsBalance;
+
+      // Check if sufficient balance
+      if (currentBalance < pointsAmount) {
         return {
           success: false,
-          error: 'Wallet is not active'
+          error: 'Insufficient points balance',
+          currentBalance,
+          requiredAmount: pointsAmount
         };
       }
-      
-      if (wallet.currentBalance < commissionAmount) {
-        return {
-          success: false,
-          error: 'Insufficient balance',
-          required: commissionAmount,
-          available: wallet.currentBalance
-        };
-      }
-      
-      const walletBalanceBefore = wallet.currentBalance;
-      
-      // Update wallet
-      wallet.commissionUsed += commissionAmount;
-      wallet.lastCommissionDeduction = new Date();
-      await wallet.save();
-      
-      // Create commission transaction record
-      const commissionTransaction = await CommissionTransaction.create({
+
+      const newBalance = currentBalance - pointsAmount;
+      const newTotalSpent = (currentWallet.totalPointsSpent || 0) + pointsAmount;
+
+      // Update points wallet
+      const walletRef = this.db.collection('driverPointsWallets').doc(driverId);
+      batch.update(walletRef, {
+        pointsBalance: newBalance,
+        totalPointsSpent: newTotalSpent,
+        lastUpdated: new Date()
+      });
+
+      // Create commission transaction
+      const transactionId = uuidv4();
+      const transactionRef = this.db.collection('pointsTransactions').doc(transactionId);
+      batch.set(transactionRef, {
+        id: transactionId,
         driverId,
+        type: 'debit',
+        pointsAmount: pointsAmount,
+        previousBalance: currentBalance,
+        newBalance: newBalance,
         tripId,
         distanceKm,
-        commissionAmount,
-        walletBalanceBefore,
-        walletBalanceAfter: wallet.currentBalance,
-        pickupLocation: tripDetails.pickupLocation || {},
-        dropoffLocation: tripDetails.dropoffLocation || {},
-        tripFare: tripDetails.tripFare || 0,
-        status: 'completed'
+        tripDetails,
+        status: 'completed',
+        createdAt: new Date()
       });
-      
-      return {
-        success: true,
-        commissionDeducted: commissionAmount,
-        newBalance: wallet.currentBalance,
-        transactionId: commissionTransaction.id,
-        canWork: wallet.canWork(),
-        isLowBalance: wallet.isLowBalance(),
-        remainingTrips: wallet.getRemainingTrips()
-      };
-    } catch (error) {
-      console.error('Error deducting commission:', error);
-      return {
-        success: false,
-        error: 'Failed to deduct commission'
-      };
-    }
-  }
 
-  /**
-   * Process wallet recharge
-   * @param {string} driverId - Driver ID
-   * @param {number} amount - Recharge amount
-   * @param {string} paymentMethod - Payment method
-   * @param {Object} paymentDetails - Payment gateway details
-   * @returns {Promise<Object>} Recharge result
-   */
-  async processRecharge(driverId, amount, paymentMethod, paymentDetails = {}) {
-    try {
-      const wallet = await DriverWallet.findOne({ driverId });
-      
-      if (!wallet) {
-        return {
-          success: false,
-          error: 'Wallet not found'
-        };
-      }
-      
-      if (wallet.status !== 'active') {
-        return {
-          success: false,
-          error: 'Wallet is not active'
-        };
-      }
-      
-      const walletBalanceBefore = wallet.currentBalance;
-      const transactionId = uuidv4();
-      
-      // Create recharge transaction
-      const rechargeTransaction = await RechargeTransaction.create({
-        driverId,
-        amount,
-        paymentMethod,
-        paymentGateway: paymentDetails.gateway || 'phonepe',
-        transactionId,
-        gatewayTransactionId: paymentDetails.gatewayTransactionId || null,
-        status: 'pending',
-        walletBalanceBefore,
-        walletBalanceAfter: walletBalanceBefore,
-        receiptUrl: paymentDetails.receiptUrl || null,
-        notes: paymentDetails.notes || ''
-      });
-      
-      return {
-        success: true,
-        transactionId: rechargeTransaction.id,
-        rechargeTransaction: rechargeTransaction.toObject()
-      };
-    } catch (error) {
-      console.error('Error processing recharge:', error);
-      return {
-        success: false,
-        error: 'Failed to process recharge'
-      };
-    }
-  }
+      // Commit all operations atomically
+      await batch.commit();
 
-  /**
-   * Complete recharge transaction
-   * @param {string} transactionId - Transaction ID
-   * @param {string} status - Transaction status
-   * @param {Object} paymentDetails - Updated payment details
-   * @returns {Promise<Object>} Completion result
-   */
-  async completeRecharge(transactionId, status, paymentDetails = {}) {
-    try {
-      const rechargeTransaction = await RechargeTransaction.findOne({ transactionId });
-      
-      if (!rechargeTransaction) {
-        return {
-          success: false,
-          error: 'Recharge transaction not found'
-        };
-      }
-      
-      const wallet = await DriverWallet.findOne({ driverId: rechargeTransaction.driverId });
-      
-      if (!wallet) {
-        return {
-          success: false,
-          error: 'Wallet not found'
-        };
-      }
-      
-      // Update transaction
-      rechargeTransaction.status = status;
-      rechargeTransaction.gatewayTransactionId = paymentDetails.gatewayTransactionId || rechargeTransaction.gatewayTransactionId;
-      rechargeTransaction.failureReason = paymentDetails.failureReason || null;
-      rechargeTransaction.receiptUrl = paymentDetails.receiptUrl || rechargeTransaction.receiptUrl;
-      
-      if (status === 'completed') {
-        // Update wallet
-        wallet.recharges += rechargeTransaction.amount;
-        wallet.lastRechargeDate = new Date();
-        rechargeTransaction.walletBalanceAfter = wallet.currentBalance;
-        await wallet.save();
-      }
-      
-      await rechargeTransaction.save();
+      console.info(`[WALLET_SERVICE] Points deducted successfully: ${pointsAmount} points`);
       
       return {
         success: true,
-        transaction: rechargeTransaction.toObject(),
-        wallet: wallet.toObject()
+        message: 'Points deducted successfully',
+        data: {
+          pointsDeducted: pointsAmount,
+          newBalance: newBalance,
+          transactionId
+        }
       };
+
     } catch (error) {
-      console.error('Error completing recharge:', error);
+      console.error('Error deducting points:', error);
+      
+      // No rollback needed - Firestore batch operations are atomic
+      // If batch.commit() fails, no changes are applied
+      
+      // Return detailed error information
       return {
         success: false,
-        error: 'Failed to complete recharge'
+        error: 'Failed to deduct points',
+        details: error.message,
+        code: 'POINTS_DEDUCT_ERROR',
+        timestamp: new Date().toISOString()
       };
     }
   }
@@ -281,43 +314,24 @@ class WalletService {
    * Get transaction history
    * @param {string} driverId - Driver ID
    * @param {Object} filters - Filter options
-   * @returns {Promise<Object>} Transaction history
+   * @returns {Promise<Object>} Result object
    */
   async getTransactionHistory(driverId, filters = {}) {
     try {
-      const { type = 'all', limit = 50, offset = 0 } = filters;
-      
-      let commissionTransactions = [];
-      let rechargeTransactions = [];
-      
-      if (type === 'all' || type === 'commission') {
-        commissionTransactions = await CommissionTransaction.find(
-          { driverId },
-          { createdAt: -1 }
-        );
+      let query = this.db.collection('pointsTransactions')
+        .where('driverId', '==', driverId)
+        .orderBy('createdAt', 'desc');
+
+      if (filters.limit) {
+        query = query.limit(filters.limit);
       }
-      
-      if (type === 'all' || type === 'recharge') {
-        rechargeTransactions = await RechargeTransaction.find(
-          { driverId },
-          { createdAt: -1 }
-        );
-      }
-      
-      // Combine and sort transactions
-      const allTransactions = [
-        ...commissionTransactions.map(t => ({ ...t.toObject(), type: 'commission' })),
-        ...rechargeTransactions.map(t => ({ ...t.toObject(), type: 'recharge' }))
-      ].sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
-      
-      // Apply pagination
-      const paginatedTransactions = allTransactions.slice(offset, offset + limit);
-      
+
+      const snapshot = await query.get();
+      const transactions = snapshot.docs.map(doc => doc.data());
+
       return {
         success: true,
-        transactions: paginatedTransactions,
-        total: allTransactions.length,
-        hasMore: offset + limit < allTransactions.length
+        transactions
       };
     } catch (error) {
       console.error('Error getting transaction history:', error);
@@ -329,28 +343,76 @@ class WalletService {
   }
 
   /**
+   * Check if driver can work
+   * @param {string} driverId - Driver ID
+   * @returns {Promise<Object>} Result object
+   */
+  async canDriverWork(driverId) {
+    try {
+      const walletDoc = await this.db.collection('driverPointsWallets').doc(driverId).get();
+      
+      if (!walletDoc.exists) {
+        return {
+          success: false,
+          canWork: false,
+          reason: 'Points wallet not found'
+        };
+      }
+
+      const walletData = walletDoc.data();
+      const canWork = walletData.pointsBalance >= 250; // Minimum 250 points required (₹250)
+
+      return {
+        success: true,
+        canWork,
+        currentBalance: walletData.pointsBalance,
+        requiresTopUp: walletData.requiresTopUp
+      };
+    } catch (error) {
+      console.error('Error checking work status:', error);
+      return {
+        success: false,
+        canWork: false,
+        error: 'Failed to check work status'
+      };
+    }
+  }
+
+  /**
+   * Check if balance is low
+   * @param {number} pointsBalance - Current points balance
+   * @returns {boolean} True if low balance
+   */
+  isLowBalance(pointsBalance) {
+    return pointsBalance < 100; // Low balance threshold
+  }
+
+  /**
+   * Get remaining trips possible
+   * @param {number} pointsBalance - Current points balance
+   * @param {number} commissionPerKm - Commission per km (default: 2 points)
+   * @returns {number} Number of trips possible
+   */
+  getRemainingTrips(pointsBalance, commissionPerKm = 2) {
+    return Math.floor(pointsBalance / commissionPerKm);
+  }
+
+  /**
    * Update wallet status
    * @param {string} driverId - Driver ID
    * @param {string} status - New status
-   * @returns {Promise<Object>} Update result
+   * @returns {Promise<Object>} Result object
    */
   async updateWalletStatus(driverId, status) {
     try {
-      const wallet = await DriverWallet.findOne({ driverId });
-      
-      if (!wallet) {
-        return {
-          success: false,
-          error: 'Wallet not found'
-        };
-      }
-      
-      wallet.status = status;
-      await wallet.save();
-      
+      await this.db.collection('driverPointsWallets').doc(driverId).update({
+        status,
+        lastUpdated: new Date()
+      });
+
       return {
         success: true,
-        wallet: wallet.toObject()
+        message: 'Wallet status updated successfully'
       };
     } catch (error) {
       console.error('Error updating wallet status:', error);
@@ -364,89 +426,43 @@ class WalletService {
   /**
    * Get wallet statistics
    * @param {string} driverId - Driver ID
-   * @returns {Promise<Object>} Wallet statistics
+   * @returns {Promise<Object>} Result object
    */
-  async getWalletStatistics(driverId) {
+  async getWalletStats(driverId) {
     try {
-      const wallet = await DriverWallet.findOne({ driverId });
+      const walletDoc = await this.db.collection('driverPointsWallets').doc(driverId).get();
       
-      if (!wallet) {
+      if (!walletDoc.exists) {
         return {
           success: false,
-          error: 'Wallet not found'
+          error: 'Points wallet not found'
         };
       }
-      
-      // Get transaction counts
-      const commissionTransactions = await CommissionTransaction.find({ driverId });
-      const rechargeTransactions = await RechargeTransaction.find({ driverId });
-      
-      const totalCommissionDeducted = commissionTransactions.reduce((sum, t) => sum + t.commissionAmount, 0);
-      const totalRecharged = rechargeTransactions
-        .filter(t => t.status === 'completed')
-        .reduce((sum, t) => sum + t.amount, 0);
+
+      const walletData = walletDoc.data();
       
       return {
         success: true,
-        statistics: {
-          totalTrips: commissionTransactions.length,
-          totalCommissionDeducted,
-          totalRecharged,
-          averageCommissionPerTrip: commissionTransactions.length > 0 ? totalCommissionDeducted / commissionTransactions.length : 0,
-          successfulRecharges: rechargeTransactions.filter(t => t.status === 'completed').length,
-          failedRecharges: rechargeTransactions.filter(t => t.status === 'failed').length,
-          wallet: wallet.toObject()
+        stats: {
+          currentBalance: walletData.pointsBalance,
+          totalEarned: walletData.totalPointsEarned,
+          totalSpent: walletData.totalPointsSpent,
+          remainingTrips: this.getRemainingTrips(walletData.pointsBalance),
+          isLowBalance: this.isLowBalance(walletData.pointsBalance),
+          canWork: this.canDriverWork(driverId),
+          status: walletData.status
         }
       };
     } catch (error) {
-      console.error('Error getting wallet statistics:', error);
+      console.error('Error getting wallet stats:', error);
       return {
         success: false,
-        error: 'Failed to get wallet statistics'
-      };
-    }
-  }
-
-  /**
-   * Get wallet stats (alias for getWalletStatistics)
-   * @param {string} driverId - Driver ID
-   * @returns {Promise<Object>} Wallet statistics
-   */
-  async getWalletStats(driverId) {
-    return this.getWalletStatistics(driverId);
-  }
-
-  /**
-   * Check if driver can work based on wallet balance
-   * @param {string} driverId - Driver ID
-   * @returns {Promise<Object>} Work status
-   */
-  async canDriverWork(driverId) {
-    try {
-      const wallet = await DriverWallet.findOne({ driverId });
-      
-      if (!wallet) {
-        return {
-          success: false,
-          error: 'Wallet not found'
-        };
-      }
-      
-      return {
-        success: true,
-        canWork: wallet.canWork(),
-        currentBalance: wallet.currentBalance,
-        isLowBalance: wallet.isLowBalance(),
-        remainingTrips: wallet.getRemainingTrips()
-      };
-    } catch (error) {
-      console.error('Error checking driver work status:', error);
-      return {
-        success: false,
-        error: 'Failed to check driver work status'
+        error: 'Failed to get wallet stats'
       };
     }
   }
 }
 
-module.exports = new WalletService();
+// Export as both WalletService and PointsService for backward compatibility
+module.exports = new PointsService();
+module.exports.PointsService = PointsService;

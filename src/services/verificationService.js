@@ -1049,4 +1049,24 @@ class VerificationService {
   }
 }
 
-module.exports = new VerificationService();
+// Use lazy initialization to avoid Firebase initialization issues
+let verificationServiceInstance = null;
+
+function getVerificationService() {
+  if (!verificationServiceInstance) {
+    verificationServiceInstance = new VerificationService();
+  }
+  return verificationServiceInstance;
+}
+
+// Export a proxy object that creates the instance only when methods are called
+const lazyVerificationService = new Proxy({}, {
+  get(target, prop) {
+    const instance = getVerificationService();
+    return instance[prop];
+  }
+});
+
+module.exports = lazyVerificationService;
+module.exports.VerificationService = VerificationService;
+module.exports.getVerificationService = getVerificationService;

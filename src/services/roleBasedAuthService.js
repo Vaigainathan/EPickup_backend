@@ -286,4 +286,24 @@ class RoleBasedAuthService {
   }
 }
 
-module.exports = new RoleBasedAuthService();
+// Use lazy initialization to avoid Firebase initialization issues
+let roleBasedAuthServiceInstance = null;
+
+function getRoleBasedAuthService() {
+  if (!roleBasedAuthServiceInstance) {
+    roleBasedAuthServiceInstance = new RoleBasedAuthService();
+  }
+  return roleBasedAuthServiceInstance;
+}
+
+// Export a proxy object that creates the instance only when methods are called
+const lazyRoleBasedAuthService = new Proxy({}, {
+  get(target, prop) {
+    const instance = getRoleBasedAuthService();
+    return instance[prop];
+  }
+});
+
+module.exports = lazyRoleBasedAuthService;
+module.exports.RoleBasedAuthService = RoleBasedAuthService;
+module.exports.getRoleBasedAuthService = getRoleBasedAuthService;

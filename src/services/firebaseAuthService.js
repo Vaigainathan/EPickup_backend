@@ -377,4 +377,24 @@ class FirebaseAuthService {
   }
 }
 
-module.exports = new FirebaseAuthService();
+// Use lazy initialization to avoid Firebase initialization issues
+let firebaseAuthServiceInstance = null;
+
+function getFirebaseAuthService() {
+  if (!firebaseAuthServiceInstance) {
+    firebaseAuthServiceInstance = new FirebaseAuthService();
+  }
+  return firebaseAuthServiceInstance;
+}
+
+// Export a proxy object that creates the instance only when methods are called
+const lazyFirebaseAuthService = new Proxy({}, {
+  get(target, prop) {
+    const instance = getFirebaseAuthService();
+    return instance[prop];
+  }
+});
+
+module.exports = lazyFirebaseAuthService;
+module.exports.FirebaseAuthService = FirebaseAuthService;
+module.exports.getFirebaseAuthService = getFirebaseAuthService;

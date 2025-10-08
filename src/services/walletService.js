@@ -464,5 +464,24 @@ class PointsService {
 }
 
 // Export as both WalletService and PointsService for backward compatibility
-module.exports = new PointsService();
+// Use lazy initialization to avoid Firebase initialization issues
+let pointsServiceInstance = null;
+
+function getPointsService() {
+  if (!pointsServiceInstance) {
+    pointsServiceInstance = new PointsService();
+  }
+  return pointsServiceInstance;
+}
+
+// Export a proxy object that creates the instance only when methods are called
+const lazyPointsService = new Proxy({}, {
+  get(target, prop) {
+    const instance = getPointsService();
+    return instance[prop];
+  }
+});
+
+module.exports = lazyPointsService;
 module.exports.PointsService = PointsService;
+module.exports.getPointsService = getPointsService;

@@ -216,15 +216,31 @@ router.get('/verify/:transactionId',
 router.post('/phonepe/callback',
   async (req, res) => {
     try {
-      const result = await phonepeService.handlePaymentCallback(req.body);
+      console.log('📥 [PAYMENTS] Received PhonePe callback');
+      
+      // Intelligent service selection (same logic as driver route)
+      const phonepeService = require('../services/phonepeService');
+      const mockPaymentService = require('../services/mockPaymentService');
+      
+      const isPhonePeConfigured = process.env.PHONEPE_MERCHANT_ID && 
+                                   process.env.PHONEPE_MERCHANT_ID !== 'PGTESTPAYUAT' &&
+                                   process.env.PHONEPE_SALT_KEY &&
+                                   process.env.PHONEPE_SALT_KEY.length > 20;
+      
+      const callbackService = isPhonePeConfigured ? phonepeService : mockPaymentService;
+      console.log(`🔧 [PAYMENTS] Using ${isPhonePeConfigured ? 'Real PhonePe' : 'Mock Payment'} callback handler`);
+      
+      const result = await callbackService.handlePaymentCallback(req.body);
 
       if (result.success) {
+        console.log('✅ [PAYMENTS] Callback processed successfully');
         res.json({
           success: true,
           message: 'Callback processed successfully',
           timestamp: new Date().toISOString()
         });
       } else {
+        console.warn('⚠️ [PAYMENTS] Callback processing failed:', result.error);
         res.status(400).json({
           success: false,
           message: 'Callback processing failed',
@@ -233,7 +249,7 @@ router.post('/phonepe/callback',
         });
       }
     } catch (error) {
-      console.error('Payment callback error:', error);
+      console.error('❌ [PAYMENTS] Payment callback error:', error);
       res.status(500).json({
         success: false,
         message: 'Internal server error',

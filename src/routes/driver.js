@@ -3826,8 +3826,26 @@ router.post('/wallet/top-up', [
       } : {})
     };
     
-    // Create PhonePe payment for wallet top-up
+    // Intelligent payment service selection
+    // Automatically uses mock if PhonePe credentials not configured
     const phonepeService = require('../services/phonepeService');
+    const mockPaymentService = require('../services/mockPaymentService');
+    
+    // Check if PhonePe is properly configured
+    const isPhonePeConfigured = process.env.PHONEPE_MERCHANT_ID && 
+                                 process.env.PHONEPE_MERCHANT_ID !== 'PGTESTPAYUAT' &&
+                                 process.env.PHONEPE_SALT_KEY &&
+                                 process.env.PHONEPE_SALT_KEY.length > 20;
+    
+    // Select payment service based on configuration
+    const paymentService = isPhonePeConfigured ? phonepeService : mockPaymentService;
+    const paymentMode = isPhonePeConfigured ? 'PRODUCTION' : 'TESTING';
+    
+    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+    console.log(`💳 [WALLET_TOP_UP] Payment Mode: ${paymentMode}`);
+    console.log(`🔧 [WALLET_TOP_UP] Service: ${isPhonePeConfigured ? 'Real PhonePe' : 'Mock Payment (Sandbox)'}`);
+    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+    
     const transactionId = `WALLET_${uid}_${Date.now()}`;
     
     // Store pending wallet transaction in driverTopUps collection
@@ -3850,13 +3868,18 @@ router.post('/wallet/top-up', [
       updatedAt: new Date()
     });
     
-    // Create PhonePe payment request
-    const paymentResult = await phonepeService.createPayment({
+    // Create payment request (works with both real PhonePe and mock)
+    const paymentResult = await paymentService.createPayment({
       transactionId: transactionId,
+      merchantTransactionId: transactionId,
+      merchantUserId: uid,
       amount: amount,
-      customerId: uid,
-      bookingId: 'wallet-topup',
-      customerPhone: req.user.phone || '9999999999' // Use test phone for sandbox
+      customerId: uid, // Legacy param for compatibility
+      mobileNumber: req.user.phone || '+919999999999',
+      customerPhone: req.user.phone || '+919999999999', // Legacy param
+      callbackUrl: `${process.env.API_BASE_URL || 'https://epickup-backend.onrender.com'}/api/payments/phonepe/callback`,
+      redirectUrl: 'epickup://payment/callback',
+      bookingId: 'wallet-topup'
     });
     
     if (paymentResult.success) {
@@ -3869,13 +3892,15 @@ router.post('/wallet/top-up', [
       
       res.status(200).json({
         success: true,
-        message: 'Payment request created successfully',
+        message: `Payment request created successfully (${paymentMode} mode)`,
         data: {
           transactionId: transactionId,
           paymentUrl: paymentResult.data.paymentUrl,
           merchantTransactionId: paymentResult.data.merchantTransactionId,
           amount: amount,
-          paymentMethod: paymentMethod
+          paymentMethod: paymentMethod,
+          paymentMode: paymentMode, // Let frontend know which mode
+          isMockPayment: !isPhonePeConfigured // Explicit flag
         },
         timestamp: new Date().toISOString()
       });

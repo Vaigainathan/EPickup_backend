@@ -472,6 +472,60 @@ app.use('/api/driver', appCheckMiddleware.optionalMiddleware(), authMiddleware, 
 app.use('/api/bookings', appCheckMiddleware.optionalMiddleware(), authMiddleware, bookingRoutes);
 // app.use('/api/bookings', appCheckMiddleware.middleware(), authMiddleware, bookingRoutes); // Production mode
 
+// ✅ PAYMENT WEBHOOKS MUST BE PUBLIC (no auth middleware)
+// Payment gateway webhooks don't have user tokens - they use signature verification
+// Register webhook route BEFORE the authenticated payment routes
+const phonepeService = require('./services/phonepeService');
+const mockPaymentService = require('./services/mockPaymentService');
+app.post('/api/payments/phonepe/callback', 
+  appCheckMiddleware.optionalMiddleware(),
+  async (req, res) => {
+    try {
+      console.log('📥 [WEBHOOK] Received PhonePe callback (public endpoint)');
+      
+      // Intelligent service selection
+      const isPhonePeConfigured = process.env.PHONEPE_MERCHANT_ID && 
+                                   process.env.PHONEPE_MERCHANT_ID !== 'PGTESTPAYUAT' &&
+                                   process.env.PHONEPE_SALT_KEY &&
+                                   process.env.PHONEPE_SALT_KEY.length > 20;
+      
+      const callbackService = isPhonePeConfigured ? phonepeService : mockPaymentService;
+      console.log(`🔧 [WEBHOOK] Using ${isPhonePeConfigured ? 'Real PhonePe' : 'Mock Payment'} callback handler`);
+      
+      const result = await callbackService.handlePaymentCallback(req.body);
+
+      if (result.success) {
+        console.log('✅ [WEBHOOK] Callback processed successfully');
+        res.json({
+          success: true,
+          message: 'Callback processed successfully',
+          timestamp: new Date().toISOString()
+        });
+      } else {
+        console.warn('⚠️ [WEBHOOK] Callback processing failed:', result.error);
+        res.status(400).json({
+          success: false,
+          message: 'Callback processing failed',
+          error: result.error,
+          timestamp: new Date().toISOString()
+        });
+      }
+    } catch (error) {
+      console.error('❌ [WEBHOOK] Payment callback error:', error);
+      res.status(500).json({
+        success: false,
+        message: 'Internal server error',
+        error: {
+          code: 'CALLBACK_ERROR',
+          message: error.message
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+  }
+);
+
+// All other payment routes require authentication
 app.use('/api/payments', appCheckMiddleware.optionalMiddleware(), authMiddleware, paymentRoutes);
 // app.use('/api/payments', appCheckMiddleware.middleware(), authMiddleware, paymentRoutes); // Production mode
 

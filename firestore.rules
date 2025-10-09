@@ -215,7 +215,15 @@ service cloud.firestore {
         (resource.data.driverId == request.auth.uid || 
          request.auth.token.role == 'admin' || 
          request.auth.token.userType == 'admin');
-      allow write: if request.auth != null && 
+      
+      // ✅ FIX: Allow drivers to CREATE their own documents
+      allow create: if request.auth != null && 
+        request.resource.data.driverId == request.auth.uid &&
+        request.auth.token.userType == 'driver' &&
+        request.resource.data.keys().hasAll(['driverId', 'documentType', 'documentUrl', 'status', 'uploadedAt']);
+      
+      // Only admin can UPDATE/DELETE (for approval/rejection)
+      allow update, delete: if request.auth != null && 
         (request.auth.token.role == 'admin' || request.auth.token.userType == 'admin');
     }
 

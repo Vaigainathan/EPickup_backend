@@ -3795,7 +3795,10 @@ router.post('/wallet/top-up', [
   body('paymentDetails')
     .optional()
     .isObject()
-    .withMessage('Payment details must be an object')
+    .withMessage('Payment details must be an object'),
+  body('idempotencyKey')
+    .isString()
+    .withMessage('Idempotency key is required for duplicate prevention')
 ], async (req, res) => {
   try {
     const errors = validationResult(req);
@@ -3812,7 +3815,7 @@ router.post('/wallet/top-up', [
     }
 
     const { uid } = req.user;
-    const { amount, paymentMethod, paymentDetails } = req.body;
+    const { amount, paymentMethod, paymentDetails, idempotencyKey } = req.body;
     
     // Sanitize payment details
     const sanitizedPaymentDetails = {
@@ -3851,6 +3854,35 @@ router.post('/wallet/top-up', [
     // Store pending wallet transaction in driverTopUps collection
     const { getFirestore } = require('../services/firebase');
     const db = getFirestore();
+    
+    // ✅ IDEMPOTENCY CHECK - Prevent duplicate top-ups
+    console.log('🔍 [IDEMPOTENCY] Checking for existing transaction with key:', idempotencyKey);
+    const existingTopUp = await db.collection('driverTopUps')
+      .where('driverId', '==', uid)
+      .where('idempotencyKey', '==', idempotencyKey)
+      .limit(1)
+      .get();
+    
+    if (!existingTopUp.empty) {
+      const existingData = existingTopUp.docs[0].data();
+      console.log('⚠️ [IDEMPOTENCY] Duplicate request detected, returning existing result');
+      return res.status(200).json({
+        success: true,
+        message: 'Top-up already processed (duplicate request prevented)',
+        data: {
+          transactionId: existingData.id,
+          paymentUrl: existingData.phonepePaymentUrl,
+          merchantTransactionId: existingData.phonepeTransactionId,
+          amount: existingData.amount,
+          paymentMethod: existingData.paymentMethod,
+          status: existingData.status,
+          isDuplicate: true
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+    console.log('✅ [IDEMPOTENCY] No duplicate found, proceeding with new transaction');
+    
     const walletTransactionRef = db.collection('driverTopUps').doc(transactionId);
     
     await walletTransactionRef.set({
@@ -3864,6 +3896,7 @@ router.post('/wallet/top-up', [
       pointsAwarded: 0,
       newPointsBalance: 0,
       paymentDetails: sanitizedPaymentDetails,
+      idempotencyKey: idempotencyKey, // Store for duplicate detection
       createdAt: new Date(),
       updatedAt: new Date()
     });

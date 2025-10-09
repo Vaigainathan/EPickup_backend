@@ -64,7 +64,10 @@ router.post('/', [
   body('estimatedDeliveryTime')
     .optional()
     .isISO8601()
-    .withMessage('Estimated delivery time must be a valid ISO 8601 date')
+    .withMessage('Estimated delivery time must be a valid ISO 8601 date'),
+  body('idempotencyKey')
+    .isString()
+    .withMessage('Idempotency key is required for duplicate prevention')
 ], async (req, res) => {
   try {
     // Check validation errors
@@ -81,9 +84,36 @@ router.post('/', [
       });
     }
 
+    const { idempotencyKey } = req.body;
+    const db = getFirestore();
+
+    // ✅ IDEMPOTENCY CHECK - Prevent duplicate bookings
+    console.log('🔍 [IDEMPOTENCY] Checking for existing booking with key:', idempotencyKey);
+    const existingBooking = await db.collection('bookings')
+      .where('customerId', '==', req.user.uid)
+      .where('idempotencyKey', '==', idempotencyKey)
+      .limit(1)
+      .get();
+
+    if (!existingBooking.empty) {
+      const existingData = existingBooking.docs[0].data();
+      console.log('⚠️ [IDEMPOTENCY] Duplicate request detected, returning existing booking');
+      return res.status(200).json({
+        success: true,
+        message: 'Booking already created (duplicate request prevented)',
+        data: {
+          booking: existingData,
+          isDuplicate: true
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+    console.log('✅ [IDEMPOTENCY] No duplicate found, proceeding with new booking');
+
     const bookingData = {
       ...req.body,
-      customerId: req.user.uid
+      customerId: req.user.uid,
+      idempotencyKey: idempotencyKey // Store for future duplicate checks
     };
 
     // Create booking with atomic transaction

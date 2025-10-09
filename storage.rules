@@ -62,11 +62,24 @@ service firebase.storage {
     }
     
     // Verification photos (for bookings)
+    // ✅ FIX: Only allow participants of the booking to access verification photos
     match /verifications/{bookingId}/{document=**} {
-      allow read: if isAuthenticated() && 
-        (isDriver() || isCustomer() || isAdmin());
-      allow write: if isAuthenticated() && 
-        (isDriver() || isCustomer() || isAdmin());
+      // Only allow participants of the booking to read
+      allow read: if isAuthenticated() && (
+        isAdmin() ||
+        // Check if user is customer or driver of this booking
+        (firestore.exists(/databases/(default)/documents/bookings/$(bookingId)) &&
+         (firestore.get(/databases/(default)/documents/bookings/$(bookingId)).data.customerId == request.auth.uid ||
+          firestore.get(/databases/(default)/documents/bookings/$(bookingId)).data.driverId == request.auth.uid))
+      );
+      
+      // Only allow driver assigned to booking to write
+      allow write: if isAuthenticated() && (
+        isAdmin() ||
+        (isDriver() &&
+         firestore.exists(/databases/(default)/documents/bookings/$(bookingId)) &&
+         firestore.get(/databases/(default)/documents/bookings/$(bookingId)).data.driverId == request.auth.uid)
+      );
     }
     
     // Public documents - read-only for all, write for admin only

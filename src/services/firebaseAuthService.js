@@ -1,5 +1,5 @@
 const admin = require('firebase-admin');
-const { getFirestore } = require('./firebase');
+const { getFirestore, getFirebaseApp } = require('./firebase');
 
 /**
  * Firebase Authentication Service for Backend
@@ -32,23 +32,28 @@ class FirebaseAuthService {
         throw new Error('Firebase Admin SDK must be initialized before FirebaseAuthService');
       }
       
-      // Verify the app is actually valid
-      const app = admin.app();
+      // Get the initialized Firebase app
+      const app = getFirebaseApp();
       console.log('🔍 Checking Firebase app:', {
         appName: app?.name,
         appExists: app !== null && app !== undefined,
         hasOptions: app?.options !== null && app?.options !== undefined
       });
       
-      console.log('🔧 Initializing Firebase Auth...');
+      if (!app) {
+        throw new Error('Firebase app not initialized. Call initializeFirebase() first.');
+      }
       
-      // Try to get auth - if this fails, the app initialization failed
+      console.log('🔧 Initializing Firebase Auth from initialized app...');
+      
+      // Get auth from the INITIALIZED app, not from raw admin module
       try {
-        this.auth = admin.auth();
+        this.auth = app.auth();  // ← Use app.auth() instead of admin.auth()!
+        console.log('🔍 Got auth from app.auth()');
       } catch (authError) {
-        console.error('❌ admin.auth() threw an error:', authError.message);
+        console.error('❌ app.auth() threw an error:', authError.message);
         console.error('❌ This usually means Firebase initialization failed silently');
-        throw new Error(`Failed to get admin.auth(): ${authError.message}`);
+        throw new Error(`Failed to get app.auth(): ${authError.message}`);
       }
       
       console.log('🔍 Checking auth instance:', {

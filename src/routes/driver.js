@@ -3831,7 +3831,8 @@ router.post('/wallet/top-up', [
     const transactionId = `WALLET_${uid}_${Date.now()}`;
     
     // Store pending wallet transaction in driverTopUps collection
-    const db = require('../config/firebase').getFirestore();
+    const { getFirestore } = require('../services/firebase');
+    const db = getFirestore();
     const walletTransactionRef = db.collection('driverTopUps').doc(transactionId);
     
     await walletTransactionRef.set({

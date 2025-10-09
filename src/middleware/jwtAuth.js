@@ -1,9 +1,9 @@
-const JWTService = require('../services/jwtService');
+const jwtService = require('../services/jwtService'); // Use singleton instance
 const { getFirestore } = require('../services/firebase');
 
 class JWTAuthMiddleware {
   constructor() {
-    this.jwtService = new JWTService();
+    this.jwtService = jwtService; // Use singleton instance
   }
 
   /**

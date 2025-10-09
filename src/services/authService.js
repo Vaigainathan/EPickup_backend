@@ -1,5 +1,4 @@
 const { getFirestore } = require('./firebase');
-const JWTService = require('./jwtService');
 const crypto = require('crypto');
 
 /**
@@ -9,7 +8,7 @@ const crypto = require('crypto');
 class AuthService {
   constructor() {
     this.db = getFirestore();
-    this.jwtService = new JWTService();
+    this.jwtService = require('./jwtService'); // Use singleton instance
   }
 
   // OTP authentication handled by Firebase Auth

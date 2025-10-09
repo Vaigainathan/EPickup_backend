@@ -138,8 +138,7 @@ const initializeSocketIO = async (server) => {
         
         try {
           // Use JWT service for proper verification
-          const JWTService = require('./jwtService');
-          const jwtService = new JWTService();
+          const jwtService = require('./jwtService');
           decodedToken = jwtService.verifyToken(token);
           
           // Set user info for successful authentication

@@ -219,20 +219,24 @@ router.get('/profile', requireDriver, async (req, res) => {
     try {
       const pointsResult = await pointsService.getPointsBalance(uid);
       if (pointsResult.success) {
-        pointsWalletData = pointsResult.data;
+        // CRITICAL FIX: walletService returns data under 'wallet', not 'data'
+        pointsWalletData = pointsResult.wallet;
       }
     } catch (pointsError) {
       console.warn('⚠️ [PROFILE] Failed to get points wallet data:', pointsError.message);
     }
     
-    // Debug logging for vehicle details
+    // Debug logging for vehicle details and wallet data
     console.log('🔍 [PROFILE] Debug userData:', {
       hasDriver: !!userData.driver,
       driverKeys: userData.driver ? Object.keys(userData.driver) : [],
       vehicleDetails: userData.driver?.vehicleDetails,
       vehicleDetailsKeys: userData.driver?.vehicleDetails ? Object.keys(userData.driver.vehicleDetails) : [],
-      pointsBalance: pointsWalletData.pointsBalance,
-      requiresTopUp: pointsWalletData.requiresTopUp
+      vehicleType: userData.driver?.vehicleType,
+      hasVehicleDetails: !!userData.driver?.vehicleDetails,
+      pointsBalance: pointsWalletData?.pointsBalance,
+      requiresTopUp: pointsWalletData?.requiresTopUp,
+      walletDataKeys: pointsWalletData ? Object.keys(pointsWalletData) : []
     });
     
     // Use comprehensive verification data if available, otherwise fall back to basic data
@@ -253,8 +257,8 @@ router.get('/profile', requireDriver, async (req, res) => {
       pointsWallet: pointsWalletData,
       verificationStatus: finalVerificationStatus,
       isVerified: finalIsVerified,
-      requiresTopUp: pointsWalletData.requiresTopUp,
-      canWork: pointsWalletData.canWork
+      requiresTopUp: pointsWalletData?.requiresTopUp ?? true,
+      canWork: pointsWalletData?.canWork ?? false
     };
     
     res.status(200).json({
@@ -269,14 +273,21 @@ router.get('/profile', requireDriver, async (req, res) => {
         verificationStatus: finalVerificationStatus,
         isVerified: finalIsVerified,
         pointsWallet: pointsWalletData,
-        requiresTopUp: pointsWalletData.requiresTopUp,
-        canWork: pointsWalletData.canWork,
+        requiresTopUp: pointsWalletData?.requiresTopUp ?? true,
+        canWork: pointsWalletData?.canWork ?? false,
         driver: {
           vehicleDetails: normalizedDriver.vehicleDetails || {
-            type: 'motorcycle',
-            model: '',
-            number: '',
-            color: ''
+            vehicleType: 'motorcycle',
+            vehicleMake: '',
+            vehicleModel: '',
+            vehicleNumber: '',
+            vehicleColor: '',
+            vehicleYear: new Date().getFullYear(),
+            licenseNumber: '',
+            licenseExpiry: '',
+            rcNumber: '',
+            insuranceNumber: '',
+            insuranceExpiry: ''
           },
           verificationStatus: finalVerificationStatus,
           isOnline: normalizedDriver.isOnline || false,
@@ -290,8 +301,8 @@ router.get('/profile', requireDriver, async (req, res) => {
           },
           pointsWallet: pointsWalletData,
           currentLocation: normalizedDriver.currentLocation || null,
-          requiresTopUp: pointsWalletData.requiresTopUp,
-          canWork: pointsWalletData.canWork
+          requiresTopUp: pointsWalletData?.requiresTopUp ?? true,
+          canWork: pointsWalletData?.canWork ?? false
         }
       },
       timestamp: new Date().toISOString()

@@ -89,6 +89,16 @@ class PhonePeService {
         request: Buffer.from(payloadString).toString('base64')
       };
 
+      // Log PhonePe API call details for debugging
+      console.log('📱 [PHONEPE] Creating payment with configuration:');
+      console.log('  Merchant ID:', this.config.merchantId);
+      console.log('  Salt Index:', this.config.saltIndex);
+      console.log('  Base URL:', phonepeConfig.getBaseUrl());
+      console.log('  Transaction ID:', transactionId);
+      console.log('  Amount (paise):', amountInPaise);
+      console.log('  Callback URL:', phonepeConfig.getCallbackUrl());
+      console.log('  Checksum:', checksum.substring(0, 20) + '...');
+
       // Make API call to PhonePe
       const response = await axios.post(
         `${phonepeConfig.getBaseUrl()}/pg/v1/pay`,
@@ -101,6 +111,12 @@ class PhonePeService {
           }
         }
       );
+
+      console.log('✅ [PHONEPE] Payment API response:', {
+        success: response.data.success,
+        code: response.data.code,
+        message: response.data.message
+      });
 
       if (response.data.success) {
         // Store payment record in Firestore
@@ -135,11 +151,29 @@ class PhonePeService {
           }
         };
       } else {
+        console.error('❌ [PHONEPE] Payment creation failed:', {
+          success: response.data.success,
+          code: response.data.code,
+          message: response.data.message,
+          data: response.data.data
+        });
         throw new Error(response.data.message || 'Payment creation failed');
       }
     }, {
       context: 'Create PhonePe payment',
       maxRetries: 2
+    }).catch(error => {
+      console.error('❌ [PHONEPE] Payment API error:', {
+        message: error.message,
+        code: error.code,
+        response: error.response?.data,
+        config: {
+          merchantId: this.config.merchantId,
+          saltIndex: this.config.saltIndex,
+          baseUrl: phonepeConfig.getBaseUrl()
+        }
+      });
+      throw error;
     });
   }
 

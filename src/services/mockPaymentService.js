@@ -337,6 +337,17 @@ class MockPaymentService {
         console.warn('⚠️  [MOCK_PAYMENT] Payment not found in pending list (might be already processed)');
       }
 
+      // ✅ CRITICAL FIX: Process the wallet top-up (add points to Firestore)
+      if (state === 'COMPLETED') {
+        console.log('💰 [MOCK_PAYMENT] Processing wallet top-up in Firestore...');
+        try {
+          await this.processWalletTopupPayment(merchantTransactionId);
+          console.log('✅ [MOCK_PAYMENT] Wallet top-up processed successfully');
+        } catch (walletError) {
+          console.error('❌ [MOCK_PAYMENT] Failed to process wallet top-up:', walletError.message);
+        }
+      }
+
       console.log('✅ [MOCK_PAYMENT] Callback processed successfully');
 
       return {
@@ -350,6 +361,78 @@ class MockPaymentService {
 
     } catch (error) {
       console.error('❌ [MOCK_PAYMENT] Error handling callback:', error.message);
+      throw error;
+    }
+  }
+
+  /**
+   * Process wallet top-up payment (adds points to Firestore wallet)
+   * This mimics the real PhonePe service's processWalletTopupPayment method
+   * 
+   * @param {string} transactionId - Transaction ID
+   */
+  async processWalletTopupPayment(transactionId) {
+    try {
+      console.log(`💰 [MOCK_PAYMENT] Processing wallet top-up: ${transactionId}`);
+      
+      const { getFirestore } = require('./firebase');
+      const db = getFirestore();
+      
+      // Find wallet transaction record in driverTopUps collection
+      const walletTransactionsSnapshot = await db.collection('driverTopUps')
+        .where('phonepeTransactionId', '==', transactionId)
+        .limit(1)
+        .get();
+
+      if (walletTransactionsSnapshot.empty) {
+        console.error(`❌ [MOCK_PAYMENT] Wallet transaction not found: ${transactionId}`);
+        return;
+      }
+
+      const walletTransactionDoc = walletTransactionsSnapshot.docs[0];
+      const walletTransactionData = walletTransactionDoc.data();
+      const driverId = walletTransactionData.driverId;
+
+      console.log(`💰 [MOCK_PAYMENT] Found transaction for driver: ${driverId}`);
+
+      // Update wallet transaction status
+      await walletTransactionDoc.ref.update({
+        status: 'completed',
+        phonepePaymentId: transactionId,
+        completedAt: new Date(),
+        updatedAt: new Date()
+      });
+
+      // Add points to wallet using walletService
+      const walletService = require('./walletService');
+      const pointsResult = await walletService.addPoints(
+        driverId,
+        walletTransactionData.amount,
+        walletTransactionData.paymentMethod || 'mock_payment',
+        {
+          transactionId,
+          phonepeTransactionId: transactionId,
+          originalTransaction: walletTransactionData,
+          isMockPayment: true
+        }
+      );
+
+      if (pointsResult.success) {
+        // Update wallet transaction with points data
+        await walletTransactionDoc.ref.update({
+          pointsAwarded: pointsResult.data.pointsAdded,
+          newPointsBalance: pointsResult.data.newBalance,
+          updatedAt: new Date()
+        });
+
+        console.log(`✅ [MOCK_PAYMENT] Points added to wallet for driver ${driverId}: +${pointsResult.data.pointsAdded} points for ₹${walletTransactionData.amount}`);
+        console.log(`💰 [MOCK_PAYMENT] New balance: ${pointsResult.data.newBalance} points`);
+      } else {
+        console.error(`❌ [MOCK_PAYMENT] Failed to add points: ${pointsResult.error}`);
+      }
+
+    } catch (error) {
+      console.error('❌ [MOCK_PAYMENT] Error processing wallet top-up:', error);
       throw error;
     }
   }

@@ -32,15 +32,32 @@ class FirebaseAuthService {
         throw new Error('Firebase Admin SDK must be initialized before FirebaseAuthService');
       }
       
+      // Verify the app is actually valid
+      const app = admin.app();
+      console.log('🔍 Checking Firebase app:', {
+        appName: app?.name,
+        appExists: app !== null && app !== undefined,
+        hasOptions: app?.options !== null && app?.options !== undefined
+      });
+      
       console.log('🔧 Initializing Firebase Auth...');
-      this.auth = admin.auth();
+      
+      // Try to get auth - if this fails, the app initialization failed
+      try {
+        this.auth = admin.auth();
+      } catch (authError) {
+        console.error('❌ admin.auth() threw an error:', authError.message);
+        console.error('❌ This usually means Firebase initialization failed silently');
+        throw new Error(`Failed to get admin.auth(): ${authError.message}`);
+      }
       
       console.log('🔍 Checking auth instance:', {
         authExists: this.auth !== null && this.auth !== undefined,
         authType: typeof this.auth,
         authConstructor: this.auth?.constructor?.name,
         hasGetUser: typeof this.auth?.getUser === 'function',
-        hasGetUserByPhoneNumber: typeof this.auth?.getUserByPhoneNumber === 'function'
+        hasGetUserByPhoneNumber: typeof this.auth?.getUserByPhoneNumber === 'function',
+        authKeys: this.auth ? Object.keys(this.auth).slice(0, 5) : []
       });
       
       // Check if auth methods exist (Proxy objects might be falsy but still valid)
@@ -49,7 +66,11 @@ class FirebaseAuthService {
       }
       
       if (typeof this.auth.getUserByPhoneNumber !== 'function') {
-        throw new Error('admin.auth() does not have getUserByPhoneNumber method');
+        console.error('❌ CRITICAL: admin.auth() exists but has no getUserByPhoneNumber method');
+        console.error('❌ This means Firebase Admin SDK initialized incorrectly');
+        console.error('❌ Check your Firebase credentials and initialization');
+        console.error('❌ Available properties:', Object.keys(this.auth));
+        throw new Error('admin.auth() does not have getUserByPhoneNumber method - Firebase initialization likely failed');
       }
       
       console.log('🔧 Initializing Firestore...');

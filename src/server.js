@@ -7,6 +7,8 @@ const morgan = require('morgan');
 const compression = require('compression');
 const rateLimit = require('express-rate-limit');
 const helmet = require('helmet');
+const admin = require('firebase-admin');
+
 // Import configuration
 const { env } = require('./config');
 
@@ -76,6 +78,10 @@ const PORT = env.getServerPort();
 app.set('trust proxy', 1);
 
 // Initialize Firebase with error handling
+console.log('═══════════════════════════════════════════════════════════');
+console.log('🔥 FIREBASE INITIALIZATION STARTING...');
+console.log('═══════════════════════════════════════════════════════════');
+
 try {
   const firebaseApp = initializeFirebase();
   
@@ -84,19 +90,47 @@ try {
   }
   
   console.log('✅ Firebase Admin SDK initialization completed');
+  console.log('🔍 Verifying Firebase app validity...');
+  
+  // Test if we can actually use the auth
+  const testAuth = admin.auth();
+  console.log('🔍 Testing admin.auth():', {
+    exists: testAuth !== null && testAuth !== undefined,
+    type: typeof testAuth,
+    hasGetUser: typeof testAuth?.getUser === 'function',
+    hasGetUserByPhoneNumber: typeof testAuth?.getUserByPhoneNumber === 'function'
+  });
+  
+  if (typeof testAuth?.getUserByPhoneNumber !== 'function') {
+    throw new Error('Firebase Admin SDK initialized but auth methods are not available');
+  }
+  
+  console.log('✅ Firebase Auth methods verified');
   
   // Initialize Firebase Auth Service after Firebase is ready
   const firebaseAuthService = require('./services/firebaseAuthService');
   firebaseAuthService.initialize();
   console.log('✅ Firebase Auth Service initialized');
+  
+  console.log('═══════════════════════════════════════════════════════════');
+  console.log('✅ FIREBASE INITIALIZATION COMPLETE');
+  console.log('═══════════════════════════════════════════════════════════');
 } catch (error) {
-  console.error('❌ Firebase initialization failed:', error.message);
+  console.error('═══════════════════════════════════════════════════════════');
+  console.error('❌ FIREBASE INITIALIZATION FAILED');
+  console.error('═══════════════════════════════════════════════════════════');
+  console.error('❌ Error:', error.message);
+  console.error('❌ Stack:', error.stack);
+  console.error('');
   console.error('❌ Firebase features will NOT work. Please check:');
   console.error('   1. FIREBASE_PRIVATE_KEY environment variable');
   console.error('   2. FIREBASE_CLIENT_EMAIL environment variable'); 
   console.error('   3. FIREBASE_PROJECT_ID environment variable');
   console.error('   4. All other Firebase environment variables');
+  console.error('   5. Make sure private key is properly formatted');
+  console.error('');
   console.error('⚠️  Backend will continue but auth endpoints will fail!');
+  console.error('═══════════════════════════════════════════════════════════');
 }
 
 // Initialize Firestore Session Service (replaces Redis)

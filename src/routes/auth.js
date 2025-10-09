@@ -251,19 +251,23 @@ router.post('/firebase/verify-token', async (req, res) => {
 
     // Generate backend JWT token
     const jwtService = require('../services/jwtService');
-    const backendToken = jwtService.generateToken({
-      uid: decodedToken.uid,
-      email: decodedToken.email,
-      phone_number: decodedToken.phone_number,
+    const backendToken = jwtService.generateAccessToken({
+      userId: decodedToken.uid,
       userType: userType || 'admin',
-      name: name || decodedToken.name || decodedToken.email || decodedToken.phone_number
+      phone: decodedToken.phone_number,
+      metadata: {
+        email: decodedToken.email,
+        name: name || decodedToken.name || decodedToken.email || decodedToken.phone_number
+      }
     });
 
     const refreshToken = jwtService.generateRefreshToken({
-      uid: decodedToken.uid,
-      email: decodedToken.email,
-      phone_number: decodedToken.phone_number,
-      userType: userType || 'admin'
+      userId: decodedToken.uid,
+      userType: userType || 'admin',
+      phone: decodedToken.phone_number,
+      metadata: {
+        email: decodedToken.email
+      }
     });
 
     console.log('✅ [FIREBASE_AUTH] Backend JWT token generated');

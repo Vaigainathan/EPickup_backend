@@ -305,4 +305,5 @@ class JWTService {
   }
 }
 
-module.exports = JWTService;
+// Export singleton instance instead of class
+module.exports = new JWTService();

@@ -36,13 +36,20 @@ class FirebaseAuthService {
       this.auth = admin.auth();
       
       console.log('🔍 Checking auth instance:', {
-        authExists: !!this.auth,
+        authExists: this.auth !== null && this.auth !== undefined,
         authType: typeof this.auth,
-        authConstructor: this.auth?.constructor?.name
+        authConstructor: this.auth?.constructor?.name,
+        hasGetUser: typeof this.auth?.getUser === 'function',
+        hasGetUserByPhoneNumber: typeof this.auth?.getUserByPhoneNumber === 'function'
       });
       
-      if (!this.auth) {
+      // Check if auth methods exist (Proxy objects might be falsy but still valid)
+      if (this.auth === null || this.auth === undefined) {
         throw new Error('admin.auth() returned null or undefined');
+      }
+      
+      if (typeof this.auth.getUserByPhoneNumber !== 'function') {
+        throw new Error('admin.auth() does not have getUserByPhoneNumber method');
       }
       
       console.log('🔧 Initializing Firestore...');
@@ -77,17 +84,18 @@ class FirebaseAuthService {
   ensureInitialized() {
     console.log('🔍 ensureInitialized called:', {
       initialized: this.initialized,
-      authExists: !!this.auth,
-      dbExists: !!this.db
+      authExists: this.auth !== null && this.auth !== undefined,
+      authType: typeof this.auth,
+      dbExists: this.db !== null && this.db !== undefined
     });
     
-    if (!this.initialized || !this.auth) {
+    if (!this.initialized || this.auth === null || this.auth === undefined) {
       console.log('⚠️  Re-initializing Firebase Auth Service...');
       this.initialize();
     }
     
-    if (!this.auth) {
-      console.error('❌ CRITICAL: this.auth is still null after initialize()');
+    if (this.auth === null || this.auth === undefined) {
+      console.error('❌ CRITICAL: this.auth is still null/undefined after initialize()');
       console.error('❌ admin.apps.length:', admin.apps.length);
       console.error('❌ this.initialized:', this.initialized);
       throw new Error('Firebase Auth is not available. Please check Firebase Admin SDK initialization.');

@@ -163,12 +163,35 @@ class PhonePeService {
       context: 'Create PhonePe payment',
       maxRetries: 2
     }).catch(error => {
-      console.error('❌ [PHONEPE] Payment API error:', {
+      // Log detailed PhonePe error response
+      if (error.response) {
+        console.error('❌ [PHONEPE] Payment API error response:', {
+          status: error.response.status,
+          statusText: error.response.statusText,
+          data: error.response.data,
+          headers: {
+            'x-request-backend-time': error.response.headers['x-request-backend-time'],
+            'x-response-backend-time': error.response.headers['x-response-backend-time']
+          }
+        });
+        
+        // Log PhonePe specific error details
+        if (error.response.data) {
+          console.error('❌ [PHONEPE] PhonePe error details:', {
+            success: error.response.data.success,
+            code: error.response.data.code,
+            message: error.response.data.message,
+            data: error.response.data.data
+          });
+        }
+      }
+      
+      console.error('❌ [PHONEPE] Payment API error summary:', {
         message: error.message,
         code: error.code,
-        response: error.response?.data,
         config: {
           merchantId: this.config.merchantId,
+          saltKey: this.config.saltKey ? `${this.config.saltKey.substring(0, 10)}...` : 'NOT_SET',
           saltIndex: this.config.saltIndex,
           baseUrl: phonepeConfig.getBaseUrl()
         }

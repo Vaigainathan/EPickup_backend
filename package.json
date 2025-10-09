@@ -35,7 +35,8 @@
     "setup:backend": "npm run validate:config && npm run migrate && npm run test:all",
     "start:backend": "node scripts/start-backend.js",
     "verify:deployment": "node scripts/verify-deployment.js",
-    "deploy:prepare:win": "scripts\\deploy-to-render.bat"
+    "deploy:prepare:win": "scripts\\deploy-to-render.bat",
+    "delete-test-users": "node scripts/delete-test-users.js"
   },
   "keywords": [
     "delivery",

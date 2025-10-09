@@ -90,11 +90,19 @@ router.post('/check-phone', async (req, res) => {
           exists: false,
           message: 'Phone number can be used for signup'
         });
+      } else {
+        // userRecord is null - user not found in Firebase Auth
+        console.log('✅ [AUTH] Phone number not found - available for signup');
+        return res.json({
+          success: true,
+          exists: false,
+          message: 'Phone number available for signup'
+        });
       }
     } catch (getUserError) {
       // User not found in Firebase Auth
       if (getUserError.code === 'auth/user-not-found') {
-        console.log('✅ [AUTH] Phone number not found - available for signup');
+        console.log('✅ [AUTH] Phone number not found (error) - available for signup');
         return res.json({
           success: true,
           exists: false,

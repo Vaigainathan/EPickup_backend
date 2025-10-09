@@ -1,5 +1,5 @@
 const admin = require('firebase-admin');
-const { getFirestore, getFirebaseApp } = require('./firebase');
+const { getFirestore } = require('./firebase');
 
 /**
  * Firebase Authentication Service for Backend
@@ -7,8 +7,8 @@ const { getFirestore, getFirebaseApp } = require('./firebase');
  */
 class FirebaseAuthService {
   constructor() {
-    this.auth = null;
-    this.db = null;
+    // Don't store auth/db references - they're Proxy objects that become stale
+    // Instead, get them fresh each time from admin singleton
     this.initialized = false;
   }
 
@@ -16,7 +16,7 @@ class FirebaseAuthService {
    * Initialize Firebase services (lazy initialization)
    */
   initialize() {
-    if (this.initialized && this.auth) {
+    if (this.initialized) {
       console.log('🔄 Firebase Auth Service already initialized');
       return;
     }
@@ -32,73 +32,36 @@ class FirebaseAuthService {
         throw new Error('Firebase Admin SDK must be initialized before FirebaseAuthService');
       }
       
-      // Get the initialized Firebase app
-      const app = getFirebaseApp();
-      console.log('🔍 Checking Firebase app:', {
-        appName: app?.name,
-        appExists: app !== null && app !== undefined,
-        hasOptions: app?.options !== null && app?.options !== undefined
+      // Test that admin.auth() works (don't store the result)
+      console.log('🔧 Testing Firebase Auth access...');
+      const testAuth = admin.auth();
+      
+      console.log('🔍 Testing auth instance:', {
+        exists: testAuth !== null && testAuth !== undefined,
+        type: typeof testAuth,
+        hasGetUser: typeof testAuth?.getUser === 'function',
+        hasGetUserByPhoneNumber: typeof testAuth?.getUserByPhoneNumber === 'function'
       });
       
-      if (!app) {
-        throw new Error('Firebase app not initialized. Call initializeFirebase() first.');
+      if (typeof testAuth?.getUserByPhoneNumber !== 'function') {
+        throw new Error('admin.auth() does not have required methods - Firebase initialization failed');
       }
       
-      console.log('🔧 Initializing Firebase Auth from initialized app...');
+      console.log('✅ Firebase Auth access verified');
       
-      // Get auth from the INITIALIZED app, not from raw admin module
-      try {
-        this.auth = app.auth();  // ← Use app.auth() instead of admin.auth()!
-        console.log('🔍 Got auth from app.auth()');
-      } catch (authError) {
-        console.error('❌ app.auth() threw an error:', authError.message);
-        console.error('❌ This usually means Firebase initialization failed silently');
-        throw new Error(`Failed to get app.auth(): ${authError.message}`);
-      }
-      
-      console.log('🔍 Checking auth instance:', {
-        authExists: this.auth !== null && this.auth !== undefined,
-        authType: typeof this.auth,
-        authConstructor: this.auth?.constructor?.name,
-        hasGetUser: typeof this.auth?.getUser === 'function',
-        hasGetUserByPhoneNumber: typeof this.auth?.getUserByPhoneNumber === 'function',
-        authKeys: this.auth ? Object.keys(this.auth).slice(0, 5) : []
-      });
-      
-      // Check if auth methods exist (Proxy objects might be falsy but still valid)
-      if (this.auth === null || this.auth === undefined) {
-        throw new Error('admin.auth() returned null or undefined');
-      }
-      
-      if (typeof this.auth.getUserByPhoneNumber !== 'function') {
-        console.error('❌ CRITICAL: admin.auth() exists but has no getUserByPhoneNumber method');
-        console.error('❌ This means Firebase Admin SDK initialized incorrectly');
-        console.error('❌ Check your Firebase credentials and initialization');
-        console.error('❌ Available properties:', Object.keys(this.auth));
-        throw new Error('admin.auth() does not have getUserByPhoneNumber method - Firebase initialization likely failed');
-      }
-      
-      console.log('🔧 Initializing Firestore...');
-      this.db = getFirestore();
-      
-      console.log('🔍 Checking db instance:', {
-        dbExists: !!this.db,
-        dbType: typeof this.db
-      });
-      
-      if (!this.db) {
+      // Test Firestore access
+      const testDb = getFirestore();
+      if (!testDb) {
         throw new Error('getFirestore() returned null or undefined');
       }
       
+      console.log('✅ Firestore access verified');
+      
       this.initialized = true;
       console.log('✅ Firebase Auth Service initialized successfully');
-      console.log('✅ Auth instance ready:', !!this.auth);
-      console.log('✅ Firestore instance ready:', !!this.db);
     } catch (error) {
       console.error('❌ Failed to initialize Firebase Auth Service:', error.message);
       console.error('❌ Error stack:', error.stack);
-      this.auth = null;
-      this.db = null;
       this.initialized = false;
       throw error;
     }
@@ -108,26 +71,26 @@ class FirebaseAuthService {
    * Ensure Firebase services are initialized
    */
   ensureInitialized() {
-    console.log('🔍 ensureInitialized called:', {
-      initialized: this.initialized,
-      authExists: this.auth !== null && this.auth !== undefined,
-      authType: typeof this.auth,
-      dbExists: this.db !== null && this.db !== undefined
-    });
-    
-    if (!this.initialized || this.auth === null || this.auth === undefined) {
+    if (!this.initialized) {
       console.log('⚠️  Re-initializing Firebase Auth Service...');
       this.initialize();
     }
-    
-    if (this.auth === null || this.auth === undefined) {
-      console.error('❌ CRITICAL: this.auth is still null/undefined after initialize()');
-      console.error('❌ admin.apps.length:', admin.apps.length);
-      console.error('❌ this.initialized:', this.initialized);
-      throw new Error('Firebase Auth is not available. Please check Firebase Admin SDK initialization.');
-    }
-    
-    console.log('✅ Firebase Auth Service is ready');
+  }
+  
+  /**
+   * Get Firebase Auth instance (always fresh from admin singleton)
+   */
+  getAuth() {
+    this.ensureInitialized();
+    return admin.auth();
+  }
+  
+  /**
+   * Get Firestore instance (always fresh)
+   */
+  getDb() {
+    this.ensureInitialized();
+    return getFirestore();
   }
 
   /**
@@ -144,7 +107,7 @@ class FirebaseAuthService {
       }
 
       // Verify the Firebase ID token
-      const decodedToken = await this.auth.verifyIdToken(idToken);
+      const decodedToken = await this.getAuth().verifyIdToken(idToken);
       
       console.log('✅ Firebase ID token verified successfully:', {
         uid: decodedToken.uid,
@@ -186,7 +149,7 @@ class FirebaseAuthService {
       }
 
       // Get user by phone number from Firebase Auth
-      const userRecord = await this.auth.getUserByPhoneNumber(phoneNumber);
+      const userRecord = await this.getAuth().getUserByPhoneNumber(phoneNumber);
       
       console.log('✅ Found user by phone number:', {
         uid: userRecord.uid,
@@ -219,16 +182,16 @@ class FirebaseAuthService {
       
       // For admin users, check adminUsers collection first
       if (userType === 'admin') {
-        const adminDoc = await this.db.collection('adminUsers').doc(uid).get();
+        const adminDoc = await this.getDb().collection('adminUsers').doc(uid).get();
         if (adminDoc.exists) {
           const adminData = adminDoc.data();
           console.log(`✅ Found admin user in adminUsers collection:`, uid);
           
           // Also check/sync with users collection
-          const userDoc = await this.db.collection('users').doc(uid).get();
+          const userDoc = await this.getDb().collection('users').doc(uid).get();
           if (!userDoc.exists) {
             // Sync admin user to users collection
-            await this.db.collection('users').doc(uid).set({
+            await this.getDb().collection('users').doc(uid).set({
               ...adminData,
               userType: 'admin',
               originalFirebaseUID: uid
@@ -243,12 +206,12 @@ class FirebaseAuthService {
           };
         } else {
           // Admin user not found in adminUsers collection, check users collection
-          const userDoc = await this.db.collection('users').doc(uid).get();
+          const userDoc = await this.getDb().collection('users').doc(uid).get();
           if (userDoc.exists) {
             const userData = userDoc.data();
             if (userData.userType === 'admin') {
               // Sync to adminUsers collection
-              await this.db.collection('adminUsers').doc(uid).set({
+              await this.getDb().collection('adminUsers').doc(uid).set({
                 ...userData,
                 originalFirebaseUID: uid
               });
@@ -267,7 +230,7 @@ class FirebaseAuthService {
       }
       
       // Check users collection for all user types
-      const userDoc = await this.db.collection('users').doc(uid).get();
+      const userDoc = await this.getDb().collection('users').doc(uid).get();
       
       if (!userDoc.exists) {
         console.log(`❌ User not found in users collection:`, uid);
@@ -291,7 +254,7 @@ class FirebaseAuthService {
         };
         
         // Update the user document with new role
-        await this.db.collection('users').doc(uid).update({
+        await this.getDb().collection('users').doc(uid).update({
           userType: userType,
           updatedAt: new Date().toISOString(),
           roleSwitchedAt: new Date().toISOString(),
@@ -370,7 +333,7 @@ class FirebaseAuthService {
       // For admin users, store in both adminUsers and users collections
       if (userType === 'admin') {
         // Store in adminUsers collection (Admin App expects this)
-        await this.db.collection('adminUsers').doc(uid).set({
+        await this.getDb().collection('adminUsers').doc(uid).set({
           ...userData,
           userType: 'admin',
           role: userData.role || 'super_admin',
@@ -391,11 +354,11 @@ class FirebaseAuthService {
       if (existingUser) {
         // Update existing user
         userData.updatedAt = new Date().toISOString();
-        await this.db.collection(collectionName).doc(uid).update(userData);
+        await this.getDb().collection(collectionName).doc(uid).update(userData);
         console.log(`✅ Updated ${userType} user in Firestore:`, uid);
       } else {
         // Create new user
-        await this.db.collection(collectionName).doc(uid).set(userData);
+        await this.getDb().collection(collectionName).doc(uid).set(userData);
         console.log(`✅ Created new ${userType} user in Firestore:`, uid);
       }
 
@@ -423,7 +386,7 @@ class FirebaseAuthService {
   async getUserRole(uid) {
     try {
       this.ensureInitialized();
-      const adminDoc = await this.db.collection('admins').doc(uid).get();
+      const adminDoc = await this.getDb().collection('admins').doc(uid).get();
       if (adminDoc.exists) {
         return adminDoc.data().role || 'pending';
       }
@@ -442,7 +405,7 @@ class FirebaseAuthService {
   async revokeUserSession(uid) {
     try {
       this.ensureInitialized();
-      await this.auth.revokeRefreshTokens(uid);
+      await this.getAuth().revokeRefreshTokens(uid);
       console.log('✅ User session revoked:', uid);
     } catch (error) {
       console.error('❌ Error revoking user session:', error);
@@ -458,7 +421,7 @@ class FirebaseAuthService {
   async getUserByEmail(email) {
     try {
       this.ensureInitialized();
-      const userRecord = await this.auth.getUserByEmail(email);
+      const userRecord = await this.getAuth().getUserByEmail(email);
       return userRecord;
     } catch (error) {
       if (error.code === 'auth/user-not-found') {
@@ -478,7 +441,7 @@ class FirebaseAuthService {
   async setCustomClaims(uid, claims) {
     try {
       this.ensureInitialized();
-      await this.auth.setCustomUserClaims(uid, claims);
+      await this.getAuth().setCustomUserClaims(uid, claims);
       console.log(`✅ Custom claims set for user ${uid}:`, claims);
     } catch (error) {
       console.error('❌ Error setting custom claims:', error);
@@ -495,7 +458,7 @@ class FirebaseAuthService {
   async createCustomToken(uid, additionalClaims = {}) {
     try {
       this.ensureInitialized();
-      const customToken = await this.auth.createCustomToken(uid, additionalClaims);
+      const customToken = await this.getAuth().createCustomToken(uid, additionalClaims);
       return customToken;
     } catch (error) {
       console.error('❌ Error creating custom token:', error);

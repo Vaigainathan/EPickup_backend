@@ -257,24 +257,55 @@ router.post('/firebase/verify-token', async (req, res) => {
       userType: userType || 'admin'
     });
 
-    // Generate backend JWT token
+    // Get or create role-specific user with role-based UID
+    const roleBasedAuthService = require('../services/roleBasedAuthService');
+    const roleBasedUser = await roleBasedAuthService.getOrCreateRoleSpecificUser(
+      decodedToken,
+      userType,
+      { name: name || decodedToken.name || decodedToken.email || decodedToken.phone_number }
+    );
+    
+    const roleBasedUID = roleBasedUser.id || roleBasedUser.uid;
+    console.log('✅ [FIREBASE_AUTH] Role-based user created/retrieved:', {
+      roleBasedUID,
+      userType,
+      originalUID: decodedToken.uid
+    });
+
+    // Set Firebase custom claims with role-based UID
+    try {
+      await firebaseAuthService.setCustomClaims(decodedToken.uid, {
+        roleBasedUID: roleBasedUID,
+        userType: userType,
+        role: userType,
+        createdAt: Date.now()
+      });
+      console.log('✅ [FIREBASE_AUTH] Custom claims set successfully');
+    } catch (claimsError) {
+      console.error('⚠️ [FIREBASE_AUTH] Failed to set custom claims:', claimsError.message);
+      // Continue anyway - user can still use the app
+    }
+
+    // Generate backend JWT token with role-based UID
     const jwtService = require('../services/jwtService');
     const backendToken = jwtService.generateAccessToken({
-      userId: decodedToken.uid,
+      userId: roleBasedUID, // Use role-based UID instead of Firebase UID
       userType: userType || 'admin',
       phone: decodedToken.phone_number,
       metadata: {
         email: decodedToken.email,
-        name: name || decodedToken.name || decodedToken.email || decodedToken.phone_number
+        name: name || decodedToken.name || decodedToken.email || decodedToken.phone_number,
+        originalUID: decodedToken.uid
       }
     });
 
     const refreshToken = jwtService.generateRefreshToken({
-      userId: decodedToken.uid,
+      userId: roleBasedUID, // Use role-based UID instead of Firebase UID
       userType: userType || 'admin',
       phone: decodedToken.phone_number,
       metadata: {
-        email: decodedToken.email
+        email: decodedToken.email,
+        originalUID: decodedToken.uid
       }
     });
 
@@ -286,7 +317,8 @@ router.post('/firebase/verify-token', async (req, res) => {
         token: backendToken,
         refreshToken: refreshToken,
         user: {
-          uid: decodedToken.uid,
+          uid: roleBasedUID, // Return role-based UID to frontend
+          originalUID: decodedToken.uid, // Include original for reference
           email: decodedToken.email,
           phone_number: decodedToken.phone_number,
           name: name || decodedToken.name || decodedToken.email || decodedToken.phone_number,

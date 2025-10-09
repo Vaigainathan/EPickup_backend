@@ -128,6 +128,7 @@ class PhonePeService {
           success: true,
           data: {
             transactionId,
+            merchantTransactionId: transactionId, // ADDED: Backend expects this field
             paymentUrl: response.data.data.instrumentResponse.redirectInfo.url,
             merchantId: this.config.merchantId,
             amount: amountInPaise

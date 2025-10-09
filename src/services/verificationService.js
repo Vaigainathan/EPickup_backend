@@ -318,22 +318,23 @@ class VerificationService {
         }
       }
       
-      // Check if user's verification status is already set to approved/verified
-      const userVerificationStatus = driverData.driver?.verificationStatus || driverData.verificationStatus;
-      const userIsVerified = driverData.driver?.isVerified || driverData.isVerified;
+      // Check if user's DRIVER verification status is already set to approved/verified
+      const userVerificationStatus = driverData.driver?.verificationStatus;
+      // CRITICAL FIX: Don't use isVerified field - it means phone/email verified, not documents
+      const userDocumentsApproved = driverData.driver?.documentsApproved === true;
       
       // Determine final verification status considering both documents and data entry
       let finalVerificationStatus = documentVerificationStatus;
       
-      // If user is explicitly verified, use that status
-      if (userVerificationStatus === 'approved' || userVerificationStatus === 'verified' || userIsVerified === true) {
+      // If user's DOCUMENTS are explicitly approved by admin, use that status
+      if (userVerificationStatus === 'approved' || userVerificationStatus === 'verified' || userDocumentsApproved) {
         finalVerificationStatus = {
           status: 'approved',
           verifiedCount: finalVerificationStatus.verifiedCount,
           rejectedCount: finalVerificationStatus.rejectedCount,
           totalWithDocuments: finalVerificationStatus.totalWithDocuments
         };
-        console.log(`📊 Using user verification status: approved (user set to verified)`);
+        console.log(`📊 Using driver document verification status: approved (admin approved)`);
       } 
       // If driver data entry is rejected, driver is rejected
       else if (dataEntryStatus === 'rejected') {

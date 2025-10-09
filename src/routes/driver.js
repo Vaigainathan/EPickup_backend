@@ -3699,7 +3699,18 @@ router.get('/wallet', requireDriver, async (req, res) => {
     const pointsService = require('../services/walletService');
     
     // Get points wallet balance
-    const balanceResult = await pointsService.getPointsBalance(uid);
+    let balanceResult = await pointsService.getPointsBalance(uid);
+    
+    // CRITICAL FIX: Create wallet if it doesn't exist for new drivers
+    if (!balanceResult.success && balanceResult.error === 'Points wallet not found') {
+      console.log('🔧 [POINTS_WALLET_API] Wallet not found, creating new wallet for driver:', uid);
+      const createResult = await pointsService.createOrGetPointsWallet(uid, 0);
+      
+      if (createResult.success) {
+        // Try to get balance again after creation
+        balanceResult = await pointsService.getPointsBalance(uid);
+      }
+    }
     
     if (!balanceResult.success) {
       return res.status(400).json({
@@ -4978,8 +4989,9 @@ router.get('/documents/status', requireDriver, documentStatusRateLimit, document
       nextSteps.push('Review rejection reasons for each document');
       nextSteps.push('Re-upload rejected documents with improvements');
     } else if (finalVerificationStatus === 'approved') {
+      // CRITICAL FIX: Removed welcome bonus next step - system uses points top-up now
+      nextSteps.push('Top-up your points wallet to start working');
       nextSteps.push('Start accepting ride requests');
-      nextSteps.push('Complete your first ride to earn welcome bonus');
     }
 
     // Enhanced document details with better UX data
@@ -5077,7 +5089,8 @@ router.get('/documents/status', requireDriver, documentStatusRateLimit, document
         estimatedReviewTime: finalVerificationStatus === 'pending_verification' ? '24-48 hours' : null,
         lastStatusUpdate: userData.updatedAt?.toDate?.()?.toISOString() || new Date().toISOString(),
         nextSteps,
-        welcomeBonusEligible: (finalVerificationStatus === 'verified' || finalVerificationStatus === 'approved') && !userData.driver?.welcomeBonusGiven,
+        // CRITICAL FIX: Welcome bonus removed - system uses mandatory points top-up instead
+        welcomeBonusEligible: false,
         // Add comprehensive data source info
         dataSource: comprehensiveVerificationData ? 'comprehensive' : 'basic',
         comprehensiveData: comprehensiveVerificationData ? {

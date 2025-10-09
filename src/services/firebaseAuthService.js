@@ -19,12 +19,21 @@ class FirebaseAuthService {
     if (this.initialized) return;
     
     try {
+      // Check if Firebase Admin SDK is actually initialized
+      if (admin.apps.length === 0) {
+        console.error('❌ Firebase Admin SDK is not initialized! Cannot initialize Auth Service.');
+        throw new Error('Firebase Admin SDK must be initialized before FirebaseAuthService');
+      }
+      
       this.auth = admin.auth();
       this.db = getFirestore();
       this.initialized = true;
-      console.log('✅ Firebase Auth Service initialized');
+      console.log('✅ Firebase Auth Service initialized successfully');
     } catch (error) {
       console.error('❌ Failed to initialize Firebase Auth Service:', error.message);
+      this.auth = null;
+      this.db = null;
+      this.initialized = false;
       throw error;
     }
   }
@@ -33,8 +42,12 @@ class FirebaseAuthService {
    * Ensure Firebase services are initialized
    */
   ensureInitialized() {
-    if (!this.initialized) {
+    if (!this.initialized || !this.auth) {
       this.initialize();
+    }
+    
+    if (!this.auth) {
+      throw new Error('Firebase Auth is not available. Please check Firebase Admin SDK initialization.');
     }
   }
 

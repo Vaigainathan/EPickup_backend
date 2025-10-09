@@ -77,16 +77,26 @@ app.set('trust proxy', 1);
 
 // Initialize Firebase with error handling
 try {
-  initializeFirebase();
-  console.log('✅ Firebase initialization completed');
+  const firebaseApp = initializeFirebase();
+  
+  if (!firebaseApp) {
+    throw new Error('Firebase Admin SDK initialization returned null - check environment variables');
+  }
+  
+  console.log('✅ Firebase Admin SDK initialization completed');
   
   // Initialize Firebase Auth Service after Firebase is ready
   const firebaseAuthService = require('./services/firebaseAuthService');
   firebaseAuthService.initialize();
   console.log('✅ Firebase Auth Service initialized');
 } catch (error) {
-  console.log('⚠️  Firebase initialization failed, continuing without Firebase...');
-  console.error('Firebase Error:', error.message);
+  console.error('❌ Firebase initialization failed:', error.message);
+  console.error('❌ Firebase features will NOT work. Please check:');
+  console.error('   1. FIREBASE_PRIVATE_KEY environment variable');
+  console.error('   2. FIREBASE_CLIENT_EMAIL environment variable'); 
+  console.error('   3. FIREBASE_PROJECT_ID environment variable');
+  console.error('   4. All other Firebase environment variables');
+  console.error('⚠️  Backend will continue but auth endpoints will fail!');
 }
 
 // Initialize Firestore Session Service (replaces Redis)

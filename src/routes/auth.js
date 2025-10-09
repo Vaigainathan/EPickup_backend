@@ -3,6 +3,120 @@ const axios = require('axios');
 const router = express.Router();
 
 /**
+ * Check if phone number exists in the system
+ * POST /api/auth/check-phone
+ */
+router.post('/check-phone', async (req, res) => {
+  try {
+    const { phoneNumber, userType } = req.body;
+
+    if (!phoneNumber) {
+      return res.status(400).json({
+        success: false,
+        error: 'Phone number is required'
+      });
+    }
+
+    console.log('🔍 [AUTH] Checking phone number:', phoneNumber, 'for userType:', userType || 'any');
+
+    // Import Firebase Admin SDK service
+    const firebaseAuthService = require('../services/firebaseAuthService');
+    
+    try {
+      // Check if user exists in Firebase Auth by phone number
+      const userRecord = await firebaseAuthService.getUserByPhoneNumber(phoneNumber);
+      
+      if (userRecord) {
+        console.log('✅ [AUTH] Phone number exists in Firebase Auth:', userRecord.uid);
+        
+        // Check if user exists in Firestore with the specific userType
+        const { getFirestore } = require('firebase-admin/firestore');
+        const db = getFirestore();
+        
+        // Query users collection for this phone number
+        const usersSnapshot = await db.collection('users')
+          .where('phone', '==', phoneNumber)
+          .get();
+        
+        if (!usersSnapshot.empty) {
+          // Check if user has the requested userType
+          const users = usersSnapshot.docs.map(doc => ({
+            id: doc.id,
+            ...doc.data()
+          }));
+          
+          console.log('📊 [AUTH] Found users with phone:', users.length);
+          
+          // If userType specified, check if any user matches
+          if (userType) {
+            const matchingUser = users.find(u => {
+              // Check various userType field names
+              return u.userType === userType || 
+                     u.role === userType || 
+                     (userType === 'driver' && u.driver) ||
+                     (userType === 'customer' && !u.driver && u.role !== 'admin');
+            });
+            
+            if (matchingUser) {
+              return res.json({
+                success: true,
+                exists: true,
+                userType: userType,
+                message: 'Phone number registered for this user type'
+              });
+            } else {
+              return res.json({
+                success: true,
+                exists: false,
+                registered: true,
+                userType: userType,
+                message: 'Phone number registered but not for this user type'
+              });
+            }
+          }
+          
+          // No specific userType requested, phone exists
+          return res.json({
+            success: true,
+            exists: true,
+            message: 'Phone number is registered'
+          });
+        }
+        
+        // Phone exists in Firebase Auth but not in Firestore
+        console.log('⚠️ [AUTH] Phone in Firebase Auth but not in Firestore');
+        return res.json({
+          success: true,
+          exists: false,
+          message: 'Phone number can be used for signup'
+        });
+      }
+    } catch (getUserError) {
+      // User not found in Firebase Auth
+      if (getUserError.code === 'auth/user-not-found') {
+        console.log('✅ [AUTH] Phone number not found - available for signup');
+        return res.json({
+          success: true,
+          exists: false,
+          message: 'Phone number available for signup'
+        });
+      }
+      
+      // Other errors
+      console.error('❌ [AUTH] Error checking user:', getUserError);
+      throw getUserError;
+    }
+
+  } catch (error) {
+    console.error('❌ [AUTH] Phone check error:', error);
+    return res.status(500).json({
+      success: false,
+      error: 'Internal server error during phone check'
+    });
+  }
+});
+
+/**
  * Verify reCAPTCHA token
  * POST /api/auth/verify-recaptcha
  */
@@ -85,30 +199,53 @@ router.post('/firebase/verify-token', async (req, res) => {
     const { idToken, userType, name } = req.body;
 
     if (!idToken) {
+      console.error('❌ [FIREBASE_AUTH] No ID token provided');
       return res.status(400).json({
         success: false,
-        error: 'Firebase ID token is required'
+        error: {
+          code: 'MISSING_ID_TOKEN',
+          message: 'Firebase ID token is required'
+        }
       });
     }
 
     console.log('🔐 [FIREBASE_AUTH] Verifying Firebase ID token...');
+    console.log('🔐 [FIREBASE_AUTH] User type:', userType || 'admin');
+    console.log('🔐 [FIREBASE_AUTH] Token length:', idToken.length);
 
     // Import Firebase Admin SDK service
     const firebaseAuthService = require('../services/firebaseAuthService');
     
     // Verify the Firebase ID token
-    const decodedToken = await firebaseAuthService.verifyIdToken(idToken);
-    
-    if (!decodedToken) {
+    let decodedToken;
+    try {
+      decodedToken = await firebaseAuthService.verifyIdToken(idToken);
+    } catch (verifyError) {
+      console.error('❌ [FIREBASE_AUTH] Token verification failed:', verifyError.message);
       return res.status(401).json({
         success: false,
-        error: 'Invalid Firebase ID token'
+        error: {
+          code: 'INVALID_TOKEN',
+          message: verifyError.message || 'Invalid Firebase ID token'
+        }
+      });
+    }
+    
+    if (!decodedToken) {
+      console.error('❌ [FIREBASE_AUTH] Decoded token is null');
+      return res.status(401).json({
+        success: false,
+        error: {
+          code: 'INVALID_TOKEN',
+          message: 'Invalid Firebase ID token'
+        }
       });
     }
 
     console.log('✅ [FIREBASE_AUTH] Firebase token verified:', {
       uid: decodedToken.uid,
       email: decodedToken.email,
+      phone_number: decodedToken.phone_number,
       userType: userType || 'admin'
     });
 
@@ -117,13 +254,15 @@ router.post('/firebase/verify-token', async (req, res) => {
     const backendToken = jwtService.generateToken({
       uid: decodedToken.uid,
       email: decodedToken.email,
+      phone_number: decodedToken.phone_number,
       userType: userType || 'admin',
-      name: name || decodedToken.name || decodedToken.email
+      name: name || decodedToken.name || decodedToken.email || decodedToken.phone_number
     });
 
     const refreshToken = jwtService.generateRefreshToken({
       uid: decodedToken.uid,
       email: decodedToken.email,
+      phone_number: decodedToken.phone_number,
       userType: userType || 'admin'
     });
 
@@ -137,7 +276,8 @@ router.post('/firebase/verify-token', async (req, res) => {
         user: {
           uid: decodedToken.uid,
           email: decodedToken.email,
-          name: name || decodedToken.name || decodedToken.email,
+          phone_number: decodedToken.phone_number,
+          name: name || decodedToken.name || decodedToken.email || decodedToken.phone_number,
           userType: userType || 'admin'
         }
       },
@@ -146,9 +286,13 @@ router.post('/firebase/verify-token', async (req, res) => {
 
   } catch (error) {
     console.error('❌ [FIREBASE_AUTH] Token verification error:', error);
+    console.error('❌ [FIREBASE_AUTH] Error stack:', error.stack);
     return res.status(500).json({
       success: false,
-      error: 'Internal server error during token verification'
+      error: {
+        code: 'INTERNAL_ERROR',
+        message: 'Internal server error during token verification: ' + (error.message || 'Unknown error')
+      }
     });
   }
 });

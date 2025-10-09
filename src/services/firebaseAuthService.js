@@ -81,6 +81,41 @@ class FirebaseAuthService {
   }
 
   /**
+   * Get user by phone number from Firebase Auth
+   * @param {string} phoneNumber - Phone number in E.164 format
+   * @returns {Promise<Object|null>} User record or null if not found
+   */
+  async getUserByPhoneNumber(phoneNumber) {
+    try {
+      this.ensureInitialized();
+      
+      if (!phoneNumber) {
+        throw new Error('Phone number is required');
+      }
+
+      // Get user by phone number from Firebase Auth
+      const userRecord = await this.auth.getUserByPhoneNumber(phoneNumber);
+      
+      console.log('✅ Found user by phone number:', {
+        uid: userRecord.uid,
+        phoneNumber: userRecord.phoneNumber,
+        disabled: userRecord.disabled
+      });
+
+      return userRecord;
+    } catch (error) {
+      // If user not found, return null instead of throwing
+      if (error.code === 'auth/user-not-found') {
+        console.log('ℹ️ No user found with phone number:', phoneNumber);
+        return null;
+      }
+      
+      console.error('❌ Error getting user by phone number:', error.message);
+      throw error;
+    }
+  }
+
+  /**
    * Get user data from Firestore based on Firebase UID
    * @param {string} uid - Firebase UID
    * @param {string} userType - Type of user (customer, driver, admin)

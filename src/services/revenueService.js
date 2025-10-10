@@ -233,21 +233,31 @@ class RevenueService {
 
       return {
         today: {
-          commission: todayRevenue.totalCommission,
-          trips: todayRevenue.totalTrips,
-          distance: todayRevenue.totalDistance
+          // 🔥 FIX: Use totalRealMoney instead of non-existent totalCommission
+          total: todayRevenue.totalRealMoney || 0,
+          realMoney: todayRevenue.totalRealMoney || 0,
+          topUps: todayRevenue.totalTopUps || 0,
+          commission: todayRevenue.totalPointsCommission || 0, // Virtual commission tracking
+          trips: todayRevenue.totalTrips || 0,
+          distance: todayRevenue.totalDistance || 0
         },
         thisMonth: {
-          commission: currentMonthRevenue.totalCommission,
-          trips: currentMonthRevenue.totalTrips,
-          distance: currentMonthRevenue.totalDistance
+          // 🔥 FIX: Use totalRealMoney instead of non-existent totalCommission
+          total: currentMonthRevenue.totalRealMoney || 0,
+          realMoney: currentMonthRevenue.totalRealMoney || 0,
+          topUps: currentMonthRevenue.totalTopUps || 0,
+          commission: currentMonthRevenue.totalPointsCommission || 0, // Virtual commission tracking
+          trips: currentMonthRevenue.totalTrips || 0,
+          distance: currentMonthRevenue.totalDistance || 0
         },
         summary: {
-          averageDailyCommission: currentMonthRevenue.dailyRevenue.length > 0 
-            ? (currentMonthRevenue.totalCommission / currentMonthRevenue.dailyRevenue.length).toFixed(2)
+          // 🔥 FIX: Use totalRealMoney for calculations
+          averageDailyRevenue: currentMonthRevenue.dailyRevenue.length > 0 
+            ? (currentMonthRevenue.totalRealMoney / currentMonthRevenue.dailyRevenue.length).toFixed(2)
             : 0,
-          averageCommissionPerTrip: currentMonthRevenue.averageCommissionPerTrip,
-          averageCommissionPerKm: currentMonthRevenue.averageCommissionPerKm
+          averageTopUpAmount: currentMonthRevenue.averageTopUpAmount || 0,
+          averageCommissionPerTrip: currentMonthRevenue.averageCommissionPerTrip || 0,
+          averageCommissionPerKm: currentMonthRevenue.averageCommissionPerKm || 0
         },
         calculatedAt: new Date().toISOString()
       };

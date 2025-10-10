@@ -1529,10 +1529,20 @@ router.put('/status', [
     const { isOnline, isAvailable, currentLocation, workingHours, workingDays } = req.body;
     const db = getFirestore();
     
+    // ✅ DEBUG: Log incoming request
+    console.log('🔍 [STATUS_UPDATE] Incoming request:', {
+      uid,
+      isOnline,
+      isAvailable,
+      hasCurrentLocation: !!currentLocation,
+      timestamp: new Date().toISOString()
+    });
+    
     const userRef = db.collection('users').doc(uid);
     const userDoc = await userRef.get();
     
     if (!userDoc.exists) {
+      console.error('❌ [STATUS_UPDATE] Driver not found:', uid);
       return res.status(404).json({
         success: false,
         error: {
@@ -1544,6 +1554,13 @@ router.put('/status', [
       });
     }
 
+    const existingData = userDoc.data();
+    console.log('🔍 [STATUS_UPDATE] Current driver status:', {
+      isOnline: existingData.driver?.isOnline,
+      isAvailable: existingData.driver?.isAvailable,
+      hasDriverObject: !!existingData.driver
+    });
+
     const updateData = {
       'driver.isOnline': isOnline,
       updatedAt: new Date()
@@ -1551,6 +1568,7 @@ router.put('/status', [
 
     if (isAvailable !== undefined) {
       updateData['driver.isAvailable'] = isAvailable;
+      console.log('✅ [STATUS_UPDATE] Setting isAvailable to:', isAvailable);
     }
 
     if (currentLocation) {
@@ -1569,7 +1587,18 @@ router.put('/status', [
       updateData['driver.availability.workingDays'] = workingDays;
     }
 
+    console.log('📤 [STATUS_UPDATE] Updating Firestore with:', updateData);
     await userRef.update(updateData);
+    console.log('✅ [STATUS_UPDATE] Firestore updated successfully');
+
+    // Verify the update
+    const updatedDoc = await userRef.get();
+    const updatedData = updatedDoc.data();
+    console.log('🔍 [STATUS_UPDATE] Verified updated data:', {
+      isOnline: updatedData.driver?.isOnline,
+      isAvailable: updatedData.driver?.isAvailable,
+      timestamp: new Date().toISOString()
+    });
 
     // Update driver location status
     const locationRef = db.collection('driverLocations').doc(uid);
@@ -2648,7 +2677,24 @@ router.post('/bookings/:id/accept', requireDriver, async (req, res) => {
     }
 
     const driverData = driverDoc.data();
+    
+    // ✅ DEBUG: Log driver status when accepting booking
+    console.log('🔍 [ACCEPT_BOOKING] Driver status check:', {
+      uid,
+      bookingId: id,
+      driverIsOnline: driverData.driver?.isOnline,
+      driverIsAvailable: driverData.driver?.isAvailable,
+      driverVerified: driverData.driver?.isVerified || driverData.isVerified,
+      verificationStatus: driverData.driver?.verificationStatus || driverData.verificationStatus,
+      timestamp: new Date().toISOString()
+    });
+    
     if (!driverData.driver?.isAvailable || !driverData.driver?.isOnline) {
+      console.error('❌ [ACCEPT_BOOKING] Driver not available:', {
+        isAvailable: driverData.driver?.isAvailable,
+        isOnline: driverData.driver?.isOnline,
+        reason: !driverData.driver?.isAvailable ? 'Not available' : 'Not online'
+      });
       return res.status(400).json({
         success: false,
         error: {
@@ -2761,6 +2807,18 @@ router.post('/bookings/:id/accept', requireDriver, async (req, res) => {
       await wsEventHandler.initialize();
 
       // Notify customer of driver assignment
+      const vehicleDetails = driverData.driver?.vehicleDetails || {};
+      const vehicleInfo = vehicleDetails.vehicleNumber 
+        ? `${vehicleDetails.vehicleMake || ''} ${vehicleDetails.vehicleModel || ''} (${vehicleDetails.vehicleNumber})`.trim()
+        : 'Vehicle Details Pending';
+      
+      console.log('🚗 [ACCEPT_BOOKING] Sending driver details to customer:', {
+        driverName: driverData.name,
+        driverPhone: driverData.phone,
+        vehicleInfo,
+        vehicleDetails: vehicleDetails
+      });
+      
       await wsEventHandler.notifyCustomerOfDriverAssignment(
         updatedBookingData.customerId,
         {
@@ -2768,7 +2826,8 @@ router.post('/bookings/:id/accept', requireDriver, async (req, res) => {
           driverId: uid,
           driverName: driverData.name,
           driverPhone: driverData.phone,
-          vehicleInfo: driverData.driver?.vehicleInfo || 'Vehicle Info',
+          vehicleInfo: vehicleInfo,
+          vehicleDetails: vehicleDetails,  // ✅ Send full vehicle details too
           estimatedArrival: new Date(Date.now() + 15 * 60 * 1000).toISOString()
         }
       );
@@ -6143,84 +6202,8 @@ router.get('/availability', requireDriver, async (req, res) => {
   }
 });
 
-/**
- * @route   POST /api/driver/bookings/:id/accept
- * @desc    Accept a booking request
- * @access  Private (Driver only)
- */
-router.post('/bookings/:id/accept', requireDriver, async (req, res) => {
-  try {
-    const { id } = req.params;
-    const { uid } = req.user;
-    const db = getFirestore();
-    
-    const bookingRef = db.collection('bookings').doc(id);
-    const bookingDoc = await bookingRef.get();
-    
-    if (!bookingDoc.exists) {
-      return res.status(404).json({
-        success: false,
-        error: {
-          code: 'BOOKING_NOT_FOUND',
-          message: 'Booking not found'
-        },
-        timestamp: new Date().toISOString()
-      });
-    }
-
-    const bookingData = bookingDoc.data();
-    
-    // Check if booking is still available
-    if (bookingData.status !== 'pending') {
-      return res.status(400).json({
-        success: false,
-        error: {
-          code: 'BOOKING_NOT_AVAILABLE',
-          message: 'Booking is no longer available'
-        },
-        timestamp: new Date().toISOString()
-      });
-    }
-
-    // Update booking status
-    await bookingRef.update({
-      status: 'accepted',
-      driverId: uid,
-      acceptedAt: new Date(),
-      updatedAt: new Date()
-    });
-
-    // Update driver status to busy
-    await db.collection('users').doc(uid).update({
-      isAvailable: false,
-      currentBookingId: id,
-      updatedAt: new Date()
-    });
-
-    res.status(200).json({
-      success: true,
-      message: 'Booking accepted successfully',
-      data: {
-        bookingId: id,
-        status: 'accepted',
-        acceptedAt: new Date()
-      },
-      timestamp: new Date().toISOString()
-    });
-
-  } catch (error) {
-    console.error('Error accepting booking:', error);
-    res.status(500).json({
-      success: false,
-      error: {
-        code: 'ACCEPT_BOOKING_ERROR',
-        message: 'Failed to accept booking',
-        details: error.message
-      },
-      timestamp: new Date().toISOString()
-    });
-  }
-});
+// ❌ REMOVED: Duplicate accept booking route (replaced by comprehensive version at line 2600)
+// The comprehensive version includes proper validation, transaction handling, and webhook notifications
 
 /**
  * @route   POST /api/driver/bookings/:id/reject

@@ -1,7 +1,7 @@
 const express = require('express');
 const { body, validationResult, query } = require('express-validator');
 const bookingService = require('../services/bookingService');
-const driverAssignmentService = require('../services/driverAssignmentService');
+// const driverAssignmentService = require('../services/driverAssignmentService'); // Commented out - only used in commented code
 const WebSocketEventHandler = require('../services/websocketEventHandler');
 const { requireRole, requireCustomer, requireDriver } = require('../middleware/auth');
 const { userRateLimit } = require('../middleware/auth');

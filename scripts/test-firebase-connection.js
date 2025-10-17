@@ -43,7 +43,7 @@ try {
   console.log('🔄 Testing Firestore connection...');
   
   db.collection('_test_connection').limit(1).get()
-    .then(snapshot => {
+    .then(() => {
       console.log('✅ Firestore connection successful!');
       console.log('📊 Collections accessible');
       return admin.auth().listUsers(1);

@@ -220,7 +220,7 @@ async function deleteAllStorageFiles() {
     try {
       // First try with default bucket
       bucket = storage.bucket();
-    } catch (bucketError) {
+    } catch {
       // If default bucket fails, try with explicit bucket name
       const serviceAccountPath = path.join(__dirname, '..', 'firebase-service-account.json');
       if (fs.existsSync(serviceAccountPath)) {
@@ -229,7 +229,7 @@ async function deleteAllStorageFiles() {
         console.log(`   Trying bucket: ${bucketName}`);
         try {
           bucket = storage.bucket(bucketName);
-        } catch (explicitError) {
+        } catch {
           console.log('⚠️  Firebase Storage not configured or bucket does not exist');
           console.log('   This is OK - Storage might not be set up yet');
           console.log('✅ Skipping storage cleanup (no bucket configured)');

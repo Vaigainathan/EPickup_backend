@@ -44,7 +44,7 @@ if (Redis) {
 function createRateLimiter(options = {}) {
   const defaultOptions = {
     windowMs: 15 * 60 * 1000, // 15 minutes
-    max: 100, // limit each IP to 100 requests per windowMs
+    max: process.env.NODE_ENV === 'development' ? 5000 : 2000, // Much higher limits for mobile apps
     message: {
       success: false,
       error: {
@@ -57,8 +57,11 @@ function createRateLimiter(options = {}) {
     standardHeaders: true,
     legacyHeaders: false,
     skip: (req) => {
-      // Skip rate limiting for health checks
-      return req.path === '/health' || req.path === '/api/health';
+      // Skip rate limiting for health checks and localhost in development
+      const isHealthCheck = req.path === '/health' || req.path === '/api/health';
+      const isDevelopment = process.env.NODE_ENV === 'development';
+      const isLocalhost = req.ip === '::1' || req.ip === '127.0.0.1' || req.ip === '::ffff:127.0.0.1';
+      return isHealthCheck || (isDevelopment && isLocalhost);
     },
     keyGenerator: (req) => {
       // Use user ID if authenticated, otherwise IP
@@ -98,7 +101,7 @@ const strictRateLimit = createRateLimiter({
  */
 const moderateRateLimit = createRateLimiter({
   windowMs: 5 * 60 * 1000, // 5 minutes
-  max: 50, // 50 requests per 5 minutes
+  max: process.env.NODE_ENV === 'development' ? 1000 : 300, // Increased for mobile apps
   message: {
     success: false,
     error: {
@@ -115,7 +118,7 @@ const moderateRateLimit = createRateLimiter({
  */
 const lightRateLimit = createRateLimiter({
   windowMs: 1 * 60 * 1000, // 1 minute
-  max: 30, // 30 requests per minute
+  max: process.env.NODE_ENV === 'development' ? 500 : 150, // Increased for mobile apps
   message: {
     success: false,
     error: {
@@ -133,7 +136,7 @@ const lightRateLimit = createRateLimiter({
  */
 const documentStatusRateLimit = createRateLimiter({
   windowMs: 1 * 60 * 1000, // 1 minute
-  max: 20, // 20 requests per minute (allows polling every 3 seconds)
+  max: process.env.NODE_ENV === 'development' ? 200 : 60, // Much higher for document polling
   message: {
     success: false,
     error: {

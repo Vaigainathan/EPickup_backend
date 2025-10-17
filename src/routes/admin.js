@@ -920,6 +920,158 @@ router.get('/bookings', async (req, res) => {
 });
 
 /**
+ * @route   PUT /api/admin/bookings/:id/status
+ * @desc    Update booking status
+ * @access  Private (Admin only)
+ */
+router.put('/bookings/:id/status', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { status } = req.body;
+    const db = getFirestore();
+
+    // Validate status
+    const validStatuses = ['pending', 'accepted', 'in_progress', 'completed', 'cancelled'];
+    if (!validStatuses.includes(status)) {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'INVALID_STATUS',
+          message: 'Invalid booking status',
+          details: `Status must be one of: ${validStatuses.join(', ')}`
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    // Get booking
+    const bookingRef = db.collection('bookings').doc(id);
+    const bookingDoc = await bookingRef.get();
+
+    if (!bookingDoc.exists) {
+      return res.status(404).json({
+        success: false,
+        error: {
+          code: 'BOOKING_NOT_FOUND',
+          message: 'Booking not found'
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    // Update booking status
+    await bookingRef.update({
+      status: status,
+      updatedAt: new Date(),
+      'statusHistory': db.FieldValue.arrayUnion({
+        status: status,
+        updatedBy: req.user.uid || req.user.userId,
+        updatedAt: new Date(),
+        role: 'admin'
+      })
+    });
+
+    console.log(`✅ [ADMIN] Booking ${id} status updated to ${status} by admin ${req.user.email || req.user.userId}`);
+
+    res.json({
+      success: true,
+      message: 'Booking status updated successfully',
+      data: {
+        bookingId: id,
+        status: status
+      },
+      timestamp: new Date().toISOString()
+    });
+
+  } catch (error) {
+    console.error('Error updating booking status:', error);
+    res.status(500).json({
+      success: false,
+      error: {
+        code: 'UPDATE_BOOKING_STATUS_ERROR',
+        message: 'Failed to update booking status',
+        details: error.message
+      },
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+/**
+ * @route   DELETE /api/admin/bookings/:id
+ * @desc    Delete a booking (admin only)
+ * @access  Private (Admin only)
+ */
+router.delete('/bookings/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const db = getFirestore();
+    const adminId = req.user.uid || req.user.userId;
+
+    console.log(`🗑️ [ADMIN] Deleting booking ${id} by admin ${req.user.email || adminId}`);
+
+    // Get booking first to check if it exists
+    const bookingRef = db.collection('bookings').doc(id);
+    const bookingDoc = await bookingRef.get();
+
+    if (!bookingDoc.exists) {
+      return res.status(404).json({
+        success: false,
+        error: {
+          code: 'BOOKING_NOT_FOUND',
+          message: 'Booking not found'
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    const bookingData = bookingDoc.data();
+
+    // Get reason from body or query params
+    const reason = req.body.reason || req.query.reason || 'No reason provided';
+
+    // Log deletion action
+    await db.collection('adminActions').add({
+      adminId: adminId,
+      adminEmail: req.user.email,
+      action: 'DELETE_BOOKING',
+      targetType: 'booking',
+      targetId: id,
+      bookingData: bookingData,
+      reason: reason,
+      timestamp: new Date()
+    });
+
+    // Delete the booking
+    await bookingRef.delete();
+
+    console.log(`✅ [ADMIN] Booking ${id} deleted successfully`);
+
+    res.json({
+      success: true,
+      message: 'Booking deleted successfully',
+      data: {
+        bookingId: id,
+        deletedAt: new Date().toISOString()
+      },
+      timestamp: new Date().toISOString()
+    });
+
+  } catch (error) {
+    console.error('Error deleting booking:', error);
+    res.status(500).json({
+      success: false,
+      error: {
+        code: 'DELETE_BOOKING_ERROR',
+        message: 'Failed to delete booking',
+        details: error.message
+      },
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+/**
  * @route   GET /api/admin/emergency-alerts
  * @desc    Get all emergency alerts with pagination and filters
  * @access  Private (Admin only)

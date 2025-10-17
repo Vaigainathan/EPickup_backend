@@ -16,6 +16,31 @@ class WorkSlotsService {
    */
   async generateDailySlots(driverId, date = new Date()) {
     try {
+      console.log(`🔄 [WORK_SLOTS] Generating daily slots for driver: ${driverId}, date: ${date.toISOString().split('T')[0]}`);
+      
+      // CRITICAL FIX: Delete existing slots for this driver and date first to prevent duplicates
+      const startOfDay = new Date(date);
+      startOfDay.setHours(0, 0, 0, 0);
+      
+      const endOfDay = new Date(date);
+      endOfDay.setHours(23, 59, 59, 999);
+
+      const existingQuery = this.db.collection('workSlots')
+        .where('driverId', '==', driverId)
+        .where('startTime', '>=', Timestamp.fromDate(startOfDay))
+        .where('startTime', '<=', Timestamp.fromDate(endOfDay));
+
+      const existingSnapshot = await existingQuery.get();
+      
+      if (!existingSnapshot.empty) {
+        console.log(`🗑️ [WORK_SLOTS] Deleting ${existingSnapshot.size} existing slots to prevent duplicates`);
+        const deleteBatch = this.db.batch();
+        existingSnapshot.forEach(doc => {
+          deleteBatch.delete(doc.ref);
+        });
+        await deleteBatch.commit();
+      }
+
       const slots = [];
       const slotConfigs = [
         { start: 7, end: 9, label: '7–9 AM' },
@@ -57,6 +82,8 @@ class WorkSlotsService {
       });
 
       await batch.commit();
+      
+      console.log(`✅ [WORK_SLOTS] Generated ${slots.length} slots successfully`);
       
       return {
         success: true,

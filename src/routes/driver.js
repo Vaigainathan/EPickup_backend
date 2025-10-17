@@ -2383,6 +2383,26 @@ router.get('/bookings/available', requireDriver, async (req, res) => {
     const { limit = 10, offset = 0, radius = 25 } = req.query;
     const db = getFirestore();
     
+    // If driver already has an active booking, return empty list
+    try {
+      const activeStatuses = ['driver_assigned', 'accepted', 'driver_enroute', 'driver_arrived', 'picked_up', 'in_transit'];
+      const activeForDriver = await db.collection('bookings')
+        .where('driverId', '==', uid)
+        .where('status', 'in', activeStatuses)
+        .limit(1)
+        .get();
+      if (!activeForDriver.empty) {
+        return res.status(200).json({
+          success: true,
+          message: 'Driver has an active booking; no available jobs',
+          data: { bookings: [], pagination: { limit: 0, offset: 0, total: 0 } },
+          timestamp: new Date().toISOString()
+        });
+      }
+    } catch (e) {
+      console.warn('⚠️ [AVAILABLE] Active booking check failed, proceeding:', e?.message);
+    }
+
     // Get driver's current location and availability status
     const driverDoc = await db.collection('users').doc(uid).get();
     if (!driverDoc.exists) {
@@ -2793,6 +2813,7 @@ router.post('/bookings/:id/accept', requireDriver, async (req, res) => {
     // Send WebSocket notifications
     try {
       const WebSocketEventHandler = require('../services/websocketEventHandler');
+      const notificationService = require('../services/notificationService');
       const wsEventHandler = new WebSocketEventHandler();
       await wsEventHandler.initialize();
 
@@ -2821,6 +2842,14 @@ router.post('/bookings/:id/accept', requireDriver, async (req, res) => {
           estimatedArrival: new Date(Date.now() + 15 * 60 * 1000).toISOString()
         }
       );
+
+      // Push notifications
+      try {
+        await notificationService.notifyCustomerDriverAssigned(updatedBookingData, driverData);
+        await notificationService.sendDriverAssignmentNotification(uid, id, updatedBookingData);
+      } catch (notifyErr) {
+        console.warn('⚠️ [ACCEPT_BOOKING] Notification send failed:', notifyErr?.message);
+      }
 
       // Notify booking status update
       await wsEventHandler.notifyBookingStatusUpdate(id, 'driver_assigned', {

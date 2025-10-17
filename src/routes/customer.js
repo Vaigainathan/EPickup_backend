@@ -410,6 +410,25 @@ router.post('/bookings', async (req, res) => {
       updatedAt: new Date()
     };
     
+    // Enforce single active booking per customer
+    const activeStatuses = ['pending', 'driver_assigned', 'accepted', 'driver_enroute', 'driver_arrived', 'picked_up', 'in_transit'];
+    const existingActiveSnapshot = await db.collection('bookings')
+      .where('customerId', '==', userId)
+      .where('status', 'in', activeStatuses)
+      .limit(1)
+      .get();
+
+    if (!existingActiveSnapshot.empty) {
+      return res.status(409).json({
+        success: false,
+        error: {
+          code: 'CUSTOMER_ACTIVE_BOOKING_EXISTS',
+          message: 'You already have an active booking. Please complete or cancel it before creating a new one.'
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
     // Create booking in Firestore
     const bookingRef = await db.collection('bookings').add(newBooking);
     

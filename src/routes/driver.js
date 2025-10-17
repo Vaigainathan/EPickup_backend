@@ -91,10 +91,6 @@ router.put('/profile', [
     .optional()
     .isLength({ min: 1 })
     .withMessage('Vehicle number is required'),
-  body('vehicleDetails.vehicleYear')
-    .optional()
-    .isInt({ min: 2000, max: new Date().getFullYear() + 1 })
-    .withMessage('Invalid vehicle year')
 ], async (req, res) => {
   try {
     const errors = validationResult(req);
@@ -278,16 +274,10 @@ router.get('/profile', requireDriver, async (req, res) => {
         driver: {
           vehicleDetails: normalizedDriver.vehicleDetails || {
             vehicleType: 'motorcycle',
-            vehicleMake: '',
             vehicleModel: '',
             vehicleNumber: '',
-            vehicleColor: '',
-            vehicleYear: new Date().getFullYear(),
             licenseNumber: '',
-            licenseExpiry: '',
-            rcNumber: '',
-            insuranceNumber: '',
-            insuranceExpiry: ''
+            licenseExpiry: ''
           },
           verificationStatus: finalVerificationStatus,
           isOnline: normalizedDriver.isOnline || false,
@@ -2809,7 +2799,7 @@ router.post('/bookings/:id/accept', requireDriver, async (req, res) => {
       // Notify customer of driver assignment
       const vehicleDetails = driverData.driver?.vehicleDetails || {};
       const vehicleInfo = vehicleDetails.vehicleNumber 
-        ? `${vehicleDetails.vehicleMake || ''} ${vehicleDetails.vehicleModel || ''} (${vehicleDetails.vehicleNumber})`.trim()
+        ? `${vehicleDetails.vehicleModel || ''} (${vehicleDetails.vehicleNumber})`.trim()
         : 'Vehicle Details Pending';
       
       console.log('🚗 [ACCEPT_BOOKING] Sending driver details to customer:', {

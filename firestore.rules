@@ -113,13 +113,7 @@ service cloud.firestore {
       return licenseNumber is string && licenseNumber.matches('^[A-Z]{2}[0-9]{2}[0-9]{4}[0-9]{7}$');
     }
     
-    function isValidRCNumber(rcNumber) {
-      return rcNumber is string && rcNumber.matches('^[A-Z]{2}[0-9]{2}[A-Z]{2}[0-9]{4}$');
-    }
-    
-    function isValidInsuranceNumber(insuranceNumber) {
-      return insuranceNumber is string && insuranceNumber.matches('^[A-Z]{2}[0-9]{2}[A-Z]{2}[0-9]{4}$');
-    }
+    // Removed RC/Insurance validators; those fields are no longer enforced
     
     function isValidDate(dateString) {
       return dateString is string && dateString.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$');
@@ -130,15 +124,11 @@ service cloud.firestore {
     }
     
     function isValidVehicleDetails(vehicleDetails) {
-      return vehicleDetails.keys().hasAll(['vehicleType', 'vehicleNumber', 'vehicleMake', 'vehicleModel', 'vehicleYear', 'vehicleColor', 'licenseNumber', 'licenseExpiry', 'rcNumber', 'insuranceNumber', 'insuranceExpiry']) &&
+      return vehicleDetails.keys().hasAll(['vehicleType', 'vehicleNumber', 'vehicleModel', 'licenseNumber', 'licenseExpiry']) &&
              isValidVehicleType(vehicleDetails.vehicleType) &&
              isValidVehicleNumber(vehicleDetails.vehicleNumber) &&
              isValidLicenseNumber(vehicleDetails.licenseNumber) &&
-             isValidRCNumber(vehicleDetails.rcNumber) &&
-             isValidInsuranceNumber(vehicleDetails.insuranceNumber) &&
-             isValidDate(vehicleDetails.licenseExpiry) &&
-             isValidDate(vehicleDetails.insuranceExpiry) &&
-             vehicleDetails.vehicleYear is int && vehicleDetails.vehicleYear >= 2000 && vehicleDetails.vehicleYear <= 2030;
+             isValidDate(vehicleDetails.licenseExpiry);
     }
 
     // Users collection - enhanced security with field validation

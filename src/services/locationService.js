@@ -248,10 +248,9 @@ class LocationService {
       // Sort by distance
       nearbyDrivers.sort((a, b) => a.distanceFromPickup - b.distanceFromPickup);
 
-      await monitoringService.logEvent('nearby_drivers_found', {
-        pickupLocation,
+      // Record metric for nearby drivers found
+      monitoringService.recordMetric('nearby_drivers_found', nearbyDrivers.length, {
         maxDistance,
-        driversFound: nearbyDrivers.length,
         totalDriversChecked: driversSnapshot.size
       });
 

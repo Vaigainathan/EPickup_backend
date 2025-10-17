@@ -119,19 +119,23 @@ router.post('/', [
     // Create booking with atomic transaction
     const result = await bookingService.createBookingAtomically(bookingData);
 
-    // If booking creation succeeded, handle driver assignment asynchronously
+    // If booking creation succeeded, notify drivers (manual acceptance workflow)
     if (result.success && result.data.booking) {
-      // Handle driver assignment in background (non-blocking)
+      // Notify drivers in background (non-blocking)
       setImmediate(async () => {
         try {
-          console.log(`🚗 Processing driver assignment for booking ${result.data.booking.id}`);
+          console.log(`📢 Broadcasting new booking ${result.data.booking.id} to available drivers`);
           
-          // Notify available drivers of new booking
+          // Notify available drivers of new booking (they will manually accept)
           const wsEventHandler = new WebSocketEventHandler();
           await wsEventHandler.initialize();
           await wsEventHandler.notifyDriversOfNewBooking(result.data.booking);
           
-          // Try immediate auto-assignment (non-blocking)
+          console.log(`✅ Booking ${result.data.booking.id} broadcasted to nearby drivers for manual acceptance`);
+          
+          // Note: Auto-assignment disabled - drivers manually accept bookings
+          // If you want to enable auto-assignment in the future, uncomment below:
+          /*
           const assignmentResult = await driverAssignmentService.autoAssignDriver(
             result.data.booking.id, 
             result.data.booking.pickup.coordinates
@@ -139,8 +143,6 @@ router.post('/', [
           
           if (assignmentResult.success) {
             console.log(`✅ Driver ${assignmentResult.data.driverId} auto-assigned to booking ${result.data.booking.id}`);
-            
-            // Notify customer of driver assignment
             await wsEventHandler.notifyCustomerOfDriverAssignment(
               result.data.booking.customerId,
               {
@@ -152,11 +154,10 @@ router.post('/', [
                 estimatedArrival: assignmentResult.data.estimatedArrival
               }
             );
-          } else {
-            console.log(`⏳ No driver immediately available for booking ${result.data.booking.id}, added to queue`);
           }
-        } catch (assignmentError) {
-          console.error('❌ Error in driver assignment:', assignmentError);
+          */
+        } catch (notificationError) {
+          console.error('❌ Error notifying drivers:', notificationError);
           // Log error but don't fail the booking
         }
       });

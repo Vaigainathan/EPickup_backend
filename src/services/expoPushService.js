@@ -260,8 +260,8 @@ class ExpoPushService {
         };
       }
 
-      // Update user's Expo push token
-      await this.db.collection('users').doc(userId).update({
+      // Update user's Expo push token (use set with merge to create document if it doesn't exist)
+      await this.db.collection('users').doc(userId).set({
         expoPushToken,
         deviceInfo: {
           platform: deviceInfo.platform || 'unknown',
@@ -270,7 +270,7 @@ class ExpoPushService {
           ...deviceInfo
         },
         tokenUpdatedAt: new Date()
-      });
+      }, { merge: true });
 
       console.log(`✅ Expo push token registered for user ${userId}`);
 
@@ -300,11 +300,11 @@ class ExpoPushService {
    */
   async unregisterToken(userId) {
     try {
-      // Remove user's Expo push token
-      await this.db.collection('users').doc(userId).update({
+      // Remove user's Expo push token (use set with merge to avoid errors if document doesn't exist)
+      await this.db.collection('users').doc(userId).set({
         expoPushToken: null,
         tokenUpdatedAt: new Date()
-      });
+      }, { merge: true });
 
       console.log(`✅ Expo push token unregistered for user ${userId}`);
 

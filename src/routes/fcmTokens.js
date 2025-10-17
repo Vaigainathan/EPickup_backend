@@ -33,13 +33,13 @@ router.post('/register', [
     const { fcmToken, deviceId, platform } = req.body;
     const userId = req.user.uid;
 
-    // Update user's FCM token
-    await db.collection('users').doc(userId).update({
+    // Update user's FCM token (use set with merge to create document if it doesn't exist)
+    await db.collection('users').doc(userId).set({
       fcmToken,
       deviceId,
       platform,
       tokenUpdatedAt: new Date()
-    });
+    }, { merge: true });
 
     res.status(200).json({
       success: true,
@@ -68,13 +68,13 @@ router.delete('/unregister', [
   try {
     const userId = req.user.uid;
 
-    // Remove FCM token from user
-    await db.collection('users').doc(userId).update({
+    // Remove FCM token from user (use set with merge to avoid errors if document doesn't exist)
+    await db.collection('users').doc(userId).set({
       fcmToken: null,
       deviceId: null,
       platform: null,
       tokenUpdatedAt: new Date()
-    });
+    }, { merge: true });
 
     res.status(200).json({
       success: true,

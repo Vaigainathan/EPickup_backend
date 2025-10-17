@@ -583,10 +583,11 @@ class WebSocketEventHandler {
       }, 300); // 5 minutes expiry
 
       if (this.db) {
-        await this.db.collection('users').doc(userId).update({
+        // Use set with merge to create document if it doesn't exist
+        await this.db.collection('users').doc(userId).set({
           isOnline,
           lastSeen: new Date()
-        });
+        }, { merge: true });
       }
 
     } catch (error) {

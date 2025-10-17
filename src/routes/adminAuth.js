@@ -280,14 +280,14 @@ router.post('/login', async (req, res) => {
     // Update last login
     try {
       await Promise.all([
-        db.collection('users').doc(adminId).update({
+        db.collection('users').doc(adminId).set({
           lastLogin: new Date(),
           updatedAt: new Date()
-        }),
-        db.collection('adminUsers').doc(adminId).update({
+        }, { merge: true }),
+        db.collection('adminUsers').doc(adminId).set({
           lastLogin: new Date(),
           updatedAt: new Date()
-        }).catch(() => {
+        }, { merge: true }).catch(() => {
           // Ignore if adminUsers collection doesn't exist
         })
       ]);

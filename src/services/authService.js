@@ -44,11 +44,11 @@ class AuthService {
           ...userDoc.data()
         };
         
-        // Update last login time for existing user
-        await this.db.collection('users').doc(userDoc.id).update({
+        // Update last login time for existing user (use set with merge for safety)
+        await this.db.collection('users').doc(userDoc.id).set({
           lastLoginAt: new Date(),
           updatedAt: new Date()
-        });
+        }, { merge: true });
         
         console.log(`✅ Existing user found: ${user.id} (${normalizedPhone}) - Type: ${user.userType}`);
       } else {

@@ -1,8 +1,48 @@
 const express = require('express');
 const { body, validationResult, query } = require('express-validator');
+const rateLimit = require('express-rate-limit');
 const router = express.Router();
 const workSlotsService = require('../services/workSlotsService');
 const { authMiddleware, requireDriver, requireAdmin } = require('../middleware/auth');
+
+// CRITICAL: Rate limiter for slot generation to prevent infinite loops and server crashes
+const slotGenerationLimiter = rateLimit({
+  windowMs: 60 * 1000, // 1 minute window
+  max: 2, // Max 3 generation requests per minute per driver
+  message: {
+    success: false,
+    error: {
+      code: 'RATE_LIMIT_EXCEEDED',
+      message: 'Too many slot generation requests. Please wait before trying again.',
+      details: 'You can only generate slots 3 times per minute'
+    }
+  },
+  standardHeaders: true,
+  legacyHeaders: false,
+  skipSuccessfulRequests: false,
+  keyGenerator: (req) => {
+    // Rate limit per driver (using their UID)
+    return `slot_gen_${req.user?.uid || req.ip}`;
+  }
+});
+
+// Rate limiter for slot fetching to prevent polling spam
+const slotFetchLimiter = rateLimit({
+  windowMs: 10 * 1000, // 10 second window  
+  max: 10, // Max 20 fetch requests per 10 seconds
+  message: {
+    success: false,
+    error: {
+      code: 'RATE_LIMIT_EXCEEDED',
+      message: 'Too many slot fetch requests',
+      details: 'Please reduce polling frequency'
+    }
+  },
+  skipSuccessfulRequests: false,
+  keyGenerator: (req) => {
+    return `slot_fetch_${req.user?.uid || req.ip}`;
+  }
+});
 
 /**
  * @route   GET /api/slots
@@ -67,6 +107,7 @@ router.get('/', [
  * @access  Private (Driver only)
  */
 router.get('/driver', [
+  slotFetchLimiter, // CRITICAL: Rate limit to prevent polling spam
   authMiddleware,
   requireDriver,
   query('date').optional().isISO8601().withMessage('Date must be in ISO format')
@@ -126,6 +167,7 @@ router.get('/driver', [
  * @access  Private (Driver only)
  */
 router.post('/generate', [
+  slotGenerationLimiter, // CRITICAL: Rate limit to prevent infinite generation loops
   authMiddleware,
   requireDriver,
   body('date').optional().isISO8601().withMessage('Date must be in ISO format')

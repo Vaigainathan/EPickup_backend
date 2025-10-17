@@ -8,6 +8,8 @@ const { getFirestore, Timestamp } = require('../services/firebase');
 class WorkSlotsService {
   constructor() {
     this.db = getFirestore();
+    // CRITICAL: Track ongoing generation to prevent concurrent requests
+    this.ongoingGenerations = new Map(); // driverId -> timestamp
   }
 
   /**
@@ -17,6 +19,31 @@ class WorkSlotsService {
   async generateDailySlots(driverId, date = new Date()) {
     try {
       console.log(`🔄 [WORK_SLOTS] Generating daily slots for driver: ${driverId}, date: ${date.toISOString().split('T')[0]}`);
+      
+      // CRITICAL: Check if generation is already in progress for this driver
+      if (this.ongoingGenerations.has(driverId)) {
+        const ongoingStart = this.ongoingGenerations.get(driverId);
+        const elapsed = Date.now() - ongoingStart;
+        
+        if (elapsed < 5000) { // If started less than 5 seconds ago
+          console.warn(`⚠️ [WORK_SLOTS] Generation already in progress for driver ${driverId} (started ${elapsed}ms ago)`);
+          return {
+            success: false,
+            error: {
+              code: 'GENERATION_IN_PROGRESS',
+              message: 'Slot generation already in progress for this driver',
+              details: 'Please wait for the current generation to complete'
+            }
+          };
+        } else {
+          // If stuck for more than 5 seconds, allow new attempt
+          console.warn(`⚠️ [WORK_SLOTS] Previous generation stuck for ${elapsed}ms, allowing retry`);
+          this.ongoingGenerations.delete(driverId);
+        }
+      }
+      
+      // Mark generation as in progress
+      this.ongoingGenerations.set(driverId, Date.now());
       
       // CRITICAL FIX: Delete existing slots for this driver and date first to prevent duplicates
       const startOfDay = new Date(date);
@@ -45,7 +72,7 @@ class WorkSlotsService {
       const slotConfigs = [
         { start: 7, end: 9, label: '7–9 AM' },
         { start: 9, end: 11, label: '9–11 AM' },
-        { start: 11, end: 13, label: '11–1 PM' },
+        { start: 11, end: 13, label: '11 AM–1 PM' },
         { start: 13, end: 15, label: '1–3 PM' },
         { start: 15, end: 17, label: '3–5 PM' },
         { start: 17, end: 19, label: '5–7 PM' }
@@ -85,6 +112,9 @@ class WorkSlotsService {
       
       console.log(`✅ [WORK_SLOTS] Generated ${slots.length} slots successfully`);
       
+      // CRITICAL: Clear the generation lock
+      this.ongoingGenerations.delete(driverId);
+      
       return {
         success: true,
         message: 'Daily slots generated successfully',
@@ -94,6 +124,10 @@ class WorkSlotsService {
 
     } catch (error) {
       console.error('Error generating daily slots:', error);
+      
+      // CRITICAL: Clear the generation lock on error
+      this.ongoingGenerations.delete(driverId);
+      
       return {
         success: false,
         error: {

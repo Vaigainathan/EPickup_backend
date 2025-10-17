@@ -65,6 +65,8 @@ class VerificationService {
     let rejectedCount = 0;
     let totalWithDocuments = 0;
 
+    console.log('📊 [VERIFICATION] Calculating status for documents:', Object.keys(documents));
+
     requiredDocs.forEach(docType => {
       const doc = documents[docType];
       if (doc && (doc.url || doc.downloadURL)) {
@@ -72,26 +74,35 @@ class VerificationService {
         const status = doc.verificationStatus || doc.status || 'pending';
         const verified = doc.verified || false;
         
+        console.log(`📄 [VERIFICATION] ${docType}: status=${status}, verified=${verified}, hasUrl=${!!(doc.url || doc.downloadURL)}`);
+        
         if (verified || status === 'verified') {
           verifiedCount++;
         } else if (status === 'rejected') {
           rejectedCount++;
         }
+      } else {
+        console.log(`📄 [VERIFICATION] ${docType}: No document uploaded`);
       }
     });
 
     // Determine overall status
+    let finalStatus;
     if (totalWithDocuments === 0) {
-      return { status: 'pending', verifiedCount, rejectedCount, totalWithDocuments };
+      finalStatus = 'pending';
     } else if (verifiedCount === totalWithDocuments) {
-      return { status: 'verified', verifiedCount, rejectedCount, totalWithDocuments };
+      finalStatus = 'verified';
     } else if (rejectedCount > 0) {
-      return { status: 'rejected', verifiedCount, rejectedCount, totalWithDocuments };
+      finalStatus = 'rejected';
     } else if (verifiedCount > 0 || totalWithDocuments > 0) {
-      return { status: 'pending_verification', verifiedCount, rejectedCount, totalWithDocuments };
+      finalStatus = 'pending_verification';
     } else {
-      return { status: 'pending', verifiedCount, rejectedCount, totalWithDocuments };
+      finalStatus = 'pending';
     }
+
+    console.log(`✅ [VERIFICATION] Final status: ${finalStatus} (${verifiedCount}/${totalWithDocuments} verified, ${rejectedCount} rejected)`);
+
+    return { status: finalStatus, verifiedCount, rejectedCount, totalWithDocuments };
   }
 
   /**

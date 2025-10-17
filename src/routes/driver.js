@@ -2454,7 +2454,7 @@ router.get('/bookings/available', requireDriver, async (req, res) => {
     
     console.log('✅ [DRIVER_API] Driver is available and online');
 
-    // Get available bookings (pending status, not assigned to any driver)
+    // Get available bookings (pending status, not assigned to any driver, not cancelled)
     // Note: Firestore cannot query for null values with == operator
     // We'll fetch all pending bookings and filter in memory
     const query = db.collection('bookings')
@@ -2482,6 +2482,18 @@ router.get('/bookings/available', requireDriver, async (req, res) => {
           driverId: bookingData.driverId
         });
         return; // Skip this booking
+      }
+      
+      // Filter out cancelled bookings
+      if (bookingData.cancellation?.cancelledBy || 
+          bookingData.status === 'cancelled' || 
+          bookingData.status === 'canceled') {
+        console.log('🔍 [DRIVER_API] Skipping cancelled booking:', {
+          id: doc.id,
+          cancelledBy: bookingData.cancellation?.cancelledBy,
+          status: bookingData.status
+        });
+        return; // Skip cancelled bookings
       }
       
       console.log('🔍 [DRIVER_API] Processing available booking:', {

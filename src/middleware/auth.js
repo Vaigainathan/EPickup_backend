@@ -349,6 +349,7 @@ const adminAuthMiddleware = async (req, res, next) => {
 const requireRole = (allowedRoles) => {
   return (req, res, next) => {
     if (!req.user) {
+      console.error('❌ [AUTH] No user object in request');
       return res.status(401).json({
         success: false,
         error: {
@@ -360,13 +361,27 @@ const requireRole = (allowedRoles) => {
       });
     }
 
+    // Log the user type for debugging
+    console.log('🔍 [AUTH] Role check:', {
+      userId: req.user.uid,
+      userType: req.user.userType,
+      allowedRoles: allowedRoles,
+      hasUserType: !!req.user.userType,
+      isAllowed: allowedRoles.includes(req.user.userType)
+    });
+
     if (!allowedRoles.includes(req.user.userType)) {
+      console.error('❌ [AUTH] Access denied:', {
+        userId: req.user.uid,
+        userType: req.user.userType,
+        allowedRoles: allowedRoles
+      });
       return res.status(403).json({
         success: false,
         error: {
           code: 'FORBIDDEN',
           message: 'Access denied',
-          details: `This resource requires one of the following roles: ${allowedRoles.join(', ')}`
+          details: `This resource requires one of the following roles: ${allowedRoles.join(', ')}. Your current role: ${req.user.userType || 'undefined'}`
         },
         timestamp: new Date().toISOString()
       });
@@ -590,15 +605,26 @@ authMiddleware.getUserData = async (userId) => {
     if (userDoc.exists) {
       const userData = userDoc.data();
       userData.userType = 'admin';
+      console.log('✅ [AUTH] Found admin user:', {
+        userId,
+        userType: userData.userType
+      });
       return userData;
     }
     
     // Check users collection (fallback)
     userDoc = await db.collection('users').doc(userId).get();
     if (userDoc.exists) {
-      return userDoc.data();
+      const userData = userDoc.data();
+      console.log('✅ [AUTH] Found user:', {
+        userId,
+        userType: userData.userType,
+        hasUserType: !!userData.userType
+      });
+      return userData;
     }
     
+    console.warn('⚠️ [AUTH] User not found:', { userId });
     return null; // User not found
   } catch (error) {
     console.error('❌ [AUTH] Error getting user data:', error);

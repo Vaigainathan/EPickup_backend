@@ -2067,10 +2067,25 @@ router.post('/drivers/:driverId/sync-status', async (req, res) => {
     const { driverId } = req.params;
     
     // Use centralized verification service
-    const verificationData = await verificationService.getDriverVerificationData(driverId);
-    await verificationService.updateDriverVerificationStatus(driverId, verificationData);
+    console.log(`🔄 [ADMIN] Syncing driver verification status for: ${driverId}`);
     
-    console.log(`✅ Status synced for driver ${driverId}: ${verificationData.verificationStatus} (${verificationData.documentSummary.verified}/${verificationData.documentSummary.total} documents verified)`);
+    const verificationData = await verificationService.getDriverVerificationData(driverId);
+    
+    console.log(`📊 [ADMIN] Verification data retrieved:`, {
+      status: verificationData.verificationStatus,
+      verified: verificationData.documentSummary.verified,
+      total: verificationData.documentSummary.total,
+      pending: verificationData.documentSummary.pending
+    });
+    
+    await verificationService.updateDriverVerificationStatus(driverId, {
+      status: verificationData.verificationStatus,
+      verifiedCount: verificationData.documentSummary.verified,
+      rejectedCount: verificationData.documentSummary.rejected || 0,
+      totalWithDocuments: verificationData.documentSummary.total
+    });
+    
+    console.log(`✅ [ADMIN] Status synced for driver ${driverId}: ${verificationData.verificationStatus} (${verificationData.documentSummary.verified}/${verificationData.documentSummary.total} documents verified)`);
     
     res.json({
       success: true,

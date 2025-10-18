@@ -547,12 +547,30 @@ router.get('/drivers', async (req, res) => {
 
     for (const doc of snapshot.docs) {
       const data = doc.data();
+      const driverData = data.driver || {};
+      
+      // ✅ CRITICAL FIX: Flatten nested driver data for admin dashboard
+      // Admin expects isOnline/isAvailable at top level, not nested under driver object
       drivers.push({
         id: doc.id,
+        uid: doc.id,
         ...data,
-        createdAt: data.createdAt?.toDate?.() || data.createdAt
+        // Override nested fields with flattened versions for admin dashboard compatibility
+        isOnline: driverData.isOnline || false,
+        isAvailable: driverData.isAvailable || false,
+        verificationStatus: driverData.verificationStatus || data.verificationStatus || 'pending',
+        rating: driverData.rating || 0,
+        totalTrips: driverData.totalTrips || 0,
+        totalDeliveries: driverData.totalTrips || 0, // Alias for compatibility
+        currentLocation: driverData.currentLocation,
+        vehicleDetails: driverData.vehicleDetails,
+        earnings: driverData.earnings,
+        createdAt: data.createdAt?.toDate?.() || data.createdAt,
+        updatedAt: data.updatedAt?.toDate?.() || data.updatedAt
       });
     }
+
+    console.log(`✅ [ADMIN] Fetched ${drivers.length} drivers with flattened status data`);
 
     res.json({
       success: true,
@@ -1642,14 +1660,25 @@ router.get('/drivers/pending', async (req, res) => {
       if (processedCount >= Math.max(1, Math.min(100, parseInt(limit) || 20))) break;
       
       const driverData = doc.data();
-      const verificationStatus = driverData.driver?.verificationStatus || 'pending';
+      const driver = driverData.driver || {};
+      const verificationStatus = driver.verificationStatus || 'pending';
       
       // Only include drivers with pending verification
       if (verificationStatus === 'pending' || verificationStatus === 'pending_verification') {
+        // ✅ CRITICAL FIX: Flatten driver data for admin dashboard
         pendingDrivers.push({
           id: doc.id,
+          uid: doc.id,
           ...driverData,
-          createdAt: driverData.createdAt?.toDate?.() || driverData.createdAt
+          // Flatten nested driver fields
+          isOnline: driver.isOnline || false,
+          isAvailable: driver.isAvailable || false,
+          verificationStatus: verificationStatus,
+          rating: driver.rating || 0,
+          totalTrips: driver.totalTrips || 0,
+          totalDeliveries: driver.totalTrips || 0,
+          createdAt: driverData.createdAt?.toDate?.() || driverData.createdAt,
+          updatedAt: driverData.updatedAt?.toDate?.() || driverData.updatedAt
         });
         processedCount++;
       }

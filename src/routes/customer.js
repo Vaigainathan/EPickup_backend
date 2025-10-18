@@ -707,6 +707,150 @@ router.delete('/addresses/:addressId', authenticateToken, async (req, res) => {
 });
 
 /**
+ * @route GET /api/customer/recent-addresses
+ * @desc Get customer recent addresses
+ * @access Private (Customer only)
+ */
+router.get('/recent-addresses', authenticateToken, async (req, res) => {
+  try {
+    const { uid: userId } = req.user;
+    const { type, limit = 10 } = req.query;
+    const db = getFirestore();
+    
+    console.log(`📍 Getting recent addresses for customer: ${userId}`);
+    
+    let query = db.collection('users').doc(userId).collection('recentAddresses');
+    
+    if (type) {
+      query = query.where('type', '==', type);
+    }
+    
+    const snapshot = await query
+      .orderBy('usedAt', 'desc')
+      .limit(parseInt(limit))
+      .get();
+    
+    const recentAddresses = snapshot.docs.map(doc => ({
+      id: doc.id,
+      ...doc.data(),
+    }));
+    
+    console.log(`✅ Retrieved ${recentAddresses.length} recent addresses for customer: ${userId}`);
+    
+    res.json({
+      success: true,
+      data: recentAddresses
+    });
+    
+  } catch (error) {
+    console.error('❌ Error getting recent addresses:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to retrieve recent addresses',
+      details: error.message
+    });
+  }
+});
+
+/**
+ * @route POST /api/customer/recent-addresses
+ * @desc Add or update recent address
+ * @access Private (Customer only)
+ */
+router.post('/recent-addresses', authenticateToken, async (req, res) => {
+  try {
+    const { uid: userId } = req.user;
+    const { address, coordinates, type } = req.body;
+    const db = getFirestore();
+    
+    console.log(`📍 Adding/updating recent address for customer: ${userId}`);
+    
+    // Check if address already exists
+    const existingSnapshot = await db
+      .collection('users')
+      .doc(userId)
+      .collection('recentAddresses')
+      .where('address', '==', address)
+      .where('type', '==', type)
+      .limit(1)
+      .get();
+    
+    if (!existingSnapshot.empty) {
+      // Update existing
+      const doc = existingSnapshot.docs[0];
+      await doc.ref.update({
+        usedAt: new Date(),
+        usageCount: (doc.data().usageCount || 0) + 1,
+        coordinates,
+      });
+      
+      res.json({
+        success: true,
+        data: {
+          id: doc.id,
+          ...doc.data(),
+          usedAt: new Date(),
+          usageCount: (doc.data().usageCount || 0) + 1,
+          coordinates,
+        },
+        message: 'Recent address updated'
+      });
+    } else {
+      // Create new
+      const newDoc = await db
+        .collection('users')
+        .doc(userId)
+        .collection('recentAddresses')
+        .add({
+          address,
+          coordinates,
+          type,
+          usedAt: new Date(),
+          usageCount: 1,
+        });
+      
+      res.json({
+        success: true,
+        data: {
+          id: newDoc.id,
+          address,
+          coordinates,
+          type,
+          usedAt: new Date(),
+          usageCount: 1,
+        },
+        message: 'Recent address added'
+      });
+      
+      // Cleanup old entries (keep max 50 per type)
+      const allSnapshot = await db
+        .collection('users')
+        .doc(userId)
+        .collection('recentAddresses')
+        .where('type', '==', type)
+        .orderBy('usedAt', 'desc')
+        .get();
+      
+      if (allSnapshot.size > 50) {
+        const batch = db.batch();
+        allSnapshot.docs.slice(50).forEach(doc => {
+          batch.delete(doc.ref);
+        });
+        await batch.commit();
+      }
+    }
+    
+  } catch (error) {
+    console.error('❌ Error adding recent address:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to add recent address',
+      details: error.message
+    });
+  }
+});
+
+/**
  * @route GET /api/customer/payments/methods
  * @desc Get customer payment methods
  * @access Private (Customer only)

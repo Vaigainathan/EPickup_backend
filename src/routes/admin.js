@@ -861,11 +861,11 @@ router.get('/bookings', async (req, res) => {
         bookingId: data.bookingId || doc.id,
         customerId: data.customerId || '',
         driverId: data.driverId,
-        // Map customer info from pickup data
+        // Map customer info from booking data
         customerInfo: {
-          name: data.pickup?.name || 'Unknown Customer',
-          phone: data.pickup?.phone || '',
-          email: ''
+          name: data.pickup?.name || data.customerInfo?.name || 'Unknown Customer',
+          phone: data.customerInfo?.phone || data.customer?.phone || '', // Get from customer data, not pickup
+          email: data.customerInfo?.email || data.customer?.email || ''
         },
         // Map driver info if available
         driverInfo: data.driverId ? {

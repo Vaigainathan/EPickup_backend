@@ -31,9 +31,10 @@ router.get('/profile', authenticateToken, async (req, res) => {
     const customerProfile = {
       id: userId,
       phone: customerData.phone,
-      name: customerData.customer?.name || '',
-      email: customerData.customer?.email || '',
+      name: customerData.customer?.name || customerData.name || '',
+      email: customerData.customer?.email || customerData.email || '',
       address: customerData.customer?.address || '',
+      profilePicture: customerData.profilePicture || customerData.customer?.profilePhoto || customerData.photoURL || customerData.profile?.photo || null,
       preferences: customerData.customer?.preferences || {},
       userType: 'customer',
       isActive: customerData.isActive !== false,
@@ -67,11 +68,11 @@ router.get('/profile', authenticateToken, async (req, res) => {
 router.put('/profile', authenticateToken, async (req, res) => {
   try {
     const { uid: userId } = req.user;
-    const { name, email, phone, address, preferences } = req.body;
+    const { name, email, phone, address, preferences, profilePicture } = req.body;
     const db = getFirestore();
     
     console.log(`📝 Updating customer profile for: ${userId}`);
-    console.log(`📝 Update data received:`, { name, email, phone, address, preferences });
+    console.log(`📝 Update data received:`, { name, email, phone, address, preferences, profilePicture });
     
     // Validate email format if provided
     if (email && !email.includes('@')) {
@@ -87,11 +88,22 @@ router.put('/profile', authenticateToken, async (req, res) => {
       updatedAt: new Date()
     };
     
-    if (name !== undefined) updateData['customer.name'] = name;
-    if (email !== undefined) updateData['customer.email'] = email;
+    if (name !== undefined) {
+      updateData['customer.name'] = name;
+      updateData['name'] = name; // Also update at root level
+    }
+    if (email !== undefined) {
+      updateData['customer.email'] = email;
+      updateData['email'] = email; // Also update at root level
+    }
     if (phone !== undefined) updateData['phone'] = phone; // Update phone at root level
     if (address !== undefined) updateData['customer.address'] = address;
     if (preferences !== undefined) updateData['customer.preferences'] = preferences;
+    if (profilePicture !== undefined) {
+      updateData['profilePicture'] = profilePicture;
+      updateData['customer.profilePhoto'] = profilePicture;
+      updateData['photoURL'] = profilePicture;
+    }
     
     await db.collection('users').doc(userId).update(updateData);
     
@@ -234,7 +246,7 @@ router.delete('/delete-account', authenticateToken, async (req, res) => {
 
 /**
  * @route POST /api/customer/upload-photo
- * @desc Upload customer profile photo
+ * @desc Upload customer profile photo (legacy endpoint)
  * @access Private (Customer only)
  */
 router.post('/upload-photo', authenticateToken, async (req, res) => {
@@ -248,6 +260,7 @@ router.post('/upload-photo', authenticateToken, async (req, res) => {
     // Update customer photo in users collection
     await db.collection('users').doc(userId).update({
       'customer.profilePhoto': photoUrl,
+      profilePicture: photoUrl,
       updatedAt: new Date()
     });
     
@@ -256,7 +269,7 @@ router.post('/upload-photo', authenticateToken, async (req, res) => {
     res.json({
       success: true,
       message: 'Profile photo updated successfully',
-      data: { photoUrl }
+      data: { photoUrl, profilePicture: photoUrl }
     });
     
   } catch (error) {
@@ -1787,7 +1800,7 @@ router.get('/invoice/:bookingId', authenticateToken, async (req, res) => {
       // Customer details
       customer: {
         name: bookingData.pickup?.name || customerData.name || 'Customer',
-        phone: bookingData.pickup?.phone || customerData.phoneNumber || '',
+        phone: customerData.phoneNumber || '', // Use customer's actual phone, not pickup.phone
         email: customerData.email || ''
       },
       
@@ -1801,8 +1814,8 @@ router.get('/invoice/:bookingId', authenticateToken, async (req, res) => {
       // Booking details
       pickup: {
         address: bookingData.pickup?.address || 'Pickup address',
-        name: bookingData.pickup?.name || 'Sender',
-        phone: bookingData.pickup?.phone || ''
+        name: bookingData.pickup?.name || 'Sender'
+        // phone removed - sender phone not needed
       },
       
       dropoff: {
@@ -1875,7 +1888,8 @@ router.get('/invoice/:bookingId', authenticateToken, async (req, res) => {
         // Pickup details
         doc.text('Pickup Details:', 50, 360);
         doc.text(`Address: ${invoiceData.pickup.address}`, 70, 380);
-        doc.text(`Contact: ${invoiceData.pickup.name} (${invoiceData.pickup.phone})`, 70, 400);
+        doc.text(`Sender: ${invoiceData.pickup.name}`, 70, 400);
+        // Phone removed - sender phone not displayed
         
         // Dropoff details
         doc.text('Dropoff Details:', 50, 440);

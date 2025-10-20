@@ -269,7 +269,7 @@ class BookingService {
         
         pickup: {
           name: pickup.name,
-          phone: pickup.phone,
+          // phone removed - sender phone not needed
           address: pickup.address,
           coordinates: pickup.coordinates,
           instructions: pickup.instructions || ''

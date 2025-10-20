@@ -93,6 +93,7 @@ class WorkSlotsService {
           endTime: Timestamp.fromDate(endTime),
           label: config.label,
           status: 'available',
+          isSelected: false, // 🔥 NEW: Track driver's selection
           driverId,
           createdAt: Timestamp.now(),
           updatedAt: Timestamp.now()
@@ -250,6 +251,138 @@ class WorkSlotsService {
         error: {
           code: 'SLOT_UPDATE_ERROR',
           message: 'Failed to update slot status',
+          details: error.message
+        }
+      };
+    }
+  }
+
+  /**
+   * 🔥 NEW: Update slot selection (driver selects/deselects slots)
+   */
+  async updateSlotSelection(slotId, isSelected, driverId) {
+    try {
+      const slotRef = this.db.collection('workSlots').doc(slotId);
+      const slotDoc = await slotRef.get();
+
+      if (!slotDoc.exists) {
+        return {
+          success: false,
+          error: {
+            code: 'SLOT_NOT_FOUND',
+            message: 'Slot not found',
+            details: 'The specified slot does not exist'
+          }
+        };
+      }
+
+      const slotData = slotDoc.data();
+      if (slotData.driverId !== driverId) {
+        return {
+          success: false,
+          error: {
+            code: 'UNAUTHORIZED',
+            message: 'Unauthorized access',
+            details: 'You can only update your own slots'
+          }
+        };
+      }
+
+      // 🔥 CRITICAL: Check if slot time has already started
+      const now = new Date();
+      const slotStartTime = slotData.startTime.toDate();
+      
+      if (now >= slotStartTime && !isSelected) {
+        // Trying to deselect a slot that has already started
+        return {
+          success: false,
+          error: {
+            code: 'SLOT_ALREADY_STARTED',
+            message: 'Cannot deselect slot',
+            details: 'This slot has already started and cannot be cancelled'
+          }
+        };
+      }
+
+      await slotRef.update({
+        isSelected: isSelected,
+        updatedAt: Timestamp.now()
+      });
+
+      return {
+        success: true,
+        message: `Slot ${isSelected ? 'selected' : 'deselected'} successfully`,
+        data: {
+          slotId,
+          isSelected,
+          updatedAt: new Date().toISOString()
+        }
+      };
+
+    } catch (error) {
+      console.error('Error updating slot selection:', error);
+      return {
+        success: false,
+        error: {
+          code: 'SLOT_SELECTION_ERROR',
+          message: 'Failed to update slot selection',
+          details: error.message
+        }
+      };
+    }
+  }
+
+  /**
+   * 🔥 NEW: Batch update slot selections
+   */
+  async batchUpdateSlotSelections(slotIds, isSelected, driverId) {
+    try {
+      const batch = this.db.batch();
+      const results = [];
+
+      for (const slotId of slotIds) {
+        const slotRef = this.db.collection('workSlots').doc(slotId);
+        const slotDoc = await slotRef.get();
+
+        if (!slotDoc.exists || slotDoc.data().driverId !== driverId) {
+          continue; // Skip invalid slots
+        }
+
+        const slotData = slotDoc.data();
+        const now = new Date();
+        const slotStartTime = slotData.startTime.toDate();
+        
+        // Skip if trying to deselect a started slot
+        if (now >= slotStartTime && !isSelected) {
+          continue;
+        }
+
+        batch.update(slotRef, {
+          isSelected: isSelected,
+          updatedAt: Timestamp.now()
+        });
+
+        results.push(slotId);
+      }
+
+      await batch.commit();
+
+      return {
+        success: true,
+        message: `${results.length} slots updated successfully`,
+        data: {
+          updatedSlots: results,
+          count: results.length
+        }
+      };
+
+    } catch (error) {
+      console.error('Error batch updating slot selections:', error);
+      return {
+        success: false,
+        error: {
+          code: 'BATCH_SELECTION_ERROR',
+          message: 'Failed to batch update slot selections',
           details: error.message
         }
       };

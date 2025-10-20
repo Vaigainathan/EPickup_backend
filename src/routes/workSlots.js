@@ -283,6 +283,125 @@ router.put('/:slotId/status', [
 });
 
 /**
+ * @route   PUT /api/slots/batch-select
+ * @desc    Batch select/deselect multiple slots
+ * @access  Private (Driver only)
+ * @note    MUST come BEFORE /:slotId/select to prevent 'batch-select' being matched as a parameter
+ */
+router.put('/batch-select', [
+  authMiddleware,
+  requireDriver,
+  body('slotIds').isArray().withMessage('slotIds must be an array'),
+  body('isSelected').isBoolean().withMessage('isSelected must be a boolean')
+], async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'VALIDATION_ERROR',
+          message: 'Validation failed',
+          details: errors.array()
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    const { slotIds, isSelected } = req.body;
+    const { uid } = req.user;
+    
+    const result = await workSlotsService.batchUpdateSlotSelections(slotIds, isSelected, uid);
+
+    if (result.success) {
+      res.status(200).json({
+        success: true,
+        message: result.message,
+        data: result.data,
+        timestamp: new Date().toISOString()
+      });
+    } else {
+      res.status(400).json({
+        success: false,
+        error: result.error,
+        timestamp: new Date().toISOString()
+      });
+    }
+
+  } catch (error) {
+    console.error('Error batch updating slot selections:', error);
+    res.status(500).json({
+      success: false,
+      error: {
+        code: 'INTERNAL_ERROR',
+        message: 'Internal server error',
+        details: 'An unexpected error occurred'
+      },
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+/**
+ * @route   PUT /api/slots/:slotId/select
+ * @desc    Select/deselect a slot (driver availability)
+ * @access  Private (Driver only)
+ */
+router.put('/:slotId/select', [
+  authMiddleware,
+  requireDriver,
+  body('isSelected').isBoolean().withMessage('isSelected must be a boolean')
+], async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'VALIDATION_ERROR',
+          message: 'Validation failed',
+          details: errors.array()
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    const { slotId } = req.params;
+    const { isSelected } = req.body;
+    const { uid } = req.user;
+    
+    const result = await workSlotsService.updateSlotSelection(slotId, isSelected, uid);
+
+    if (result.success) {
+      res.status(200).json({
+        success: true,
+        message: result.message,
+        data: result.data,
+        timestamp: new Date().toISOString()
+      });
+    } else {
+      res.status(400).json({
+        success: false,
+        error: result.error,
+        timestamp: new Date().toISOString()
+      });
+    }
+
+  } catch (error) {
+    console.error('Error updating slot selection:', error);
+    res.status(500).json({
+      success: false,
+      error: {
+        code: 'INTERNAL_ERROR',
+        message: 'Internal server error',
+        details: 'An unexpected error occurred'
+      },
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+/**
  * @route   POST /api/slots/:slotId/book
  * @desc    Book a slot
  * @access  Private (Customer only)

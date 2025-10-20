@@ -20,6 +20,7 @@ const { securityHeaders } = require('./middleware/security');
 // Import routes
 const authRoutes = require('./routes/auth');
 const refreshTokenRoutes = require('./routes/refreshToken');
+const userRoutes = require('./routes/user');
 const customerRoutes = require('./routes/customer');
 const driverRoutes = require('./routes/driver');
 const bookingRoutes = require('./routes/booking');
@@ -451,6 +452,7 @@ app.get('/metrics', (req, res) => {
 // API Routes
 app.use('/api/auth', authLimiter, authRoutes);
 app.use('/api/auth', refreshTokenRoutes); // Add refresh token route
+app.use('/api/user', appCheckMiddleware.optionalMiddleware(), userRoutes); // User profile routes (includes profile picture upload)
 
 // =============================================================================
 // APP CHECK MIDDLEWARE CONFIGURATION

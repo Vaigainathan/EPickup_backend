@@ -186,6 +186,28 @@ service cloud.firestore {
       );
       
       allow delete: if isAuthenticated() && isAdmin();
+      
+      // ✅ Saved Addresses Subcollection - Allow users to manage their own saved addresses
+      match /savedAddresses/{addressId} {
+        allow read, write: if isAuthenticated() && isOwner(userId);
+        allow create: if isAuthenticated() && isOwner(userId) &&
+          request.resource.data.keys().hasAll(['name', 'address', 'type', 'isDefault', 'coordinates', 'createdAt']) &&
+          request.resource.data.type in ['home', 'work', 'other'];
+        allow update: if isAuthenticated() && isOwner(userId) &&
+          request.writeFields.hasOnly(['name', 'address', 'type', 'isDefault', 'coordinates', 'updatedAt']);
+        allow delete: if isAuthenticated() && isOwner(userId);
+      }
+      
+      // ✅ Recent Addresses Subcollection - Allow users to manage their recent addresses
+      match /recentAddresses/{addressId} {
+        allow read, write: if isAuthenticated() && isOwner(userId);
+        allow create: if isAuthenticated() && isOwner(userId) &&
+          request.resource.data.keys().hasAll(['address', 'coordinates', 'type', 'usedAt']) &&
+          request.resource.data.type in ['pickup', 'dropoff'];
+        allow update: if isAuthenticated() && isOwner(userId) &&
+          request.writeFields.hasOnly(['usedAt', 'usageCount', 'coordinates']);
+        allow delete: if isAuthenticated() && isOwner(userId);
+      }
     }
     
     // Auth attempts collection - admin only for security

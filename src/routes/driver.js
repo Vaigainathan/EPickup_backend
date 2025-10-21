@@ -2506,18 +2506,30 @@ router.get('/bookings/available', requireDriver, async (req, res) => {
       
       // Calculate distance from driver to pickup location
       if (bookingData.pickup?.coordinates) {
+        // ✅ CRITICAL FIX: Handle both GeoPoint and plain object coordinates
+        const pickupLat = bookingData.pickup.coordinates._latitude || bookingData.pickup.coordinates.latitude;
+        const pickupLng = bookingData.pickup.coordinates._longitude || bookingData.pickup.coordinates.longitude;
+        
+        if (!pickupLat || !pickupLng) {
+          console.log('⚠️ [DRIVER_API] Booking has invalid coordinates:', {
+            id: doc.id,
+            coordinates: bookingData.pickup.coordinates
+          });
+          return; // Skip this booking
+        }
+        
         const distance = calculateDistance(
           driverLocation.latitude,
           driverLocation.longitude,
-          bookingData.pickup.coordinates.latitude,
-          bookingData.pickup.coordinates.longitude
+          pickupLat,
+          pickupLng
         );
         
         console.log('🔍 [DRIVER_API] Distance calculation:', {
           driverLat: driverLocation.latitude,
           driverLng: driverLocation.longitude,
-          pickupLat: bookingData.pickup.coordinates.latitude,
-          pickupLng: bookingData.pickup.coordinates.longitude,
+          pickupLat,
+          pickupLng,
           distanceKm: distance,
           radiusKm: parseFloat(radius),
           isWithinRadius: distance <= parseFloat(radius)
@@ -2530,8 +2542,8 @@ router.get('/bookings/available', requireDriver, async (req, res) => {
         };
         
         const pickupDistanceFromTirupattur = calculateDistance(
-          bookingData.pickup.coordinates.latitude,
-          bookingData.pickup.coordinates.longitude,
+          pickupLat,
+          pickupLng,
           tirupatturCenter.latitude,
           tirupatturCenter.longitude
         );
@@ -2563,12 +2575,28 @@ router.get('/bookings/available', requireDriver, async (req, res) => {
         });
         
         if ((isWithinTirupatturArea && isWithinDriverRadius) || isTestingMode || isDeveloperMode) {
-          allBookings.push({
+          // ✅ CRITICAL FIX: Normalize coordinates to plain objects for frontend
+          const normalizedBooking = {
             id: doc.id,
             ...bookingData,
+            pickup: {
+              ...bookingData.pickup,
+              coordinates: {
+                latitude: pickupLat,
+                longitude: pickupLng
+              }
+            },
+            dropoff: {
+              ...bookingData.dropoff,
+              coordinates: {
+                latitude: bookingData.dropoff?.coordinates?._latitude || bookingData.dropoff?.coordinates?.latitude,
+                longitude: bookingData.dropoff?.coordinates?._longitude || bookingData.dropoff?.coordinates?.longitude
+              }
+            },
             distanceFromDriver: Math.round(distance / 1000 * 100) / 100, // Convert to km with 2 decimal places
             estimatedPickupTime: bookingData.estimatedPickupTime || new Date(Date.now() + 15 * 60 * 1000).toISOString()
-          });
+          };
+          allBookings.push(normalizedBooking);
         }
       } else {
         console.log('⚠️ [DRIVER_API] Booking has no pickup coordinates:', doc.id);

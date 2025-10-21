@@ -2454,25 +2454,39 @@ router.get('/bookings/available', requireDriver, async (req, res) => {
     
     console.log('✅ [DRIVER_API] Driver is available and online');
 
-    // Get available bookings (pending status, not assigned to any driver, not cancelled)
-    // Note: Firestore cannot query for null values with == operator
-    // We'll fetch all pending bookings and filter in memory
-    const query = db.collection('bookings')
+    // ✅ CRITICAL FIX: Get both pending bookings AND assigned bookings for this driver
+    // First, get pending bookings (not assigned to any driver)
+    const pendingQuery = db.collection('bookings')
       .where('status', '==', 'pending')
       .orderBy('createdAt', 'desc')
       .limit(parseInt(limit) + parseInt(offset));
     
-    const snapshot = await query.get();
+    // Second, get bookings assigned to this specific driver
+    const assignedQuery = db.collection('bookings')
+      .where('driverId', '==', uid)
+      .where('status', '==', 'driver_assigned')
+      .orderBy('createdAt', 'desc')
+      .limit(parseInt(limit) + parseInt(offset));
+    
+    // Execute both queries in parallel
+    const [pendingSnapshot, assignedSnapshot] = await Promise.all([
+      pendingQuery.get(),
+      assignedQuery.get()
+    ]);
+    
     const allBookings = [];
     
-    console.log('🔍 [DRIVER_API] Query snapshot:', {
-      size: snapshot.size,
-      empty: snapshot.empty,
+    console.log('🔍 [DRIVER_API] Query snapshots:', {
+      pendingSize: pendingSnapshot.size,
+      assignedSize: assignedSnapshot.size,
+      pendingEmpty: pendingSnapshot.empty,
+      assignedEmpty: assignedSnapshot.empty,
       driverLocation,
       radius: parseFloat(radius)
     });
     
-    snapshot.forEach(doc => {
+    // Process pending bookings
+    pendingSnapshot.forEach(doc => {
       const bookingData = doc.data();
       
       // Filter out bookings that are already assigned to a driver
@@ -2601,6 +2615,30 @@ router.get('/bookings/available', requireDriver, async (req, res) => {
       } else {
         console.log('⚠️ [DRIVER_API] Booking has no pickup coordinates:', doc.id);
       }
+    });
+    
+    // ✅ CRITICAL FIX: Process assigned bookings (these are specifically for this driver)
+    assignedSnapshot.forEach(doc => {
+      const bookingData = doc.data();
+      
+      console.log('🔍 [DRIVER_API] Processing assigned booking:', {
+        id: doc.id,
+        status: bookingData.status,
+        driverId: bookingData.driverId
+      });
+      
+      // Add assigned booking with special flags
+      const assignedBooking = {
+        id: doc.id,
+        ...bookingData,
+        isAssigned: true,
+        assignmentType: 'admin_assigned',
+        distanceFromDriver: 0, // Assigned bookings don't need distance calculation
+        estimatedPickupTime: bookingData.estimatedPickupTime || new Date(Date.now() + 15 * 60 * 1000).toISOString()
+      };
+      
+      allBookings.push(assignedBooking);
+      console.log('✅ [DRIVER_API] Added assigned booking to results:', doc.id);
     });
 
     // Sort by distance (closest first)

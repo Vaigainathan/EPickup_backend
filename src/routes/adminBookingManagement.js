@@ -247,6 +247,21 @@ router.post('/bookings/:bookingId/assign-driver', [
       });
     }
 
+    // ✅ CRITICAL FIX: Check if driver is verified
+    const verificationStatus = driverData.driver?.verificationStatus || driverData.verificationStatus;
+    if (verificationStatus !== 'verified' && verificationStatus !== 'approved') {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'DRIVER_NOT_VERIFIED',
+          message: 'Driver is not verified',
+          details: 'Only verified drivers can be assigned to bookings',
+          currentStatus: verificationStatus
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
     // Update booking
     batch.update(bookingRef, {
       driverId,
@@ -300,6 +315,24 @@ router.post('/bookings/:bookingId/assign-driver', [
         }
       )
     ]);
+
+    // ✅ CRITICAL FIX: Notify driver via WebSocket for real-time updates
+    try {
+      const wsEventHandler = require('../services/websocketEventHandler');
+      await wsEventHandler.notifyDriverOfAssignment(driverId, {
+        bookingId,
+        customerName: bookingData.pickup?.name || 'Customer',
+        pickupAddress: bookingData.pickup?.address,
+        dropoffAddress: bookingData.dropoff?.address,
+        estimatedFare: bookingData.pricing?.total || bookingData.fare?.total || 0,
+        assignedBy: req.user.uid,
+        assignedAt: new Date().toISOString()
+      });
+      console.log(`✅ [ADMIN_ASSIGNMENT] Driver ${driverId} notified via WebSocket for booking ${bookingId}`);
+    } catch (notificationError) {
+      console.error('❌ [ADMIN_ASSIGNMENT] Failed to notify driver via WebSocket:', notificationError);
+      // Don't fail the assignment if WebSocket notification fails
+    }
 
     res.status(200).json({
       success: true,

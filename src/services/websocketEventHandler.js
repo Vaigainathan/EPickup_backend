@@ -1999,6 +1999,63 @@ class WebSocketEventHandler {
       };
     }
   }
+
+  /**
+   * ✅ CRITICAL FIX: Notify driver of admin assignment
+   * @param {string} driverId - Driver ID
+   * @param {Object} assignmentData - Assignment data
+   */
+  async notifyDriverOfAssignment(driverId, assignmentData) {
+    try {
+      if (!this.io) {
+        console.log('⚠️ [WEBSOCKET] Socket.IO not available for driver assignment notification');
+        return;
+      }
+
+      // Find driver's socket connection
+      const driverSocket = this.getDriverSocket(driverId);
+      if (driverSocket) {
+        driverSocket.emit('booking_assigned', {
+          type: 'booking_assigned',
+          data: {
+            bookingId: assignmentData.bookingId,
+            customerName: assignmentData.customerName,
+            pickupAddress: assignmentData.pickupAddress,
+            dropoffAddress: assignmentData.dropoffAddress,
+            estimatedFare: assignmentData.estimatedFare,
+            assignedBy: assignmentData.assignedBy,
+            assignedAt: assignmentData.assignedAt
+          },
+          timestamp: new Date().toISOString()
+        });
+        
+        console.log(`✅ [WEBSOCKET] Driver ${driverId} notified of booking assignment ${assignmentData.bookingId}`);
+      } else {
+        console.log(`⚠️ [WEBSOCKET] Driver ${driverId} not connected, assignment notification queued`);
+        // TODO: Implement notification queuing for offline drivers
+      }
+    } catch (error) {
+      console.error('❌ [WEBSOCKET] Error notifying driver of assignment:', error);
+    }
+  }
+
+  /**
+   * Get driver socket connection
+   * @param {string} driverId - Driver ID
+   * @returns {Object|null} Driver socket or null
+   */
+  getDriverSocket(driverId) {
+    if (!this.io) return null;
+    
+    // Find socket by driver ID in connected sockets
+    const connectedSockets = this.io.sockets.sockets;
+    for (const [socketId, socket] of connectedSockets) {
+      if (socket.driverId === driverId) {
+        return socket;
+      }
+    }
+    return null;
+  }
 }
 
 module.exports = WebSocketEventHandler;

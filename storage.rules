@@ -45,7 +45,15 @@ service firebase.storage {
       allow write: if isAuthenticated() && isDriver();
     }
     
-    // Profile photos - universal access
+    // User files (profile photos, documents, etc.) - NEW path used by backend
+    match /users/{userId}/{allFiles=**} {
+      allow read: if isAuthenticated() && 
+        (isOwner(userId) || isAdmin());
+      allow write: if isAuthenticated() && 
+        (isOwner(userId) || isAdmin());
+    }
+    
+    // Profile photos - universal access (LEGACY path)
     match /profiles/{userId}/{document=**} {
       allow read: if isAuthenticated() && 
         (isOwner(userId) || isAdmin());

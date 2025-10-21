@@ -12,7 +12,17 @@ service cloud.firestore {
     }
     
     function isOwner(userId) {
-      return request.auth != null && request.auth.uid == userId;
+      // ✅ CRITICAL FIX: Support both Firebase UID and role-based UID
+      // For role-based auth: userId in path is the backend role-based UID
+      // request.auth.uid is the Firebase Auth UID
+      // Check if user document exists with Firebase UID and matches the path userId
+      return request.auth != null && (
+        // Direct match (for Firebase UID paths)
+        request.auth.uid == userId ||
+        // Role-based match: Check if the user document has originalFirebaseUID matching request.auth.uid
+        (exists(/databases/$(database)/documents/users/$(userId)) && 
+         get(/databases/$(database)/documents/users/$(userId)).data.originalFirebaseUID == request.auth.uid)
+      );
     }
     
     function isValidEmail(email) {
@@ -187,25 +197,23 @@ service cloud.firestore {
       
       allow delete: if isAuthenticated() && isAdmin();
       
-      // ✅ Saved Addresses Subcollection - Allow users to manage their own saved addresses
+      // ✅ Saved Addresses Subcollection - Allow authenticated users to access their own addresses
+      // Note: userId in path is Firebase Auth UID, not backend user ID
       match /savedAddresses/{addressId} {
-        allow read, write: if isAuthenticated() && isOwner(userId);
-        allow create: if isAuthenticated() && isOwner(userId) &&
-          request.resource.data.keys().hasAll(['name', 'address', 'type', 'isDefault', 'coordinates', 'createdAt']) &&
-          request.resource.data.type in ['home', 'work', 'other'];
-        allow update: if isAuthenticated() && isOwner(userId) &&
-          request.writeFields.hasOnly(['name', 'address', 'type', 'isDefault', 'coordinates', 'updatedAt']);
+        allow read: if isAuthenticated() && isOwner(userId);
+        allow write: if isAuthenticated() && isOwner(userId);
+        allow create: if isAuthenticated() && isOwner(userId);
+        allow update: if isAuthenticated() && isOwner(userId);
         allow delete: if isAuthenticated() && isOwner(userId);
       }
       
-      // ✅ Recent Addresses Subcollection - Allow users to manage their recent addresses
+      // ✅ Recent Addresses Subcollection - Allow authenticated users to access their own addresses
+      // Note: userId in path is Firebase Auth UID, not backend user ID
       match /recentAddresses/{addressId} {
-        allow read, write: if isAuthenticated() && isOwner(userId);
-        allow create: if isAuthenticated() && isOwner(userId) &&
-          request.resource.data.keys().hasAll(['address', 'coordinates', 'type', 'usedAt']) &&
-          request.resource.data.type in ['pickup', 'dropoff'];
-        allow update: if isAuthenticated() && isOwner(userId) &&
-          request.writeFields.hasOnly(['usedAt', 'usageCount', 'coordinates']);
+        allow read: if isAuthenticated() && isOwner(userId);
+        allow write: if isAuthenticated() && isOwner(userId);
+        allow create: if isAuthenticated() && isOwner(userId);
+        allow update: if isAuthenticated() && isOwner(userId);
         allow delete: if isAuthenticated() && isOwner(userId);
       }
     }

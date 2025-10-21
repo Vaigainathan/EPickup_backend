@@ -4792,6 +4792,199 @@ router.get('/analytics/drivers', async (req, res) => {
 });
 
 /**
+ * @route   GET /api/admin/drivers/:driverId/work-slots
+ * @desc    Get driver's work slots (for admin view)
+ * @access  Private (Admin only)
+ */
+router.get('/drivers/:driverId/work-slots', async (req, res) => {
+  try {
+    const { driverId } = req.params;
+    const { date, limit = 50 } = req.query;
+    const db = getFirestore();
+    
+    console.log(`🔍 [ADMIN] Fetching work slots for driver: ${driverId}`);
+    
+    // Build query
+    let query = db.collection('workSlots').where('driverId', '==', driverId);
+    
+    // Filter by date if provided
+    if (date) {
+      const startOfDay = new Date(date);
+      startOfDay.setHours(0, 0, 0, 0);
+      const endOfDay = new Date(date);
+      endOfDay.setHours(23, 59, 59, 999);
+      
+      query = query
+        .where('startTime', '>=', startOfDay)
+        .where('startTime', '<=', endOfDay);
+    }
+    
+    // Order by start time and limit
+    const slotsSnapshot = await query
+      .orderBy('startTime', 'asc')
+      .limit(parseInt(limit))
+      .get();
+    
+    const slots = [];
+    slotsSnapshot.forEach(doc => {
+      const slotData = doc.data();
+      slots.push({
+        id: doc.id,
+        ...slotData,
+        startTime: slotData.startTime?.toDate?.() || slotData.startTime,
+        endTime: slotData.endTime?.toDate?.() || slotData.endTime,
+        createdAt: slotData.createdAt?.toDate?.() || slotData.createdAt,
+        updatedAt: slotData.updatedAt?.toDate?.() || slotData.updatedAt
+      });
+    });
+    
+    console.log(`✅ [ADMIN] Retrieved ${slots.length} work slots for driver ${driverId}`);
+    
+    res.json({
+      success: true,
+      data: {
+        driverId,
+        slots,
+        count: slots.length
+      },
+      timestamp: new Date().toISOString()
+    });
+    
+  } catch (error) {
+    console.error('❌ [ADMIN] Error fetching driver work slots:', error);
+    res.status(500).json({
+      success: false,
+      error: {
+        code: 'WORK_SLOTS_ERROR',
+        message: 'Failed to fetch driver work slots',
+        details: error.message
+      },
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+/**
+ * @route   GET /api/admin/drivers/:driverId/rejection-history
+ * @desc    Get driver's booking rejection history
+ * @access  Private (Admin only)
+ */
+router.get('/drivers/:driverId/rejection-history', async (req, res) => {
+  try {
+    const { driverId } = req.params;
+    const { limit = 50, startDate, endDate } = req.query;
+    const db = getFirestore();
+    
+    console.log(`🔍 [ADMIN] Fetching rejection history for driver: ${driverId}`);
+    
+    // Query bookings where this driver rejected
+    let query = db.collection('bookings')
+      .where('cancellation.cancelledBy', '==', 'driver')
+      .where('driverId', '==', driverId);
+    
+    // Add date filters if provided
+    if (startDate) {
+      query = query.where('cancellation.cancelledAt', '>=', new Date(startDate));
+    }
+    if (endDate) {
+      query = query.where('cancellation.cancelledAt', '<=', new Date(endDate));
+    }
+    
+    const rejectionsSnapshot = await query
+      .orderBy('cancellation.cancelledAt', 'desc')
+      .limit(parseInt(limit))
+      .get();
+    
+    const rejections = [];
+    rejectionsSnapshot.forEach(doc => {
+      const bookingData = doc.data();
+      rejections.push({
+        bookingId: doc.id,
+        customerId: bookingData.customerId,
+        customerName: bookingData.customer?.name || 'Unknown',
+        pickupAddress: bookingData.pickup?.address || 'N/A',
+        dropoffAddress: bookingData.dropoff?.address || 'N/A',
+        reason: bookingData.cancellation?.reason || 'No reason provided',
+        rejectedAt: bookingData.cancellation?.cancelledAt?.toDate?.() || bookingData.cancellation?.cancelledAt,
+        fare: bookingData.payment?.amount || 0,
+        distance: bookingData.distance || 0
+      });
+    });
+    
+    // Also get rejections from booking_rejections collection if it exists
+    const rejectionHistoryQuery = db.collection('booking_rejections')
+      .where('driverId', '==', driverId)
+      .orderBy('rejectedAt', 'desc')
+      .limit(parseInt(limit));
+    
+    const rejectionHistorySnapshot = await rejectionHistoryQuery.get();
+    
+    rejectionHistorySnapshot.forEach(doc => {
+      const rejectionData = doc.data();
+      if (!rejections.find(r => r.bookingId === rejectionData.bookingId)) {
+        rejections.push({
+          bookingId: rejectionData.bookingId,
+          customerId: rejectionData.customerId || 'Unknown',
+          customerName: rejectionData.customerName || 'Unknown',
+          pickupAddress: rejectionData.pickupAddress || 'N/A',
+          dropoffAddress: rejectionData.dropoffAddress || 'N/A',
+          reason: rejectionData.reason || 'No reason provided',
+          rejectedAt: rejectionData.rejectedAt?.toDate?.() || rejectionData.rejectedAt,
+          fare: rejectionData.fare || 0,
+          distance: rejectionData.distance || 0
+        });
+      }
+    });
+    
+    // Sort by rejection date
+    rejections.sort((a, b) => {
+      const dateA = new Date(a.rejectedAt);
+      const dateB = new Date(b.rejectedAt);
+      return dateB - dateA;
+    });
+    
+    console.log(`✅ [ADMIN] Retrieved ${rejections.length} rejections for driver ${driverId}`);
+    
+    res.json({
+      success: true,
+      data: {
+        driverId,
+        rejections: rejections.slice(0, parseInt(limit)),
+        totalCount: rejections.length,
+        summary: {
+          totalRejections: rejections.length,
+          last7Days: rejections.filter(r => {
+            const rejDate = new Date(r.rejectedAt);
+            const weekAgo = new Date();
+            weekAgo.setDate(weekAgo.getDate() - 7);
+            return rejDate >= weekAgo;
+          }).length,
+          last30Days: rejections.filter(r => {
+            const rejDate = new Date(r.rejectedAt);
+            const monthAgo = new Date();
+            monthAgo.setDate(monthAgo.getDate() - 30);
+            return rejDate >= monthAgo;
+          }).length
+        }
+      },
+      timestamp: new Date().toISOString()
+    });
+    
+  } catch (error) {
+    console.error('❌ [ADMIN] Error fetching rejection history:', error);
+    res.status(500).json({
+      success: false,
+      error: {
+        code: 'REJECTION_HISTORY_ERROR',
+        message: 'Failed to fetch rejection history',
+        details: error.message
+      },
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+/**
  * @route   GET /api/admin/system/metrics
  * @desc    Get system metrics
  * @access  Private (Admin only)

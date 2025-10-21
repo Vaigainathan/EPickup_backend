@@ -1,6 +1,47 @@
 const express = require('express');
 const axios = require('axios');
+const rateLimit = require('express-rate-limit');
 const router = express.Router();
+
+// 🔥 PRODUCTION FIX: More lenient rate limiter for Firebase token verification
+// This endpoint is called once per login, not constantly
+// Users may retry if verification fails, so we need higher limits
+const firebaseVerifyLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: process.env.NODE_ENV === 'development' ? 500 : 50, // 50 attempts per 15 min (was 5)
+  message: {
+    success: false,
+    error: {
+      code: 'TOO_MANY_REQUESTS',
+      message: 'Too many authentication attempts. Please wait a few minutes and try again.'
+    },
+    timestamp: new Date().toISOString()
+  },
+  standardHeaders: true,
+  legacyHeaders: false,
+  // Use phone number or IP for identification
+  keyGenerator: (req) => {
+    const phoneNumber = req.body?.phoneNumber || req.body?.phone;
+    return phoneNumber ? `firebase_verify:${phoneNumber}` : `firebase_verify:ip:${req.ip}`;
+  },
+  skip: (req) => {
+    const isDevelopment = process.env.NODE_ENV === 'development';
+    const isLocalhost = req.ip === '::1' || req.ip === '127.0.0.1' || req.ip === '::ffff:127.0.0.1';
+    return isDevelopment && isLocalhost;
+  },
+  handler: (req, res) => {
+    console.warn('⚠️ [RATE_LIMIT] Firebase token verification rate limit exceeded for:', req.body?.phone || req.ip);
+    res.status(429).json({
+      success: false,
+      error: {
+        code: 'TOO_MANY_REQUESTS',
+        message: 'Too many authentication attempts. Please wait a few minutes and try again.',
+        retryAfter: 900 // 15 minutes in seconds
+      },
+      timestamp: new Date().toISOString()
+    });
+  }
+});
 
 /**
  * Check if phone number exists in the system
@@ -202,7 +243,7 @@ router.post('/verify-recaptcha', async (req, res) => {
  * Verify Firebase ID token and exchange for backend JWT
  * POST /api/auth/firebase/verify-token
  */
-router.post('/firebase/verify-token', async (req, res) => {
+router.post('/firebase/verify-token', firebaseVerifyLimiter, async (req, res) => {
   try {
     const { idToken, userType, name } = req.body;
 

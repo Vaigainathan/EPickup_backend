@@ -14,7 +14,7 @@ class WorkSlotsService {
 
   /**
    * Generate daily work slots for a driver
-   * Creates 6 slots: 7-9 AM, 9-11 AM, 11-1 PM, 1-3 PM, 3-5 PM, 5-7 PM
+   * Creates 8 slots: 7-9 AM, 9-11 AM, 11-1 PM, 1-3 PM, 3-5 PM, 5-7 PM, 7-9 PM, 9-11 PM
    */
   async generateDailySlots(driverId, date = new Date()) {
     try {
@@ -75,7 +75,9 @@ class WorkSlotsService {
         { start: 11, end: 13, label: '11 AM–1 PM' },
         { start: 13, end: 15, label: '1–3 PM' },
         { start: 15, end: 17, label: '3–5 PM' },
-        { start: 17, end: 19, label: '5–7 PM' }
+        { start: 17, end: 19, label: '5–7 PM' },
+        { start: 19, end: 21, label: '7–9 PM' },
+        { start: 21, end: 23, label: '9–11 PM' }
       ];
 
       for (const config of slotConfigs) {
@@ -86,6 +88,8 @@ class WorkSlotsService {
         endTime.setHours(config.end, 0, 0, 0);
 
         const slotId = `${driverId}_${date.toISOString().split('T')[0]}_${config.start}-${config.end}`;
+        
+        console.log(`🔍 [WORK_SLOTS] Creating slot: ${config.label} (${config.start}-${config.end})`);
         
         const slot = {
           slotId,
@@ -100,18 +104,23 @@ class WorkSlotsService {
         };
 
         slots.push(slot);
+        console.log(`✅ [WORK_SLOTS] Slot added to batch: ${config.label}`);
       }
+      
+      console.log(`📊 [WORK_SLOTS] Total slots prepared for batch write: ${slots.length}`);
 
       // Batch write all slots
       const batch = this.db.batch();
-      slots.forEach(slot => {
+      slots.forEach((slot, index) => {
         const slotRef = this.db.collection('workSlots').doc(slot.slotId);
         batch.set(slotRef, slot);
+        console.log(`📝 [WORK_SLOTS] Batch item ${index + 1}/${slots.length}: ${slot.label}`);
       });
 
       await batch.commit();
       
       console.log(`✅ [WORK_SLOTS] Generated ${slots.length} slots successfully`);
+      console.log(`📋 [WORK_SLOTS] Slot labels: ${slots.map(s => s.label).join(', ')}`);
       
       // CRITICAL: Clear the generation lock
       this.ongoingGenerations.delete(driverId);
@@ -151,6 +160,8 @@ class WorkSlotsService {
       const endOfDay = new Date(date);
       endOfDay.setHours(23, 59, 59, 999);
 
+      console.log(`🔍 [GET_DRIVER_SLOTS] Fetching slots for driver: ${driverId}, date: ${date.toISOString().split('T')[0]}`);
+
       const query = this.db.collection('workSlots')
         .where('driverId', '==', driverId)
         .where('startTime', '>=', Timestamp.fromDate(startOfDay))
@@ -161,11 +172,16 @@ class WorkSlotsService {
       const slots = [];
 
       snapshot.forEach(doc => {
+        const slotData = doc.data();
         slots.push({
           id: doc.id,
-          ...doc.data()
+          ...slotData
         });
+        console.log(`📥 [GET_DRIVER_SLOTS] Retrieved slot: ${slotData.label}`);
       });
+
+      console.log(`✅ [GET_DRIVER_SLOTS] Total slots retrieved: ${slots.length}`);
+      console.log(`📋 [GET_DRIVER_SLOTS] Slot labels: ${slots.map(s => s.label).join(', ')}`);
 
       return {
         success: true,

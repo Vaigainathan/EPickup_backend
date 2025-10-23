@@ -7,9 +7,24 @@ const { getFirestore, Timestamp } = require('../services/firebase');
 
 class WorkSlotsService {
   constructor() {
-    this.db = getFirestore();
+    this.getDb() = null; // Initialize lazily
     // CRITICAL: Track ongoing generation to prevent concurrent requests
     this.ongoingGenerations = new Map(); // driverId -> timestamp
+  }
+
+  /**
+   * Get Firestore instance (lazy initialization)
+   */
+  getDb() {
+    if (!this.db) {
+      try {
+        this.getDb() = getFirestore();
+      } catch (error) {
+        console.error('❌ [WorkSlotsService] Failed to get Firestore:', error);
+        throw new Error('Firebase not initialized. Please ensure Firebase is initialized before using WorkSlotsService.');
+      }
+    }
+    return this.db;
   }
 
   /**

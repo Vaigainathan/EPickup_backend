@@ -9,9 +9,24 @@ const firestoreSessionService = require('./firestoreSessionService');
 class ExpoPushService {
   constructor() {
     this.expo = new Expo({ accessToken: process.env.EXPO_ACCESS_TOKEN });
-    this.db = getFirestore();
+    this.getDb() = null; // Initialize lazily
     this.firestoreSessionService = firestoreSessionService;
     this.initialize();
+  }
+
+  /**
+   * Get Firestore instance (lazy initialization)
+   */
+  getDb() {
+    if (!this.db) {
+      try {
+        this.getDb() = getFirestore();
+      } catch (error) {
+        console.error('❌ [ExpoPushService] Failed to get Firestore:', error);
+        throw new Error('Firebase not initialized. Please ensure Firebase is initialized before using ExpoPushService.');
+      }
+    }
+    return this.db;
   }
 
   /**

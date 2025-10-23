@@ -11,13 +11,28 @@ const phonepeConfig = require('./phonepeConfigService');
  */
 class PhonePeService {
   constructor() {
-    this.db = getFirestore();
+    this.getDb() = null; // Initialize lazily
     
     // Use centralized PhonePe configuration
     this.config = phonepeConfig.getConfig();
     
     // Log configuration for debugging
     phonepeConfig.logConfig();
+  }
+
+  /**
+   * Get Firestore instance (lazy initialization)
+   */
+  getDb() {
+    if (!this.db) {
+      try {
+        this.getDb() = getFirestore();
+      } catch (error) {
+        console.error('❌ [PhonePeService] Failed to get Firestore:', error);
+        throw new Error('Firebase not initialized. Please ensure Firebase is initialized before using PhonePeService.');
+      }
+    }
+    return this.db;
   }
 
   /**

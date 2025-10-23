@@ -770,6 +770,27 @@ service cloud.firestore {
       allow delete: if isAuthenticated() && isAdmin();
     }
 
+    // ✅ CRITICAL FIX: Booking rejections collection - track driver rejections
+    match /booking_rejections/{rejectionId} {
+      allow read: if isAuthenticated() && (
+        resource.data.driverId == request.auth.uid || 
+        isAdmin() ||
+        (isCustomer() && exists(/databases/$(database)/documents/bookings/$(resource.data.bookingId)) &&
+         get(/databases/$(database)/documents/bookings/$(resource.data.bookingId)).data.customerId == request.auth.uid)
+      );
+      
+      allow create: if isAuthenticated() && (
+        isAdmin() ||
+        (isDriver() && request.resource.data.driverId == request.auth.uid &&
+         request.resource.data.keys().hasAll(['bookingId', 'driverId', 'reason', 'rejectedAt', 'createdAt']) &&
+         request.resource.data.driverId == request.auth.uid)
+      );
+      
+      allow update: if isAuthenticated() && isAdmin();
+      
+      allow delete: if isAuthenticated() && isAdmin();
+    }
+
     // Default rule - deny all other access
     match /{document=**} {
       allow read, write: if false;

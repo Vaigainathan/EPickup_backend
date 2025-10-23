@@ -6,8 +6,23 @@ const { getFirestore } = require('firebase-admin/firestore');
  */
 class LiveTrackingService {
   constructor() {
-    this.db = getFirestore();
+    this.getDb() = null; // Initialize lazily
     this.io = null;
+  }
+
+  /**
+   * Get Firestore instance (lazy initialization)
+   */
+  getDb() {
+    if (!this.db) {
+      try {
+        this.getDb() = getFirestore();
+      } catch (error) {
+        console.error('❌ [LiveTrackingService] Failed to get Firestore:', error);
+        throw new Error('Firebase not initialized. Please ensure Firebase is initialized before using LiveTrackingService.');
+      }
+    }
+    return this.db;
   }
 
   /**

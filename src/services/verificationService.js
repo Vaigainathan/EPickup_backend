@@ -2,7 +2,22 @@ const { getFirestore } = require('firebase-admin/firestore');
 
 class VerificationService {
   constructor() {
-    this.db = getFirestore();
+    this.getDb() = null; // Initialize lazily
+  }
+
+  /**
+   * Get Firestore instance (lazy initialization)
+   */
+  getDb() {
+    if (!this.db) {
+      try {
+        this.getDb() = getFirestore();
+      } catch (error) {
+        console.error('❌ [VerificationService] Failed to get Firestore:', error);
+        throw new Error('Firebase not initialized. Please ensure Firebase is initialized before using VerificationService.');
+      }
+    }
+    return this.db;
   }
 
   /**

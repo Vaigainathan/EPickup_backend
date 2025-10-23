@@ -6,9 +6,24 @@ const { getFirestore } = require('firebase-admin/firestore');
  */
 class BookingLockService {
   constructor() {
-    this.db = getFirestore();
+    this.getDb() = null; // Initialize lazily
     this.activeLocks = new Map(); // In-memory lock tracking
     this.lockTimeout = 30000; // 30 seconds lock timeout
+  }
+
+  /**
+   * Get Firestore instance (lazy initialization)
+   */
+  getDb() {
+    if (!this.db) {
+      try {
+        this.getDb() = getFirestore();
+      } catch (error) {
+        console.error('❌ [BookingLockService] Failed to get Firestore:', error);
+        throw new Error('Firebase not initialized. Please ensure Firebase is initialized before using BookingLockService.');
+      }
+    }
+    return this.db;
   }
 
   /**
@@ -120,4 +135,4 @@ class BookingLockService {
   }
 }
 
-module.exports = new BookingLockService();
+module.exports = BookingLockService;

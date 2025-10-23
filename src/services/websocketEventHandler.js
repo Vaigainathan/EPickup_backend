@@ -1133,20 +1133,37 @@ class WebSocketEventHandler {
 
       const bookingData = bookingDoc.data();
       
-      // Update booking with rejection
+      // ✅ CRITICAL FIX: Make booking available again (same as HTTP API)
       await bookingRef.update({
-        status: 'rejected',
-        rejectedBy: userId,
-        rejectionReason: reason || 'No reason provided',
-        rejectedAt: new Date(),
+        status: 'pending',
+        driverId: null,
+        'timing.assignedAt': null,
+        'cancellation.cancelledBy': 'driver',
+        'cancellation.reason': reason || 'Rejected by driver',
+        'cancellation.cancelledAt': new Date(),
         updatedAt: new Date()
       });
+
+      // ✅ CRITICAL FIX: Track rejection to prevent driver from seeing same booking again
+      try {
+        await this.db.collection('booking_rejections').add({
+          bookingId: bookingId,
+          driverId: userId,
+          reason: reason || 'Rejected by driver',
+          rejectedAt: new Date(),
+          createdAt: new Date()
+        });
+        console.log(`✅ [WEBSOCKET_REJECTION] Tracked rejection for driver ${userId} and booking ${bookingId}`);
+      } catch (rejectionError) {
+        console.error('❌ [WEBSOCKET_REJECTION] Failed to track rejection:', rejectionError);
+        // Don't fail the rejection if tracking fails
+      }
 
       // Create booking status update
       const statusUpdate = {
         bookingId,
-        status: 'rejected',
-        driverId: userId,
+        status: 'pending', // ✅ FIXED: Status is now pending (available again)
+        driverId: null, // ✅ FIXED: No driver assigned
         reason: reason || 'No reason provided',
         timestamp: new Date().toISOString(),
         updatedBy: userId
@@ -1165,6 +1182,20 @@ class WebSocketEventHandler {
 
       // Notify admin
       this.io.to(`type:admin`).emit('booking_status_update', statusUpdate);
+
+      // ✅ CRITICAL FIX: Notify other drivers that booking is available again
+      try {
+        console.log(`🔔 [WEBSOCKET_REJECTION] Notifying other drivers that booking ${bookingId} is available again`);
+        await this.notifyDriversOfNewBooking({
+          id: bookingId,
+          ...bookingData,
+          status: 'pending',
+          driverId: null
+        });
+      } catch (notificationError) {
+        console.error('❌ [WEBSOCKET_REJECTION] Failed to notify other drivers:', notificationError);
+        // Don't fail the rejection if notification fails
+      }
 
       // Confirm rejection
       socket.emit('booking_rejected_confirmed', {

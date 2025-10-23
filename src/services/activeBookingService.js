@@ -6,7 +6,22 @@ const { getFirestore } = require('firebase-admin/firestore');
  */
 class ActiveBookingService {
   constructor() {
-    this.db = getFirestore();
+    this.getDb() = null; // Initialize lazily
+  }
+
+  /**
+   * Get Firestore instance (lazy initialization)
+   */
+  getDb() {
+    if (!this.db) {
+      try {
+        this.getDb() = getFirestore();
+      } catch (error) {
+        console.error('❌ [ActiveBookingService] Failed to get Firestore:', error);
+        throw new Error('Firebase not initialized. Please ensure Firebase is initialized before using ActiveBookingService.');
+      }
+    }
+    return this.db;
   }
 
   /**
@@ -242,4 +257,4 @@ class ActiveBookingService {
   }
 }
 
-module.exports = new ActiveBookingService();
+module.exports = ActiveBookingService;

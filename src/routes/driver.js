@@ -6,7 +6,8 @@ const { documentStatusRateLimit } = require('../middleware/rateLimiter');
 const { speedLimiter } = require('../middleware/rateLimit');
 const { documentStatusCache, invalidateUserCache } = require('../middleware/cache');
 const admin = require('firebase-admin');
-const bookingLockService = require('../services/bookingLockService');
+const BookingLockService = require('../services/bookingLockService');
+const bookingLockService = new BookingLockService();
 
 const router = express.Router();
 
@@ -2469,11 +2470,25 @@ router.get('/bookings/available', requireDriver, async (req, res) => {
       .orderBy('createdAt', 'desc')
       .limit(parseInt(limit) + parseInt(offset));
     
-    // Execute both queries in parallel
-    const [pendingSnapshot, assignedSnapshot] = await Promise.all([
+    // ✅ CRITICAL FIX: Get rejected bookings by this driver to exclude them
+    const rejectedQuery = db.collection('booking_rejections')
+      .where('driverId', '==', uid)
+      .get();
+    
+    // Execute queries in parallel
+    const [pendingSnapshot, assignedSnapshot, rejectedSnapshot] = await Promise.all([
       pendingQuery.get(),
-      assignedQuery.get()
+      assignedQuery.get(),
+      rejectedQuery
     ]);
+    
+    // Create set of rejected booking IDs for fast lookup
+    const rejectedBookingIds = new Set();
+    rejectedSnapshot.forEach(doc => {
+      rejectedBookingIds.add(doc.data().bookingId);
+    });
+    
+    console.log(`🔍 [DRIVER_API] Rejected bookings by driver ${uid}:`, Array.from(rejectedBookingIds));
     
     const allBookings = [];
     
@@ -2489,6 +2504,15 @@ router.get('/bookings/available', requireDriver, async (req, res) => {
     // Process pending bookings
     pendingSnapshot.forEach(doc => {
       const bookingData = doc.data();
+      
+      // ✅ CRITICAL FIX: Filter out bookings rejected by this driver
+      if (rejectedBookingIds.has(doc.id)) {
+        console.log('🔍 [DRIVER_API] Skipping rejected booking:', {
+          id: doc.id,
+          driverId: uid
+        });
+        return; // Skip this booking
+      }
       
       // Filter out bookings that are already assigned to a driver
       if (bookingData.driverId !== null && bookingData.driverId !== undefined) {
@@ -2815,7 +2839,8 @@ router.post('/bookings/:id/accept', requireDriver, async (req, res) => {
     }
 
     // ✅ FIXED: Use BookingLockService for atomic driver acceptance
-    const bookingLockService = require('../services/bookingLockService');
+    const BookingLockService = require('../services/bookingLockService');
+    const bookingLockService = new BookingLockService();
     
     // Acquire exclusive lock for booking acceptance
     try {
@@ -3120,11 +3145,48 @@ router.post('/bookings/:id/reject', [
       updatedAt: new Date()
     });
 
+    // ✅ CRITICAL FIX: Track rejection to prevent driver from seeing same booking again
+    try {
+      await db.collection('booking_rejections').add({
+        bookingId: id,
+        driverId: uid,
+        reason: reason || 'Rejected by driver',
+        rejectedAt: new Date(),
+        createdAt: new Date()
+      });
+      console.log(`✅ [BOOKING_REJECTION] Tracked rejection for driver ${uid} and booking ${id}`);
+    } catch (rejectionError) {
+      console.error('❌ [BOOKING_REJECTION] Failed to track rejection:', rejectionError);
+      // Don't fail the rejection if tracking fails
+    }
+
     // Remove current trip from driver location
     await db.collection('driverLocations').doc(uid).update({
       currentTripId: null,
       lastUpdated: new Date()
     });
+
+    // ✅ CRITICAL FIX: Notify other drivers that booking is available again
+    try {
+      const wsEventHandler = require('../services/websocketEventHandler');
+      const wsHandler = new wsEventHandler();
+      await wsHandler.initialize();
+      
+      // Get updated booking data for notification
+      const updatedBookingDoc = await bookingRef.get();
+      const updatedBookingData = updatedBookingDoc.data();
+      
+      if (updatedBookingData) {
+        console.log(`🔔 [BOOKING_REJECTION] Notifying other drivers that booking ${id} is available again`);
+        await wsHandler.notifyDriversOfNewBooking({
+          id: id,
+          ...updatedBookingData
+        });
+      }
+    } catch (notificationError) {
+      console.error('❌ [BOOKING_REJECTION] Failed to notify other drivers:', notificationError);
+      // Don't fail the rejection if notification fails
+    }
 
     res.status(200).json({
       success: true,

@@ -420,7 +420,8 @@ router.post('/bookings', authenticateToken, async (req, res) => {
     };
     
     // ✅ FIXED: Use ActiveBookingService for atomic active booking check
-    const activeBookingService = require('../services/activeBookingService');
+    const ActiveBookingService = require('../services/activeBookingService');
+    const activeBookingService = new ActiveBookingService();
     const activeBookingCheck = await activeBookingService.hasActiveBooking(userId);
     
     if (activeBookingCheck.hasActive) {
@@ -2009,7 +2010,8 @@ router.get('/invoice/:bookingId', authenticateToken, async (req, res) => {
 router.get('/active-booking', authenticateToken, async (req, res) => {
   try {
     const { uid: customerId } = req.user;
-    const activeBookingService = require('../services/activeBookingService');
+    const ActiveBookingService = require('../services/activeBookingService');
+    const activeBookingService = new ActiveBookingService();
     
     const result = await activeBookingService.getCurrentActiveBooking(customerId);
     
@@ -2061,7 +2063,8 @@ router.post('/cancel-active-booking', [
 
     const { uid: customerId } = req.user;
     const { reason } = req.body;
-    const activeBookingService = require('../services/activeBookingService');
+    const ActiveBookingService = require('../services/activeBookingService');
+    const activeBookingService = new ActiveBookingService();
     
     const result = await activeBookingService.cancelActiveBooking(customerId, reason);
     

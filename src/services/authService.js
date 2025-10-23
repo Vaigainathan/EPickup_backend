@@ -7,8 +7,23 @@ const crypto = require('crypto');
  */
 class AuthService {
   constructor() {
-    this.db = getFirestore();
+    this.getDb() = null; // Initialize lazily
     this.jwtService = require('./jwtService'); // Use singleton instance
+  }
+
+  /**
+   * Get Firestore instance (lazy initialization)
+   */
+  getDb() {
+    if (!this.db) {
+      try {
+        this.getDb() = getFirestore();
+      } catch (error) {
+        console.error('❌ [AuthService] Failed to get Firestore:', error);
+        throw new Error('Firebase not initialized. Please ensure Firebase is initialized before using AuthService.');
+      }
+    }
+    return this.db;
   }
 
   // OTP authentication handled by Firebase Auth
@@ -89,7 +104,7 @@ class AuthService {
         await this.db.runTransaction(async (transaction) => {
           // Double-check that user doesn't exist with the same userType (race condition protection)
           const doubleCheckQuery = await transaction.get(
-            this.db.collection('users')
+            this.getDb().collection('users')
               .where('phone', '==', normalizedPhone)
               .where('userType', '==', userType)
               .limit(1)

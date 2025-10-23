@@ -17,33 +17,7 @@ const { sanitizeInput } = require('./middleware/validation');
 const { generalLimiter, authLimiter, adminLimiter, speedLimiter } = require('./middleware/rateLimit');
 const { securityHeaders } = require('./middleware/security');
 
-// Import routes
-const authRoutes = require('./routes/auth');
-const refreshTokenRoutes = require('./routes/refreshToken');
-const userRoutes = require('./routes/user');
-const customerRoutes = require('./routes/customer');
-const driverRoutes = require('./routes/driver');
-const bookingRoutes = require('./routes/booking');
-const paymentRoutes = require('./routes/payments');
-const trackingRoutes = require('./routes/tracking');
-const notificationRoutes = require('./routes/notification');
-const fileUploadRoutes = require('./routes/fileUpload');
-const supportRoutes = require('./routes/support');
-const chatRoutes = require('./routes/chat');
-const googleMapsRoutes = require('./routes/googleMaps');
-const realtimeRoutes = require('./routes/realtime');
-const fcmTokenRoutes = require('./routes/fcmTokens');
-const emergencyRoutes = require('./routes/emergency');
-const serviceAreaRoutes = require('./routes/serviceArea');
-const healthRoutes = require('./routes/health');
-const walletRoutes = require('./routes/wallet');
-const fareCalculationRoutes = require('./routes/fareCalculation');
-const workSlotsRoutes = require('./routes/workSlots');
-const adminRoutes = require('./routes/admin');
-const adminAuthRoutes = require('./routes/adminAuth');
-const adminSignupRoutes = require('./routes/adminSignup');
-// const adminBookingManagementRoutes = require('./routes/adminBookingManagement'); // Included in adminRoutes
-const locationTrackingRoutes = require('./routes/locationTracking');
+// Routes will be imported after Firebase initialization
 
 // Import middleware
 const { 
@@ -143,6 +117,36 @@ try {
 }
 
 // MSG91 service removed - using Firebase Auth for OTP
+
+// Import routes after Firebase initialization
+console.log('📦 Importing routes after Firebase initialization...');
+const authRoutes = require('./routes/auth');
+const refreshTokenRoutes = require('./routes/refreshToken');
+const userRoutes = require('./routes/user');
+const customerRoutes = require('./routes/customer');
+const driverRoutes = require('./routes/driver');
+const bookingRoutes = require('./routes/booking');
+const paymentRoutes = require('./routes/payments');
+const trackingRoutes = require('./routes/tracking');
+const notificationRoutes = require('./routes/notification');
+const fileUploadRoutes = require('./routes/fileUpload');
+const supportRoutes = require('./routes/support');
+const chatRoutes = require('./routes/chat');
+const googleMapsRoutes = require('./routes/googleMaps');
+const realtimeRoutes = require('./routes/realtime');
+const fcmTokenRoutes = require('./routes/fcmTokens');
+const emergencyRoutes = require('./routes/emergency');
+const serviceAreaRoutes = require('./routes/serviceArea');
+const healthRoutes = require('./routes/health');
+const walletRoutes = require('./routes/wallet');
+const fareCalculationRoutes = require('./routes/fareCalculation');
+const workSlotsRoutes = require('./routes/workSlots');
+const adminRoutes = require('./routes/admin');
+const adminAuthRoutes = require('./routes/adminAuth');
+const adminSignupRoutes = require('./routes/adminSignup');
+// const adminBookingManagementRoutes = require('./routes/adminBookingManagement'); // Included in adminRoutes
+const locationTrackingRoutes = require('./routes/locationTracking');
+console.log('✅ All routes imported successfully');
 
 // Create HTTP server
 const server = require('http').createServer(app);

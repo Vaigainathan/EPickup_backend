@@ -30,16 +30,25 @@ router.post('/register', [
       });
     }
 
-    const { fcmToken, deviceId, platform } = req.body;
-    const userId = req.user.uid;
+    const { fcmToken, deviceId, platform, userType } = req.body;
+    const userId = req.user.uid; // This is the role-based UID from JWT
 
+    // ✅ FIX: Use role-based UID for FCM token storage
+    console.log(`🔔 [FCM_TOKEN] Registering FCM token for user: ${userId} (role-based UID)`);
+    
     // Update user's FCM token (use set with merge to create document if it doesn't exist)
     await db.collection('users').doc(userId).set({
       fcmToken,
       deviceId,
       platform,
-      tokenUpdatedAt: new Date()
+      userType: userType || req.user.userType,
+      tokenUpdatedAt: new Date(),
+      // ✅ FIX: Store additional metadata for debugging
+      registrationSource: 'customer_app',
+      lastSeen: new Date()
     }, { merge: true });
+
+    console.log(`✅ [FCM_TOKEN] FCM token registered successfully for user: ${userId}`);
 
     res.status(200).json({
       success: true,

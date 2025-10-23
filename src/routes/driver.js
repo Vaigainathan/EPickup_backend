@@ -6,6 +6,7 @@ const { documentStatusRateLimit } = require('../middleware/rateLimiter');
 const { speedLimiter } = require('../middleware/rateLimit');
 const { documentStatusCache, invalidateUserCache } = require('../middleware/cache');
 const admin = require('firebase-admin');
+const bookingLockService = require('../services/bookingLockService');
 
 const router = express.Router();
 
@@ -2715,9 +2716,10 @@ router.get('/bookings/available', requireDriver, async (req, res) => {
  * @access  Private (Driver only)
  */
 router.post('/bookings/:id/accept', requireDriver, async (req, res) => {
+  const { uid } = req.user;
+  const { id } = req.params;
+  
   try {
-    const { uid } = req.user;
-    const { id } = req.params;
     const db = getFirestore();
     
     const bookingRef = db.collection('bookings').doc(id);
@@ -2810,6 +2812,27 @@ router.post('/bookings/:id/accept', requireDriver, async (req, res) => {
         },
         timestamp: new Date().toISOString()
       });
+    }
+
+    // ✅ FIXED: Use BookingLockService for atomic driver acceptance
+    const bookingLockService = require('../services/bookingLockService');
+    
+    // Acquire exclusive lock for booking acceptance
+    try {
+      await bookingLockService.acquireBookingLock(id, uid);
+    } catch (error) {
+      if (error.message === 'BOOKING_LOCKED') {
+        return res.status(409).json({
+          success: false,
+          error: {
+            code: 'BOOKING_ALREADY_ACCEPTED',
+            message: 'This booking has already been accepted by another driver',
+            details: 'Another driver accepted this booking just now. Please try other available bookings.'
+          },
+          timestamp: new Date().toISOString()
+        });
+      }
+      throw error;
     }
 
     // Accept booking using Firestore transaction for conflict resolution
@@ -2941,6 +2964,9 @@ router.post('/bookings/:id/accept', requireDriver, async (req, res) => {
       // Don't fail the request if WebSocket fails
     }
 
+    // ✅ FIXED: Release booking lock on success
+    await bookingLockService.releaseBookingLock(id, uid);
+
     res.status(200).json({
       success: true,
       message: 'Booking accepted successfully',
@@ -2953,6 +2979,13 @@ router.post('/bookings/:id/accept', requireDriver, async (req, res) => {
 
   } catch (error) {
     console.error('Error accepting booking:', error);
+    
+    // ✅ FIXED: Release booking lock on error
+    try {
+      await bookingLockService.releaseBookingLock(id, uid);
+    } catch (lockError) {
+      console.error('Error releasing booking lock:', lockError);
+    }
     
     // Handle specific transaction errors
     if (error.message === 'DRIVER_NOT_VERIFIED') {
@@ -3118,6 +3151,105 @@ router.post('/bookings/:id/reject', [
  * @desc    Update booking status (start trip, pickup, delivery, etc.)
  * @access  Private (Driver only)
  */
+router.put('/:id/status', [
+  requireDriver,
+  body('status')
+    .isIn(['driver_enroute', 'driver_arrived', 'picked_up', 'in_transit', 'at_dropoff', 'delivered'])
+    .withMessage('Invalid status'),
+  body('location')
+    .optional()
+    .isObject()
+    .withMessage('Location must be an object'),
+  body('eta')
+    .optional()
+    .isNumeric()
+    .withMessage('ETA must be a number')
+], async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'VALIDATION_ERROR',
+          message: 'Validation failed',
+          details: errors.array()
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    const { id } = req.params;
+    const { uid } = req.user;
+    const { status, location, eta } = req.body;
+    const db = getFirestore();
+
+    // Verify booking exists and driver is assigned
+    const bookingRef = db.collection('bookings').doc(id);
+    const bookingDoc = await bookingRef.get();
+    
+    if (!bookingDoc.exists) {
+      return res.status(404).json({
+        success: false,
+        error: {
+          code: 'BOOKING_NOT_FOUND',
+          message: 'Booking not found'
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    const bookingData = bookingDoc.data();
+    
+    if (bookingData.driverId !== uid) {
+      return res.status(403).json({
+        success: false,
+        error: {
+          code: 'ACCESS_DENIED',
+          message: 'You can only update bookings assigned to you'
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    // ✅ FIXED: Use LiveTrackingService for status updates
+    const liveTrackingService = require('../services/liveTrackingService');
+    
+    // Update driver location if provided
+    if (location) {
+      await liveTrackingService.updateDriverLocation(uid, location, id);
+    }
+
+    // Update booking status with live tracking
+    await liveTrackingService.updateBookingStatus(id, status, uid, {
+      eta: eta || null,
+      updatedAt: new Date()
+    });
+
+    res.status(200).json({
+      success: true,
+      message: 'Booking status updated successfully',
+      data: {
+        bookingId: id,
+        status,
+        timestamp: new Date().toISOString()
+      },
+      timestamp: new Date().toISOString()
+    });
+
+  } catch (error) {
+    console.error('Error updating booking status:', error);
+    res.status(500).json({
+      success: false,
+      error: {
+        code: 'BOOKING_STATUS_UPDATE_ERROR',
+        message: 'Failed to update booking status',
+        details: error.message
+      },
+      timestamp: new Date().toISOString()
+    });
+  }
+});
 router.put('/bookings/:id/status', [
   requireDriver,
   body('status')

@@ -822,20 +822,37 @@ router.post('/:id/accept', [
     });
 
     if (result.success) {
-      // Notify customer of driver acceptance
+      // ✅ FIXED: Notify customer of driver acceptance with proper WebSocket events
       const wsEventHandler = new WebSocketEventHandler();
       await wsEventHandler.initialize();
-      await wsEventHandler.notifyCustomerOfDriverAcceptance(
-        result.data.booking.customerId,
-        {
-          bookingId: id,
-          driverId: uid,
-          driverName: result.data.driver.name,
-          driverPhone: result.data.driver.phone,
-          vehicleInfo: result.data.driver.vehicleInfo,
-          estimatedArrival: estimatedArrival
-        }
-      );
+      
+      // Send driver_assigned event to customer
+      await wsEventHandler.io.to(`user:${result.data.booking.customerId}`).emit('driver_assigned', {
+        bookingId: id,
+        driverId: uid,
+        driver: {
+          id: uid,
+          name: result.data.driver.name,
+          phone: result.data.driver.phone,
+          vehicleNumber: result.data.driver.vehicleInfo?.vehicleNumber || '',
+          rating: result.data.driver.rating || 4.5
+        },
+        timestamp: new Date().toISOString()
+      });
+
+      // Send booking status update
+      await wsEventHandler.io.to(`user:${result.data.booking.customerId}`).emit('booking_status_update', {
+        bookingId: id,
+        status: 'driver_assigned',
+        driverInfo: {
+          id: uid,
+          name: result.data.driver.name,
+          phone: result.data.driver.phone,
+          vehicleNumber: result.data.driver.vehicleInfo?.vehicleNumber || ''
+        },
+        timestamp: new Date().toISOString(),
+        updatedBy: uid
+      });
 
       res.status(200).json({
         success: true,

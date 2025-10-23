@@ -1,624 +1,225 @@
-const { getFirestore } = require('./firebase');
-const firestoreSessionService = require('./firestoreSessionService');
-const RealTimeService = require('./realTimeService');
-const { getSocketIO } = require('./socket');
+const { getFirestore } = require('firebase-admin/firestore');
 
 /**
- * Live Tracking Service for EPickup
- * Handles real-time location updates, trip progress, and live tracking
+ * Live Tracking Service - Handles real-time driver location updates and booking status
+ * ✅ FIXED: Provides live tracking for customers and status updates
  */
 class LiveTrackingService {
   constructor() {
-    this.db = null;
-    this.firestoreSessionService = firestoreSessionService;
-    this.realTimeService = null;
+    this.db = getFirestore();
     this.io = null;
-    this.activeTrips = new Map(); // tripId -> tracking data
-    this.locationUpdateInterval = 10000; // 10 seconds
-    this.initialize();
   }
 
   /**
-   * Initialize the live tracking service
+   * Initialize with Socket.IO instance
    */
-  async initialize() {
-    try {
-      this.db = getFirestore();
-      this.realTimeService = new RealTimeService();
-      this.io = getSocketIO();
-      
-      console.log('✅ Live tracking service initialized successfully');
-    } catch (error) {
-      console.error('❌ Failed to initialize live tracking service:', error);
-    }
+  initialize(io) {
+    this.io = io;
+    console.log('✅ [LiveTrackingService] Initialized with Socket.IO');
   }
 
   /**
-   * Start live tracking for a trip
-   * @param {string} tripId - Trip identifier
-   * @param {Object} tripData - Trip information
-   * @param {Object} options - Tracking options
+   * Update driver location and notify customer
    */
-  async startLiveTracking(tripId, tripData, options = {}) {
+  async updateDriverLocation(driverId, location, bookingId = null) {
     try {
-      console.log(`🚀 Starting live tracking for trip: ${tripId}`);
-
-      // Validate trip data
-      if (!tripData.driverId || !tripData.pickup || !tripData.dropoff) {
-        throw new Error('Invalid trip data for live tracking');
+      if (!this.io) {
+        console.error('❌ [LiveTrackingService] Socket.IO not initialized');
+        return;
       }
 
-      // Initialize tracking data
-      const trackingData = {
-        tripId,
-        bookingId: tripData.bookingId || tripId,
-        driverId: tripData.driverId,
-        customerId: tripData.customerId,
-        status: 'tracking_started',
-        startTime: new Date(),
-        lastUpdate: new Date(),
-        currentLocation: null,
-        locationHistory: [],
-        progress: {
-          distanceToPickup: 0,
-          distanceToDropoff: 0,
-          etaToPickup: 0,
-          etaToDropoff: 0,
-          isAtPickup: false,
-          isAtDropoff: false,
-          currentStage: 'enroute'
-        },
-        route: {
-          polyline: null,
-          distance: 0,
-          duration: 0,
-          waypoints: []
-        },
-        geofence: {
-          pickup: {
-            center: tripData.pickup.coordinates,
-            radius: 0.1, // 100 meters
-            triggered: false,
-            triggeredAt: null
-          },
-          dropoff: {
-            center: tripData.dropoff.coordinates,
-            radius: 0.1, // 100 meters
-            triggered: false,
-            triggeredAt: null
-          }
-        },
-        options: {
-          updateInterval: options.updateInterval || this.locationUpdateInterval,
-          enableGeofencing: options.enableGeofencing !== false,
-          enableRouteOptimization: options.enableRouteOptimization !== false,
-          maxLocationHistory: options.maxLocationHistory || 100
-        }
-      };
-
-      // Store in active trips
-      this.activeTrips.set(tripId, trackingData);
-
-      // Store in Firestore cache for persistence
-      await this.firestoreSessionService.setCache(`live_tracking:${tripId}`, trackingData, 3600); // 1 hour expiry
-
-      // Create tracking document in Firestore
-      await this.createTrackingDocument(tripId, trackingData);
-
-      // Send tracking started notification
-      await this.realTimeService.sendTripStatusUpdate(tripId, 'tracking_started', {
-        startTime: trackingData.startTime,
-        driverId: tripData.driverId
-      });
-
-      // Start location update monitoring
-      this.startLocationMonitoring(tripId);
-
-      console.log(`✅ Live tracking started for trip: ${tripId}`);
-      return trackingData;
-
-    } catch (error) {
-      console.error('Error starting live tracking:', error);
-      throw error;
-    }
-  }
-
-  /**
-   * Update driver location for a trip
-   * @param {string} tripId - Trip identifier
-   * @param {string} driverId - Driver identifier
-   * @param {Object} location - Location data
-   * @param {Object} options - Update options
-   */
-  async updateDriverLocation(tripId, driverId, location, options = {}) { // eslint-disable-line no-unused-vars
-    try {
-      // Validate location data
-      if (!location.latitude || !location.longitude) {
-        throw new Error('Invalid location coordinates');
-      }
-
-      // Get tracking data
-      const trackingData = this.activeTrips.get(tripId);
-      if (!trackingData) {
-        throw new Error('Trip not being tracked');
-      }
-
-      // Verify driver
-      if (trackingData.driverId !== driverId) {
-        throw new Error('Driver not authorized for this trip');
-      }
-
-      // Create location update
-      const locationUpdate = {
+      // Update driver location in Firestore
+      await this.db.collection('driverLocations').doc(driverId).set({
         latitude: location.latitude,
         longitude: location.longitude,
-        accuracy: location.accuracy || 10,
-        speed: location.speed || 0,
-        bearing: location.bearing || 0,
-        altitude: location.altitude || null,
+        address: location.address || 'Current Location',
+        timestamp: new Date(),
+        lastUpdated: new Date(),
+        currentTripId: bookingId
+      }, { merge: true });
+
+      // If driver is on a trip, notify customer
+      if (bookingId) {
+        // Get booking details
+        const bookingDoc = await this.db.collection('bookings').doc(bookingId).get();
+        if (bookingDoc.exists) {
+          const bookingData = bookingDoc.data();
+          
+          // Notify customer of driver location update
+          this.io.to(`user:${bookingData.customerId}`).emit('driver_location_update', {
+            bookingId,
+            driverId,
+            location: {
+        latitude: location.latitude,
+        longitude: location.longitude,
+              address: location.address,
+              timestamp: new Date().toISOString()
+            },
         timestamp: new Date().toISOString()
-      };
-
-      // Update tracking data
-      trackingData.currentLocation = locationUpdate;
-      trackingData.lastUpdate = new Date();
-
-      // Add to location history
-      trackingData.locationHistory.push(locationUpdate);
-
-      // Limit location history size
-      if (trackingData.locationHistory.length > trackingData.options.maxLocationHistory) {
-        trackingData.locationHistory = trackingData.locationHistory.slice(-trackingData.options.maxLocationHistory);
-      }
-
-      // Calculate progress
-      await this.calculateTripProgress(tripId, locationUpdate);
-
-      // Check geofence triggers
-      if (trackingData.options.enableGeofencing) {
-        await this.checkGeofenceTriggers(tripId, locationUpdate);
-      }
-
-      // Update Firestore cache
-      await this.firestoreSessionService.setCache(`live_tracking:${tripId}`, trackingData, 3600);
-
-      // Update Firestore
-      await this.updateTrackingDocument(tripId, trackingData);
-
-      // Send real-time update
-      await this.realTimeService.sendLocationUpdate(tripId, driverId, locationUpdate, {
-        progress: trackingData.progress,
-        geofence: trackingData.geofence
-      });
-
-      console.log(`📍 Location updated for trip ${tripId}`);
-      return true;
-
-    } catch (error) {
-      console.error('Error updating driver location:', error);
-      return false;
-    }
-  }
-
-  /**
-   * Calculate trip progress based on current location
-   * @param {string} tripId - Trip identifier
-   * @param {Object} currentLocation - Current location
-   */
-  async calculateTripProgress(tripId, currentLocation) {
-    try {
-      const trackingData = this.activeTrips.get(tripId);
-      if (!trackingData) return;
-
-      const { pickup, dropoff } = trackingData.geofence;
-
-      // Calculate distance to pickup
-      const distanceToPickup = this.calculateHaversineDistance(
-        currentLocation.latitude,
-        currentLocation.longitude,
-        pickup.center.latitude,
-        pickup.center.longitude
-      );
-
-      // Calculate distance to dropoff
-      const distanceToDropoff = this.calculateHaversineDistance(
-        currentLocation.latitude,
-        currentLocation.longitude,
-        dropoff.center.latitude,
-        dropoff.center.longitude
-      );
-
-      // Calculate ETA based on average speed
-      const avgSpeed = this.calculateAverageSpeed(trackingData.locationHistory);
-      const etaToPickup = avgSpeed > 0 ? Math.round((distanceToPickup / avgSpeed) * 60) : 0;
-      const etaToDropoff = avgSpeed > 0 ? Math.round((distanceToDropoff / avgSpeed) * 60) : 0;
-
-      // Update progress
-      trackingData.progress = {
-        distanceToPickup: Math.round(distanceToPickup * 1000) / 1000, // Round to 3 decimal places
-        distanceToDropoff: Math.round(distanceToDropoff * 1000) / 1000,
-        etaToPickup,
-        etaToDropoff,
-        isAtPickup: distanceToPickup <= pickup.radius,
-        isAtDropoff: distanceToDropoff <= dropoff.radius,
-        currentStage: this.determineCurrentStage(trackingData)
-      };
-
-      // Send ETA update if significant change
-      if (this.shouldSendETAUpdate(tripId, trackingData.progress)) {
-        await this.realTimeService.sendETAUpdate(tripId, trackingData.progress);
-      }
-
-    } catch (error) {
-      console.error('Error calculating trip progress:', error);
-    }
-  }
-
-  /**
-   * Check geofence triggers
-   * @param {string} tripId - Trip identifier
-   * @param {Object} currentLocation - Current location
-   */
-  async checkGeofenceTriggers(tripId, currentLocation) {
-    try {
-      const trackingData = this.activeTrips.get(tripId);
-      if (!trackingData) return;
-
-      const { pickup, dropoff } = trackingData.geofence;
-
-      // Check pickup geofence
-      if (!pickup.triggered) {
-        const distanceToPickup = this.calculateHaversineDistance(
-          currentLocation.latitude,
-          currentLocation.longitude,
-          pickup.center.latitude,
-          pickup.center.longitude
-        );
-
-        if (distanceToPickup <= pickup.radius) {
-          pickup.triggered = true;
-          pickup.triggeredAt = new Date().toISOString();
-
-          // Send pickup arrival notification
-          await this.realTimeService.sendTripStatusUpdate(tripId, 'driver_arrived_at_pickup', {
-            location: currentLocation,
-            triggeredAt: pickup.triggeredAt
           });
 
-          console.log(`📍 Driver arrived at pickup for trip ${tripId}`);
-        }
-      }
-
-      // Check dropoff geofence
-      if (!dropoff.triggered) {
-        const distanceToDropoff = this.calculateHaversineDistance(
-          currentLocation.latitude,
-          currentLocation.longitude,
-          dropoff.center.latitude,
-          dropoff.center.longitude
-        );
-
-        if (distanceToDropoff <= dropoff.radius) {
-          dropoff.triggered = true;
-          dropoff.triggeredAt = new Date().toISOString();
-
-          // Send dropoff arrival notification
-          await this.realTimeService.sendTripStatusUpdate(tripId, 'driver_arrived_at_dropoff', {
-            location: currentLocation,
-            triggeredAt: dropoff.triggeredAt
-          });
-
-          console.log(`📍 Driver arrived at dropoff for trip ${tripId}`);
+          console.log(`📍 [LiveTrackingService] Updated driver location for booking ${bookingId}`);
         }
       }
 
     } catch (error) {
-      console.error('Error checking geofence triggers:', error);
+      console.error('❌ [LiveTrackingService] Error updating driver location:', error);
     }
   }
 
   /**
-   * Start location monitoring for a trip
-   * @param {string} tripId - Trip identifier
+   * Update booking status and notify customer
    */
-  startLocationMonitoring(tripId) {
+  async updateBookingStatus(bookingId, status, driverId, additionalData = {}) {
     try {
-      const trackingData = this.activeTrips.get(tripId);
-      if (!trackingData) return;
+      if (!this.io) {
+        console.error('❌ [LiveTrackingService] Socket.IO not initialized');
+        return;
+      }
 
-      const interval = setInterval(async () => {
-        try {
-          // Check if trip is still active
-          if (!this.activeTrips.has(tripId)) {
-            clearInterval(interval);
+      // Get booking details
+      const bookingDoc = await this.db.collection('bookings').doc(bookingId).get();
+      if (!bookingDoc.exists) {
+        console.error(`❌ [LiveTrackingService] Booking ${bookingId} not found`);
             return;
           }
 
-          // Check for location timeout
-          const lastUpdate = new Date(trackingData.lastUpdate);
-          const now = new Date();
-          const timeSinceUpdate = now - lastUpdate;
-
-          if (timeSinceUpdate > 60000) { // 1 minute timeout
-            console.warn(`⚠️ Location update timeout for trip ${tripId}`);
-            
-            // Send location timeout notification
-            await this.realTimeService.sendTripStatusUpdate(tripId, 'location_timeout', {
-              lastUpdate: trackingData.lastUpdate,
-              timeoutDuration: timeSinceUpdate
-            });
-          }
-
-        } catch (error) {
-          console.error('Error in location monitoring:', error);
-        }
-      }, trackingData.options.updateInterval);
-
-      // Store interval reference
-      trackingData.monitoringInterval = interval;
-
-    } catch (error) {
-      console.error('Error starting location monitoring:', error);
-    }
-  }
-
-  /**
-   * Stop live tracking for a trip
-   * @param {string} tripId - Trip identifier
-   * @param {string} reason - Reason for stopping
-   */
-  async stopLiveTracking(tripId, reason = 'completed') {
-    try {
-      console.log(`🛑 Stopping live tracking for trip: ${tripId} - Reason: ${reason}`);
-
-      const trackingData = this.activeTrips.get(tripId);
-      if (!trackingData) {
-        console.warn(`⚠️ Trip ${tripId} not being tracked`);
-        return false;
-      }
-
-      // Clear monitoring interval
-      if (trackingData.monitoringInterval) {
-        clearInterval(trackingData.monitoringInterval);
-      }
-
-      // Update final status
-      trackingData.status = 'tracking_stopped';
-      trackingData.endTime = new Date();
-      trackingData.stopReason = reason;
-
-      // Remove from active trips
-      this.activeTrips.delete(tripId);
-
-      // Remove from Firestore cache
-      await this.firestoreSessionService.deleteCache(`live_tracking:${tripId}`);
-
-      // Update Firestore
-      await this.updateTrackingDocument(tripId, trackingData);
-
-      // Send tracking stopped notification
-      await this.realTimeService.sendTripStatusUpdate(tripId, 'tracking_stopped', {
-        reason,
-        endTime: trackingData.endTime,
-        totalDistance: this.calculateTotalDistance(trackingData.locationHistory),
-        totalDuration: trackingData.endTime - trackingData.startTime
+      const bookingData = bookingDoc.data();
+      
+      // Update booking status
+      await this.db.collection('bookings').doc(bookingId).update({
+        status,
+        updatedAt: new Date(),
+        ...additionalData
       });
 
-      console.log(`✅ Live tracking stopped for trip: ${tripId}`);
-      return true;
-
-    } catch (error) {
-      console.error('Error stopping live tracking:', error);
-      return false;
-    }
-  }
-
-  /**
-   * Get live tracking data for a trip
-   * @param {string} tripId - Trip identifier
-   */
-  async getLiveTrackingData(tripId) {
-    try {
-      // Try active trips first
-      let trackingData = this.activeTrips.get(tripId);
-      
-      if (!trackingData) {
-        // Try Firestore cache
-        const cachedData = await this.firestoreSessionService.getCache(`live_tracking:${tripId}`);
-        if (cachedData.success && cachedData.data) {
-          trackingData = cachedData.data;
-        }
-      }
-
-      if (!trackingData && this.db) {
-        // Try Firestore
-        const doc = await this.db.collection('liveTracking').doc(tripId).get();
-        if (doc.exists) {
-          trackingData = doc.data();
-        }
-      }
-
-      return trackingData;
-
-    } catch (error) {
-      console.error('Error getting live tracking data:', error);
-      return null;
-    }
-  }
-
-  /**
-   * Get all active trips
-   */
-  async getActiveTrips() {
-    try {
-      const activeTrips = [];
-      
-      for (const [tripId, trackingData] of this.activeTrips.entries()) {
-        activeTrips.push({
-          tripId,
-          ...trackingData
-        });
-      }
-
-      return activeTrips;
-
-    } catch (error) {
-      console.error('Error getting active trips:', error);
-      return [];
-    }
-  }
-
-  /**
-   * Calculate Haversine distance between two points
-   */
-  calculateHaversineDistance(lat1, lon1, lat2, lon2) {
-    const R = 6371; // Earth's radius in kilometers
-    const dLat = (lat2 - lat1) * Math.PI / 180;
-    const dLon = (lon2 - lon1) * Math.PI / 180;
-    const a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-      Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
-      Math.sin(dLon / 2) * Math.sin(dLon / 2);
-    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-    return R * c;
-  }
-
-  /**
-   * Calculate average speed from location history
-   */
-  calculateAverageSpeed(locationHistory) {
-    if (locationHistory.length < 2) return 0;
-
-    let totalSpeed = 0;
-    let validSpeedCount = 0;
-
-    for (let i = 1; i < locationHistory.length; i++) {
-      const prev = locationHistory[i - 1];
-
-      if (prev.speed && prev.speed > 0) {
-        totalSpeed += prev.speed;
-        validSpeedCount++;
-      }
-    }
-
-    return validSpeedCount > 0 ? totalSpeed / validSpeedCount : 0;
-  }
-
-  /**
-   * Determine current stage of the trip
-   */
-  determineCurrentStage(trackingData) {
-    if (trackingData.progress.isAtDropoff) return 'at_dropoff';
-    if (trackingData.progress.isAtPickup) return 'at_pickup';
-    if (trackingData.geofence.pickup.triggered) return 'picked_up';
-    return 'enroute';
-  }
-
-  /**
-   * Check if ETA update should be sent
-   */
-  shouldSendETAUpdate(tripId, progress) {
-    // Send ETA update if there's a significant change (>1 minute)
-    const lastETA = this.lastETAUpdates.get(tripId);
-    if (!lastETA) {
-      this.lastETAUpdates.set(tripId, progress);
-      return true;
-    }
-
-    const etaChange = Math.abs(progress.etaToPickup - lastETA.etaToPickup);
-    if (etaChange > 1) {
-      this.lastETAUpdates.set(tripId, progress);
-      return true;
-    }
-
-    return false;
-  }
-
-  /**
-   * Calculate total distance from location history
-   */
-  calculateTotalDistance(locationHistory) {
-    if (locationHistory.length < 2) return 0;
-
-    let totalDistance = 0;
-    for (let i = 1; i < locationHistory.length; i++) {
-      const prev = locationHistory[i - 1];
-      const curr = locationHistory[i];
-      
-      totalDistance += this.calculateHaversineDistance(
-        prev.latitude,
-        prev.longitude,
-        curr.latitude,
-        curr.longitude
-      );
-    }
-
-    return Math.round(totalDistance * 1000) / 1000; // Round to 3 decimal places
-  }
-
-  /**
-   * Create tracking document in Firestore
-   */
-  async createTrackingDocument(tripId, trackingData) {
-    try {
-      if (!this.db) return;
-
-      await this.db.collection('liveTracking').doc(tripId).set({
-        ...trackingData,
-        createdAt: new Date(),
-        updatedAt: new Date()
-      });
-
-    } catch (error) {
-      console.error('Error creating tracking document:', error);
-    }
-  }
-
-  /**
-   * Update tracking document in Firestore
-   */
-  async updateTrackingDocument(tripId, trackingData) {
-    try {
-      if (!this.db) return;
-
-      await this.db.collection('liveTracking').doc(tripId).update({
-        ...trackingData,
-        updatedAt: new Date()
-      });
-
-    } catch (error) {
-      console.error('Error updating tracking document:', error);
-    }
-  }
-
-  /**
-   * Health check
-   */
-  async healthCheck() {
-    try {
-      const status = {
-        service: 'LiveTrackingService',
-        status: 'healthy',
+      // Create status update record
+      await this.db.collection('booking_status_updates').add({
+        bookingId,
+        status,
+        driverId,
         timestamp: new Date().toISOString(),
-        activeTrips: this.activeTrips.size,
-        components: {
-          firestore: this.db ? 'connected' : 'disconnected',
-          firestoreSession: this.firestoreSessionService ? 'connected' : 'disconnected',
-          realTimeService: this.realTimeService ? 'connected' : 'disconnected',
-          socketIO: this.io ? 'connected' : 'disconnected'
-        }
+        updatedBy: driverId,
+        additionalData
+      });
+
+      // Notify customer based on status
+      let eventName = 'booking_status_update';
+      let eventData = {
+        bookingId,
+        status,
+        driverId,
+        timestamp: new Date().toISOString(),
+        updatedBy: driverId
       };
 
-      return status;
+      // Add status-specific notifications
+      switch (status) {
+        case 'driver_enroute':
+          eventName = 'driver_enroute_notification';
+          eventData = {
+            bookingId,
+            driverInfo: {
+              id: driverId,
+              name: bookingData.driver?.name || 'Driver',
+              phone: bookingData.driver?.phone || '',
+              vehicleNumber: bookingData.driver?.vehicleNumber || ''
+            },
+            eta: additionalData.eta || 15, // Default 15 minutes
+            timestamp: new Date().toISOString()
+          };
+          break;
+          
+        case 'driver_arrived':
+          eventName = 'driver_arrived_notification';
+          eventData = {
+            bookingId,
+            driverInfo: {
+              id: driverId,
+              name: bookingData.driver?.name || 'Driver',
+              phone: bookingData.driver?.phone || '',
+              vehicleNumber: bookingData.driver?.vehicleNumber || ''
+            },
+            timestamp: new Date().toISOString()
+          };
+          break;
+          
+        case 'picked_up':
+          eventName = 'package_picked_up_notification';
+          eventData = {
+            bookingId,
+            driverInfo: {
+              id: driverId,
+              name: bookingData.driver?.name || 'Driver',
+              phone: bookingData.driver?.phone || '',
+              vehicleNumber: bookingData.driver?.vehicleNumber || ''
+            },
+            timestamp: new Date().toISOString()
+          };
+          break;
+          
+        case 'delivered':
+          eventName = 'package_delivered_notification';
+          eventData = {
+            bookingId,
+            driverInfo: {
+              id: driverId,
+              name: bookingData.driver?.name || 'Driver',
+              phone: bookingData.driver?.phone || '',
+              vehicleNumber: bookingData.driver?.vehicleNumber || ''
+            },
+            timestamp: new Date().toISOString()
+          };
+          break;
+      }
+
+      // Send notification to customer
+      this.io.to(`user:${bookingData.customerId}`).emit(eventName, eventData);
+      
+      // Also send general status update
+      this.io.to(`user:${bookingData.customerId}`).emit('booking_status_update', {
+        bookingId,
+        status,
+        driverId,
+        timestamp: new Date().toISOString(),
+        updatedBy: driverId
+      });
+
+      console.log(`📊 [LiveTrackingService] Updated booking ${bookingId} status to ${status}`);
 
     } catch (error) {
-      return {
-        service: 'LiveTrackingService',
-        status: 'unhealthy',
-        error: error.message,
-        timestamp: new Date().toISOString()
-      };
+      console.error('❌ [LiveTrackingService] Error updating booking status:', error);
+    }
+  }
+
+  /**
+   * Get driver location for a booking
+   */
+  async getDriverLocation(bookingId) {
+    try {
+      const bookingDoc = await this.db.collection('bookings').doc(bookingId).get();
+      if (!bookingDoc.exists) {
+        return null;
+      }
+
+      const bookingData = bookingDoc.data();
+      const driverId = bookingData.driverId;
+      
+      if (!driverId) {
+        return null;
+      }
+
+      const driverLocationDoc = await this.db.collection('driverLocations').doc(driverId).get();
+      if (!driverLocationDoc.exists) {
+        return null;
+      }
+
+      return driverLocationDoc.data();
+    } catch (error) {
+      console.error('❌ [LiveTrackingService] Error getting driver location:', error);
+      return null;
     }
   }
 }
 
-module.exports = LiveTrackingService;
+module.exports = new LiveTrackingService();

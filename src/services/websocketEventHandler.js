@@ -1023,18 +1023,19 @@ class WebSocketEventHandler {
         return;
       }
 
-      // Update booking with driver assignment
+      // ✅ FIXED: Update booking with correct status
       await bookingRef.update({
-        status: 'accepted',
+        status: 'driver_assigned',  // ✅ FIXED: Use correct status
         driverId: userId,
         acceptedAt: new Date(),
+        assignedAt: new Date(),  // ✅ FIXED: Add assignedAt timestamp
         updatedAt: new Date()
       });
 
-      // Create booking status update
+      // ✅ FIXED: Create booking status update with correct status
       const statusUpdate = {
         bookingId,
-        status: 'accepted',
+        status: 'driver_assigned',  // ✅ FIXED: Use correct status
         driverId: userId,
         timestamp: new Date().toISOString(),
         updatedBy: userId
@@ -1043,11 +1044,32 @@ class WebSocketEventHandler {
       // Store status update
       await this.db.collection('booking_status_updates').add(statusUpdate);
 
-      // Notify customer
-      this.io.to(`user:${bookingData.customerId}`).emit('booking_accepted', {
+      // ✅ FIXED: Notify customer with correct event name and data structure
+      this.io.to(`user:${bookingData.customerId}`).emit('driver_assigned', {
         bookingId,
         driverId: userId,
+        driver: {
+          id: userId,
+          name: bookingData.driver?.name || 'Driver',
+          phone: bookingData.driver?.phone || '',
+          vehicleNumber: bookingData.driver?.vehicleNumber || '',
+          rating: bookingData.driver?.rating || 4.5
+        },
         timestamp: new Date().toISOString()
+      });
+
+      // ✅ FIXED: Also send booking status update
+      this.io.to(`user:${bookingData.customerId}`).emit('booking_status_update', {
+        bookingId,
+        status: 'driver_assigned',
+        driverInfo: {
+          id: userId,
+          name: bookingData.driver?.name || 'Driver',
+          phone: bookingData.driver?.phone || '',
+          vehicleNumber: bookingData.driver?.vehicleNumber || ''
+        },
+        timestamp: new Date().toISOString(),
+        updatedBy: userId
       });
 
       // Notify admin
@@ -2049,7 +2071,7 @@ class WebSocketEventHandler {
     
     // Find socket by driver ID in connected sockets
     const connectedSockets = this.io.sockets.sockets;
-    for (const [socketId, socket] of connectedSockets) {
+    for (const [, socket] of connectedSockets) {
       if (socket.driverId === driverId) {
         return socket;
       }

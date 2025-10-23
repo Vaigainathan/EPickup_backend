@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const { getFirestore } = require('firebase-admin/firestore');
 const { authenticateToken } = require('../middleware/auth');
+const { body, validationResult } = require('express-validator');
 
 /**
  * @route GET /api/customer/profile
@@ -244,43 +245,9 @@ router.delete('/delete-account', authenticateToken, async (req, res) => {
   }
 });
 
-/**
- * @route POST /api/customer/upload-photo
- * @desc Upload customer profile photo (legacy endpoint)
- * @access Private (Customer only)
- */
-router.post('/upload-photo', authenticateToken, async (req, res) => {
-  try {
-    const { uid: userId } = req.user;
-    const { photoUrl } = req.body;
-    const db = getFirestore();
-    
-    console.log(`📸 Uploading customer photo for: ${userId}`);
-    
-    // Update customer photo in users collection
-    await db.collection('users').doc(userId).update({
-      'customer.profilePhoto': photoUrl,
-      profilePicture: photoUrl,
-      updatedAt: new Date()
-    });
-    
-    console.log(`✅ Updated customer photo: ${userId}`);
-    
-    res.json({
-      success: true,
-      message: 'Profile photo updated successfully',
-      data: { photoUrl, profilePicture: photoUrl }
-    });
-    
-  } catch (error) {
-    console.error('❌ Error uploading customer photo:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Failed to upload profile photo',
-      details: error.message
-    });
-  }
-});
+// REMOVED: /api/customer/upload-photo endpoint
+// This was redundant - profile photo uploads now use /api/file-upload/customer-document
+// which handles file upload to Firebase Storage and returns downloadURL
 
 /**
  * @route GET /api/customer/bookings
@@ -345,7 +312,7 @@ router.get('/bookings', authenticateToken, async (req, res) => {
  * @desc Create new booking
  * @access Private (Customer only)
  */
-router.post('/bookings', async (req, res) => {
+router.post('/bookings', authenticateToken, async (req, res) => {
   try {
     const { uid: userId } = req.user;
     const bookingData = req.body;
@@ -355,10 +322,36 @@ router.post('/bookings', async (req, res) => {
     
     // Validate required booking fields
     if (!bookingData.pickup || !bookingData.dropoff || !bookingData.package) {
+      console.error('❌ Missing required booking fields:', {
+        hasPickup: !!bookingData.pickup,
+        hasDropoff: !!bookingData.dropoff,
+        hasPackage: !!bookingData.package,
+        bookingData: bookingData
+      });
       return res.status(400).json({
         success: false,
         error: 'Missing required booking fields',
         details: 'pickup, dropoff, and package are required'
+      });
+    }
+    
+    // Validate pickup coordinates
+    if (!bookingData.pickup.coordinates || !bookingData.pickup.coordinates.latitude || !bookingData.pickup.coordinates.longitude) {
+      console.error('❌ Invalid pickup coordinates:', bookingData.pickup);
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid pickup coordinates',
+        details: 'Pickup location coordinates are required'
+      });
+    }
+    
+    // Validate dropoff coordinates
+    if (!bookingData.dropoff.coordinates || !bookingData.dropoff.coordinates.latitude || !bookingData.dropoff.coordinates.longitude) {
+      console.error('❌ Invalid dropoff coordinates:', bookingData.dropoff);
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid dropoff coordinates',
+        details: 'Dropoff location coordinates are required'
       });
     }
     
@@ -379,6 +372,8 @@ router.post('/bookings', async (req, res) => {
         lng: bookingData.dropoff.coordinates.longitude
       };
       
+      console.log('📍 Calculating fare for coordinates:', { pickupCoords, dropoffCoords });
+      
       const distanceAndFare = await fareCalculationService.calculateDistanceAndFare(pickupCoords, dropoffCoords);
       fareDetails = distanceAndFare.fare;
       distance = distanceAndFare.distanceKm;
@@ -389,6 +384,7 @@ router.post('/bookings', async (req, res) => {
       // Fallback to basic calculation if service fails
       distance = 5; // Default distance
       fareDetails = fareCalculationService.calculateFare(distance);
+      console.log(`💰 Using fallback fare: ₹${fareDetails.baseFare} (${distance}km)`);
     }
     
     // Add customer ID and fare information to booking data
@@ -423,38 +419,50 @@ router.post('/bookings', async (req, res) => {
       updatedAt: new Date()
     };
     
-    // Enforce single active booking per customer
-    const activeStatuses = ['pending', 'driver_assigned', 'accepted', 'driver_enroute', 'driver_arrived', 'picked_up', 'in_transit'];
-    const existingActiveSnapshot = await db.collection('bookings')
-      .where('customerId', '==', userId)
-      .where('status', 'in', activeStatuses)
-      .limit(1)
-      .get();
-
-    if (!existingActiveSnapshot.empty) {
+    // ✅ FIXED: Use ActiveBookingService for atomic active booking check
+    const activeBookingService = require('../services/activeBookingService');
+    const activeBookingCheck = await activeBookingService.hasActiveBooking(userId);
+    
+    if (activeBookingCheck.hasActive) {
       return res.status(409).json({
         success: false,
         error: {
           code: 'CUSTOMER_ACTIVE_BOOKING_EXISTS',
-          message: 'You already have an active booking. Please complete or cancel it before creating a new one.'
+          message: 'You already have an active booking. Please complete or cancel it before creating a new one.',
+          details: {
+            existingBookingId: activeBookingCheck.bookingId,
+            status: activeBookingCheck.status,
+            createdAt: activeBookingCheck.createdAt
+          }
         },
         timestamp: new Date().toISOString()
       });
     }
 
     // Create booking in Firestore
-    const bookingRef = await db.collection('bookings').add(newBooking);
-    
-    console.log(`✅ Created booking ${bookingRef.id} for customer: ${userId}`);
-    
-    res.json({
-      success: true,
-      data: {
-        id: bookingRef.id,
-        ...newBooking
-      },
-      message: 'Booking created successfully'
-    });
+    try {
+      const bookingRef = await db.collection('bookings').add(newBooking);
+      
+      console.log(`✅ Created booking ${bookingRef.id} for customer: ${userId}`);
+      
+      res.json({
+        success: true,
+        data: {
+          booking: {
+            id: bookingRef.id,
+            ...newBooking
+          }
+        },
+        message: 'Booking created successfully'
+      });
+    } catch (firestoreError) {
+      console.error('❌ Firestore error creating booking:', firestoreError);
+      return res.status(500).json({
+        success: false,
+        error: 'Failed to save booking to database',
+        details: firestoreError.message
+      });
+    }
     
   } catch (error) {
     console.error('❌ Error creating booking:', error);
@@ -536,7 +544,27 @@ router.get('/addresses', authenticateToken, async (req, res) => {
     
     console.log(`📍 Getting addresses for customer: ${userId}`);
     
-    const customerDoc = await db.collection('users').doc(userId).get();
+    // 🚀 BACKEND CACHING: Check cache first
+    const cacheKey = `addresses_${userId}`;
+    const { cachingService } = require('../services/cachingService');
+    
+    try {
+      const cachedAddresses = await cachingService.get(cacheKey, 'memory');
+      if (cachedAddresses) {
+        console.log(`⚡ Cache hit for addresses: ${userId}`);
+        return res.json({
+          success: true,
+          data: cachedAddresses
+        });
+      }
+    } catch (cacheError) {
+      console.log('⚠️ Cache check failed, proceeding with database query:', cacheError.message);
+    }
+    
+    // 🚀 OPTIMIZED: Use select() to only fetch required fields
+    const customerDoc = await db.collection('users').doc(userId)
+      .select('customer.addresses')
+      .get();
     
     if (!customerDoc.exists) {
       return res.status(404).json({
@@ -547,6 +575,14 @@ router.get('/addresses', authenticateToken, async (req, res) => {
     
     const customerData = customerDoc.data();
     const addresses = customerData.customer?.addresses || [];
+    
+    // 🚀 BACKEND CACHING: Cache the result
+    try {
+      await cachingService.set(cacheKey, addresses, 300, 'memory'); // 5 minutes cache
+      console.log(`✅ Cached addresses for customer: ${userId}`);
+    } catch (cacheError) {
+      console.log('⚠️ Cache set failed, but continuing:', cacheError.message);
+    }
     
     console.log(`✅ Retrieved ${addresses.length} addresses for customer: ${userId}`);
     
@@ -597,6 +633,16 @@ router.post('/addresses', authenticateToken, async (req, res) => {
       'customer.addresses': addresses,
       updatedAt: new Date()
     });
+    
+    // 🚀 BACKEND CACHING: Invalidate cache when addresses are updated
+    const cacheKey = `addresses_${userId}`;
+    const { cachingService } = require('../services/cachingService');
+    try {
+      await cachingService.delete(cacheKey, 'memory');
+      console.log(`🗑️ Invalidated address cache for customer: ${userId}`);
+    } catch (cacheError) {
+      console.log('⚠️ Cache invalidation failed, but continuing:', cacheError.message);
+    }
     
     console.log(`✅ Added address for customer: ${userId}`);
     
@@ -732,15 +778,17 @@ router.get('/recent-addresses', authenticateToken, async (req, res) => {
     
     console.log(`📍 Getting recent addresses for customer: ${userId}`);
     
+    // 🚀 OPTIMIZED: Build query with filters
     let query = db.collection('users').doc(userId).collection('recentAddresses');
     
     if (type) {
       query = query.where('type', '==', type);
     }
     
+    // 🚀 OPTIMIZED: Use limit and orderBy for faster queries
     const snapshot = await query
       .orderBy('usedAt', 'desc')
-      .limit(parseInt(limit))
+      .limit(Math.min(parseInt(limit), 50)) // Cap at 50 for performance
       .get();
     
     const recentAddresses = snapshot.docs.map(doc => ({
@@ -835,21 +883,26 @@ router.post('/recent-addresses', authenticateToken, async (req, res) => {
         message: 'Recent address added'
       });
       
-      // Cleanup old entries (keep max 50 per type)
-      const allSnapshot = await db
-        .collection('users')
-        .doc(userId)
-        .collection('recentAddresses')
-        .where('type', '==', type)
-        .orderBy('usedAt', 'desc')
-        .get();
-      
-      if (allSnapshot.size > 50) {
-        const batch = db.batch();
-        allSnapshot.docs.slice(50).forEach(doc => {
-          batch.delete(doc.ref);
-        });
-        await batch.commit();
+      // Cleanup old entries (keep max 50 per type) - only for new addresses
+      try {
+        const allSnapshot = await db
+          .collection('users')
+          .doc(userId)
+          .collection('recentAddresses')
+          .where('type', '==', type)
+          .orderBy('usedAt', 'desc')
+          .get();
+        
+        if (allSnapshot.size > 50) {
+          const batch = db.batch();
+          allSnapshot.docs.slice(50).forEach(doc => {
+            batch.delete(doc.ref);
+          });
+          await batch.commit();
+        }
+      } catch (cleanupError) {
+        console.warn('⚠️ Failed to cleanup old recent addresses:', cleanupError);
+        // Don't fail the main operation for cleanup issues
       }
     }
     
@@ -1944,6 +1997,101 @@ router.get('/invoice/:bookingId', authenticateToken, async (req, res) => {
       success: false,
       error: 'Failed to generate invoice',
       details: error.message
+    });
+  }
+});
+
+/**
+ * @route   GET /api/customer/active-booking
+ * @desc    Get current active booking for customer
+ * @access  Private (Customer only)
+ */
+router.get('/active-booking', authenticateToken, async (req, res) => {
+  try {
+    const { uid: customerId } = req.user;
+    const activeBookingService = require('../services/activeBookingService');
+    
+    const result = await activeBookingService.getCurrentActiveBooking(customerId);
+    
+    res.status(200).json({
+      success: true,
+      message: 'Active booking retrieved successfully',
+      data: result,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('Error getting active booking:', error);
+    res.status(500).json({
+      success: false,
+      error: {
+        code: 'ACTIVE_BOOKING_ERROR',
+        message: 'Failed to get active booking',
+        details: error.message
+      },
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+/**
+ * @route   POST /api/customer/cancel-active-booking
+ * @desc    Cancel current active booking
+ * @access  Private (Customer only)
+ */
+router.post('/cancel-active-booking', [
+  authenticateToken,
+  body('reason')
+    .optional()
+    .isLength({ min: 5, max: 200 })
+    .withMessage('Reason must be between 5 and 200 characters')
+], async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'VALIDATION_ERROR',
+          message: 'Validation failed',
+          details: errors.array()
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    const { uid: customerId } = req.user;
+    const { reason } = req.body;
+    const activeBookingService = require('../services/activeBookingService');
+    
+    const result = await activeBookingService.cancelActiveBooking(customerId, reason);
+    
+    if (result.success) {
+      res.status(200).json({
+        success: true,
+        message: 'Active booking cancelled successfully',
+        data: result,
+        timestamp: new Date().toISOString()
+      });
+    } else {
+      res.status(400).json({
+        success: false,
+        error: {
+          code: 'CANCELLATION_FAILED',
+          message: result.message || 'Failed to cancel active booking'
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+  } catch (error) {
+    console.error('Error cancelling active booking:', error);
+    res.status(500).json({
+      success: false,
+      error: {
+        code: 'CANCELLATION_ERROR',
+        message: 'Failed to cancel active booking',
+        details: error.message
+      },
+      timestamp: new Date().toISOString()
     });
   }
 });

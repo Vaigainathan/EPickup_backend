@@ -806,6 +806,14 @@ app.use(standardizedErrorHandler);
 try {
   socketService.initializeSocketIO(server);
   console.log('✅ Socket.IO service initialized successfully');
+  
+  // ✅ FIXED: Initialize LiveTrackingService
+  const liveTrackingService = require('./services/liveTrackingService');
+  const io = socketService.getIO();
+  if (io) {
+    liveTrackingService.initialize(io);
+    console.log('✅ LiveTrackingService initialized successfully');
+  }
 } catch (error) {
   console.log('⚠️  Socket.IO initialization failed, continuing without real-time features...');
   console.error('Socket.IO Error:', error.message);

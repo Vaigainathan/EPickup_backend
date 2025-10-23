@@ -446,7 +446,7 @@ class DriverMatchingService {
         driverId: driver.driverId,
         status: 'pending',
         assignedAt: new Date(),
-        expiresAt: new Date(Date.now() + 2 * 60 * 1000), // 2 minutes to respond
+        expiresAt: null, // ✅ FIX: Remove timeout - let it run indefinitely until driver accepts
         driverDetails: {
           name: driver.name,
           phone: driver.phone,
@@ -529,7 +529,9 @@ class DriverMatchingService {
       }
 
       // Check if assignment has expired
-      if (new Date() > assignment.expiresAt.toDate()) {
+      // ✅ FIX: Remove timeout check - assignments never expire
+      // eslint-disable-next-line no-constant-condition
+      if (false) { // Disabled timeout check
         await assignmentRef.update({
           status: 'expired',
           updatedAt: new Date()

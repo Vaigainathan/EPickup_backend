@@ -7,8 +7,24 @@ const environmentConfig = require('../config/environment');
  */
 class AppCheckMiddleware {
   constructor() {
-    this.app = admin.app();
+    this.app = null; // Initialize lazily
     this.isInitialized = false;
+    // Don't access Firebase during construction - wait until methods are called
+  }
+
+  /**
+   * Get Firebase app instance (lazy initialization)
+   */
+  getApp() {
+    if (!this.app) {
+      try {
+        this.app = admin.app();
+      } catch (error) {
+        console.error('❌ [AppCheckMiddleware] Failed to get Firebase app:', error);
+        throw new Error('Firebase not initialized. Please ensure Firebase is initialized before using AppCheckMiddleware.');
+      }
+    }
+    return this.app;
   }
 
   /**
@@ -40,6 +56,9 @@ class AppCheckMiddleware {
         console.warn('⚠️ No App Check token provided');
         return null;
       }
+
+      // Ensure Firebase is initialized before using appCheck
+      this.getApp(); // This will initialize Firebase if needed
 
       // Verify the App Check token with advanced Play Integrity validation
       const decodedToken = await admin.appCheck().verifyToken(token);
@@ -157,11 +176,4 @@ class AppCheckMiddleware {
 }
 
 // Export singleton instance
-const appCheckMiddleware = new AppCheckMiddleware();
-
-// Initialize middleware
-appCheckMiddleware.initialize().catch(error => {
-  console.error('❌ Failed to initialize App Check middleware:', error);
-});
-
-module.exports = appCheckMiddleware;
+module.exports = AppCheckMiddleware;

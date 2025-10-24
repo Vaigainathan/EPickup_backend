@@ -7,7 +7,7 @@ const crypto = require('crypto');
  */
 class AuthService {
   constructor() {
-    this.getDb() = null; // Initialize lazily
+    this.db = null; // Initialize lazily
     this.jwtService = require('./jwtService'); // Use singleton instance
   }
 
@@ -17,7 +17,7 @@ class AuthService {
   getDb() {
     if (!this.db) {
       try {
-        this.getDb() = getFirestore();
+        this.db = getFirestore();
       } catch (error) {
         console.error('❌ [AuthService] Failed to get Firestore:', error);
         throw new Error('Firebase not initialized. Please ensure Firebase is initialized before using AuthService.');

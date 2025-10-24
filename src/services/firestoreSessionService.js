@@ -6,10 +6,25 @@ const { getFirestore } = require('./firebase');
  */
 class FirestoreSessionService {
   constructor() {
-    this.db = getFirestore();
+    this.db = null; // Initialize lazily
     this.sessionCollection = 'user_sessions';
     this.rateLimitCollection = 'rate_limits';
     this.cacheCollection = 'cache_data';
+  }
+
+  /**
+   * Get Firestore instance (lazy initialization)
+   */
+  getDb() {
+    if (!this.db) {
+      try {
+        this.db = getFirestore();
+      } catch (error) {
+        console.error('❌ [FirestoreSessionService] Failed to get Firestore:', error);
+        throw new Error('Firebase not initialized. Please ensure Firebase is initialized before using FirestoreSessionService.');
+      }
+    }
+    return this.db;
   }
 
   /**

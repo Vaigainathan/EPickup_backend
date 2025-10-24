@@ -8,7 +8,7 @@ const { getFirestore } = require('./firebase');
 class RevenueService {
   constructor() {
     this.COMMISSION_PER_KM = 2; // ₹2 per km commission (in points)
-    this.getDb() = null; // Initialize lazily
+    this.db = null; // Initialize lazily
   }
 
   /**
@@ -17,7 +17,7 @@ class RevenueService {
   getDb() {
     if (!this.db) {
       try {
-        this.getDb() = getFirestore();
+        this.db = getFirestore();
       } catch (error) {
         console.error('❌ [RevenueService] Failed to get Firestore:', error);
         throw new Error('Firebase not initialized. Please ensure Firebase is initialized before using RevenueService.');

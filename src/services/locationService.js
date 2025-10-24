@@ -7,7 +7,7 @@ const monitoringService = require('./monitoringService');
  */
 class LocationService {
   constructor() {
-    this.getDb() = null; // Initialize lazily
+    this.db = null; // Initialize lazily
     this.googleMapsApiKey = process.env.GOOGLE_MAPS_API_KEY;
     this.maxRetries = 3;
     this.cache = new Map();
@@ -20,7 +20,7 @@ class LocationService {
   getDb() {
     if (!this.db) {
       try {
-        this.getDb() = getFirestore();
+        this.db = getFirestore();
       } catch (error) {
         console.error('❌ [LocationService] Failed to get Firestore:', error);
         throw new Error('Firebase not initialized. Please ensure Firebase is initialized before using LocationService.');

@@ -11,6 +11,19 @@ const bookingLockService = new BookingLockService();
 
 const router = express.Router();
 
+// Helper function to calculate distance between two coordinates
+function calculateDistance(lat1, lon1, lat2, lon2) {
+  const R = 6371; // Radius of the Earth in kilometers
+  const dLat = (lat2 - lat1) * Math.PI / 180;
+  const dLon = (lon2 - lon1) * Math.PI / 180;
+  const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
+    Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+    Math.sin(dLon/2) * Math.sin(dLon/2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+  const distance = R * c; // Distance in kilometers
+  return distance;
+}
+
 /**
  * @route   GET /api/driver/
  * @desc    Get driver data (root endpoint)
@@ -3074,6 +3087,409 @@ router.post('/bookings/:id/accept', requireDriver, async (req, res) => {
 });
 
 /**
+ * @route   POST /api/driver/bookings/:id/validate-location
+ * @desc    Validate driver location for pickup/dropoff
+ * @access  Private (Driver only)
+ */
+router.post('/bookings/:id/validate-location', [
+  requireDriver,
+  body('locationType').isIn(['pickup', 'dropoff']).withMessage('Location type must be pickup or dropoff'),
+  body('latitude').isFloat().withMessage('Latitude must be a valid number'),
+  body('longitude').isFloat().withMessage('Longitude must be a valid number')
+], async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { uid } = req.user;
+    const { locationType, latitude, longitude } = req.body;
+    
+    const db = getFirestore();
+    const bookingRef = db.collection('bookings').doc(id);
+    const bookingDoc = await bookingRef.get();
+    
+    if (!bookingDoc.exists) {
+      return res.status(404).json({
+        success: false,
+        error: 'Booking not found'
+      });
+    }
+    
+    const bookingData = bookingDoc.data();
+    
+    // Get target coordinates based on location type
+    let targetLat, targetLng;
+    if (locationType === 'pickup') {
+      targetLat = bookingData.pickupLocation?.latitude;
+      targetLng = bookingData.pickupLocation?.longitude;
+    } else {
+      targetLat = bookingData.dropoffLocation?.latitude;
+      targetLng = bookingData.dropoffLocation?.longitude;
+    }
+    
+    if (!targetLat || !targetLng) {
+      return res.status(400).json({
+        success: false,
+        error: 'Target location coordinates not available'
+      });
+    }
+    
+    // Calculate distance between driver and target location
+    const distance = calculateDistance(latitude, longitude, targetLat, targetLng);
+    const isWithinRange = distance <= 0.1; // 100 meters
+    
+    // Update booking with location validation
+    await bookingRef.update({
+      [`locationValidation.${locationType}`]: {
+        validated: isWithinRange,
+        distance: distance,
+        driverLocation: { latitude, longitude },
+        validatedAt: new Date(),
+        validatedBy: uid
+      },
+      updatedAt: new Date()
+    });
+    
+    res.status(200).json({
+      success: true,
+      data: {
+        isValid: isWithinRange,
+        distance: distance,
+        message: isWithinRange ? 'Location validated successfully' : 'You are not at the correct location'
+      }
+    });
+    
+  } catch (error) {
+    console.error('Error validating location:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to validate location'
+    });
+  }
+});
+
+/**
+ * @route   POST /api/driver/bookings/:id/photo-verification
+ * @desc    Upload photo verification for pickup/dropoff
+ * @access  Private (Driver only)
+ */
+router.post('/bookings/:id/photo-verification', [
+  requireDriver,
+  body('photoType').isIn(['pickup', 'delivery']).withMessage('Photo type must be pickup or delivery'),
+  body('photoUrl').isURL().withMessage('Photo URL must be valid'),
+  body('location').optional().isObject().withMessage('Location must be an object')
+], async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { uid } = req.user;
+    const { photoType, photoUrl, location } = req.body;
+    
+    const db = getFirestore();
+    const bookingRef = db.collection('bookings').doc(id);
+    const bookingDoc = await bookingRef.get();
+    
+    if (!bookingDoc.exists) {
+      return res.status(404).json({
+        success: false,
+        error: 'Booking not found'
+      });
+    }
+    
+    // Store photo verification
+    const photoVerification = {
+      photoType,
+      photoUrl,
+      location: location || null,
+      uploadedBy: uid,
+      uploadedAt: new Date()
+    };
+    
+    await bookingRef.update({
+      [`photoVerification.${photoType}`]: photoVerification,
+      updatedAt: new Date()
+    });
+    
+    // Create photo verification record
+    await db.collection('photo_verifications').add({
+      bookingId: id,
+      driverId: uid,
+      ...photoVerification
+    });
+    
+    res.status(200).json({
+      success: true,
+      data: {
+        message: 'Photo verification uploaded successfully',
+        photoType,
+        photoUrl
+      }
+    });
+    
+  } catch (error) {
+    console.error('Error uploading photo verification:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to upload photo verification'
+    });
+  }
+});
+
+/**
+ * @route   POST /api/driver/bookings/:id/confirm-payment
+ * @desc    Confirm cash payment collection
+ * @access  Private (Driver only)
+ */
+router.post('/bookings/:id/confirm-payment', [
+  requireDriver,
+  body('amount').isFloat({ min: 0 }).withMessage('Amount must be a positive number'),
+  body('paymentMethod').equals('cash').withMessage('Payment method must be cash'),
+  body('transactionId').isString().withMessage('Transaction ID is required')
+], async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { uid } = req.user;
+    const { amount, paymentMethod, transactionId } = req.body;
+    
+    const db = getFirestore();
+    const bookingRef = db.collection('bookings').doc(id);
+    const bookingDoc = await bookingRef.get();
+    
+    if (!bookingDoc.exists) {
+      return res.status(404).json({
+        success: false,
+        error: 'Booking not found'
+      });
+    }
+    
+    // Create payment record
+    const paymentRecord = {
+      bookingId: id,
+      driverId: uid,
+      amount,
+      paymentMethod,
+      transactionId,
+      status: 'completed',
+      collectedAt: new Date(),
+      collectedBy: uid
+    };
+    
+    await db.collection('payments').add(paymentRecord);
+    
+    // Update booking with payment confirmation
+    await bookingRef.update({
+      payment: {
+        ...paymentRecord,
+        confirmed: true
+      },
+      updatedAt: new Date()
+    });
+    
+    res.status(200).json({
+      success: true,
+      data: {
+        message: 'Payment confirmed successfully',
+        amount,
+        transactionId
+      }
+    });
+    
+  } catch (error) {
+    console.error('Error confirming payment:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to confirm payment'
+    });
+  }
+});
+
+/**
+ * @route   PUT /api/driver/status
+ * @desc    Update driver status (available/busy/offline)
+ * @access  Private (Driver only)
+ */
+router.put('/status', [
+  requireDriver,
+  body('status').isIn(['available', 'busy', 'offline']).withMessage('Status must be available, busy, or offline')
+], async (req, res) => {
+  try {
+    const { uid } = req.user;
+    const { status } = req.body;
+    
+    const db = getFirestore();
+    const driverRef = db.collection('users').doc(uid);
+    const driverDoc = await driverRef.get();
+    
+    if (!driverDoc.exists) {
+      return res.status(404).json({
+        success: false,
+        error: 'Driver not found'
+      });
+    }
+    
+    // Update driver status
+    await driverRef.update({
+      status: status,
+      updatedAt: new Date()
+    });
+    
+    res.status(200).json({
+      success: true,
+      data: {
+        message: 'Driver status updated successfully',
+        status: status
+      }
+    });
+    
+  } catch (error) {
+    console.error('Error updating driver status:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to update driver status'
+    });
+  }
+});
+
+/**
+ * @route   GET /api/driver/bookings/:id/status
+ * @desc    Get booking status
+ * @access  Private (Driver only)
+ */
+router.get('/bookings/:id/status', requireDriver, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { uid } = req.user;
+    
+    const db = getFirestore();
+    const bookingRef = db.collection('bookings').doc(id);
+    const bookingDoc = await bookingRef.get();
+    
+    if (!bookingDoc.exists) {
+      return res.status(404).json({
+        success: false,
+        error: 'Booking not found'
+      });
+    }
+    
+    const bookingData = bookingDoc.data();
+    
+    // Check if driver is assigned to this booking
+    if (bookingData.driverId !== uid) {
+      return res.status(403).json({
+        success: false,
+        error: 'Access denied'
+      });
+    }
+    
+    res.status(200).json({
+      success: true,
+      data: {
+        status: bookingData.status,
+        bookingId: id,
+        driverId: uid,
+        customerId: bookingData.customerId,
+        pickupLocation: bookingData.pickupLocation,
+        dropoffLocation: bookingData.dropoffLocation,
+        fare: bookingData.fare,
+        weight: bookingData.weight,
+        createdAt: bookingData.createdAt,
+        updatedAt: bookingData.updatedAt
+      }
+    });
+    
+  } catch (error) {
+    console.error('Error getting booking status:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to get booking status'
+    });
+  }
+});
+
+/**
+ * @route   POST /api/driver/bookings/:id/complete-delivery
+ * @desc    Complete delivery and process commission
+ * @access  Private (Driver only)
+ */
+router.post('/bookings/:id/complete-delivery', [
+  requireDriver,
+  body('driverEarnings').isFloat({ min: 0 }).withMessage('Driver earnings must be a positive number'),
+  body('commission').isFloat({ min: 0 }).withMessage('Commission must be a positive number')
+], async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { uid } = req.user;
+    const { driverEarnings, commission } = req.body;
+    
+    const db = getFirestore();
+    const bookingRef = db.collection('bookings').doc(id);
+    const bookingDoc = await bookingRef.get();
+    
+    if (!bookingDoc.exists) {
+      return res.status(404).json({
+        success: false,
+        error: 'Booking not found'
+      });
+    }
+    
+    // Update booking status to completed
+    await bookingRef.update({
+      status: 'completed',
+      completedAt: new Date(),
+      completedBy: uid,
+      earnings: {
+        driverEarnings,
+        commission,
+        totalAmount: driverEarnings + commission
+      },
+      updatedAt: new Date()
+    });
+    
+    // Update driver earnings
+    const driverRef = db.collection('users').doc(uid);
+    const driverDoc = await driverRef.get();
+    
+    if (driverDoc.exists) {
+      const driverData = driverDoc.data();
+      const currentEarnings = driverData.totalEarnings || 0;
+      const currentBalance = driverData.wallet?.balance || 0;
+      
+      await driverRef.update({
+        totalEarnings: currentEarnings + driverEarnings,
+        'wallet.balance': currentBalance + driverEarnings,
+        'wallet.lastUpdated': new Date(),
+        updatedAt: new Date()
+      });
+    }
+    
+    // Create earnings record
+    await db.collection('driver_earnings').add({
+      bookingId: id,
+      driverId: uid,
+      amount: driverEarnings,
+      commission,
+      totalFare: driverEarnings + commission,
+      earnedAt: new Date(),
+      status: 'completed'
+    });
+    
+    res.status(200).json({
+      success: true,
+      data: {
+        message: 'Delivery completed successfully',
+        driverEarnings,
+        commission,
+        totalFare: driverEarnings + commission
+      }
+    });
+    
+  } catch (error) {
+    console.error('Error completing delivery:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to complete delivery'
+    });
+  }
+});
+
+/**
  * @route   POST /api/driver/bookings/:id/reject
  * @desc    Reject a booking
  * @access  Private (Driver only)
@@ -5774,17 +6190,7 @@ function getDocumentDisplayName(docType) {
   return displayNames[docType] || docType;
 }
 
-// Helper function to calculate distance between two points
-function calculateDistance(lat1, lon1, lat2, lon2) {
-  const R = 6371; // Radius of the Earth in kilometers
-  const dLat = (lat2 - lat1) * Math.PI / 180;
-  const dLon = (lon2 - lon1) * Math.PI / 180;
-  const a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-    Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
-    Math.sin(dLon / 2) * Math.sin(dLon / 2);
-  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-  return R * c; // Distance in kilometers
-}
+// Helper function to calculate distance between two points (duplicate removed)
 
 /**
  * @route   POST /api/driver/tracking/start

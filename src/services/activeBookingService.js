@@ -6,7 +6,7 @@ const { getFirestore } = require('firebase-admin/firestore');
  */
 class ActiveBookingService {
   constructor() {
-    this.getDb() = null; // Initialize lazily
+    this.db = null; // Initialize lazily
   }
 
   /**
@@ -15,7 +15,7 @@ class ActiveBookingService {
   getDb() {
     if (!this.db) {
       try {
-        this.getDb() = getFirestore();
+        this.db = getFirestore();
       } catch (error) {
         console.error('❌ [ActiveBookingService] Failed to get Firestore:', error);
         throw new Error('Firebase not initialized. Please ensure Firebase is initialized before using ActiveBookingService.');

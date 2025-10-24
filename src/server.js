@@ -34,7 +34,6 @@ const {
 // Import standardized error handler
 const { errorHandler: standardizedErrorHandler } = require('./middleware/errorHandler');
 const { authMiddleware } = require('./middleware/auth');
-const appCheckMiddleware = require('./middleware/appCheckAuth');
 // const { firebaseAdminAuthMiddleware } = require('./middleware/firebaseAuth'); // No longer used - using firebaseIdTokenAuth instead
 
 // Import services
@@ -147,6 +146,12 @@ const adminSignupRoutes = require('./routes/adminSignup');
 // const adminBookingManagementRoutes = require('./routes/adminBookingManagement'); // Included in adminRoutes
 const locationTrackingRoutes = require('./routes/locationTracking');
 console.log('✅ All routes imported successfully');
+
+// Import middleware after Firebase initialization
+console.log('📦 Importing middleware after Firebase initialization...');
+const AppCheckMiddleware = require('./middleware/appCheckAuth');
+const appCheckMiddleware = new AppCheckMiddleware();
+console.log('✅ All middleware imported successfully');
 
 // Create HTTP server
 const server = require('http').createServer(app);

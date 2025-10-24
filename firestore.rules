@@ -791,6 +791,66 @@ service cloud.firestore {
       allow delete: if isAuthenticated() && isAdmin();
     }
 
+    // Photo verifications collection
+    match /photo_verifications/{verificationId} {
+      allow read: if isAuthenticated() && (
+        isAdmin() ||
+        (isDriver() && resource.data.driverId == request.auth.uid) ||
+        (isCustomer() && exists(/databases/$(database)/documents/bookings/$(resource.data.bookingId)) &&
+         get(/databases/$(database)/documents/bookings/$(resource.data.bookingId)).data.customerId == request.auth.uid)
+      );
+      
+      allow create: if isAuthenticated() && (
+        isAdmin() ||
+        (isDriver() && request.resource.data.driverId == request.auth.uid &&
+         request.resource.data.keys().hasAll(['bookingId', 'driverId', 'photoType', 'photoUrl', 'uploadedBy', 'uploadedAt']))
+      );
+    }
+
+    // Payments collection
+    match /payments/{paymentId} {
+      allow read: if isAuthenticated() && (
+        isAdmin() ||
+        (isDriver() && resource.data.driverId == request.auth.uid) ||
+        (isCustomer() && exists(/databases/$(database)/documents/bookings/$(resource.data.bookingId)) &&
+         get(/databases/$(database)/documents/bookings/$(resource.data.bookingId)).data.customerId == request.auth.uid)
+      );
+      
+      allow create: if isAuthenticated() && (
+        isAdmin() ||
+        (isDriver() && request.resource.data.driverId == request.auth.uid &&
+         request.resource.data.keys().hasAll(['bookingId', 'driverId', 'amount', 'paymentMethod', 'transactionId', 'status', 'collectedAt', 'collectedBy']))
+      );
+    }
+
+    // Driver earnings collection
+    match /driver_earnings/{earningId} {
+      allow read: if isAuthenticated() && (
+        isAdmin() ||
+        (isDriver() && resource.data.driverId == request.auth.uid)
+      );
+      
+      allow create: if isAuthenticated() && (
+        isAdmin() ||
+        (isDriver() && request.resource.data.driverId == request.auth.uid &&
+         request.resource.data.keys().hasAll(['bookingId', 'driverId', 'amount', 'commission', 'totalFare', 'earnedAt', 'status']))
+      );
+    }
+
+    // Booking rejections collection
+    match /booking_rejections/{rejectionId} {
+      allow read: if isAuthenticated() && (
+        isAdmin() ||
+        (isDriver() && resource.data.driverId == request.auth.uid)
+      );
+      
+      allow create: if isAuthenticated() && (
+        isAdmin() ||
+        (isDriver() && request.resource.data.driverId == request.auth.uid &&
+         request.resource.data.keys().hasAll(['bookingId', 'driverId', 'reason', 'rejectedAt']))
+      );
+    }
+
     // Default rule - deny all other access
     match /{document=**} {
       allow read, write: if false;

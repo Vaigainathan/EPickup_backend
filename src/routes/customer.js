@@ -545,12 +545,13 @@ router.get('/addresses', authenticateToken, async (req, res) => {
     
     console.log(`📍 Getting addresses for customer: ${userId}`);
     
-    // 🚀 BACKEND CACHING: Check cache first
+    // 🚀 BACKEND CACHING: Check cache first (optional)
     const cacheKey = `addresses_${userId}`;
-    const { cachingService } = require('../services/cachingService');
+    let cachedAddresses = null;
     
     try {
-      const cachedAddresses = await cachingService.get(cacheKey, 'memory');
+      const { cachingService } = require('../services/cachingService');
+      cachedAddresses = await cachingService.get(cacheKey, 'memory');
       if (cachedAddresses) {
         console.log(`⚡ Cache hit for addresses: ${userId}`);
         return res.json({
@@ -562,10 +563,8 @@ router.get('/addresses', authenticateToken, async (req, res) => {
       console.log('⚠️ Cache check failed, proceeding with database query:', cacheError.message);
     }
     
-    // 🚀 OPTIMIZED: Use select() to only fetch required fields
-    const customerDoc = await db.collection('users').doc(userId)
-      .select('customer.addresses')
-      .get();
+    // 🚀 OPTIMIZED: Fetch customer document
+    const customerDoc = await db.collection('users').doc(userId).get();
     
     if (!customerDoc.exists) {
       return res.status(404).json({
@@ -577,8 +576,9 @@ router.get('/addresses', authenticateToken, async (req, res) => {
     const customerData = customerDoc.data();
     const addresses = customerData.customer?.addresses || [];
     
-    // 🚀 BACKEND CACHING: Cache the result
+    // 🚀 BACKEND CACHING: Cache the result (optional)
     try {
+      const { cachingService } = require('../services/cachingService');
       await cachingService.set(cacheKey, addresses, 300, 'memory'); // 5 minutes cache
       console.log(`✅ Cached addresses for customer: ${userId}`);
     } catch (cacheError) {

@@ -68,11 +68,11 @@ router.post('/register', [
 });
 
 /**
- * @route   DELETE /api/fcm-tokens/unregister
+ * @route   POST /api/fcm-tokens/unregister
  * @desc    Unregister FCM token for user
  * @access  Private
  */
-router.delete('/unregister', [
+router.post('/unregister', [
   requireRole(['customer', 'driver'])
 ], async (req, res) => {
   try {

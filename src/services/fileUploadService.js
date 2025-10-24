@@ -9,6 +9,7 @@ class FileUploadService {
     try {
       this.firebaseApp = getFirebaseApp();
       this.isAvailable = !!this.firebaseApp;
+      this.db = null; // Initialize lazily
     } catch (error) {
       console.warn('⚠️ Firebase not available for FileUploadService:', error.message);
       this.isAvailable = false;
@@ -366,7 +367,7 @@ class FileUploadService {
       };
 
       // Create document in driverDocuments collection
-      const docRef = await this.db.collection('driverDocuments').add(documentData);
+      const docRef = await this.getDb().collection('driverDocuments').add(documentData);
       
       // Also create/update verification request for admin dashboard
       await this.createOrUpdateVerificationRequest(driverId, documentType, documentData);
@@ -393,7 +394,7 @@ class FileUploadService {
       console.log(`📋 Creating/updating verification request for driver: ${driverId}, document: ${documentType}`);
       
       // Get driver information
-      const driverDoc = await this.db.collection('users').doc(driverId).get();
+      const driverDoc = await this.getDb().collection('users').doc(driverId).get();
       if (!driverDoc.exists) {
         console.warn(`Driver ${driverId} not found for verification request`);
         return;
@@ -403,7 +404,7 @@ class FileUploadService {
       console.log(`📋 Driver data retrieved:`, { name: driverData.name, phone: driverData.phone });
       
       // Check if verification request already exists
-      const existingRequestQuery = await this.db.collection('documentVerificationRequests')
+      const existingRequestQuery = await this.getDb().collection('documentVerificationRequests')
         .where('driverId', '==', driverId)
         .where('status', '==', 'pending')
         .limit(1)
@@ -492,7 +493,7 @@ class FileUploadService {
 
       if (existingRequestQuery.empty) {
         // Create new verification request
-        await this.db.collection('documentVerificationRequests').add(verificationRequestData);
+        await this.getDb().collection('documentVerificationRequests').add(verificationRequestData);
         console.log(`Created new verification request for driver ${driverId}`);
       } else {
         // Update existing verification request
@@ -637,7 +638,7 @@ class FileUploadService {
       };
 
       // Create document in driverDocuments collection
-      const docRef = await this.db.collection('driverDocuments').add(documentData);
+      const docRef = await this.getDb().collection('driverDocuments').add(documentData);
       
       // Also create/update verification request for admin dashboard
       await this.createOrUpdateVerificationRequest(driverId, documentType, {
@@ -683,7 +684,7 @@ class FileUploadService {
    */
   async updateDriverDocumentStatus(driverId, documentType, status) {
     try {
-      const driverRef = this.db.collection('users').doc(driverId);
+      const driverRef = this.getDb().collection('users').doc(driverId);
       
       await driverRef.update({
         [`driver.documents.${documentType}.status`]: status,
@@ -705,7 +706,7 @@ class FileUploadService {
    */
   async updateUserDriverDocuments(driverId, documentType, downloadURL) {
     try {
-      const driverRef = this.db.collection('users').doc(driverId);
+      const driverRef = this.getDb().collection('users').doc(driverId);
       
       // Map backend document types to frontend document types
       const documentTypeMap = {
@@ -742,7 +743,7 @@ class FileUploadService {
    */
   async getDriverDocuments(driverId, documentType = null) {
     try {
-      let query = this.db.collection('driverDocuments')
+      let query = this.getDb().collection('driverDocuments')
         .where('driverId', '==', driverId)
         .orderBy('createdAt', 'desc');
 
@@ -779,7 +780,7 @@ class FileUploadService {
    */
   async verifyDocument(documentId, adminId, status, comments = null, rejectionReason = null) {
     try {
-      const documentRef = this.db.collection('driverDocuments').doc(documentId);
+      const documentRef = this.getDb().collection('driverDocuments').doc(documentId);
       const documentDoc = await documentRef.get();
 
       if (!documentDoc.exists) {
@@ -872,7 +873,7 @@ class FileUploadService {
    */
   async updateDriverVerificationStatus(driverId, status) {
     try {
-      const driverRef = this.db.collection('users').doc(driverId);
+      const driverRef = this.getDb().collection('users').doc(driverId);
       
       await driverRef.update({
         'driver.verificationStatus': status,
@@ -923,7 +924,7 @@ class FileUploadService {
    */
   async deleteDocument(documentId, adminId) {
     try {
-      const documentRef = this.db.collection('driverDocuments').doc(documentId);
+      const documentRef = this.getDb().collection('driverDocuments').doc(documentId);
       const documentDoc = await documentRef.get();
 
       if (!documentDoc.exists) {
@@ -988,7 +989,7 @@ class FileUploadService {
    */
   async getDocumentStatistics(filters = {}) {
     try {
-      let query = this.db.collection('driverDocuments');
+      let query = this.getDb().collection('driverDocuments');
 
       // Apply filters
       if (filters.documentType) {
@@ -1055,7 +1056,7 @@ class FileUploadService {
     try {
       const cutoffDate = new Date(Date.now() - maxAge);
       
-      const snapshot = await this.db.collection('driverDocuments')
+      const snapshot = await this.getDb().collection('driverDocuments')
         .where('createdAt', '<', cutoffDate)
         .where('status', 'in', ['pending', 'rejected'])
         .get();
@@ -1205,7 +1206,7 @@ class FileUploadService {
    */
   async getVerificationQueue(filters = {}, limit = 20, offset = 0) {
     try {
-      let query = this.db.collection('driverDocuments')
+      let query = this.getDb().collection('driverDocuments')
         .where('verificationStatus', '==', 'pending')
         .orderBy('createdAt', 'asc');
 

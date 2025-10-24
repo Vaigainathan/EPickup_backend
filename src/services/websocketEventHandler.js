@@ -56,10 +56,30 @@ class WebSocketEventHandler {
    */
   async handleConnection(socket) {
     try {
-      const { userId, userType, userRole } = socket;
+      const userId = socket.userId;
+      const userType = socket.userType;
+      const userRole = socket.userRole;
+
+      // ✅ CRITICAL FIX: Check if userId is valid
+      if (!userId) {
+        console.error('❌ No userId found in socket, skipping connection handling');
+        socket.emit('error', {
+          code: 'AUTHENTICATION_ERROR',
+          message: 'User ID not found in socket'
+        });
+        return;
+      }
 
       console.log(`🔌 User connected: ${userId} (${userType})`);
 
+      // ✅ CRITICAL FIX: Leave all previous rooms to prevent data conflicts
+      const currentRooms = Array.from(socket.rooms);
+      currentRooms.forEach(room => {
+        if (room !== socket.id) { // Don't leave the socket's own room
+          socket.leave(room);
+        }
+      });
+      
       // Join user-specific room
       socket.join(`user:${userId}`);
       
@@ -68,6 +88,8 @@ class WebSocketEventHandler {
       
       // Join user type room
       socket.join(`type:${userType}`);
+      
+      console.log(`✅ [WebSocket] User ${userId} joined rooms: user:${userId}, role:${userRole}, type:${userType}`);
 
       // Send connection confirmation
       socket.emit('connected', {
@@ -603,6 +625,12 @@ class WebSocketEventHandler {
   async sendActiveTrips(socket, userId) {
     try {
       if (!this.db) return;
+
+      // ✅ CRITICAL FIX: Check if userId is valid
+      if (!userId) {
+        console.warn('⚠️ No userId provided for sendActiveTrips');
+        return;
+      }
 
       // Get user's active trips
       const tripsQuery = await this.db.collection('bookings')

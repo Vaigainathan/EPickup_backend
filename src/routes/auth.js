@@ -319,6 +319,9 @@ router.post('/firebase/verify-token', firebaseVerifyLimiter, async (req, res) =>
         roleBasedUID: roleBasedUID,
         userType: userType,
         role: userType,
+        phone: decodedToken.phone_number,
+        appType: 'customer_app',
+        verified: true,
         createdAt: Date.now()
       });
       console.log('✅ [FIREBASE_AUTH] Custom claims set successfully');

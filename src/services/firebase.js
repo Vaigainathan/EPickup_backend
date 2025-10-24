@@ -92,7 +92,8 @@ function initializeFirebase() {
     }
 
     // Fallback to service account file (local development)
-    const serviceAccountPath = process.env.FCM_SERVICE_ACCOUNT_PATH || './firebase-service-account.json';
+    const serviceAccountPath = process.env.FCM_SERVICE_ACCOUNT_PATH || 
+      (require('fs').existsSync('./firebase-service-account.json') ? './firebase-service-account.json' : '../firebase-service-account.json');
     
     if (require('fs').existsSync(serviceAccountPath)) {
       firebaseApp = admin.initializeApp({

@@ -30,7 +30,7 @@ router.post('/register', [
       });
     }
 
-    const { token: fcmToken, deviceId, platform, userType, userId: requestUserId } = req.body;
+    const { token: fcmToken, deviceId, platform, userType } = req.body;
     const userId = req.user.uid; // This is the role-based UID from JWT
 
     // ✅ FIX: Use role-based UID for FCM token storage

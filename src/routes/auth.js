@@ -382,4 +382,80 @@ router.post('/firebase/verify-token', firebaseVerifyLimiter, async (req, res) =>
   }
 });
 
+/**
+ * Refresh JWT token using refresh token
+ * POST /api/auth/refresh
+ */
+router.post('/refresh', async (req, res) => {
+  try {
+    const { refreshToken } = req.body;
+
+    if (!refreshToken) {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'MISSING_REFRESH_TOKEN',
+          message: 'Refresh token is required'
+        }
+      });
+    }
+
+    console.log('🔄 [AUTH] Refreshing JWT token...');
+
+    // Import JWT service
+    const jwtService = require('../services/jwtService');
+    
+    // Verify refresh token
+    const decoded = jwtService.verifyRefreshToken(refreshToken);
+    
+    if (!decoded) {
+      return res.status(401).json({
+        success: false,
+        error: {
+          code: 'INVALID_REFRESH_TOKEN',
+          message: 'Invalid or expired refresh token'
+        }
+      });
+    }
+
+    // Generate new access token
+    const newAccessToken = jwtService.generateAccessToken({
+      uid: decoded.uid,
+      userType: decoded.userType,
+      phone: decoded.phone,
+      originalUID: decoded.originalUID
+    });
+
+    // Generate new refresh token
+    const newRefreshToken = jwtService.generateRefreshToken({
+      uid: decoded.uid,
+      userType: decoded.userType,
+      phone: decoded.phone,
+      originalUID: decoded.originalUID
+    });
+
+    console.log('✅ [AUTH] JWT token refreshed successfully');
+
+    res.status(200).json({
+      success: true,
+      data: {
+        token: newAccessToken,
+        refreshToken: newRefreshToken,
+        expiresIn: 604800 // 7 days
+      },
+      message: 'Token refreshed successfully'
+    });
+
+  } catch (error) {
+    console.error('❌ [AUTH] Token refresh error:', error);
+    res.status(500).json({
+      success: false,
+      error: {
+        code: 'REFRESH_ERROR',
+        message: 'Failed to refresh token'
+      }
+    });
+  }
+});
+
 module.exports = router;

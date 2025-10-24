@@ -105,6 +105,21 @@ class RoleBasedAuthService {
       
       if (userDoc.exists) {
         console.log(`✅ Found existing ${userType} user: ${roleSpecificUID}`);
+        
+        // ✅ CRITICAL FIX: Ensure custom claims are set for existing users
+        try {
+          await admin.auth().setCustomUserClaims(decodedToken.uid, {
+            role: userType,
+            roleBasedUID: roleSpecificUID,
+            phone: decodedToken.phone_number,
+            appType: 'customer_app',
+            verified: true
+          });
+          console.log(`✅ Custom claims updated for existing user: ${decodedToken.uid}`);
+        } catch (claimsError) {
+          console.error('❌ Failed to update custom claims for existing user:', claimsError);
+        }
+        
         return userDoc.data();
       }
       
@@ -204,6 +219,21 @@ class RoleBasedAuthService {
 
       // Create user document
       await this.db.collection('users').doc(roleSpecificUID).set(baseUserData);
+      
+      // ✅ CRITICAL FIX: Set custom claims for Firebase Auth
+      try {
+        await admin.auth().setCustomUserClaims(decodedToken.uid, {
+          role: userType,
+          roleBasedUID: roleSpecificUID,
+          phone: decodedToken.phone_number,
+          appType: 'customer_app',
+          verified: true
+        });
+        console.log(`✅ Custom claims set for Firebase UID: ${decodedToken.uid}`);
+      } catch (claimsError) {
+        console.error('❌ Failed to set custom claims:', claimsError);
+        // Don't fail the entire process for claims error
+      }
       
       console.log(`✅ Created ${userType} user with role-specific UID: ${roleSpecificUID}`);
       

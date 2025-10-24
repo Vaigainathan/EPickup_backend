@@ -737,7 +737,7 @@ router.get('/:bookingId', [
       },
       estimatedPickupTime: booking.timing?.estimatedPickupTime,
       estimatedDeliveryTime: booking.timing?.estimatedDeliveryTime,
-      lastUpdate: booking.updatedAt?.toISOString() || new Date().toISOString()
+      lastUpdate: booking.updatedAt ? (booking.updatedAt instanceof Date ? booking.updatedAt.toISOString() : new Date(booking.updatedAt).toISOString()) : new Date().toISOString()
     };
 
     res.status(200).json({

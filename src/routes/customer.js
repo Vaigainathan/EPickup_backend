@@ -1965,8 +1965,8 @@ router.get('/invoice/:bookingId', authenticateToken, async (req, res) => {
       invoiceId: `INV-${bookingId.substring(0, 8).toUpperCase()}`,
       invoiceDate: new Date().toISOString(),
       bookingId: bookingId,
-      bookingDate: bookingData.createdAt?.toDate?.()?.toISOString() || bookingData.createdAt,
-      completedDate: bookingData.completedAt?.toDate?.()?.toISOString() || bookingData.updatedAt,
+      bookingDate: bookingData.createdAt ? (bookingData.createdAt.toDate ? bookingData.createdAt.toDate().toISOString() : new Date(bookingData.createdAt).toISOString()) : new Date().toISOString(),
+      completedDate: bookingData.completedAt ? (bookingData.completedAt.toDate ? bookingData.completedAt.toDate().toISOString() : new Date(bookingData.completedAt).toISOString()) : (bookingData.updatedAt ? new Date(bookingData.updatedAt).toISOString() : new Date().toISOString()),
       
       // Customer details
       customer: {

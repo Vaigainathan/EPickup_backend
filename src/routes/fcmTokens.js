@@ -13,7 +13,7 @@ const db = getFirestore();
  */
 router.post('/register', [
   requireRole(['customer', 'driver']),
-  body('fcmToken').isString().notEmpty().withMessage('FCM token is required'),
+  body('token').isString().notEmpty().withMessage('FCM token is required'),
   body('deviceId').optional().isString(),
   body('platform').optional().isIn(['android', 'ios', 'web'])
 ], async (req, res) => {
@@ -30,11 +30,12 @@ router.post('/register', [
       });
     }
 
-    const { fcmToken, deviceId, platform, userType } = req.body;
+    const { token: fcmToken, deviceId, platform, userType, userId: requestUserId } = req.body;
     const userId = req.user.uid; // This is the role-based UID from JWT
 
     // ✅ FIX: Use role-based UID for FCM token storage
     console.log(`🔔 [FCM_TOKEN] Registering FCM token for user: ${userId} (role-based UID)`);
+    console.log(`🔔 [FCM_TOKEN] Token data:`, { fcmToken: fcmToken?.substring(0, 20) + '...', deviceId, platform, userType });
     
     // Update user's FCM token (use set with merge to create document if it doesn't exist)
     await db.collection('users').doc(userId).set({

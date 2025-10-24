@@ -30,6 +30,11 @@ class ActiveBookingService {
    */
   async hasActiveBooking(customerId) {
     try {
+      // ✅ CRITICAL FIX: Ensure database is initialized
+      if (!this.db) {
+        this.db = this.getDb();
+      }
+      
       const activeStatuses = [
         'pending', 
         'driver_assigned', 
@@ -211,6 +216,10 @@ class ActiveBookingService {
    */
   async getCurrentActiveBooking(customerId) {
     try {
+      // ✅ CRITICAL FIX: Initialize database connection
+      const db = this.getDb();
+      this.db = db; // Set instance variable
+      
       const activeBooking = await this.hasActiveBooking(customerId);
       
       if (!activeBooking.hasActive) {

@@ -35,9 +35,12 @@ class FirestoreSessionService {
    */
   async setSession(sessionId, sessionData, ttl = 3600) {
     try {
+      // ✅ CRITICAL FIX: Ensure database is initialized
+      const db = this.getDb();
+      
       const expiresAt = new Date(Date.now() + (ttl * 1000));
       
-      await this.db.collection(this.sessionCollection).doc(sessionId).set({
+      await db.collection(this.sessionCollection).doc(sessionId).set({
         ...sessionData,
         expiresAt,
         createdAt: new Date(),
@@ -62,7 +65,9 @@ class FirestoreSessionService {
    */
   async getSession(sessionId) {
     try {
-      const doc = await this.db.collection(this.sessionCollection).doc(sessionId).get();
+      // ✅ CRITICAL FIX: Ensure database is initialized
+      const db = this.getDb();
+      const doc = await db.collection(this.sessionCollection).doc(sessionId).get();
       
       if (!doc.exists) {
         return { success: false, data: null };
@@ -89,7 +94,9 @@ class FirestoreSessionService {
    */
   async deleteSession(sessionId) {
     try {
-      await this.db.collection(this.sessionCollection).doc(sessionId).delete();
+      // ✅ CRITICAL FIX: Ensure database is initialized
+      const db = this.getDb();
+      await db.collection(this.sessionCollection).doc(sessionId).delete();
       return { success: true };
     } catch (error) {
       console.error('Delete session error:', error);
@@ -225,9 +232,12 @@ class FirestoreSessionService {
    */
   async setCache(key, data, ttl = 300) {
     try {
+      // ✅ CRITICAL FIX: Ensure database is initialized
+      const db = this.getDb();
+      
       const expiresAt = new Date(Date.now() + (ttl * 1000));
       
-      await this.db.collection(this.cacheCollection).doc(key).set({
+      await db.collection(this.cacheCollection).doc(key).set({
         data,
         expiresAt,
         createdAt: new Date()
@@ -289,7 +299,9 @@ class FirestoreSessionService {
    */
   async setWebSocketConnection(userId, socketId, connectionData) {
     try {
-      await this.db.collection('websocket_connections').doc(socketId).set({
+      // ✅ CRITICAL FIX: Ensure database is initialized
+      const db = this.getDb();
+      await db.collection('websocket_connections').doc(socketId).set({
         userId,
         socketId,
         ...connectionData,
@@ -329,7 +341,9 @@ class FirestoreSessionService {
    */
   async deleteWebSocketConnection(socketId) {
     try {
-      await this.db.collection('websocket_connections').doc(socketId).delete();
+      // ✅ CRITICAL FIX: Ensure database is initialized
+      const db = this.getDb();
+      await db.collection('websocket_connections').doc(socketId).delete();
       return { success: true };
     } catch (error) {
       console.error('Delete WebSocket connection error:', error);

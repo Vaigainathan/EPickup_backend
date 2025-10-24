@@ -550,7 +550,7 @@ router.get('/addresses', authenticateToken, async (req, res) => {
     let cachedAddresses = null;
     
     try {
-      const { cachingService } = require('../services/cachingService');
+      const cachingService = require('../services/cachingService');
       cachedAddresses = await cachingService.get(cacheKey, 'memory');
       if (cachedAddresses) {
         console.log(`⚡ Cache hit for addresses: ${userId}`);
@@ -578,7 +578,7 @@ router.get('/addresses', authenticateToken, async (req, res) => {
     
     // 🚀 BACKEND CACHING: Cache the result (optional)
     try {
-      const { cachingService } = require('../services/cachingService');
+      const cachingService = require('../services/cachingService');
       await cachingService.set(cacheKey, addresses, 300, 'memory'); // 5 minutes cache
       console.log(`✅ Cached addresses for customer: ${userId}`);
     } catch (cacheError) {
@@ -637,7 +637,7 @@ router.post('/addresses', authenticateToken, async (req, res) => {
     
     // 🚀 BACKEND CACHING: Invalidate cache when addresses are updated
     const cacheKey = `addresses_${userId}`;
-    const { cachingService } = require('../services/cachingService');
+    const cachingService = require('../services/cachingService');
     try {
       await cachingService.delete(cacheKey, 'memory');
       console.log(`🗑️ Invalidated address cache for customer: ${userId}`);

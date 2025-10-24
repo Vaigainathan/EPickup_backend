@@ -36,8 +36,11 @@ class RevenueService {
     try {
       console.log(`💰 Calculating revenue from ${startDate.toISOString()} to ${endDate.toISOString()}`);
 
+      // Get database instance
+      const db = this.getDb();
+
       // Get real money from top-ups (primary revenue source)
-      const topUpsSnapshot = await this.db
+      const topUpsSnapshot = await db
         .collection('driverTopUps')
         .where('createdAt', '>=', startDate)
         .where('createdAt', '<=', endDate)
@@ -64,7 +67,7 @@ class RevenueService {
       });
 
       // Get points commission transactions (secondary revenue tracking)
-      const pointsCommissionSnapshot = await this.db
+      const pointsCommissionSnapshot = await db
         .collection('pointsTransactions')
         .where('createdAt', '>=', startDate)
         .where('createdAt', '<=', endDate)
@@ -293,8 +296,11 @@ class RevenueService {
       const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
       const endOfMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999);
       
+      // Get database instance
+      const db = this.getDb();
+      
       // Get all top-ups for current month
-      const topUpsSnapshot = await this.db
+      const topUpsSnapshot = await db
         .collection('companyRevenue')
         .where('createdAt', '>=', startOfMonth)
         .where('createdAt', '<=', endOfMonth)

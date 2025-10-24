@@ -938,6 +938,140 @@ router.get('/bookings', async (req, res) => {
 });
 
 /**
+ * @route   GET /api/admin/bookings/active
+ * @desc    Get active bookings (pending, accepted, in_progress)
+ * @access  Private (Admin only)
+ */
+router.get('/bookings/active', async (req, res) => {
+  try {
+    const db = getFirestore();
+    const { limit = 50 } = req.query;
+
+    // Get active bookings
+    const activeStatuses = ['pending', 'accepted', 'in_progress'];
+    const bookings = [];
+
+    for (const status of activeStatuses) {
+      const snapshot = await db
+        .collection('bookings')
+        .where('status', '==', status)
+        .orderBy('createdAt', 'desc')
+        .limit(parseInt(limit))
+        .get();
+
+      snapshot.forEach(doc => {
+        const data = doc.data();
+        const mappedBooking = {
+          id: doc.id,
+          customerId: data.customerId,
+          driverId: data.driverId,
+          status: data.status,
+          pickupLocation: data.pickupLocation,
+          dropoffLocation: data.dropoffLocation,
+          fare: data.fare || data.pricing?.totalAmount || 0,
+          distance: data.distance,
+          estimatedTime: data.estimatedTime,
+          createdAt: data.createdAt?.toDate?.() || data.createdAt,
+          updatedAt: data.updatedAt?.toDate?.() || data.updatedAt,
+          customerName: data.customerName || 'Unknown Customer',
+          driverName: data.driverName || 'No Driver Assigned',
+          paymentStatus: data.paymentStatus || 'pending'
+        };
+        
+        bookings.push(mappedBooking);
+      });
+    }
+
+    // Sort by creation date
+    bookings.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+
+    res.json({
+      success: true,
+      data: bookings.slice(0, parseInt(limit)),
+      timestamp: new Date().toISOString()
+    });
+
+  } catch (error) {
+    console.error('Error fetching active bookings:', error);
+    res.status(500).json({
+      success: false,
+      error: {
+        code: 'FETCH_ACTIVE_BOOKINGS_ERROR',
+        message: 'Failed to fetch active bookings',
+        details: error.message
+      },
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+/**
+ * @route   GET /api/admin/bookings/:id
+ * @desc    Get specific booking by ID
+ * @access  Private (Admin only)
+ */
+router.get('/bookings/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const db = getFirestore();
+
+    const bookingDoc = await db.collection('bookings').doc(id).get();
+
+    if (!bookingDoc.exists) {
+      return res.status(404).json({
+        success: false,
+        error: {
+          code: 'BOOKING_NOT_FOUND',
+          message: 'Booking not found'
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    const data = bookingDoc.data();
+    const booking = {
+      id: bookingDoc.id,
+      customerId: data.customerId,
+      driverId: data.driverId,
+      status: data.status,
+      pickupLocation: data.pickupLocation,
+      dropoffLocation: data.dropoffLocation,
+      fare: data.fare || data.pricing?.totalAmount || 0,
+      distance: data.distance,
+      estimatedTime: data.estimatedTime,
+      createdAt: data.createdAt?.toDate?.() || data.createdAt,
+      updatedAt: data.updatedAt?.toDate?.() || data.updatedAt,
+      customerName: data.customerName || 'Unknown Customer',
+      driverName: data.driverName || 'No Driver Assigned',
+      paymentStatus: data.paymentStatus || 'pending',
+      packageDetails: data.packageDetails,
+      senderInfo: data.senderInfo,
+      recipientInfo: data.recipientInfo,
+      pickupVerification: data.pickupVerification,
+      deliveryVerification: data.deliveryVerification
+    };
+
+    res.json({
+      success: true,
+      data: booking,
+      timestamp: new Date().toISOString()
+    });
+
+  } catch (error) {
+    console.error('Error fetching booking:', error);
+    res.status(500).json({
+      success: false,
+      error: {
+        code: 'FETCH_BOOKING_ERROR',
+        message: 'Failed to fetch booking',
+        details: error.message
+      },
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+/**
  * @route   PUT /api/admin/bookings/:id/status
  * @desc    Update booking status
  * @access  Private (Admin only)
@@ -1062,6 +1196,49 @@ router.delete('/bookings/:id', async (req, res) => {
 
     // Delete the booking
     await bookingRef.delete();
+
+    // Send real-time notifications to customer and driver
+    try {
+      const socketService = require('../services/socket');
+      const io = socketService.getSocketIO();
+      
+      // Notify customer if they have the booking open
+      if (bookingData.customerId) {
+        io.to(`user:${bookingData.customerId}`).emit('booking_deleted', {
+          bookingId: id,
+          reason: reason,
+          deletedBy: 'admin',
+          deletedAt: new Date().toISOString(),
+          message: 'Your booking has been cancelled by admin'
+        });
+      }
+      
+      // Notify driver if they were assigned to this booking
+      if (bookingData.driverId) {
+        io.to(`user:${bookingData.driverId}`).emit('booking_deleted', {
+          bookingId: id,
+          reason: reason,
+          deletedBy: 'admin',
+          deletedAt: new Date().toISOString(),
+          message: 'The booking you were assigned to has been cancelled by admin'
+        });
+      }
+      
+      // Notify admin dashboard users
+      io.to('type:admin').emit('booking_deleted', {
+        bookingId: id,
+        reason: reason,
+        deletedBy: adminId,
+        deletedAt: new Date().toISOString(),
+        customerId: bookingData.customerId,
+        driverId: bookingData.driverId
+      });
+      
+      console.log(`📡 [ADMIN] Real-time notifications sent for booking deletion ${id}`);
+    } catch (notificationError) {
+      console.error('❌ [ADMIN] Failed to send real-time notifications:', notificationError);
+      // Don't fail the deletion if notifications fail
+    }
 
     console.log(`✅ [ADMIN] Booking ${id} deleted successfully`);
 

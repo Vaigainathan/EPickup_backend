@@ -35,6 +35,12 @@ class WorkSlotsService {
     try {
       console.log(`🔄 [WORK_SLOTS] Generating daily slots for driver: ${driverId}, date: ${date.toISOString().split('T')[0]}`);
       
+      // CRITICAL: Initialize database connection first
+      const db = this.getDb();
+      if (!db) {
+        throw new Error('Failed to initialize Firestore database connection');
+      }
+      
       // CRITICAL: Check if generation is already in progress for this driver
       if (this.ongoingGenerations.has(driverId)) {
         const ongoingStart = this.ongoingGenerations.get(driverId);
@@ -67,7 +73,7 @@ class WorkSlotsService {
       const endOfDay = new Date(date);
       endOfDay.setHours(23, 59, 59, 999);
 
-      const existingQuery = this.db.collection('workSlots')
+      const existingQuery = db.collection('workSlots')
         .where('driverId', '==', driverId)
         .where('startTime', '>=', Timestamp.fromDate(startOfDay))
         .where('startTime', '<=', Timestamp.fromDate(endOfDay));
@@ -76,7 +82,7 @@ class WorkSlotsService {
       
       if (!existingSnapshot.empty) {
         console.log(`🗑️ [WORK_SLOTS] Deleting ${existingSnapshot.size} existing slots to prevent duplicates`);
-        const deleteBatch = this.db.batch();
+        const deleteBatch = db.batch();
         existingSnapshot.forEach(doc => {
           deleteBatch.delete(doc.ref);
         });
@@ -125,9 +131,9 @@ class WorkSlotsService {
       console.log(`📊 [WORK_SLOTS] Total slots prepared for batch write: ${slots.length}`);
 
       // Batch write all slots
-      const batch = this.db.batch();
+      const batch = db.batch();
       slots.forEach((slot, index) => {
-        const slotRef = this.db.collection('workSlots').doc(slot.slotId);
+        const slotRef = db.collection('workSlots').doc(slot.slotId);
         batch.set(slotRef, slot);
         console.log(`📝 [WORK_SLOTS] Batch item ${index + 1}/${slots.length}: ${slot.label}`);
       });
@@ -169,6 +175,12 @@ class WorkSlotsService {
    */
   async getDriverSlots(driverId, date = new Date()) {
     try {
+      // Initialize database connection
+      const db = this.getDb();
+      if (!db) {
+        throw new Error('Failed to initialize Firestore database connection');
+      }
+
       const startOfDay = new Date(date);
       startOfDay.setHours(0, 0, 0, 0);
       
@@ -177,7 +189,7 @@ class WorkSlotsService {
 
       console.log(`🔍 [GET_DRIVER_SLOTS] Fetching slots for driver: ${driverId}, date: ${date.toISOString().split('T')[0]}`);
 
-      const query = this.db.collection('workSlots')
+      const query = db.collection('workSlots')
         .where('driverId', '==', driverId)
         .where('startTime', '>=', Timestamp.fromDate(startOfDay))
         .where('startTime', '<=', Timestamp.fromDate(endOfDay))
@@ -222,6 +234,12 @@ class WorkSlotsService {
    */
   async updateSlotStatus(slotId, status, driverId) {
     try {
+      // Initialize database connection
+      const db = this.getDb();
+      if (!db) {
+        throw new Error('Failed to initialize Firestore database connection');
+      }
+
       const validStatuses = ['available', 'booked', 'completed'];
       if (!validStatuses.includes(status)) {
         return {
@@ -234,7 +252,7 @@ class WorkSlotsService {
         };
       }
 
-      const slotRef = this.db.collection('workSlots').doc(slotId);
+      const slotRef = db.collection('workSlots').doc(slotId);
       const slotDoc = await slotRef.get();
 
       if (!slotDoc.exists) {
@@ -293,7 +311,13 @@ class WorkSlotsService {
    */
   async updateSlotSelection(slotId, isSelected, driverId) {
     try {
-      const slotRef = this.db.collection('workSlots').doc(slotId);
+      // Initialize database connection
+      const db = this.getDb();
+      if (!db) {
+        throw new Error('Failed to initialize Firestore database connection');
+      }
+
+      const slotRef = db.collection('workSlots').doc(slotId);
       const slotDoc = await slotRef.get();
 
       if (!slotDoc.exists) {
@@ -368,11 +392,17 @@ class WorkSlotsService {
    */
   async batchUpdateSlotSelections(slotIds, isSelected, driverId) {
     try {
-      const batch = this.db.batch();
+      // Initialize database connection
+      const db = this.getDb();
+      if (!db) {
+        throw new Error('Failed to initialize Firestore database connection');
+      }
+
+      const batch = db.batch();
       const results = [];
 
       for (const slotId of slotIds) {
-        const slotRef = this.db.collection('workSlots').doc(slotId);
+        const slotRef = db.collection('workSlots').doc(slotId);
         const slotDoc = await slotRef.get();
 
         if (!slotDoc.exists || slotDoc.data().driverId !== driverId) {
@@ -425,13 +455,19 @@ class WorkSlotsService {
    */
   async getAvailableSlots(date = new Date(), limit = 50) {
     try {
+      // Initialize database connection
+      const db = this.getDb();
+      if (!db) {
+        throw new Error('Failed to initialize Firestore database connection');
+      }
+
       const startOfDay = new Date(date);
       startOfDay.setHours(0, 0, 0, 0);
       
       const endOfDay = new Date(date);
       endOfDay.setHours(23, 59, 59, 999);
 
-      const query = this.db.collection('workSlots')
+      const query = db.collection('workSlots')
         .where('status', '==', 'available')
         .where('startTime', '>=', Timestamp.fromDate(startOfDay))
         .where('startTime', '<=', Timestamp.fromDate(endOfDay))
@@ -472,7 +508,13 @@ class WorkSlotsService {
    */
   async bookSlot(slotId, customerId) {
     try {
-      const slotRef = this.db.collection('workSlots').doc(slotId);
+      // Initialize database connection
+      const db = this.getDb();
+      if (!db) {
+        throw new Error('Failed to initialize Firestore database connection');
+      }
+
+      const slotRef = db.collection('workSlots').doc(slotId);
       const slotDoc = await slotRef.get();
 
       if (!slotDoc.exists) {
@@ -534,7 +576,13 @@ class WorkSlotsService {
    */
   async generateSlotsForAllDrivers(date = new Date()) {
     try {
-      const driversQuery = this.db.collection('users')
+      // Initialize database connection
+      const db = this.getDb();
+      if (!db) {
+        throw new Error('Failed to initialize Firestore database connection');
+      }
+
+      const driversQuery = db.collection('users')
         .where('userType', '==', 'driver')
         .where('isActive', '==', true);
 
@@ -574,14 +622,20 @@ class WorkSlotsService {
    */
   async deleteOldSlots(daysOld = 7) {
     try {
+      // Initialize database connection
+      const db = this.getDb();
+      if (!db) {
+        throw new Error('Failed to initialize Firestore database connection');
+      }
+
       const cutoffDate = new Date();
       cutoffDate.setDate(cutoffDate.getDate() - daysOld);
 
-      const query = this.db.collection('workSlots')
+      const query = db.collection('workSlots')
         .where('startTime', '<', Timestamp.fromDate(cutoffDate));
 
       const snapshot = await query.get();
-      const batch = this.db.batch();
+      const batch = db.batch();
 
       snapshot.forEach(doc => {
         batch.delete(doc.ref);

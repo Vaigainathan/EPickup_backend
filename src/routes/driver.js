@@ -1069,6 +1069,56 @@ router.get('/earnings/today', requireDriver, async (req, res) => {
 });
 
 /**
+ * @route   GET /api/driver/bookings/history
+ * @desc    Get driver's booking history
+ * @access  Private (Driver only)
+ */
+router.get('/bookings/history', requireDriver, async (req, res) => {
+  try {
+    const { uid } = req.user;
+    const { limit = 50, offset = 0, status } = req.query;
+
+    const db = getFirestore();
+    let query = db.collection('bookings')
+      .where('driverId', '==', uid)
+      .orderBy('createdAt', 'desc')
+      .limit(parseInt(limit))
+      .offset(parseInt(offset));
+
+    // Filter by status if provided
+    if (status && status !== 'all') {
+      query = query.where('status', '==', status);
+    }
+
+    const snapshot = await query.get();
+    const bookings = [];
+
+    snapshot.forEach(doc => {
+      const data = doc.data();
+      bookings.push({
+        id: doc.id,
+        ...data,
+        createdAt: data.createdAt?.toDate?.()?.toISOString() || new Date().toISOString(),
+        updatedAt: data.updatedAt?.toDate?.()?.toISOString() || new Date().toISOString()
+      });
+    });
+
+    res.status(200).json({
+      success: true,
+      data: bookings,
+      total: bookings.length
+    });
+
+  } catch (error) {
+    console.error('Error getting booking history:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to get booking history'
+    });
+  }
+});
+
+/**
  * @route   GET /api/driver/earnings/breakdown
  * @desc    Get detailed earnings breakdown for a trip
  * @access  Private (Driver only)
@@ -3343,6 +3393,56 @@ router.put('/status', [
     res.status(500).json({
       success: false,
       error: 'Failed to update driver status'
+    });
+  }
+});
+
+/**
+ * @route   GET /api/driver/bookings/history
+ * @desc    Get driver booking history
+ * @access  Private (Driver only)
+ */
+router.get('/bookings/history', requireDriver, async (req, res) => {
+  try {
+    const { uid } = req.user;
+    const { limit = 50, offset = 0, status } = req.query;
+    
+    const db = getFirestore();
+    let query = db.collection('bookings')
+      .where('driverId', '==', uid)
+      .orderBy('createdAt', 'desc')
+      .limit(parseInt(limit))
+      .offset(parseInt(offset));
+    
+    // Filter by status if provided
+    if (status && status !== 'all') {
+      query = query.where('status', '==', status);
+    }
+    
+    const snapshot = await query.get();
+    const bookings = [];
+    
+    snapshot.forEach(doc => {
+      const data = doc.data();
+      bookings.push({
+        id: doc.id,
+        ...data,
+        createdAt: data.createdAt?.toDate?.()?.toISOString() || new Date().toISOString(),
+        updatedAt: data.updatedAt?.toDate?.()?.toISOString() || new Date().toISOString()
+      });
+    });
+    
+    res.status(200).json({
+      success: true,
+      data: bookings,
+      total: bookings.length
+    });
+    
+  } catch (error) {
+    console.error('Error getting booking history:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to get booking history'
     });
   }
 });

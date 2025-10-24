@@ -177,7 +177,8 @@ class VerificationService {
       console.log(`🔍 Getting verification data for driver: ${driverId}`);
 
       // Get driver from users collection
-      const driverDoc = await this.db.collection('users').doc(driverId).get();
+      const db = this.getDb();
+      const driverDoc = await db.collection('users').doc(driverId).get();
       if (!driverDoc.exists) {
         throw new Error('Driver not found');
       }
@@ -187,7 +188,7 @@ class VerificationService {
       // Get verification request (simplified query to avoid index issues)
       let verificationQuery;
       try {
-        verificationQuery = await this.db.collection('documentVerificationRequests')
+        verificationQuery = await db.collection('documentVerificationRequests')
           .where('driverId', '==', driverId)
           .get();
         
@@ -206,7 +207,7 @@ class VerificationService {
       }
 
       // Get driver documents collection
-      const driverDocsQuery = await this.db.collection('driverDocuments')
+      const driverDocsQuery = await db.collection('driverDocuments')
         .where('driverId', '==', driverId)
         .get();
 
@@ -328,7 +329,8 @@ class VerificationService {
         hasVehicleDetails = true;
         // Check if there's a driver data entry
         try {
-          const dataEntryQuery = await this.db.collection('driverDataEntries')
+          const db = this.getDb();
+          const dataEntryQuery = await db.collection('driverDataEntries')
             .where('driverId', '==', driverId)
             .orderBy('submittedAt', 'desc')
             .limit(1)
@@ -430,13 +432,14 @@ class VerificationService {
    * Update driver verification status in all relevant collections
    */
   async updateDriverVerificationStatus(driverId, verificationData) {
-    const batch = this.db.batch();
+    const db = this.getDb();
+    const batch = db.batch();
     
     try {
       console.log(`🔄 Updating verification status for driver: ${driverId}`);
 
       // Update user collection
-      const driverRef = this.db.collection('users').doc(driverId);
+      const driverRef = db.collection('users').doc(driverId);
       batch.update(driverRef, {
         'driver.verificationStatus': verificationData.status,
         'driver.isVerified': verificationData.status === 'verified',
@@ -452,7 +455,7 @@ class VerificationService {
       const welcomeBonusGiven = driverData?.driver?.welcomeBonusGiven || false;
       
       // Update real-time verification status collection for live updates
-      const verificationStatusRef = this.db.collection('driverVerificationStatus').doc(driverId);
+      const verificationStatusRef = db.collection('driverVerificationStatus').doc(driverId);
       batch.set(verificationStatusRef, {
         driverId,
         verificationStatus: verificationData.status,
@@ -469,7 +472,7 @@ class VerificationService {
       }, { merge: true });
 
       // Update verification request if exists
-      const verificationQuery = await this.db.collection('documentVerificationRequests')
+      const verificationQuery = await db.collection('documentVerificationRequests')
         .where('driverId', '==', driverId)
         .where('status', '==', 'pending')
         .limit(1)
@@ -499,8 +502,9 @@ class VerificationService {
     try {
       console.log(`📄 Verifying document ${documentType} for driver: ${driverId}`);
       
-      const batch = this.db.batch();
-      const driverRef = this.db.collection('users').doc(driverId);
+      const db = this.getDb();
+      const batch = db.batch();
+      const driverRef = db.collection('users').doc(driverId);
       
       // Get current driver data
       const driverDoc = await driverRef.get();
@@ -545,7 +549,7 @@ class VerificationService {
 
       // Update driverDocuments collection (avoid composite index by filtering in memory)
       const snakeCaseDocType = this.toSnakeCase(documentType);
-      const driverDocsQuery = await this.db.collection('driverDocuments')
+      const driverDocsQuery = await db.collection('driverDocuments')
         .where('driverId', '==', driverId)
         .get();
 
@@ -573,7 +577,7 @@ class VerificationService {
       }
       
       // Update verification request if exists (get most recent request regardless of status)
-      const verificationQuery = await this.db.collection('documentVerificationRequests')
+      const verificationQuery = await db.collection('documentVerificationRequests')
         .where('driverId', '==', driverId)
         .get();
 
@@ -836,7 +840,8 @@ class VerificationService {
    */
   async storeRejectionHistory(driverId, documentType, rejectionReason) {
     try {
-      const rejectionRef = this.db.collection('driverDocumentsRejections').doc();
+      const db = this.getDb();
+      const rejectionRef = db.collection('driverDocumentsRejections').doc();
       await rejectionRef.set({
         id: rejectionRef.id,
         driverId: driverId,
@@ -872,8 +877,9 @@ class VerificationService {
     try {
       console.log(`✅ Approving driver: ${driverId}`);
       
-      const batch = this.db.batch();
-      const driverRef = this.db.collection('users').doc(driverId);
+      const db = this.getDb();
+      const batch = db.batch();
+      const driverRef = db.collection('users').doc(driverId);
       
       // Driver reference for batch operations
       
@@ -889,7 +895,7 @@ class VerificationService {
       });
 
       // Update verification request if exists
-      const verificationQuery = await this.db.collection('documentVerificationRequests')
+      const verificationQuery = await db.collection('documentVerificationRequests')
         .where('driverId', '==', driverId)
         .where('status', '==', 'pending')
         .limit(1)
@@ -949,8 +955,9 @@ class VerificationService {
     try {
       console.log(`❌ Rejecting driver: ${driverId}`);
       
-      const batch = this.db.batch();
-      const driverRef = this.db.collection('users').doc(driverId);
+      const db = this.getDb();
+      const batch = db.batch();
+      const driverRef = db.collection('users').doc(driverId);
       
       // Update driver status
       batch.update(driverRef, {
@@ -964,7 +971,7 @@ class VerificationService {
       });
 
       // Update verification request if exists
-      const verificationQuery = await this.db.collection('documentVerificationRequests')
+      const verificationQuery = await db.collection('documentVerificationRequests')
         .where('driverId', '==', driverId)
         .where('status', '==', 'pending')
         .limit(1)
@@ -1010,7 +1017,8 @@ class VerificationService {
     try {
       console.log('🔄 Syncing verification status for all drivers...');
 
-      const driversSnapshot = await this.db.collection('users')
+      const db = this.getDb();
+      const driversSnapshot = await db.collection('users')
         .where('userType', '==', 'driver')
         .get();
 

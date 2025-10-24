@@ -30,6 +30,8 @@ class ActiveBookingService {
    */
   async hasActiveBooking(customerId) {
     try {
+      console.log(`🔍 [BACKEND_ACTIVE_BOOKING] Checking for active booking for customer: ${customerId}`);
+      
       // ✅ CRITICAL FIX: Ensure database is initialized
       if (!this.db) {
         this.db = this.getDb();
@@ -53,17 +55,22 @@ class ActiveBookingService {
         .limit(1)
         .get();
 
+      console.log(`🔍 [BACKEND_ACTIVE_BOOKING] Found ${activeBookingsSnapshot.size} active bookings for customer: ${customerId}`);
+
       if (!activeBookingsSnapshot.empty) {
         const activeBooking = activeBookingsSnapshot.docs[0].data();
-        return {
+        const result = {
           hasActive: true,
           bookingId: activeBookingsSnapshot.docs[0].id,
           status: activeBooking.status,
           createdAt: activeBooking.createdAt,
           driverId: activeBooking.driverId
         };
+        console.log(`🔍 [BACKEND_ACTIVE_BOOKING] Active booking found:`, result);
+        return result;
       }
 
+      console.log(`🔍 [BACKEND_ACTIVE_BOOKING] No active booking found for customer: ${customerId}`);
       return { hasActive: false };
     } catch (error) {
       console.error('❌ [ActiveBookingService] Error checking active booking:', error);

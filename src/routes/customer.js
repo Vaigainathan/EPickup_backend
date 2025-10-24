@@ -308,6 +308,120 @@ router.get('/bookings', authenticateToken, async (req, res) => {
 });
 
 /**
+ * @route GET /api/customer/bookings/:id
+ * @desc Get single booking by ID
+ * @access Private (Customer only)
+ */
+router.get('/bookings/:id', authenticateToken, async (req, res) => {
+  try {
+    const { uid: userId } = req.user;
+    const { id: bookingId } = req.params;
+    const db = getFirestore();
+    
+    console.log(`📋 Getting booking ${bookingId} for customer: ${userId}`);
+    
+    const bookingRef = db.collection('bookings').doc(bookingId);
+    const bookingDoc = await bookingRef.get();
+    
+    if (!bookingDoc.exists) {
+      return res.status(404).json({
+        success: false,
+        error: 'Booking not found',
+        details: 'The requested booking does not exist'
+      });
+    }
+    
+    const bookingData = bookingDoc.data();
+    
+    // Check if customer owns this booking
+    if (bookingData.customerId !== userId) {
+      return res.status(403).json({
+        success: false,
+        error: 'Access denied',
+        details: 'You can only access your own bookings'
+      });
+    }
+    
+    // Format the response
+    const booking = {
+      id: bookingDoc.id,
+      ...bookingData,
+      createdAt: bookingData.createdAt?.toDate?.() || bookingData.createdAt,
+      updatedAt: bookingData.updatedAt?.toDate?.() || bookingData.updatedAt
+    };
+    
+    res.json({
+      success: true,
+      data: booking
+    });
+    
+  } catch (error) {
+    console.error('❌ Error getting booking:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to retrieve booking',
+      details: error.message
+    });
+  }
+});
+
+/**
+ * @route GET /api/customer/active-booking
+ * @desc Get customer's active booking
+ * @access Private (Customer only)
+ */
+router.get('/active-booking', authenticateToken, async (req, res) => {
+  try {
+    const { uid: userId } = req.user;
+    const db = getFirestore();
+    
+    console.log(`🔍 Getting active booking for customer: ${userId}`);
+    
+    // Query for active bookings (not cancelled or delivered)
+    const activeBookingsQuery = db.collection('bookings')
+      .where('customerId', '==', userId)
+      .where('status', 'in', ['pending', 'confirmed', 'driver_assigned', 'driver_enroute', 'driver_arrived', 'picked_up', 'in_transit', 'at_dropoff'])
+      .orderBy('createdAt', 'desc')
+      .limit(1);
+    
+    const snapshot = await activeBookingsQuery.get();
+    
+    if (snapshot.empty) {
+      return res.json({
+        success: true,
+        data: { booking: null },
+        message: 'No active booking found'
+      });
+    }
+    
+    const bookingDoc = snapshot.docs[0];
+    const bookingData = bookingDoc.data();
+    
+    // Format the response
+    const booking = {
+      id: bookingDoc.id,
+      ...bookingData,
+      createdAt: bookingData.createdAt?.toDate?.() || bookingData.createdAt,
+      updatedAt: bookingData.updatedAt?.toDate?.() || bookingData.updatedAt
+    };
+    
+    res.json({
+      success: true,
+      data: { booking },
+      message: 'Active booking retrieved successfully'
+    });
+    
+  } catch (error) {
+    console.error('❌ Error getting active booking:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to retrieve active booking',
+      details: error.message
+    });
+  }
+});
+
+/**
  * @route POST /api/customer/bookings
  * @desc Create new booking
  * @access Private (Customer only)
@@ -422,7 +536,10 @@ router.post('/bookings', authenticateToken, async (req, res) => {
     // ✅ FIXED: Use ActiveBookingService for atomic active booking check
     const ActiveBookingService = require('../services/activeBookingService');
     const activeBookingService = new ActiveBookingService();
+    
+    console.log(`🔍 [BACKEND] Checking for active booking for customer: ${userId}`);
     const activeBookingCheck = await activeBookingService.hasActiveBooking(userId);
+    console.log(`🔍 [BACKEND] Active booking check result:`, activeBookingCheck);
     
     if (activeBookingCheck.hasActive) {
       return res.status(409).json({

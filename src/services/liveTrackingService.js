@@ -1,4 +1,4 @@
-const { getFirestore } = require('./firebase');
+const { getFirestore } = require('firebase-admin/firestore');
 
 /**
  * Live Tracking Service - Handles real-time driver location updates and booking status

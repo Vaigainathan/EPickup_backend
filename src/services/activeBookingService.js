@@ -1,4 +1,4 @@
-const { getFirestore } = require('./firebase');
+const { getFirestore } = require('firebase-admin/firestore');
 
 /**
  * Active Booking Service - Industry Standard Customer Order Management

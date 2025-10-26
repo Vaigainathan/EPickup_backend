@@ -1,14 +1,35 @@
-const { getFirestore } = require('./firebase');
+const { getFirestore } = require('firebase-admin/firestore');
 
 class VerificationService {
   constructor() {
-    this.db = getFirestore(); // Initialize immediately like other services
+    this.db = null; // Initialize lazily
   }
 
   /**
-   * Get Firestore instance
+   * Get Firestore instance (lazy initialization)
    */
   getDb() {
+    if (!this.db) {
+      try {
+        // ✅ CRITICAL FIX: Use the same Firebase service as other parts of the app
+        this.db = getFirestore();
+        
+        // ✅ CRITICAL FIX: Verify the database instance is valid
+        if (!this.db) {
+          throw new Error('Firestore instance is null');
+        }
+        
+        console.log('✅ [VerificationService] Firestore instance initialized successfully');
+      } catch (error) {
+        console.error('❌ [VerificationService] Failed to get Firestore:', error);
+        console.error('❌ [VerificationService] Error details:', {
+          message: error.message,
+          stack: error.stack,
+          firebaseApps: require('firebase-admin').apps.length
+        });
+        throw new Error('Firebase not initialized. Please ensure Firebase is initialized before using VerificationService.');
+      }
+    }
     return this.db;
   }
 
@@ -16,10 +37,14 @@ class VerificationService {
    * Get Firestore instance with safety checks
    */
   getDbSafe() {
-    if (!this.db) {
+    const db = this.getDb();
+    
+    // ✅ CRITICAL FIX: Verify database instance is valid
+    if (!db) {
       throw new Error('Database instance is null - Firebase not properly initialized');
     }
-    return this.db;
+    
+    return db;
   }
 
   /**
@@ -1090,5 +1115,24 @@ class VerificationService {
   }
 }
 
-module.exports = new VerificationService();
+// Use lazy initialization to avoid Firebase initialization issues
+let verificationServiceInstance = null;
+
+function getVerificationService() {
+  if (!verificationServiceInstance) {
+    verificationServiceInstance = new VerificationService();
+  }
+  return verificationServiceInstance;
+}
+
+// Export a proxy object that creates the instance only when methods are called
+const lazyVerificationService = new Proxy({}, {
+  get(target, prop) {
+    const instance = getVerificationService();
+    return instance[prop];
+  }
+});
+
+module.exports = lazyVerificationService;
 module.exports.VerificationService = VerificationService;
+module.exports.getVerificationService = getVerificationService;

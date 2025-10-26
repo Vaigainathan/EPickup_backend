@@ -31,19 +31,16 @@ service firebase.storage {
          request.auth.token.roleBasedUID == userId);
     }
     
-    // Driver documents - NEW structured path
+    // Driver documents - NEW structured path (MORE PERMISSIVE FOR UPLOADS)
     match /drivers/{driverId}/documents/{documentType}/{document=**} {
       allow read: if isAuthenticated() && 
         ((isDriver() && isOwner(driverId)) || isAdmin());
       allow write: if isAuthenticated() && 
-        ((isDriver() && isOwner(driverId)) || isAdmin());
+        ((isDriver() && isOwner(driverId)) || isAdmin() || 
+         (isDriver() && request.auth.uid == driverId));
     }
     
-    // Driver documents - LEGACY path (TEMPORARILY PERMISSIVE)
-    match /driver-documents/{userId}/{document=**} {
-      allow read: if isAuthenticated() && isDriver();
-      allow write: if isAuthenticated() && isDriver();
-    }
+    // ✅ CRITICAL FIX: Legacy driver-documents path removed - no longer used
     
     // User files (profile photos, documents, etc.) - NEW path used by backend
     match /users/{userId}/{allFiles=**} {

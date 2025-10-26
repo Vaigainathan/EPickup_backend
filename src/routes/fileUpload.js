@@ -42,14 +42,22 @@ router.post('/driver-document', upload.single('document'), async (req, res) => {
       });
     }
 
-    // Validate document type
+    // Validate document type - Support both formats for compatibility
     const validDocumentTypes = ['driving_license', 'profile_photo', 'aadhaar_card', 'bike_insurance', 'rc_book'];
-    if (!validDocumentTypes.includes(documentType)) {
+    const validDocumentTypesCamel = ['drivingLicense', 'profilePhoto', 'aadhaarCard', 'bikeInsurance', 'rcBook'];
+    
+    if (!validDocumentTypes.includes(documentType) && !validDocumentTypesCamel.includes(documentType)) {
       console.log('❌ [BACKEND PROXY] Invalid document type:', documentType);
       return res.status(400).json({
         success: false,
         error: `Invalid document type. Must be one of: ${validDocumentTypes.join(', ')}`
       });
+    }
+
+    // Normalize document type to snake_case for storage path
+    let normalizedDocType = documentType;
+    if (validDocumentTypesCamel.includes(documentType)) {
+      normalizedDocType = documentType.replace(/([A-Z])/g, '_$1').toLowerCase();
     }
 
     console.log('📤 [BACKEND PROXY] Uploading document:', { driverId, documentType, fileSize: file.size });
@@ -59,8 +67,8 @@ router.post('/driver-document', upload.single('document'), async (req, res) => {
     
     // Generate unique filename
     const timestamp = Date.now();
-    const fileName = `${timestamp}_${documentType}.jpg`;
-    const filePath = `drivers/${driverId}/documents/${documentType}/${fileName}`;
+    const fileName = `${timestamp}_${normalizedDocType}.jpg`;
+    const filePath = `drivers/${driverId}/documents/${normalizedDocType}/${fileName}`;
     
     console.log('📤 [BACKEND PROXY] File path:', filePath);
     
@@ -94,8 +102,17 @@ router.post('/driver-document', upload.single('document'), async (req, res) => {
       const db = getFirestore();
       const userRef = db.collection('users').doc(driverId);
       
-      await userRef.update({
-        [`documents.${documentType}`]: {
+      // Update both document type formats for compatibility
+      const updateData = {
+        [`documents.${normalizedDocType}`]: {
+          fileName: fileName,
+          filePath: filePath,
+          downloadURL: downloadURL,
+          uploadedAt: new Date().toISOString(),
+          status: 'uploaded',
+          uploadedBy: 'backend_proxy'
+        },
+        [`driver.documents.${normalizedDocType}`]: {
           fileName: fileName,
           filePath: filePath,
           downloadURL: downloadURL,
@@ -104,7 +121,9 @@ router.post('/driver-document', upload.single('document'), async (req, res) => {
           uploadedBy: 'backend_proxy'
         },
         updatedAt: new Date()
-      });
+      };
+
+      await userRef.update(updateData);
       
       console.log('✅ [BACKEND PROXY] User document updated in Firestore');
     } catch (firestoreError) {
@@ -138,11 +157,11 @@ router.post('/driver-document', upload.single('document'), async (req, res) => {
 });
 
 /**
- * @route GET /api/file-upload/driver-documents/:driverId
+ * @route GET /api/file-upload/drivers/:driverId/documents
  * @desc Get all driver documents via backend proxy
  * @access Private (Driver/Admin)
  */
-router.get('/driver-documents/:driverId', async (req, res) => {
+router.get('/drivers/:driverId/documents', async (req, res) => {
   try {
     console.log('📥 [BACKEND PROXY] Getting driver documents for:', req.params.driverId);
     

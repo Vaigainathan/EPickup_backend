@@ -677,9 +677,10 @@ class BookingService {
         throw new Error('Booking not found');
       }
 
+      // ✅ UNIFIED STATUS DEFINITION: Match BookingStateMachine exactly
       const validStatuses = [
-        'pending', 'confirmed', 'driver_assigned', 'driver_enroute',
-        'driver_arrived', 'picked_up', 'in_transit', 'at_dropoff', 'delivered', 'cancelled'
+        'pending', 'driver_assigned', 'accepted', 'driver_enroute',
+        'driver_arrived', 'picked_up', 'in_transit', 'delivered', 'completed', 'cancelled', 'rejected'
       ];
 
       if (!validStatuses.includes(status)) {

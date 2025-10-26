@@ -947,8 +947,8 @@ router.get('/bookings/active', async (req, res) => {
     const db = getFirestore();
     const { limit = 50 } = req.query;
 
-    // Get active bookings
-    const activeStatuses = ['pending', 'accepted', 'in_progress'];
+    // ✅ UNIFIED STATUS DEFINITION: Use consistent status names
+    const activeStatuses = ['pending', 'driver_assigned', 'accepted', 'driver_enroute', 'driver_arrived', 'picked_up', 'in_transit'];
     const bookings = [];
 
     for (const status of activeStatuses) {
@@ -5255,6 +5255,149 @@ router.get('/admins', async (req, res) => {
         details: error.message
       },
       timestamp: new Date().toISOString()
+    });
+  }
+});
+
+/**
+ * @route   GET /api/admin/test-document-system/:driverId
+ * @desc    Test complete document system for a driver
+ * @access  Private (Admin only)
+ */
+router.get('/test-document-system/:driverId', async (req, res) => {
+  try {
+    const { driverId } = req.params;
+    const db = getFirestore();
+    
+    console.log(`🧪 Testing document system for driver: ${driverId}`);
+    
+    // Test 1: Check driver exists in users collection
+    const driverDoc = await db.collection('users').doc(driverId).get();
+    if (!driverDoc.exists) {
+      return res.status(404).json({
+        success: false,
+        error: { code: 'DRIVER_NOT_FOUND', message: 'Driver not found in users collection' }
+      });
+    }
+    
+    const driverData = driverDoc.data();
+    console.log(`✅ Driver found: ${driverData.name}`);
+    
+    // Test 2: Check document structure in Firestore
+    const documents = driverData.driver?.documents || driverData.documents || {};
+    console.log(`📄 Documents in Firestore:`, Object.keys(documents));
+    
+    // Test 3: Check Firebase Storage structure - ALL POSSIBLE PATHS
+    const { getStorage } = require('firebase-admin/storage');
+    const bucket = getStorage().bucket();
+    
+    const storageTests = [];
+    const documentTypes = ['driving_license', 'profile_photo', 'aadhaar_card', 'bike_insurance', 'rc_book'];
+    
+    // ✅ CRITICAL FIX: Only check the correct storage path
+    const correctPath = `drivers/${driverId}/documents`;
+    const pathTests = [];
+    
+    for (const docType of documentTypes) {
+      try {
+        const [files] = await bucket.getFiles({
+          prefix: `${correctPath}/${docType}/`,
+          maxResults: 1
+        });
+        
+        pathTests.push({
+          documentType: docType,
+          hasFiles: files.length > 0,
+          fileCount: files.length,
+          firstFile: files[0]?.name || null,
+          fullPath: `${correctPath}/${docType}/`
+        });
+      } catch (error) {
+        pathTests.push({
+          documentType: docType,
+          hasFiles: false,
+          error: error.message,
+          fullPath: `${correctPath}/${docType}/`
+        });
+      }
+    }
+    
+    storageTests.push({
+      basePath: correctPath,
+      tests: pathTests,
+      totalFiles: pathTests.reduce((sum, test) => sum + (test.fileCount || 0), 0)
+    });
+    
+    // Test 4: Check API endpoint functionality
+    let apiTestResult = null;
+    try {
+      const apiResponse = await fetch(`${req.protocol}://${req.get('host')}/api/admin/drivers/${driverId}/documents`, {
+        headers: {
+          'Authorization': req.headers.authorization
+        }
+      });
+      
+      const apiData = await apiResponse.json();
+      apiTestResult = {
+        success: apiResponse.ok,
+        statusCode: apiResponse.status,
+        hasData: !!apiData.data,
+        documentCount: apiData.data?.documents ? Object.keys(apiData.data.documents).length : 0
+      };
+    } catch (error) {
+      apiTestResult = {
+        success: false,
+        error: error.message
+      };
+    }
+    
+    // Compile test results
+    const testResults = {
+      driverId,
+      driverName: driverData.name,
+      driverPhone: driverData.phone,
+      firestoreTest: {
+        hasDriver: true,
+        hasDocuments: Object.keys(documents).length > 0,
+        documentKeys: Object.keys(documents),
+        verificationStatus: driverData.driver?.verificationStatus || 'pending'
+      },
+      storageTests,
+      apiTest: apiTestResult,
+      recommendations: []
+    };
+    
+    // Generate recommendations
+    if (Object.keys(documents).length === 0) {
+      testResults.recommendations.push('No documents found in Firestore - driver needs to upload documents');
+    }
+    
+    const uploadedDocs = storageTests.filter(test => test.hasFiles);
+    if (uploadedDocs.length === 0) {
+      testResults.recommendations.push('No files found in Firebase Storage - check upload process');
+    }
+    
+    if (!apiTestResult.success) {
+      testResults.recommendations.push('API endpoint test failed - check backend configuration');
+    }
+    
+    console.log(`🧪 Document system test completed for driver: ${driverId}`);
+    
+    res.json({
+      success: true,
+      data: testResults,
+      message: 'Document system test completed'
+    });
+    
+  } catch (error) {
+    console.error('Document system test error:', error);
+    res.status(500).json({
+      success: false,
+      error: {
+        code: 'DOCUMENT_SYSTEM_TEST_ERROR',
+        message: 'Failed to test document system',
+        details: error.message
+      }
     });
   }
 });

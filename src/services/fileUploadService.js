@@ -570,7 +570,7 @@ class FileUploadService {
             try {
               const storage = getStorage();
               const bucket = storage.bucket();
-              const filePath = `driver-documents/${driverId}/${documentType}/${filename}`;
+              const filePath = `drivers/${driverId}/documents/${documentType}/${filename}`;
               const file = bucket.file(filePath);
               
               await file.save(buffer, {
@@ -617,7 +617,7 @@ class FileUploadService {
         uploadDetails: {
           downloadURL: downloadURL,
           thumbnailURL: null,
-          filePath: `driver-documents/${driverId}/${documentType}/${filename}`,
+          filePath: `drivers/${driverId}/documents/${documentType}/${filename}`,
           size: fileSize,
           contentType: contentType
         },

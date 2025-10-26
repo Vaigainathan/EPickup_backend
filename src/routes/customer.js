@@ -377,10 +377,11 @@ router.get('/active-booking', authenticateToken, async (req, res) => {
     
     console.log(`🔍 Getting active booking for customer: ${userId}`);
     
-    // Query for active bookings (not cancelled or delivered)
+    // ✅ CRITICAL FIX: Only consider bookings with assigned drivers as "active"
+    // 'pending' and 'confirmed' should NOT redirect to trip progress
     const activeBookingsQuery = db.collection('bookings')
       .where('customerId', '==', userId)
-      .where('status', 'in', ['pending', 'confirmed', 'driver_assigned', 'driver_enroute', 'driver_arrived', 'picked_up', 'in_transit', 'at_dropoff'])
+      .where('status', 'in', ['driver_assigned', 'driver_enroute', 'driver_arrived', 'picked_up', 'in_transit', 'at_dropoff'])
       .orderBy('createdAt', 'desc')
       .limit(1);
     
@@ -416,6 +417,62 @@ router.get('/active-booking', authenticateToken, async (req, res) => {
     res.status(500).json({
       success: false,
       error: 'Failed to retrieve active booking',
+      details: error.message
+    });
+  }
+});
+
+/**
+ * @route GET /api/customer/pending-booking
+ * @desc Get customer's pending booking (for driver matching screen)
+ * @access Private (Customer only)
+ */
+router.get('/pending-booking', authenticateToken, async (req, res) => {
+  try {
+    const { uid: userId } = req.user;
+    const db = getFirestore();
+    
+    console.log(`🔍 Getting pending booking for customer: ${userId}`);
+    
+    // Query for pending bookings (waiting for driver assignment)
+    const pendingBookingsQuery = db.collection('bookings')
+      .where('customerId', '==', userId)
+      .where('status', 'in', ['pending', 'confirmed', 'searching'])
+      .orderBy('createdAt', 'desc')
+      .limit(1);
+    
+    const snapshot = await pendingBookingsQuery.get();
+    
+    if (snapshot.empty) {
+      return res.json({
+        success: true,
+        data: { booking: null },
+        message: 'No pending booking found'
+      });
+    }
+    
+    const bookingDoc = snapshot.docs[0];
+    const bookingData = bookingDoc.data();
+    
+    // Format the response
+    const booking = {
+      id: bookingDoc.id,
+      ...bookingData,
+      createdAt: bookingData.createdAt?.toDate?.() || bookingData.createdAt,
+      updatedAt: bookingData.updatedAt?.toDate?.() || bookingData.updatedAt
+    };
+    
+    res.json({
+      success: true,
+      data: { booking },
+      message: 'Pending booking retrieved successfully'
+    });
+    
+  } catch (error) {
+    console.error('❌ Error getting pending booking:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to retrieve pending booking',
       details: error.message
     });
   }
@@ -2115,39 +2172,6 @@ router.get('/invoice/:bookingId', authenticateToken, async (req, res) => {
       success: false,
       error: 'Failed to generate invoice',
       details: error.message
-    });
-  }
-});
-
-/**
- * @route   GET /api/customer/active-booking
- * @desc    Get current active booking for customer
- * @access  Private (Customer only)
- */
-router.get('/active-booking', authenticateToken, async (req, res) => {
-  try {
-    const { uid: customerId } = req.user;
-    const ActiveBookingService = require('../services/activeBookingService');
-    const activeBookingService = new ActiveBookingService();
-    
-    const result = await activeBookingService.getCurrentActiveBooking(customerId);
-    
-    res.status(200).json({
-      success: true,
-      message: 'Active booking retrieved successfully',
-      data: result,
-      timestamp: new Date().toISOString()
-    });
-  } catch (error) {
-    console.error('Error getting active booking:', error);
-    res.status(500).json({
-      success: false,
-      error: {
-        code: 'ACTIVE_BOOKING_ERROR',
-        message: 'Failed to get active booking',
-        details: error.message
-      },
-      timestamp: new Date().toISOString()
     });
   }
 });

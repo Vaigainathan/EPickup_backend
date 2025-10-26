@@ -337,6 +337,22 @@ router.post('/login', async (req, res) => {
       { expiresIn: '24h' }
     );
 
+    console.log('✅ [ADMIN LOGIN] Sending successful response...');
+    console.log('📤 [ADMIN LOGIN] Response data:', {
+      success: true,
+      message: 'Admin login successful',
+      data: {
+        user: {
+          id: adminUser.id,
+          email: adminUser.email,
+          name: adminUser.name,
+          role: adminUser.role,
+          permissions: adminUser.permissions
+        },
+        token: token ? 'JWT_TOKEN_PRESENT' : 'JWT_TOKEN_MISSING'
+      }
+    });
+
     res.json({
       success: true,
       message: 'Admin login successful',
@@ -352,6 +368,8 @@ router.post('/login', async (req, res) => {
       },
       timestamp: new Date().toISOString()
     });
+    
+    console.log('✅ [ADMIN LOGIN] Response sent successfully');
 
   } catch (error) {
     console.error('Admin login error:', error);

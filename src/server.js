@@ -40,7 +40,7 @@ const { authMiddleware } = require('./middleware/auth');
 const { initializeFirebase } = require('./services/firebase');
 // Firestore Session Service is imported but not directly used in server.js
 // It's used by other services that import it directly
-const socketService = require('./services/socket');
+const { initializeSocketIO } = require('./services/socket');
 // const msg91Service = require('./services/msg91Service'); // Deprecated - using Firebase Auth instead
 const monitoringService = require('./services/monitoringService');
 // performanceMonitoringService removed - using monitoringService instead
@@ -138,7 +138,7 @@ let appCheckMiddleware;
 
 // ✅ CRITICAL FIX: Import routes after Firebase is fully ready
 function importRoutesAfterFirebaseReady() {
-  console.log('📦 Importing routes after Firebase initialization...');
+console.log('📦 Importing routes after Firebase initialization...');
   
   authRoutes = require('./routes/auth');
   refreshTokenRoutes = require('./routes/refreshToken');
@@ -167,11 +167,11 @@ function importRoutesAfterFirebaseReady() {
   // adminBookingManagementRoutes = require('./routes/adminBookingManagement'); // Included in adminRoutes
   locationTrackingRoutes = require('./routes/locationTracking');
   
-  console.log('✅ All routes imported successfully');
-  
+console.log('✅ All routes imported successfully');
+
   // ✅ CRITICAL FIX: Initialize middleware after routes are imported
   console.log('📦 Initializing middleware...');
-  const AppCheckMiddleware = require('./middleware/appCheckAuth');
+const AppCheckMiddleware = require('./middleware/appCheckAuth');
   appCheckMiddleware = new AppCheckMiddleware();
   console.log('✅ All middleware initialized successfully');
   
@@ -849,12 +849,13 @@ app.use(standardizedErrorHandler);
 
 // Initialize Socket.IO with error handling
 try {
-  socketService.initializeSocketIO(server);
+  initializeSocketIO(server);
   console.log('✅ Socket.IO service initialized successfully');
   
   // ✅ FIXED: Initialize LiveTrackingService
   const liveTrackingService = require('./services/liveTrackingService');
-  const io = socketService.getIO();
+  const { getSocketIO } = require('./services/socket');
+  const io = getSocketIO();
   if (io) {
     liveTrackingService.initialize(io);
     console.log('✅ LiveTrackingService initialized successfully');

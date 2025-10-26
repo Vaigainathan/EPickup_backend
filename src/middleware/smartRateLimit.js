@@ -139,7 +139,7 @@ const createProgressiveSlowDown = (options = {}) => {
       return isDevelopment && isLocalhost;
     },
     
-    onLimitReached: (req, res, options) => {
+    handler: (req, res, options) => {
       const phoneNumber = req.body?.phoneNumber || req.body?.phone;
       const requestUserType = req.body?.userType || 'unknown';
       
@@ -148,6 +148,17 @@ const createProgressiveSlowDown = (options = {}) => {
         userType: requestUserType,
         ip: req.ip,
         delayMs: options.delayMs,
+        timestamp: new Date().toISOString()
+      });
+      
+      // Continue with the request after logging
+      res.status(429).json({
+        success: false,
+        error: {
+          code: 'RATE_LIMIT_EXCEEDED',
+          message: 'Too many requests, please slow down',
+          retryAfter: Math.ceil(options.windowMs / 1000)
+        },
         timestamp: new Date().toISOString()
       });
     }

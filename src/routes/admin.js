@@ -1200,8 +1200,8 @@ router.delete('/bookings/:id', async (req, res) => {
 
     // Send real-time notifications to customer and driver
     try {
-      const socketService = require('../services/socket');
-      const io = socketService.getSocketIO();
+      const { getSocketIO } = require('../services/socket');
+      const io = getSocketIO();
       
       // Notify customer if they have the booking open
       if (bookingData.customerId) {

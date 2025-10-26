@@ -200,6 +200,37 @@ router.get('/profile', requireDriver, async (req, res) => {
 
     const userData = userDoc.data();
     
+    // ✅ CRITICAL FIX: Get profile photo from Firebase Storage if not in Firestore
+    let profilePicture = userData.profilePicture;
+    
+    if (!profilePicture) {
+      try {
+        const bucket = getStorage().bucket();
+        const [files] = await bucket.getFiles({
+          prefix: `drivers/${uid}/documents/profile_photo/`,
+        });
+
+        if (files.length > 0) {
+          // Get the latest profile photo
+          const sortedFiles = files.sort((a, b) => {
+            const aTime = new Date(a.metadata.timeCreated);
+            const bTime = new Date(b.metadata.timeCreated);
+            return bTime - aTime; // Newest first
+          });
+
+          const [downloadURL] = await sortedFiles[0].getSignedUrl({
+            action: 'read',
+            expires: '03-01-2500'
+          });
+
+          profilePicture = downloadURL;
+          console.log('✅ [PROFILE] Profile photo fetched from Firebase Storage');
+        }
+      } catch (storageError) {
+        console.warn('⚠️ [PROFILE] Failed to fetch profile photo from Firebase Storage:', storageError.message);
+      }
+    }
+    
     // Ensure wallet structure exists and is properly formatted
     const driverData = userData.driver || {};
     
@@ -280,7 +311,7 @@ router.get('/profile', requireDriver, async (req, res) => {
         name: userData.name,
         email: userData.email,
         phone: userData.phone,
-        profilePicture: userData.profilePicture,
+        profilePicture: profilePicture,
         verificationStatus: finalVerificationStatus,
         isVerified: finalIsVerified,
         pointsWallet: pointsWalletData,
@@ -6186,37 +6217,77 @@ router.post('/documents/request-verification', requireDriver, async (req, res) =
     }
 
     const userData = userDoc.data();
-    const documents = userData.documents || userData.driver?.documents || {};
+    
+    // ✅ CRITICAL FIX: Check Firebase Storage instead of Firestore
+    const bucket = getStorage().bucket();
+    const [files] = await bucket.getFiles({
+      prefix: `drivers/${uid}/documents/`,
+    });
+
+    const documents = {};
+    const documentFiles = {};
+
+    // Group files by document type
+    for (const file of files) {
+      try {
+        const pathParts = file.name.split('/');
+        const documentType = pathParts[pathParts.length - 2];
+        
+        if (!documentFiles[documentType]) {
+          documentFiles[documentType] = [];
+        }
+        
+        const [downloadURL] = await file.getSignedUrl({
+          action: 'read',
+          expires: '03-01-2500'
+        });
+
+        const [metadata] = await file.getMetadata();
+        
+        documentFiles[documentType].push({
+          fileName: file.name.split('/').pop(),
+          filePath: file.name,
+          downloadURL: downloadURL,
+          size: metadata.size,
+          uploadedAt: metadata.timeCreated,
+          contentType: metadata.contentType,
+          customMetadata: metadata.customMetadata || {}
+        });
+      } catch (fileError) {
+        console.error(`❌ [VERIFICATION_REQUEST] Error processing file ${file.name}:`, fileError);
+      }
+    }
+
+    // Select the latest file for each document type
+    for (const [documentType, files] of Object.entries(documentFiles)) {
+      if (files.length > 0) {
+        const sortedFiles = files.sort((a, b) => new Date(b.uploadedAt) - new Date(a.uploadedAt));
+        documents[documentType] = sortedFiles[0];
+        
+        if (files.length > 1) {
+          console.warn(`⚠️ [VERIFICATION_REQUEST] Multiple files found for ${documentType}: ${files.length} files. Using latest: ${sortedFiles[0].fileName}`);
+        }
+      }
+    }
 
     // Check if all required documents are uploaded
-    const requiredDocuments = ['drivingLicense', 'profilePhoto', 'aadhaarCard', 'bikeInsurance', 'rcBook'];
+    const requiredDocuments = ['driving_license', 'profile_photo', 'aadhaar_card', 'bike_insurance', 'rc_book'];
     
-    // Map camelCase to snake_case for backend proxy storage
-    const documentFieldMap = {
-      'drivingLicense': 'driving_license',
-      'profilePhoto': 'profile_photo', 
-      'aadhaarCard': 'aadhaar_card',
-      'bikeInsurance': 'bike_insurance',
-      'rcBook': 'rc_book'
-    };
-    
-    const uploadedDocuments = requiredDocuments.filter(doc => {
-      const snakeCaseKey = documentFieldMap[doc];
-      return documents[doc]?.downloadURL || documents[doc]?.url || 
-             documents[snakeCaseKey]?.downloadURL || documents[snakeCaseKey]?.url;
+    const uploadedDocuments = requiredDocuments.filter(docType => {
+      return documents[docType]?.downloadURL;
     });
 
     if (uploadedDocuments.length !== requiredDocuments.length) {
+      const missingDocuments = requiredDocuments.filter(docType => {
+        return !documents[docType]?.downloadURL;
+      });
+      
       return res.status(400).json({
         success: false,
         error: {
           code: 'INCOMPLETE_DOCUMENTS',
           message: 'Incomplete documents',
-          details: `Please upload all required documents. Missing: ${requiredDocuments.filter(doc => {
-            const snakeCaseKey = documentFieldMap[doc];
-            return !documents[doc]?.downloadURL && !documents[doc]?.url && 
-                   !documents[snakeCaseKey]?.downloadURL && !documents[snakeCaseKey]?.url;
-          }).join(', ')}`
+          details: `Please upload all required documents. Missing: ${missingDocuments.join(', ')}`
         },
         timestamp: new Date().toISOString()
       });
@@ -6251,34 +6322,44 @@ router.post('/documents/request-verification', requireDriver, async (req, res) =
       driverPhone: userData.phone,
       documents: {
         drivingLicense: {
-          downloadURL: documents.drivingLicense?.downloadURL || documents.drivingLicense?.url || documents.driving_license?.downloadURL || documents.driving_license?.url || '',
-          verificationStatus: documents.drivingLicense?.status || documents.driving_license?.status || 'pending',
-          uploadedAt: documents.drivingLicense?.uploadedAt || documents.driving_license?.uploadedAt || new Date(),
-          verified: documents.drivingLicense?.verified || documents.driving_license?.verified || false
+          downloadURL: documents.driving_license?.downloadURL || '',
+          fileName: documents.driving_license?.fileName || '',
+          filePath: documents.driving_license?.filePath || '',
+          verificationStatus: 'pending',
+          uploadedAt: documents.driving_license?.uploadedAt || new Date(),
+          verified: false
         },
         aadhaarCard: {
-          downloadURL: documents.aadhaarCard?.downloadURL || documents.aadhaarCard?.url || documents.aadhaar_card?.downloadURL || documents.aadhaar_card?.url || '',
-          verificationStatus: documents.aadhaarCard?.status || documents.aadhaar_card?.status || 'pending',
-          uploadedAt: documents.aadhaarCard?.uploadedAt || documents.aadhaar_card?.uploadedAt || new Date(),
-          verified: documents.aadhaarCard?.verified || documents.aadhaar_card?.verified || false
+          downloadURL: documents.aadhaar_card?.downloadURL || '',
+          fileName: documents.aadhaar_card?.fileName || '',
+          filePath: documents.aadhaar_card?.filePath || '',
+          verificationStatus: 'pending',
+          uploadedAt: documents.aadhaar_card?.uploadedAt || new Date(),
+          verified: false
         },
         bikeInsurance: {
-          downloadURL: documents.bikeInsurance?.downloadURL || documents.bikeInsurance?.url || documents.bike_insurance?.downloadURL || documents.bike_insurance?.url || '',
-          verificationStatus: documents.bikeInsurance?.status || documents.bike_insurance?.status || 'pending',
-          uploadedAt: documents.bikeInsurance?.uploadedAt || documents.bike_insurance?.uploadedAt || new Date(),
-          verified: documents.bikeInsurance?.verified || documents.bike_insurance?.verified || false
+          downloadURL: documents.bike_insurance?.downloadURL || '',
+          fileName: documents.bike_insurance?.fileName || '',
+          filePath: documents.bike_insurance?.filePath || '',
+          verificationStatus: 'pending',
+          uploadedAt: documents.bike_insurance?.uploadedAt || new Date(),
+          verified: false
         },
         rcBook: {
-          downloadURL: documents.rcBook?.downloadURL || documents.rcBook?.url || documents.rc_book?.downloadURL || documents.rc_book?.url || '',
-          verificationStatus: documents.rcBook?.status || documents.rc_book?.status || 'pending',
-          uploadedAt: documents.rcBook?.uploadedAt || documents.rc_book?.uploadedAt || new Date(),
-          verified: documents.rcBook?.verified || documents.rc_book?.verified || false
+          downloadURL: documents.rc_book?.downloadURL || '',
+          fileName: documents.rc_book?.fileName || '',
+          filePath: documents.rc_book?.filePath || '',
+          verificationStatus: 'pending',
+          uploadedAt: documents.rc_book?.uploadedAt || new Date(),
+          verified: false
         },
         profilePhoto: {
-          downloadURL: documents.profilePhoto?.downloadURL || documents.profilePhoto?.url || documents.profile_photo?.downloadURL || documents.profile_photo?.url || '',
-          verificationStatus: documents.profilePhoto?.status || documents.profile_photo?.status || 'pending',
-          uploadedAt: documents.profilePhoto?.uploadedAt || documents.profile_photo?.uploadedAt || new Date(),
-          verified: documents.profilePhoto?.verified || documents.profile_photo?.verified || false
+          downloadURL: documents.profile_photo?.downloadURL || '',
+          fileName: documents.profile_photo?.fileName || '',
+          filePath: documents.profile_photo?.filePath || '',
+          verificationStatus: 'pending',
+          uploadedAt: documents.profile_photo?.uploadedAt || new Date(),
+          verified: false
         }
       },
       status: 'pending',

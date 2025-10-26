@@ -319,6 +319,23 @@ function setupRoutes() {
   console.log('✅ All API routes set up successfully');
 }
 
+// ✅ CRITICAL FIX: Set up body parsing middleware BEFORE routes
+// Body parsing middleware with security limits
+app.use(express.json({ 
+  limit: '1mb', // Reduced from 10mb for security
+  verify: (req, res, buf) => {
+    // Additional security check for JSON payload
+    if (buf.length > 1024 * 1024) { // 1MB limit
+      throw new Error('Payload too large');
+    }
+  }
+}));
+app.use(express.urlencoded({ 
+  extended: true, 
+  limit: '1mb', // Reduced from 10mb for security
+  parameterLimit: 100 // Limit number of parameters
+}));
+
 // Call the function after Firebase is ready
 importRoutesAfterFirebaseReady();
 
@@ -441,22 +458,6 @@ if (process.env.NODE_ENV === 'development') {
 } else {
   app.use(morgan('combined'));
 }
-
-// Body parsing middleware with security limits
-app.use(express.json({ 
-  limit: '1mb', // Reduced from 10mb for security
-  verify: (req, res, buf) => {
-    // Additional security check for JSON payload
-    if (buf.length > 1024 * 1024) { // 1MB limit
-      throw new Error('Payload too large');
-    }
-  }
-}));
-app.use(express.urlencoded({ 
-  extended: true, 
-  limit: '1mb', // Reduced from 10mb for security
-  parameterLimit: 100 // Limit number of parameters
-}));
 
 // Static files (for file uploads)
 app.use('/uploads', express.static('uploads'));

@@ -1,4 +1,4 @@
-const { getFirestore } = require('firebase-admin/firestore');
+const { getFirestore } = require('./firebase');
 const { v4: uuidv4 } = require('uuid');
 
 class PointsService {

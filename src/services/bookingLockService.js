@@ -1,4 +1,4 @@
-const { getFirestore } = require('firebase-admin/firestore');
+const { getFirestore } = require('./firebase');
 
 /**
  * Booking Lock Service - Industry Standard Order Isolation

@@ -1,4 +1,4 @@
-const { getFirestore } = require('./firebase'); // ✅ CRITICAL FIX: Use our Firebase service
+const { getFirestore } = require('firebase-admin/firestore');
 
 class VerificationService {
   constructor() {

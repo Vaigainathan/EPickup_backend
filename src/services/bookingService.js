@@ -35,6 +35,18 @@ class BookingService {
         estimatedDeliveryTime
       } = bookingData;
 
+      // ✅ CRITICAL FIX: Check for existing active bookings
+      const existingActiveBooking = await this.db.collection('bookings')
+        .where('customerId', '==', customerId)
+        .where('status', 'in', ['pending', 'driver_assigned', 'accepted', 'driver_enroute', 'driver_arrived', 'picked_up', 'in_transit', 'delivered'])
+        .limit(1)
+        .get();
+
+      if (!existingActiveBooking.empty) {
+        const existingData = existingActiveBooking.docs[0].data();
+        throw new Error(`Customer already has an active booking (ID: ${existingData.id}, Status: ${existingData.status}). Please complete or cancel the current booking before creating a new one.`);
+      }
+
       // Validate booking data
       const validation = this.validateBookingData(bookingData);
       if (!validation.isValid) {
@@ -174,6 +186,18 @@ class BookingService {
         // Check if driver is available
         if (driver.status !== 'available') {
           throw new Error('Driver is not available');
+        }
+
+        // ✅ CRITICAL FIX: Check if driver already has an active booking
+        const driverActiveBooking = await this.db.collection('bookings')
+          .where('driverId', '==', driverId)
+          .where('status', 'in', ['driver_assigned', 'accepted', 'driver_enroute', 'driver_arrived', 'picked_up', 'in_transit', 'delivered'])
+          .limit(1)
+          .get();
+
+        if (!driverActiveBooking.empty) {
+          const existingDriverBooking = driverActiveBooking.docs[0].data();
+          throw new Error(`Driver already has an active booking (ID: ${existingDriverBooking.id}, Status: ${existingDriverBooking.status}). Please complete the current booking before accepting a new one.`);
         }
 
         // Update booking with driver acceptance

@@ -2504,6 +2504,20 @@ router.get('/bookings/available', requireDriver, async (req, res) => {
       hasDriverData: !!driverData.driver
     });
     
+    // ✅ CRITICAL FIX: Check driver verification status
+    if (driverData.driver?.verificationStatus !== 'verified') {
+      console.log(`⚠️ [AVAILABLE] Driver ${uid} not verified: ${driverData.driver?.verificationStatus}`);
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'DRIVER_NOT_VERIFIED',
+          message: 'Driver not verified',
+          details: 'Driver must be verified to receive booking requests'
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+    
     if (!driverData.driver?.isAvailable || !driverData.driver?.isOnline) {
       console.log('❌ [DRIVER_API] Driver not available for bookings');
       return res.status(400).json({

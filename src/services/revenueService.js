@@ -66,6 +66,37 @@ class RevenueService {
         });
       });
 
+      // ✅ CRITICAL FIX: Get actual payments from payments collection
+      const paymentsSnapshot = await db
+        .collection('payments')
+        .where('confirmedAt', '>=', startDate)
+        .where('confirmedAt', '<=', endDate)
+        .where('status', '==', 'confirmed')
+        .get();
+
+      let totalPayments = 0;
+      let totalPaymentAmount = 0;
+      const paymentsBreakdown = [];
+
+      paymentsSnapshot.forEach(doc => {
+        const data = doc.data();
+        totalPaymentAmount += data.amount || 0;
+        totalPayments += 1;
+        
+        paymentsBreakdown.push({
+          id: doc.id,
+          transactionId: data.transactionId,
+          bookingId: data.bookingId,
+          driverId: data.driverId,
+          customerId: data.customerId,
+          amount: data.amount,
+          paymentMethod: data.paymentMethod,
+          confirmedAt: data.confirmedAt?.toDate?.() || data.confirmedAt
+        });
+      });
+
+      console.log(`💰 [REVENUE] Found ${totalPayments} confirmed payments totaling ₹${totalPaymentAmount}`);
+
       // Get points commission transactions (secondary revenue tracking)
       const pointsCommissionSnapshot = await db
         .collection('pointsTransactions')
@@ -107,9 +138,14 @@ class RevenueService {
 
       const revenue = {
         // Real money revenue (primary)
-        totalRealMoney: totalRealMoney,
+        totalRealMoney: totalRealMoney + totalPaymentAmount, // ✅ CRITICAL FIX: Include payments in total
         totalTopUps: totalTopUps,
         averageTopUpAmount: totalTopUps > 0 ? (totalRealMoney / totalTopUps).toFixed(2) : 0,
+        
+        // ✅ CRITICAL FIX: Add payments data
+        totalPayments: totalPayments,
+        totalPaymentAmount: totalPaymentAmount,
+        averagePaymentAmount: totalPayments > 0 ? (totalPaymentAmount / totalPayments).toFixed(2) : 0,
         
         // Points commission tracking (secondary)
         totalPointsCommission: totalPointsCommission,
@@ -120,6 +156,7 @@ class RevenueService {
         
         // Breakdown data
         topUpsBreakdown: topUpsBreakdown,
+        paymentsBreakdown: paymentsBreakdown, // ✅ CRITICAL FIX: Include payments breakdown
         commissionBreakdown: commissionBreakdown,
         dailyRevenue: dailyRevenue,
         monthlyRevenue: monthlyRevenue,
@@ -133,7 +170,7 @@ class RevenueService {
         calculatedAt: new Date().toISOString()
       };
 
-      console.log(`✅ Revenue calculated: ₹${totalRealMoney} real money from ${totalTopUps} top-ups, ${totalPointsCommission} points commission from ${totalTrips} trips`);
+      console.log(`✅ Revenue calculated: ₹${totalRealMoney + totalPaymentAmount} total (₹${totalRealMoney} top-ups + ₹${totalPaymentAmount} payments), ${totalPointsCommission} points commission from ${totalTrips} trips`);
       return revenue;
 
     } catch (error) {

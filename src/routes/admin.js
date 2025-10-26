@@ -1082,8 +1082,8 @@ router.put('/bookings/:id/status', async (req, res) => {
     const { status } = req.body;
     const db = getFirestore();
 
-    // Validate status
-    const validStatuses = ['pending', 'accepted', 'in_progress', 'completed', 'cancelled'];
+    // ✅ CRITICAL FIX: Use unified status definitions
+    const validStatuses = ['pending', 'driver_assigned', 'accepted', 'driver_enroute', 'driver_arrived', 'picked_up', 'in_transit', 'delivered', 'completed', 'cancelled', 'rejected', 'payment_pending'];
     if (!validStatuses.includes(status)) {
       return res.status(400).json({
         success: false,
@@ -5398,6 +5398,120 @@ router.get('/test-document-system/:driverId', async (req, res) => {
         message: 'Failed to test document system',
         details: error.message
       }
+    });
+  }
+});
+
+/**
+ * @route   POST /api/admin/bookings/:id/intervene
+ * @desc    Admin intervention in booking (cancel, reassign, etc.)
+ * @access  Private (Admin only)
+ */
+router.post('/bookings/:id/intervene', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { action, reason } = req.body;
+    const db = getFirestore();
+
+    // Validate action
+    const validActions = ['cancel', 'reassign', 'escalate', 'refund'];
+    if (!validActions.includes(action)) {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'INVALID_ACTION',
+          message: 'Invalid intervention action',
+          details: `Action must be one of: ${validActions.join(', ')}`
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    // Get booking
+    const bookingRef = db.collection('bookings').doc(id);
+    const bookingDoc = await bookingRef.get();
+
+    if (!bookingDoc.exists) {
+      return res.status(404).json({
+        success: false,
+        error: {
+          code: 'BOOKING_NOT_FOUND',
+          message: 'Booking not found'
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    const bookingData = bookingDoc.data();
+    const updateData = {
+      updatedAt: new Date()
+    };
+
+    // Handle different actions
+    switch (action) {
+      case 'cancel':
+        updateData.status = 'cancelled';
+        updateData.cancelledAt = new Date();
+        updateData.cancellationReason = reason || 'Admin intervention';
+        break;
+      case 'reassign':
+        // This would require additional logic to reassign driver
+        updateData.status = 'pending';
+        updateData.driverId = null;
+        updateData.driverName = null;
+        updateData.reassignmentReason = reason || 'Admin reassignment';
+        break;
+      case 'escalate':
+        updateData.escalatedAt = new Date();
+        updateData.escalationReason = reason || 'Admin escalation';
+        break;
+      case 'refund':
+        updateData.refundedAt = new Date();
+        updateData.refundReason = reason || 'Admin refund';
+        break;
+    }
+
+    await bookingRef.update(updateData);
+
+    // Log the intervention
+    const auditLogRef = db.collection('adminLogs').doc();
+    await auditLogRef.set({
+      action: `booking_${action}`,
+      adminId: req.user.uid,
+      targetBookingId: id,
+      details: {
+        bookingId: id,
+        action,
+        reason: reason || 'No reason provided',
+        previousStatus: bookingData.status,
+        newStatus: updateData.status || bookingData.status,
+        timestamp: new Date()
+      },
+      timestamp: new Date()
+    });
+
+    res.json({
+      success: true,
+      message: `Booking ${action} successful`,
+      data: {
+        bookingId: id,
+        action,
+        status: updateData.status || bookingData.status,
+        updatedAt: new Date().toISOString()
+      },
+      timestamp: new Date().toISOString()
+    });
+
+  } catch (error) {
+    console.error('Error intervening in booking:', error);
+    res.status(500).json({
+      success: false,
+      error: {
+        code: 'BOOKING_INTERVENTION_ERROR',
+        message: 'Failed to intervene in booking',
+        details: error.message
+      },
+      timestamp: new Date().toISOString()
     });
   }
 });

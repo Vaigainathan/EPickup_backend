@@ -1478,11 +1478,12 @@ class WebSocketEventHandler {
         console.log('⚠️ Real-time testing mode enabled - enhanced logging active');
       }
 
-      // Get available drivers in the area
+      // ✅ CRITICAL FIX: Get available AND verified drivers in the area
       const driversQuery = this.db.collection('users')
         .where('userType', '==', 'driver')
         .where('driver.isOnline', '==', true)
-        .where('driver.isAvailable', '==', true);
+        .where('driver.isAvailable', '==', true)
+        .where('driver.verificationStatus', '==', 'verified'); // ✅ Only verified drivers
 
       const driversSnapshot = await driversQuery.get();
       
@@ -1491,7 +1492,7 @@ class WebSocketEventHandler {
         booking: {
           id: bookingData.id,
           pickup: bookingData.pickup,
-          drop: bookingData.drop,
+          dropoff: bookingData.dropoff, // ✅ CRITICAL FIX: Use correct field name
           fare: bookingData.fare,
           distance: bookingData.distance,
           estimatedDuration: bookingData.estimatedDuration,

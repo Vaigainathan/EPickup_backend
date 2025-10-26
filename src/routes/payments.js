@@ -621,13 +621,13 @@ router.post('/confirm',
       }
 
       // Check if booking is in correct status for payment confirmation
-      if (!['picked_up', 'in_transit', 'arrived_dropoff'].includes(bookingData.status)) {
+      if (!['picked_up', 'in_transit', 'driver_arrived', 'delivered'].includes(bookingData.status)) {
         return res.status(400).json({
           success: false,
           error: {
             code: 'INVALID_BOOKING_STATUS',
             message: 'Invalid booking status for payment confirmation',
-            details: `Booking must be in picked_up, in_transit, or arrived_dropoff status. Current status: ${bookingData.status}`
+            details: `Booking must be in picked_up, in_transit, driver_arrived, or delivered status. Current status: ${bookingData.status}`
           },
           timestamp: new Date().toISOString()
         });
@@ -676,6 +676,25 @@ router.post('/confirm',
       }, { merge: true });
 
       console.log('✅ [PAYMENT_CONFIRM] Payment confirmed successfully:', transactionId);
+
+      // ✅ CRITICAL FIX: Notify customer about payment completion
+      try {
+        const notificationService = require('../services/notificationService');
+        await notificationService.sendNotificationToUser(bookingData.customerId, {
+          title: 'Payment Completed',
+          body: `Your payment of ₹${amount} has been collected successfully.`,
+          data: {
+            type: 'payment_completed',
+            bookingId: bookingId,
+            amount: amount,
+            paymentMethod: paymentMethod
+          }
+        });
+        console.log('✅ [PAYMENT_CONFIRM] Customer notification sent');
+      } catch (notificationError) {
+        console.warn('⚠️ [PAYMENT_CONFIRM] Failed to send customer notification:', notificationError);
+        // Don't fail the payment confirmation if notification fails
+      }
 
       res.status(200).json({
         success: true,

@@ -126,36 +126,43 @@ try {
 
 // MSG91 service removed - using Firebase Auth for OTP
 
+// ✅ CRITICAL FIX: Declare route variables in global scope
+let authRoutes, refreshTokenRoutes, userRoutes, customerRoutes, driverRoutes, bookingRoutes;
+let paymentRoutes, trackingRoutes, notificationRoutes, fileUploadRoutes, supportRoutes;
+let chatRoutes, googleMapsRoutes, realtimeRoutes, fcmTokenRoutes, emergencyRoutes;
+let serviceAreaRoutes, healthRoutes, walletRoutes, fareCalculationRoutes, workSlotsRoutes;
+let adminRoutes, adminAuthRoutes, adminSignupRoutes, locationTrackingRoutes;
+
 // ✅ CRITICAL FIX: Import routes after Firebase is fully ready
 function importRoutesAfterFirebaseReady() {
   console.log('📦 Importing routes after Firebase initialization...');
   
-  const authRoutes = require('./routes/auth');
-  const refreshTokenRoutes = require('./routes/refreshToken');
-  const userRoutes = require('./routes/user');
-  const customerRoutes = require('./routes/customer');
-  const driverRoutes = require('./routes/driver');
-  const bookingRoutes = require('./routes/booking');
-  const paymentRoutes = require('./routes/payments');
-  const trackingRoutes = require('./routes/tracking');
-  const notificationRoutes = require('./routes/notification');
-  const fileUploadRoutes = require('./routes/fileUpload');
-  const supportRoutes = require('./routes/support');
-  const chatRoutes = require('./routes/chat');
-  const googleMapsRoutes = require('./routes/googleMaps');
-  const realtimeRoutes = require('./routes/realtime');
-  const fcmTokenRoutes = require('./routes/fcmTokens');
-  const emergencyRoutes = require('./routes/emergency');
-  const serviceAreaRoutes = require('./routes/serviceArea');
-  const healthRoutes = require('./routes/health');
-  const walletRoutes = require('./routes/wallet');
-  const fareCalculationRoutes = require('./routes/fareCalculation');
-  const workSlotsRoutes = require('./routes/workSlots');
-  const adminRoutes = require('./routes/admin');
-  const adminAuthRoutes = require('./routes/adminAuth');
-  const adminSignupRoutes = require('./routes/adminSignup');
-  // const adminBookingManagementRoutes = require('./routes/adminBookingManagement'); // Included in adminRoutes
-  const locationTrackingRoutes = require('./routes/locationTracking');
+  authRoutes = require('./routes/auth');
+  refreshTokenRoutes = require('./routes/refreshToken');
+  userRoutes = require('./routes/user');
+  customerRoutes = require('./routes/customer');
+  driverRoutes = require('./routes/driver');
+  bookingRoutes = require('./routes/booking');
+  paymentRoutes = require('./routes/payments');
+  trackingRoutes = require('./routes/tracking');
+  notificationRoutes = require('./routes/notification');
+  fileUploadRoutes = require('./routes/fileUpload');
+  supportRoutes = require('./routes/support');
+  chatRoutes = require('./routes/chat');
+  googleMapsRoutes = require('./routes/googleMaps');
+  realtimeRoutes = require('./routes/realtime');
+  fcmTokenRoutes = require('./routes/fcmTokens');
+  emergencyRoutes = require('./routes/emergency');
+  serviceAreaRoutes = require('./routes/serviceArea');
+  healthRoutes = require('./routes/health');
+  walletRoutes = require('./routes/wallet');
+  fareCalculationRoutes = require('./routes/fareCalculation');
+  workSlotsRoutes = require('./routes/workSlots');
+  adminRoutes = require('./routes/admin');
+  adminAuthRoutes = require('./routes/adminAuth');
+  adminSignupRoutes = require('./routes/adminSignup');
+  // adminBookingManagementRoutes = require('./routes/adminBookingManagement'); // Included in adminRoutes
+  locationTrackingRoutes = require('./routes/locationTracking');
   
   console.log('✅ All routes imported successfully');
   

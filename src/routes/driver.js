@@ -4916,7 +4916,7 @@ router.post('/wallet/top-up', [
       customerId: uid, // Legacy param for compatibility
       mobileNumber: req.user.phone || '+919999999999',
       customerPhone: req.user.phone || '+919999999999', // Legacy param
-      callbackUrl: `${process.env.API_BASE_URL || 'https://epickup-backend.onrender.com'}/api/payments/phonepe/callback`,
+      callbackUrl: `${process.env.API_BASE_URL || 'https://epickupbackend-production.up.railway.app'}/api/payments/phonepe/callback`,
       redirectUrl: 'epickup://payment/callback',
       bookingId: 'wallet-topup'
     });
@@ -5979,7 +5979,59 @@ router.get('/documents/status', requireDriver, documentStatusRateLimit, document
     }
 
     const userData = userDoc.data();
-    const documents = userData.driver?.documents || {};
+    
+    // ✅ CRITICAL FIX: Get documents from Firebase Storage instead of Firestore
+    const bucket = getStorage().bucket();
+    const [files] = await bucket.getFiles({
+      prefix: `drivers/${uid}/documents/`,
+    });
+
+    const documents = {};
+    const documentFiles = {};
+
+    // Group files by document type
+    for (const file of files) {
+      try {
+        const pathParts = file.name.split('/');
+        const documentType = pathParts[pathParts.length - 2];
+        
+        if (!documentFiles[documentType]) {
+          documentFiles[documentType] = [];
+        }
+        
+        const [downloadURL] = await file.getSignedUrl({
+          action: 'read',
+          expires: '03-01-2500'
+        });
+
+        const [metadata] = await file.getMetadata();
+        
+        documentFiles[documentType].push({
+          fileName: file.name.split('/').pop(),
+          filePath: file.name,
+          downloadURL: downloadURL,
+          size: metadata.size,
+          uploadedAt: metadata.timeCreated,
+          contentType: metadata.contentType,
+          customMetadata: metadata.customMetadata || {}
+        });
+      } catch (fileError) {
+        console.error(`❌ [DOC_STATUS] Error processing file ${file.name}:`, fileError);
+      }
+    }
+
+    // Select the latest file for each document type
+    for (const [documentType, files] of Object.entries(documentFiles)) {
+      if (files.length > 0) {
+        const sortedFiles = files.sort((a, b) => new Date(b.uploadedAt) - new Date(a.uploadedAt));
+        documents[documentType] = sortedFiles[0];
+        
+        if (files.length > 1) {
+          console.warn(`⚠️ [DOC_STATUS] Multiple files found for ${documentType}: ${files.length} files. Using latest: ${sortedFiles[0].fileName}`);
+        }
+      }
+    }
+
     const verificationStatus = userData.driver?.verificationStatus || 'pending';
 
     // CRITICAL FIX: Get verification data from verification service for comprehensive status
@@ -5993,42 +6045,36 @@ router.get('/documents/status', requireDriver, documentStatusRateLimit, document
       console.warn('⚠️ Failed to get comprehensive verification data, using basic data:', verificationError.message);
     }
 
-    // Use comprehensive data if available, otherwise fall back to basic data
-    let finalDocuments = comprehensiveVerificationData?.documents || documents;
+    // ✅ CRITICAL FIX: Use Firebase Storage data for document status
     const finalVerificationStatus = comprehensiveVerificationData?.verificationStatus || verificationStatus;
     
-    // CRITICAL FIX: If comprehensive data failed, ensure we have proper document structure
-    if (!comprehensiveVerificationData) {
-      console.log('📊 Using basic data from users collection');
-      console.log('📊 Raw documents from users:', JSON.stringify(documents, null, 2));
-      
-      // Ensure all required documents have proper structure
-      const requiredDocuments = ['drivingLicense', 'profilePhoto', 'aadhaarCard', 'bikeInsurance', 'rcBook'];
-      finalDocuments = {};
-      
-      requiredDocuments.forEach(docType => {
-        const doc = documents[docType] || {};
-        finalDocuments[docType] = {
-          url: doc.url || doc.downloadURL || '',
-          status: doc.verificationStatus || doc.status || 'not_uploaded',
-          verificationStatus: doc.verificationStatus || doc.status || 'not_uploaded',
-          uploadedAt: doc.uploadedAt || '',
-          verified: doc.verified || false,
-          rejectionReason: doc.rejectionReason || null,
-          verifiedAt: doc.verifiedAt || null,
-          verifiedBy: doc.verifiedBy || null,
-          comments: doc.comments || null,
-          number: doc.number || null,
-          fileSize: doc.fileSize || null,
-          lastModified: doc.lastModified || doc.uploadedAt || null
-        };
-      });
-      
-      console.log('📊 Processed final documents:', JSON.stringify(finalDocuments, null, 2));
-    }
+    // Map Firebase Storage documents to expected format
+    const requiredDocuments = ['driving_license', 'profile_photo', 'aadhaar_card', 'bike_insurance', 'rc_book'];
+    const finalDocuments = {};
+    
+    requiredDocuments.forEach(docType => {
+      const doc = documents[docType] || {};
+      finalDocuments[docType] = {
+        url: doc.downloadURL || '',
+        status: doc.downloadURL ? 'uploaded' : 'not_uploaded',
+        verificationStatus: doc.downloadURL ? 'uploaded' : 'not_uploaded',
+        uploadedAt: doc.uploadedAt || '',
+        verified: false,
+        rejectionReason: null,
+        verifiedAt: null,
+        verifiedBy: null,
+        comments: null,
+        number: null,
+        fileSize: doc.size || null,
+        lastModified: doc.uploadedAt || null,
+        fileName: doc.fileName || null,
+        filePath: doc.filePath || null
+      };
+    });
+    
+    console.log('📊 [DOC_STATUS] Processed Firebase Storage documents:', JSON.stringify(finalDocuments, null, 2));
 
     // Calculate document completion status with enhanced data
-    const requiredDocuments = ['drivingLicense', 'profilePhoto', 'aadhaarCard', 'bikeInsurance', 'rcBook'];
     const uploadedDocuments = requiredDocuments.filter(doc => finalDocuments[doc]?.url);
     const verifiedDocuments = requiredDocuments.filter(doc => 
       finalDocuments[doc]?.status === 'verified' || 
@@ -6072,31 +6118,31 @@ router.get('/documents/status', requireDriver, documentStatusRateLimit, document
 
     // Enhanced document details with better UX data
     const documentConfig = {
-      drivingLicense: { 
+      driving_license: { 
         displayName: 'Driving License', 
         description: 'Valid driving license with clear photo',
         icon: 'card',
         tips: 'Ensure all text is clearly visible and photo is recent'
       },
-      aadhaarCard: { 
+      aadhaar_card: { 
         displayName: 'Aadhaar Card', 
         description: 'Government issued Aadhaar card',
         icon: 'id-card',
         tips: 'Front and back side in separate images'
       },
-      bikeInsurance: { 
+      bike_insurance: { 
         displayName: 'Bike Insurance', 
         description: 'Valid vehicle insurance document',
         icon: 'shield-checkmark',
         tips: 'Must be current and cover the vehicle you\'ll use'
       },
-      rcBook: { 
+      rc_book: { 
         displayName: 'RC Book', 
         description: 'Vehicle Registration Certificate',
         icon: 'document-text',
         tips: 'Ensure vehicle details match your bike'
       },
-      profilePhoto: { 
+      profile_photo: { 
         displayName: 'Profile Photo', 
         description: 'Clear photo of yourself',
         icon: 'person',
@@ -6104,20 +6150,30 @@ router.get('/documents/status', requireDriver, documentStatusRateLimit, document
       }
     };
 
+    // ✅ CRITICAL FIX: Map snake_case to camelCase for frontend compatibility
+    const documentTypeMapping = {
+      'driving_license': 'drivingLicense',
+      'profile_photo': 'profilePhoto', 
+      'aadhaar_card': 'aadhaarCard',
+      'bike_insurance': 'bikeInsurance',
+      'rc_book': 'rcBook'
+    };
+
     const enhancedDocuments = requiredDocuments.map(docType => {
       const doc = finalDocuments[docType] || {};
       const config = documentConfig[docType];
+      const frontendType = documentTypeMapping[docType] || docType;
 
       return {
-        type: docType,
+        type: frontendType, // ✅ Use camelCase for frontend
         name: config?.displayName || docType,
         displayName: config?.displayName || docType,
         description: config?.description || '',
-        status: doc.verificationStatus || doc.status || 'not_uploaded',
+        status: doc.status || 'not_uploaded',
         url: doc.url || '',
         number: doc.number || '',
-        uploadedAt: doc.uploadedAt?.toDate?.()?.toISOString() || doc.uploadedAt || '',
-        verifiedAt: doc.verifiedAt?.toDate?.()?.toISOString() || doc.verifiedAt || '',
+        uploadedAt: doc.uploadedAt || '',
+        verifiedAt: doc.verifiedAt || '',
         rejectedAt: doc.rejectedAt || '',
         rejectionReason: doc.rejectionReason || '',
         verifiedBy: doc.verifiedBy || '',

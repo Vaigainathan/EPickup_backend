@@ -55,10 +55,28 @@ const initializeSocketIO = async (server) => {
       },
       transports: ['websocket', 'polling'],
       allowEIO3: true,
-      pingTimeout: 60000,
-      pingInterval: 25000,
-      maxHttpBufferSize: 1e6, // 1MB
-      connectTimeout: 45000
+      // ✅ RAILWAY-SPECIFIC FIX: Enhanced timeout configuration for Railway infrastructure
+      pingTimeout: 90000,         // Railway proxy timeout (90s)
+      pingInterval: 25000,        // Railway ping interval (25s)
+      connectTimeout: 45000,      // Railway connection timeout (45s)
+      maxHttpBufferSize: 1e6,    // 1MB
+      // ✅ CRITICAL FIX: Enhanced connection options
+      upgradeTimeout: 30000,      // 30s for transport upgrade
+      allowUpgrades: true,
+      perMessageDeflate: {
+        threshold: 1024,
+        concurrencyLimit: 10,
+        memLevel: 7
+      },
+      // ✅ CRITICAL FIX: Better error handling
+      serveClient: false,
+      cookie: false,
+      // ✅ RAILWAY-SPECIFIC FIX: Connection pooling and limits for Railway
+      maxConnections: 500,        // Railway has lower connection limits
+      connectionStateRecovery: {
+        maxDisconnectionDuration: 60 * 1000, // 1 minute (Railway specific)
+        skipMiddlewares: true
+      }
     });
 
     // Initialize event handler

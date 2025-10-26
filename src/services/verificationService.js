@@ -11,13 +11,40 @@ class VerificationService {
   getDb() {
     if (!this.db) {
       try {
+        // ✅ CRITICAL FIX: Use the same Firebase instance as other services
         this.db = getFirestore();
+        
+        // ✅ CRITICAL FIX: Verify the database instance is valid
+        if (!this.db) {
+          throw new Error('Firestore instance is null');
+        }
+        
+        console.log('✅ [VerificationService] Firestore instance initialized successfully');
       } catch (error) {
         console.error('❌ [VerificationService] Failed to get Firestore:', error);
+        console.error('❌ [VerificationService] Error details:', {
+          message: error.message,
+          stack: error.stack,
+          firebaseApps: require('firebase-admin').apps.length
+        });
         throw new Error('Firebase not initialized. Please ensure Firebase is initialized before using VerificationService.');
       }
     }
     return this.db;
+  }
+
+  /**
+   * Get Firestore instance with safety checks
+   */
+  getDbSafe() {
+    const db = this.getDb();
+    
+    // ✅ CRITICAL FIX: Verify database instance is valid
+    if (!db) {
+      throw new Error('Database instance is null - Firebase not properly initialized');
+    }
+    
+    return db;
   }
 
   /**
@@ -177,7 +204,7 @@ class VerificationService {
       console.log(`🔍 Getting verification data for driver: ${driverId}`);
 
       // Get driver from users collection
-      const db = this.getDb();
+      const db = this.getDbSafe();
       const driverDoc = await db.collection('users').doc(driverId).get();
       if (!driverDoc.exists) {
         throw new Error('Driver not found');
@@ -432,7 +459,7 @@ class VerificationService {
    * Update driver verification status in all relevant collections
    */
   async updateDriverVerificationStatus(driverId, verificationData) {
-    const db = this.getDb();
+    const db = this.getDbSafe();
     const batch = db.batch();
     
     try {
@@ -502,7 +529,11 @@ class VerificationService {
     try {
       console.log(`📄 Verifying document ${documentType} for driver: ${driverId}`);
       
-      const db = this.getDb();
+      // ✅ CRITICAL FIX: Use safer database access
+      const db = this.getDbSafe();
+      
+      console.log('✅ [VerificationService] Database instance verified, proceeding with verification');
+      
       const batch = db.batch();
       const driverRef = db.collection('users').doc(driverId);
       
@@ -877,7 +908,7 @@ class VerificationService {
     try {
       console.log(`✅ Approving driver: ${driverId}`);
       
-      const db = this.getDb();
+      const db = this.getDbSafe();
       const batch = db.batch();
       const driverRef = db.collection('users').doc(driverId);
       
@@ -955,7 +986,7 @@ class VerificationService {
     try {
       console.log(`❌ Rejecting driver: ${driverId}`);
       
-      const db = this.getDb();
+      const db = this.getDbSafe();
       const batch = db.batch();
       const driverRef = db.collection('users').doc(driverId);
       

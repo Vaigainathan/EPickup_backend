@@ -1,6 +1,6 @@
 const express = require('express');
 const { body, validationResult } = require('express-validator');
-const { getFirestore } = require('../services/firebase');
+const { getFirestore, getStorage } = require('../services/firebase');
 const { requireDriver } = require('../middleware/auth');
 const { documentStatusRateLimit } = require('../middleware/rateLimiter');
 const { speedLimiter } = require('../middleware/rateLimit');
@@ -351,20 +351,115 @@ router.get('/documents', requireDriver, async (req, res) => {
     }
 
     const userData = userDoc.data();
-    const documents = userData.driver?.documents || {};
+    
+    // ✅ CRITICAL FIX: Fetch actual documents from Firebase Storage
+    const bucket = getStorage().bucket();
+    const [files] = await bucket.getFiles({
+      prefix: `drivers/${uid}/documents/`,
+    });
+
+    const documents = {};
+    const documentFiles = {};
+
+    // Group files by document type
+    for (const file of files) {
+      try {
+        const pathParts = file.name.split('/');
+        const documentType = pathParts[pathParts.length - 2];
+        
+        if (!documentFiles[documentType]) {
+          documentFiles[documentType] = [];
+        }
+        
+        const [downloadURL] = await file.getSignedUrl({
+          action: 'read',
+          expires: '03-01-2500'
+        });
+
+        const [metadata] = await file.getMetadata();
+        
+        documentFiles[documentType].push({
+          fileName: file.name.split('/').pop(),
+          filePath: file.name,
+          downloadURL: downloadURL,
+          size: metadata.size,
+          uploadedAt: metadata.timeCreated,
+          contentType: metadata.contentType,
+          customMetadata: metadata.customMetadata || {}
+        });
+      } catch (fileError) {
+        console.error(`❌ [DRIVER_DOCS] Error processing file ${file.name}:`, fileError);
+      }
+    }
+
+    // Select the latest file for each document type
+    for (const [documentType, files] of Object.entries(documentFiles)) {
+      if (files.length > 0) {
+        const sortedFiles = files.sort((a, b) => new Date(b.uploadedAt) - new Date(a.uploadedAt));
+        documents[documentType] = sortedFiles[0];
+        
+        if (files.length > 1) {
+          console.warn(`⚠️ [DRIVER_DOCS] Multiple files found for ${documentType}: ${files.length} files. Using latest: ${sortedFiles[0].fileName}`);
+        }
+      }
+    }
+
+    // ✅ CRITICAL FIX: Map document types to expected format (matching admin format)
+    const mappedDocuments = {
+      drivingLicense: documents.driving_license ? {
+        url: documents.driving_license.downloadURL,
+        fileName: documents.driving_license.fileName,
+        uploadedAt: documents.driving_license.uploadedAt,
+        size: documents.driving_license.size,
+        contentType: documents.driving_license.contentType,
+        status: 'uploaded',
+        verified: false
+      } : null,
+      profilePhoto: documents.profile_photo ? {
+        url: documents.profile_photo.downloadURL,
+        fileName: documents.profile_photo.fileName,
+        uploadedAt: documents.profile_photo.uploadedAt,
+        size: documents.profile_photo.size,
+        contentType: documents.profile_photo.contentType,
+        status: 'uploaded',
+        verified: false
+      } : null,
+      aadhaarCard: documents.aadhaar_card ? {
+        url: documents.aadhaar_card.downloadURL,
+        fileName: documents.aadhaar_card.fileName,
+        uploadedAt: documents.aadhaar_card.uploadedAt,
+        size: documents.aadhaar_card.size,
+        contentType: documents.aadhaar_card.contentType,
+        status: 'uploaded',
+        verified: false
+      } : null,
+      bikeInsurance: documents.bike_insurance ? {
+        url: documents.bike_insurance.downloadURL,
+        fileName: documents.bike_insurance.fileName,
+        uploadedAt: documents.bike_insurance.uploadedAt,
+        size: documents.bike_insurance.size,
+        contentType: documents.bike_insurance.contentType,
+        status: 'uploaded',
+        verified: false
+      } : null,
+      rcBook: documents.rc_book ? {
+        url: documents.rc_book.downloadURL,
+        fileName: documents.rc_book.fileName,
+        uploadedAt: documents.rc_book.uploadedAt,
+        size: documents.rc_book.size,
+        contentType: documents.rc_book.contentType,
+        status: 'uploaded',
+        verified: false
+      } : null
+    };
     
     res.status(200).json({
       success: true,
       message: 'Documents retrieved successfully',
       data: {
-        documents: {
-          drivingLicense: documents.drivingLicense || null,
-          profilePhoto: documents.profilePhoto || null,
-          aadhaarCard: documents.aadhaarCard || null,
-          bikeInsurance: documents.bikeInsurance || null,
-          rcBook: documents.rcBook || null
-        },
-        verificationStatus: userData.driver?.verificationStatus || 'pending'
+        documents: mappedDocuments,
+        verificationStatus: userData.driver?.verificationStatus || 'pending',
+        totalDocuments: Object.keys(documents).length
       },
       timestamp: new Date().toISOString()
     });

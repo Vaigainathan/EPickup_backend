@@ -1,5 +1,6 @@
 const express = require('express');
 const { getFirestore } = require('firebase-admin/firestore');
+const { getStorage } = require('../services/firebase');
 const verificationService = require('../services/verificationService');
 const { sanitizeInput, validateEmail, checkValidation } = require('../middleware/validation');
 const { requireAdmin } = require('../middleware/auth');
@@ -1895,17 +1896,8 @@ router.get('/drivers/:driverId/documents', async (req, res) => {
   try {
     const { driverId } = req.params;
     
-    // Use the same comprehensive verification service that the driver app uses
-    const verificationService = require('../services/verificationService');
-    let comprehensiveVerificationData;
+    console.log(`📥 [ADMIN_DOCS] Getting documents for driver: ${driverId}`);
     
-    try {
-      comprehensiveVerificationData = await verificationService.getDriverVerificationData(driverId);
-      console.log('📊 Admin fetching comprehensive verification data:', comprehensiveVerificationData);
-    } catch (verificationError) {
-      console.warn('⚠️ Failed to get comprehensive verification data for admin:', verificationError.message);
-    }
-
     // Get driver basic info
     const db = getFirestore();
     const driverDoc = await db.collection('users').doc(driverId).get();
@@ -1921,47 +1913,124 @@ router.get('/drivers/:driverId/documents', async (req, res) => {
 
     const driverData = driverDoc.data();
     
-    // Use comprehensive data if available, otherwise fall back to basic data
-    const finalDocuments = comprehensiveVerificationData?.documents || driverData.driver?.documents || {};
-    const finalVerificationStatus = comprehensiveVerificationData?.verificationStatus || driverData.driver?.verificationStatus || 'pending';
-    
-    // Process documents to ensure proper verification status
-    const processedDocuments = {};
-    const documentTypes = ['drivingLicense', 'aadhaarCard', 'bikeInsurance', 'rcBook', 'profilePhoto'];
-    
-    documentTypes.forEach(docType => {
-      const doc = finalDocuments[docType];
-      if (doc) {
-        processedDocuments[docType] = {
-          ...doc,
-          verified: doc.verificationStatus === 'verified' || doc.status === 'verified' || doc.verified === true,
-          status: doc.verificationStatus || doc.status || 'pending'
-        };
-      } else {
-        processedDocuments[docType] = null;
-      }
+    // ✅ CRITICAL FIX: Fetch actual documents from Firebase Storage (same logic as driver endpoint)
+    const bucket = getStorage().bucket();
+    const [files] = await bucket.getFiles({
+      prefix: `drivers/${driverId}/documents/`,
     });
+
+    const documents = {};
+    const documentFiles = {};
+
+    // Group files by document type
+    for (const file of files) {
+      try {
+        const pathParts = file.name.split('/');
+        const documentType = pathParts[pathParts.length - 2];
+        
+        if (!documentFiles[documentType]) {
+          documentFiles[documentType] = [];
+        }
+        
+        const [downloadURL] = await file.getSignedUrl({
+          action: 'read',
+          expires: '03-01-2500'
+        });
+
+        const [metadata] = await file.getMetadata();
+        
+        documentFiles[documentType].push({
+          fileName: file.name.split('/').pop(),
+          filePath: file.name,
+          downloadURL: downloadURL,
+          size: metadata.size,
+          uploadedAt: metadata.timeCreated,
+          contentType: metadata.contentType,
+          customMetadata: metadata.customMetadata || {}
+        });
+      } catch (fileError) {
+        console.error(`❌ [ADMIN_DOCS] Error processing file ${file.name}:`, fileError);
+      }
+    }
+
+    // Select the latest file for each document type
+    for (const [documentType, files] of Object.entries(documentFiles)) {
+      if (files.length > 0) {
+        const sortedFiles = files.sort((a, b) => new Date(b.uploadedAt) - new Date(a.uploadedAt));
+        documents[documentType] = sortedFiles[0];
+        
+        if (files.length > 1) {
+          console.warn(`⚠️ [ADMIN_DOCS] Multiple files found for ${documentType}: ${files.length} files. Using latest: ${sortedFiles[0].fileName}`);
+        }
+      }
+    }
+
+    // ✅ CRITICAL FIX: Map document types to expected format for admin dashboard
+    const mappedDocuments = {
+      drivingLicense: documents.driving_license ? {
+        url: documents.driving_license.downloadURL,
+        fileName: documents.driving_license.fileName,
+        uploadedAt: documents.driving_license.uploadedAt,
+        size: documents.driving_license.size,
+        contentType: documents.driving_license.contentType,
+        status: 'uploaded',
+        verified: false
+      } : null,
+      profilePhoto: documents.profile_photo ? {
+        url: documents.profile_photo.downloadURL,
+        fileName: documents.profile_photo.fileName,
+        uploadedAt: documents.profile_photo.uploadedAt,
+        size: documents.profile_photo.size,
+        contentType: documents.profile_photo.contentType,
+        status: 'uploaded',
+        verified: false
+      } : null,
+      aadhaarCard: documents.aadhaar_card ? {
+        url: documents.aadhaar_card.downloadURL,
+        fileName: documents.aadhaar_card.fileName,
+        uploadedAt: documents.aadhaar_card.uploadedAt,
+        size: documents.aadhaar_card.size,
+        contentType: documents.aadhaar_card.contentType,
+        status: 'uploaded',
+        verified: false
+      } : null,
+      bikeInsurance: documents.bike_insurance ? {
+        url: documents.bike_insurance.downloadURL,
+        fileName: documents.bike_insurance.fileName,
+        uploadedAt: documents.bike_insurance.uploadedAt,
+        size: documents.bike_insurance.size,
+        contentType: documents.bike_insurance.contentType,
+        status: 'uploaded',
+        verified: false
+      } : null,
+      rcBook: documents.rc_book ? {
+        url: documents.rc_book.downloadURL,
+        fileName: documents.rc_book.fileName,
+        uploadedAt: documents.rc_book.uploadedAt,
+        size: documents.rc_book.size,
+        contentType: documents.rc_book.contentType,
+        status: 'uploaded',
+        verified: false
+      } : null
+    };
+    
+    console.log(`✅ [ADMIN_DOCS] Retrieved ${Object.keys(documents).length} documents for driver ${driverId}`);
     
     res.json({
       success: true,
       data: {
-        documents: processedDocuments,
+        documents: mappedDocuments,
         driverId,
         driverName: driverData.name || 'Unknown Driver',
-        verificationStatus: finalVerificationStatus,
+        verificationStatus: driverData.driver?.verificationStatus || 'pending',
         vehicleDetails: driverData.driver?.vehicleDetails || null,
-        // Add comprehensive data source info
-        dataSource: comprehensiveVerificationData ? 'comprehensive' : 'basic',
-        comprehensiveData: comprehensiveVerificationData ? {
-          source: comprehensiveVerificationData.source,
-          documentSummary: comprehensiveVerificationData.documentSummary
-        } : null
+        totalDocuments: Object.keys(documents).length
       },
       timestamp: new Date().toISOString()
     });
 
   } catch (error) {
-    console.error('Error fetching driver documents:', error);
+    console.error('❌ [ADMIN_DOCS] Error fetching driver documents:', error);
     res.status(500).json({
       success: false,
       error: { 

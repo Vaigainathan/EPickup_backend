@@ -79,6 +79,10 @@ class FileUploadService {
     return getFirestore();
   }
 
+  getDb() {
+    return this.db;
+  }
+
   get storage() {
     if (!this.isAvailable) {
       throw new Error('Firebase is not available. Storage operations are not available.');

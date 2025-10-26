@@ -133,6 +133,9 @@ let chatRoutes, googleMapsRoutes, realtimeRoutes, fcmTokenRoutes, emergencyRoute
 let serviceAreaRoutes, healthRoutes, walletRoutes, fareCalculationRoutes, workSlotsRoutes;
 let adminRoutes, adminAuthRoutes, adminSignupRoutes, locationTrackingRoutes;
 
+// ✅ CRITICAL FIX: Declare middleware in global scope
+let appCheckMiddleware;
+
 // ✅ CRITICAL FIX: Import routes after Firebase is fully ready
 function importRoutesAfterFirebaseReady() {
   console.log('📦 Importing routes after Firebase initialization...');
@@ -165,6 +168,12 @@ function importRoutesAfterFirebaseReady() {
   locationTrackingRoutes = require('./routes/locationTracking');
   
   console.log('✅ All routes imported successfully');
+  
+  // ✅ CRITICAL FIX: Initialize middleware after routes are imported
+  console.log('📦 Initializing middleware...');
+  const AppCheckMiddleware = require('./middleware/appCheckAuth');
+  appCheckMiddleware = new AppCheckMiddleware();
+  console.log('✅ All middleware initialized successfully');
   
   // Set up routes
   setupRoutes();
@@ -312,12 +321,6 @@ function setupRoutes() {
 
 // Call the function after Firebase is ready
 importRoutesAfterFirebaseReady();
-
-// Import middleware after Firebase initialization
-console.log('📦 Importing middleware after Firebase initialization...');
-const AppCheckMiddleware = require('./middleware/appCheckAuth');
-const appCheckMiddleware = new AppCheckMiddleware();
-console.log('✅ All middleware imported successfully');
 
 // Create HTTP server
 const server = require('http').createServer(app);

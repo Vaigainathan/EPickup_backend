@@ -1,4 +1,4 @@
-const { getFirestore } = require('firebase-admin/firestore');
+const { getFirestore } = require('./firebase'); // ✅ CRITICAL FIX: Use our Firebase service
 
 class VerificationService {
   constructor() {
@@ -11,7 +11,7 @@ class VerificationService {
   getDb() {
     if (!this.db) {
       try {
-        // ✅ CRITICAL FIX: Use the same Firebase instance as other services
+        // ✅ CRITICAL FIX: Use the same Firebase service as other parts of the app
         this.db = getFirestore();
         
         // ✅ CRITICAL FIX: Verify the database instance is valid

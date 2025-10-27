@@ -289,91 +289,32 @@ router.get('/profile', requireDriver, async (req, res) => {
       walletDataKeys: pointsWalletData ? Object.keys(pointsWalletData) : []
     });
     
-    // ✅ CRITICAL FIX: Check individual document statuses to determine accurate verification status
-    const documents = driverData.documents || {};
-    
-    // Debug: Log document keys
-    console.log('📄 [PROFILE] Documents object keys:', Object.keys(documents));
-    console.log('📄 [PROFILE] Sample document:', documents[Object.keys(documents)[0]]);
-    
-    const requiredDocTypes = ['drivingLicense', 'aadhaarCard', 'bikeInsurance', 'rcBook', 'profilePhoto'];
-    let verifiedDocs = 0;
-    let totalDocs = 0;
-    let allDocsVerified = false;
-    
-    // Check each document's verification status
-    requiredDocTypes.forEach(docType => {
-      // Try both camelCase and snake_case
-      const camelKey = docType;
-      const snakeCaseKey = docType.replace(/([A-Z])/g, '_$1').toLowerCase();
-      
-      const doc = documents[camelKey] || documents[snakeCaseKey];
-      
-      if (doc && (doc.url || doc.downloadURL)) {
-        totalDocs++;
-        const isVerified = doc.verified === true || 
-                          doc.status === 'verified' || 
-                          doc.verificationStatus === 'verified';
-        if (isVerified) {
-          verifiedDocs++;
-        }
-        console.log(`📄 [PROFILE] ${docType}: total=${totalDocs}, verified=${isVerified ? 'yes' : 'no'}`);
-      } else {
-        console.log(`📄 [PROFILE] ${docType}: not found in documents`);
-      }
-    });
-    
-    // Determine if all documents are verified
-    allDocsVerified = totalDocs > 0 && verifiedDocs === totalDocs;
-    
-    // Use comprehensive verification data if available, otherwise check documents
+    // ✅ USE VERIFICATION SERVICE RESULT (No redundant logic!)
+    // The verification service already counts documents and determines status
     let finalVerificationStatus;
     let finalIsVerified;
     
-    if (comprehensiveVerificationData?.verificationStatus) {
-      // Use comprehensive verification status (from verification service)
+    if (comprehensiveVerificationData) {
+      // Use the verification service result (already counted documents)
       finalVerificationStatus = comprehensiveVerificationData.verificationStatus;
-      finalIsVerified = comprehensiveVerificationData.verificationStatus === 'verified' || 
-                        comprehensiveVerificationData.verificationStatus === 'approved';
-    } else if (allDocsVerified) {
-      // All documents verified
-      finalVerificationStatus = 'verified';
-      finalIsVerified = true;
-    } else if (totalDocs === 0) {
-      // No documents uploaded
-      finalVerificationStatus = 'pending';
-      finalIsVerified = false;
-    } else if (verifiedDocs === 0) {
-      // Documents uploaded but none verified
-      finalVerificationStatus = 'pending_verification';
-      finalIsVerified = false;
+      finalIsVerified = comprehensiveVerificationData.isVerified;
+      
+      console.log('🔍 [PROFILE] Using verification service result:', {
+        status: finalVerificationStatus,
+        isVerified: finalIsVerified,
+        verifiedDocs: comprehensiveVerificationData.verifiedDocumentsCount,
+        totalDocs: comprehensiveVerificationData.totalDocumentsCount
+      });
     } else {
-      // Some documents verified but not all
-      finalVerificationStatus = 'pending_verification';
-      finalIsVerified = false;
+      // Fallback if verification service fails
+      finalVerificationStatus = driverData.verificationStatus || 'pending';
+      finalIsVerified = driverData.isVerified || false;
+      
+      console.log('⚠️ [PROFILE] Using fallback verification data:', {
+        status: finalVerificationStatus,
+        isVerified: finalIsVerified
+      });
     }
-    
-    // Override with explicit driver verification status if set
-    if (driverData.verificationStatus === 'approved' || driverData.verificationStatus === 'verified') {
-      // Admin has explicitly approved, but only if documents are also verified
-      if (allDocsVerified) {
-        finalVerificationStatus = driverData.verificationStatus;
-        finalIsVerified = true;
-      } else {
-        // Admin approved but documents not all verified - show pending verification
-        finalVerificationStatus = 'pending_verification';
-        finalIsVerified = false;
-      }
-    }
-    
-    console.log('🔍 [PROFILE] Final verification calculation:', {
-      comprehensiveStatus: comprehensiveVerificationData?.verificationStatus,
-      driverDataStatus: driverData.verificationStatus,
-      documentsStatus: { verifiedDocs, totalDocs, allDocsVerified },
-      finalStatus: finalVerificationStatus,
-      finalIsVerified: finalIsVerified,
-      hasComprehensiveData: !!comprehensiveVerificationData
-    });
     
     // Normalize driver data with points wallet and updated verification status
     const normalizedDriver = {

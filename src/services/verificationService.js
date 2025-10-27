@@ -56,7 +56,7 @@ class VerificationService {
   getDbSafe() {
     try {
       return this.getDb();
-    } catch (error) {
+    } catch {
       console.error('⚠️ [VerificationService] Database instance is null - returning null for graceful fallback');
       return null;
     }
@@ -106,13 +106,18 @@ class VerificationService {
         const doc = documents[camelKey] || documents[snakeCaseKey];
 
         if (doc) {
-          const hasUrl = doc.url || doc.downloadURL;
-          if (hasUrl) {
+          const hasUrl = (doc.url || doc.downloadURL) && (doc.url !== '' || doc.downloadURL !== '');
+          
+          // Check if document is verified (even if URL is empty, it might still be verified)
+          const isVerified = doc.verified === true || doc.status === 'verified' || doc.verificationStatus === 'verified';
+          
+          if (hasUrl || isVerified) {
+            // Document exists with either URL or verification status
             totalCount++;
-            const isVerified = doc.verified === true || doc.status === 'verified' || doc.verificationStatus === 'verified';
+            
             if (isVerified) {
               verifiedCount++;
-              console.log(`✅ Document verified: ${docType} (key: ${documents[camelKey] ? camelKey : snakeCaseKey})`);
+              console.log(`✅ Document verified: ${docType} (key: ${documents[camelKey] ? camelKey : snakeCaseKey}, hasUrl: ${hasUrl ? 'yes' : 'no'})`);
             } else {
               console.log(`⏳ Document not verified: ${docType} (key: ${documents[camelKey] ? camelKey : snakeCaseKey})`);
             }
@@ -197,8 +202,13 @@ class VerificationService {
     }
 
     try {
-      // Update document status
-      const docPath = `driver.documents.${documentType}`;
+      // ✅ CRITICAL FIX: Normalize document type to snake_case
+      // Admin sends camelCase (e.g., "drivingLicense") but documents are stored in snake_case (e.g., "driving_license")
+      const normalizedType = documentType.replace(/([A-Z])/g, '_$1').toLowerCase();
+      console.log(`🔧 [VerificationService] Normalizing document type: ${documentType} → ${normalizedType}`);
+      
+      // Update document status using normalized type
+      const docPath = `driver.documents.${normalizedType}`;
       const updates = {
         [`${docPath}.verified`]: status === 'verified',
         [`${docPath}.status`]: status,

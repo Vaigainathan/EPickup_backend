@@ -4,14 +4,27 @@ const { getAuth } = require('firebase-admin/auth');
 const jwt = require('jsonwebtoken');
 const router = express.Router();
 
+// Add middleware to log all requests
+router.use((req, res, next) => {
+  console.log('🔍 [ADMIN_AUTH] Request received:', req.method, req.url);
+  console.log('🔍 [ADMIN_AUTH] Request at:', new Date().toISOString());
+  next();
+});
+
 /**
  * @route   POST /api/admin/auth/login
  * @desc    Admin login with email and password
  * @access  Public
  */
 router.post('/login', async (req, res) => {
+  console.log('🔐 [ADMIN LOGIN] ==========================================');
+  console.log('🔐 [ADMIN LOGIN] Login request received at:', new Date().toISOString());
+  console.log('🔐 [ADMIN LOGIN] Request headers:', req.headers);
+  console.log('🔐 [ADMIN LOGIN] Request body:', req.body ? { ...req.body, idToken: req.body.idToken ? 'PRESENT' : 'MISSING' } : 'NO_BODY');
+  
   try {
     const { idToken } = req.body;
+    console.log('🔐 [ADMIN LOGIN] ID token received:', idToken ? 'YES' : 'NO');
 
     if (!idToken) {
       return res.status(400).json({
@@ -397,16 +410,27 @@ router.post('/login', async (req, res) => {
     console.log('✅ [ADMIN LOGIN] Response sent successfully');
 
   } catch (error) {
-    console.error('Admin login error:', error);
-    res.status(500).json({
-      success: false,
-      error: {
-        code: 'LOGIN_ERROR',
-        message: 'Failed to login admin user',
-        details: error.message
-      },
-      timestamp: new Date().toISOString()
-    });
+    console.error('❌ [ADMIN LOGIN] ==========================================');
+    console.error('❌ [ADMIN LOGIN] ERROR OCCURRED');
+    console.error('❌ [ADMIN LOGIN] Error type:', error.constructor.name);
+    console.error('❌ [ADMIN LOGIN] Error message:', error.message);
+    console.error('❌ [ADMIN LOGIN] Error stack:', error.stack);
+    console.error('❌ [ADMIN LOGIN] ==========================================');
+    
+    // Ensure response hasn't been sent yet
+    if (!res.headersSent) {
+      res.status(500).json({
+        success: false,
+        error: {
+          code: 'LOGIN_ERROR',
+          message: 'Failed to login admin user',
+          details: error.message
+        },
+        timestamp: new Date().toISOString()
+      });
+    } else {
+      console.error('❌ [ADMIN LOGIN] Cannot send error response - headers already sent');
+    }
   }
 });
 

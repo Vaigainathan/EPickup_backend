@@ -1974,7 +1974,8 @@ router.get('/drivers/:driverId/documents', async (req, res) => {
     
     // Helper function to get verification status for a document
     const getDocStatus = (docType) => {
-      const firestoreDoc = firestoreDocs[docType];
+      // Check both camelCase and snake_case variants
+      const firestoreDoc = firestoreDocs[docType] || firestoreDocs[docType.replace(/([A-Z])/g, '_$1').toLowerCase()];
       if (!firestoreDoc) return { status: 'pending', verified: false };
       
       // Check multiple possible status fields for compatibility
@@ -1992,55 +1993,33 @@ router.get('/drivers/:driverId/documents', async (req, res) => {
     };
     
     // ✅ CRITICAL FIX: Map document types to expected format with ACTUAL verification status
-    const mappedDocuments = {
-      drivingLicense: documents.driving_license ? {
-        url: documents.driving_license.downloadURL,
-        fileName: documents.driving_license.fileName,
-        uploadedAt: documents.driving_license.uploadedAt,
-        size: documents.driving_license.size,
-        contentType: documents.driving_license.contentType,
-        documentType: 'drivingLicense',
-        ...getDocStatus('drivingLicense')
-      } : null,
-      profilePhoto: documents.profile_photo ? {
-        url: documents.profile_photo.downloadURL,
-        fileName: documents.profile_photo.fileName,
-        uploadedAt: documents.profile_photo.uploadedAt,
-        size: documents.profile_photo.size,
-        contentType: documents.profile_photo.contentType,
-        documentType: 'profilePhoto',
-        ...getDocStatus('profilePhoto')
-      } : null,
-      aadhaarCard: documents.aadhaar_card ? {
-        url: documents.aadhaar_card.downloadURL,
-        fileName: documents.aadhaar_card.fileName,
-        uploadedAt: documents.aadhaar_card.uploadedAt,
-        size: documents.aadhaar_card.size,
-        contentType: documents.aadhaar_card.contentType,
-        documentType: 'aadhaarCard',
-        ...getDocStatus('aadhaarCard')
-      } : null,
-      bikeInsurance: documents.bike_insurance ? {
-        url: documents.bike_insurance.downloadURL,
-        fileName: documents.bike_insurance.fileName,
-        uploadedAt: documents.bike_insurance.uploadedAt,
-        size: documents.bike_insurance.size,
-        contentType: documents.bike_insurance.contentType,
-        documentType: 'bikeInsurance',
-        ...getDocStatus('bikeInsurance')
-      } : null,
-      rcBook: documents.rc_book ? {
-        url: documents.rc_book.downloadURL,
-        fileName: documents.rc_book.fileName,
-        uploadedAt: documents.rc_book.uploadedAt,
-        size: documents.rc_book.size,
-        contentType: documents.rc_book.contentType,
-        documentType: 'rcBook',
-        ...getDocStatus('rcBook')
-      } : null
-    };
+    // Only include documents that actually exist (not null)
+    const mappedDocuments = {};
     
-    console.log(`✅ [ADMIN_DOCS] Retrieved ${Object.keys(documents).length} documents for driver ${driverId}`);
+    const documentMappings = [
+      { storageKey: 'driving_license', docKey: 'drivingLicense', name: 'Driving License' },
+      { storageKey: 'profile_photo', docKey: 'profilePhoto', name: 'Profile Photo' },
+      { storageKey: 'aadhaar_card', docKey: 'aadhaarCard', name: 'Aadhaar Card' },
+      { storageKey: 'bike_insurance', docKey: 'bikeInsurance', name: 'Bike Insurance' },
+      { storageKey: 'rc_book', docKey: 'rcBook', name: 'RC Book' }
+    ];
+    
+    documentMappings.forEach(({ storageKey, docKey, name }) => {
+      if (documents[storageKey]) {
+        mappedDocuments[docKey] = {
+          url: documents[storageKey].downloadURL,
+          fileName: documents[storageKey].fileName,
+          uploadedAt: documents[storageKey].uploadedAt,
+          size: documents[storageKey].size,
+          contentType: documents[storageKey].contentType,
+          documentType: docKey,
+          documentName: name,
+          ...getDocStatus(docKey)
+        };
+      }
+    });
+    
+    console.log(`✅ [ADMIN_DOCS] Retrieved ${Object.keys(mappedDocuments).length} documents for driver ${driverId}`);
     
     res.json({
       success: true,
@@ -2050,7 +2029,8 @@ router.get('/drivers/:driverId/documents', async (req, res) => {
         driverName: driverData.name || 'Unknown Driver',
         verificationStatus: driverData.driver?.verificationStatus || 'pending',
         vehicleDetails: driverData.driver?.vehicleDetails || null,
-        totalDocuments: Object.keys(documents).length
+        totalDocuments: Object.keys(mappedDocuments).length,
+        totalFolders: Object.keys(mappedDocuments).length
       },
       timestamp: new Date().toISOString()
     });

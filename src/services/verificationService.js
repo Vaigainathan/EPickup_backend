@@ -25,10 +25,24 @@ class VerificationService {
           if (admin.apps.length > 0) {
             const app = admin.app();
             this.db = app.firestore();
+            
+            // Additional check: ensure Firestore is actually available
+            if (this.db && typeof this.db.collection === 'function') {
+              console.log('✅ [VerificationService] Firestore initialized from admin.app()');
+            } else {
+              this.db = null;
+            }
           }
           
           if (!this.db) {
             throw new Error('Firestore instance is null after retry');
+          }
+        } else {
+          // Verify Firestore instance is functional
+          if (typeof this.db.collection !== 'function') {
+            console.error('❌ [VerificationService] Firestore instance is not functional');
+            this.db = null;
+            throw new Error('Firestore instance is not functional');
           }
         }
         
@@ -40,6 +54,7 @@ class VerificationService {
           stack: error.stack,
           firebaseApps: require('firebase-admin').apps.length
         });
+        this.db = null;
         // Don't throw - return null and let caller handle it gracefully
         return null;
       }

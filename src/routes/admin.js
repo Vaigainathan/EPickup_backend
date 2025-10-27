@@ -2332,12 +2332,44 @@ router.get('/debug/documents/:driverId', async (req, res) => {
       .where('driverId', '==', driverId)
       .get();
 
+    // ✅ FIX: Deduplicate documents to avoid counting snake_case + camelCase as separate
+    const allDocuments = driverData.driver?.documents || driverData.documents || {};
+    
+    // Helper function to normalize document type (camelCase)
+    const normalizeKey = (key) => {
+      // Convert snake_case to camelCase
+      return key.replace(/_([a-z])/g, (_, letter) => letter.toUpperCase());
+    };
+    
+    // Deduplicate: prefer camelCase over snake_case
+    const deduplicatedDocuments = {};
+    const seenNormalized = new Set();
+    
+    // First pass: collect camelCase versions
+    Object.keys(allDocuments).forEach(key => {
+      const normalized = normalizeKey(key);
+      if (!seenNormalized.has(normalized) && key === normalized) {
+        deduplicatedDocuments[key] = allDocuments[key];
+        seenNormalized.add(normalized);
+      }
+    });
+    
+    // Second pass: collect snake_case versions only if camelCase doesn't exist
+    Object.keys(allDocuments).forEach(key => {
+      const normalized = normalizeKey(key);
+      if (!seenNormalized.has(normalized)) {
+        deduplicatedDocuments[normalized] = allDocuments[key];
+        seenNormalized.add(normalized);
+      }
+    });
+
     const debugInfo = {
       driverId,
       driverName: driverData.name,
       driverPhone: driverData.phone,
       verificationStatus: driverData.driver?.verificationStatus,
-      userCollectionDocuments: driverData.driver?.documents || driverData.documents || {},
+      userCollectionDocuments: deduplicatedDocuments, // ✅ Use deduplicated
+      userCollectionDocumentsRaw: allDocuments, // Keep raw for debugging
       verificationRequests: verificationQuery.docs.map(doc => ({
         id: doc.id,
         ...doc.data()
@@ -2349,7 +2381,10 @@ router.get('/debug/documents/:driverId', async (req, res) => {
       timestamp: new Date().toISOString()
     };
 
-    console.log(`🔍 Debug info for driver ${driverId}:`, JSON.stringify(debugInfo, null, 2));
+    console.log(`🔍 Debug info for driver ${driverId}:`);
+    console.log(`   Raw documents count: ${Object.keys(allDocuments).length}`);
+    console.log(`   Deduplicated documents count: ${Object.keys(deduplicatedDocuments).length}`);
+    console.log(`   Document types: ${Object.keys(deduplicatedDocuments).join(', ')}`);
 
     res.json({
       success: true,

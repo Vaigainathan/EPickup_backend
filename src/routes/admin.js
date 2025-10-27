@@ -550,6 +550,26 @@ router.get('/drivers', async (req, res) => {
       const data = doc.data();
       const driverData = data.driver || {};
       
+      // ✅ CRITICAL FIX: Merge documents from both locations (top-level and nested)
+      // Documents can be in data.documents OR data.driver.documents
+      const topLevelDocs = data.documents || {};
+      const driverDocs = driverData.documents || {};
+      
+      // Merge documents, prefer top-level over nested
+      const mergedDocuments = { ...driverDocs, ...topLevelDocs };
+      
+      // Helper to convert snake_case to camelCase
+      const toCamelCase = (str) => {
+        return str.replace(/_([a-z])/g, (_, letter) => letter.toUpperCase());
+      };
+      
+      // ✅ CRITICAL FIX: Normalize all document keys to camelCase for frontend
+      const normalizedDocuments = {};
+      Object.keys(mergedDocuments).forEach(key => {
+        const camelKey = toCamelCase(key);
+        normalizedDocuments[camelKey] = mergedDocuments[key];
+      });
+      
       // ✅ CRITICAL FIX: Flatten nested driver data for admin dashboard
       // Admin expects isOnline/isAvailable at top level, not nested under driver object
       drivers.push({
@@ -568,14 +588,20 @@ router.get('/drivers', async (req, res) => {
         currentLocation: driverData.currentLocation,
         vehicleDetails: driverData.vehicleDetails,
         earnings: driverData.earnings,
-        // ✅ CRITICAL FIX: Include documents for status display
-        documents: driverData.documents || data.documents || {},
+        // ✅ CRITICAL FIX: Include normalized documents for status display
+        documents: normalizedDocuments,
         createdAt: data.createdAt?.toDate?.() || data.createdAt,
         updatedAt: data.updatedAt?.toDate?.() || data.updatedAt
       });
     }
 
     console.log(`✅ [ADMIN] Fetched ${drivers.length} drivers with flattened status data`);
+    
+    // Debug: Log document counts for first driver
+    if (drivers.length > 0) {
+      console.log(`📄 [ADMIN] First driver documents count: ${Object.keys(drivers[0].documents || {}).length}`);
+      console.log(`📄 [ADMIN] Document types: ${Object.keys(drivers[0].documents || {}).join(', ')}`);
+    }
 
     res.json({
       success: true,

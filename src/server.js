@@ -818,7 +818,7 @@ try {
   
   // ✅ FIXED: Initialize LiveTrackingService
   const liveTrackingService = require('./services/liveTrackingService');
-  const io = socketService.getIO();
+  const io = socketService.getSocketIO(); // ✅ FIX: Changed from getIO() to getSocketIO()
   if (io) {
     liveTrackingService.initialize(io);
     console.log('✅ LiveTrackingService initialized successfully');

@@ -137,19 +137,6 @@ const createProgressiveSlowDown = (options = {}) => {
       const isDevelopment = process.env.NODE_ENV === 'development';
       const isLocalhost = req.ip === '::1' || req.ip === '127.0.0.1' || req.ip === '::ffff:127.0.0.1';
       return isDevelopment && isLocalhost;
-    },
-    
-    onLimitReached: (req, res, options) => {
-      const phoneNumber = req.body?.phoneNumber || req.body?.phone;
-      const requestUserType = req.body?.userType || 'unknown';
-      
-      console.warn('🐌 [PROGRESSIVE_SLOWDOWN] Slow down activated:', {
-        phone: phoneNumber,
-        userType: requestUserType,
-        ip: req.ip,
-        delayMs: options.delayMs,
-        timestamp: new Date().toISOString()
-      });
     }
   });
 };

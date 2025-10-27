@@ -106,9 +106,12 @@ class JWTService {
           issuer: 'epickup-app',
           audience: 'epickup-users'
         });
-      } catch (issuerError) {
-        // Fallback to basic verification without issuer/audience
-        console.log('JWT verification with issuer/audience failed, trying basic verification:', issuerError.message);
+      } catch {
+        // Fallback to basic verification without issuer/audience (for backward compatibility with older tokens)
+        // Only log in development mode for debugging
+        if (process.env.NODE_ENV !== 'production') {
+          console.log('[JWT] Fallback verification used for older token format');
+        }
         decoded = jwt.verify(token, this.secret);
       }
 

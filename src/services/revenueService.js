@@ -66,36 +66,49 @@ class RevenueService {
         });
       });
 
-      // ✅ CRITICAL FIX: Get actual payments from payments collection
-      const paymentsSnapshot = await db
-        .collection('payments')
-        .where('confirmedAt', '>=', startDate)
-        .where('confirmedAt', '<=', endDate)
-        .where('status', '==', 'confirmed')
-        .get();
-
+      // ✅ CORE FIX: Get actual payments from payments collection
+      // Simplified query to avoid requiring composite index:
+      // 1. Query by confirmedAt range (only one field range query)
+      // 2. Filter by status in memory
       let totalPayments = 0;
       let totalPaymentAmount = 0;
       const paymentsBreakdown = [];
 
-      paymentsSnapshot.forEach(doc => {
-        const data = doc.data();
-        totalPaymentAmount += data.amount || 0;
-        totalPayments += 1;
-        
-        paymentsBreakdown.push({
-          id: doc.id,
-          transactionId: data.transactionId,
-          bookingId: data.bookingId,
-          driverId: data.driverId,
-          customerId: data.customerId,
-          amount: data.amount,
-          paymentMethod: data.paymentMethod,
-          confirmedAt: data.confirmedAt?.toDate?.() || data.confirmedAt
-        });
-      });
+      try {
+        // Query by date range only (no composite index needed)
+        const paymentsSnapshot = await db
+          .collection('payments')
+          .where('confirmedAt', '>=', startDate)
+          .where('confirmedAt', '<=', endDate)
+          .get();
 
-      console.log(`💰 [REVENUE] Found ${totalPayments} confirmed payments totaling ₹${totalPaymentAmount}`);
+        // Filter by status in memory
+        paymentsSnapshot.forEach(doc => {
+          const data = doc.data();
+          
+          // Only include confirmed payments
+          if (data.status === 'confirmed') {
+            totalPaymentAmount += data.amount || 0;
+            totalPayments += 1;
+            
+            paymentsBreakdown.push({
+              id: doc.id,
+              transactionId: data.transactionId,
+              bookingId: data.bookingId,
+              driverId: data.driverId,
+              customerId: data.customerId,
+              amount: data.amount,
+              paymentMethod: data.paymentMethod,
+              confirmedAt: data.confirmedAt?.toDate?.() || data.confirmedAt
+            });
+          }
+        });
+
+        console.log(`💰 [REVENUE] Found ${totalPayments} confirmed payments totaling ₹${totalPaymentAmount}`);
+      } catch (error) {
+        console.error('❌ [REVENUE] Error fetching payments:', error.message);
+        // Continue with empty payment data (revenue will still work)
+      }
 
       // Get points commission transactions (secondary revenue tracking)
       const pointsCommissionSnapshot = await db

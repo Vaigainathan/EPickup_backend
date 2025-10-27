@@ -325,17 +325,42 @@ router.post('/login', async (req, res) => {
       });
     }
     
-    const token = jwt.sign(
-      {
-        userId: adminUser.uid,
-        email: adminUser.email,
-        userType: 'admin',
-        role: adminUser.role,
-        permissions: adminUser.permissions
-      },
-      process.env.JWT_SECRET,
-      { expiresIn: '24h' }
-    );
+    console.log('🔑 [ADMIN LOGIN] Generating JWT token...');
+    console.log('🔑 [ADMIN LOGIN] Admin user data for JWT:', {
+      uid: adminUser.uid,
+      email: adminUser.email,
+      role: adminUser.role,
+      permissions: adminUser.permissions,
+      hasUid: !!adminUser.uid,
+      hasEmail: !!adminUser.email,
+      hasRole: !!adminUser.role,
+      hasPermissions: !!adminUser.permissions
+    });
+    
+    let token;
+    try {
+      token = jwt.sign(
+        {
+          userId: adminUser.uid,
+          email: adminUser.email,
+          userType: 'admin',
+          role: adminUser.role,
+          permissions: adminUser.permissions || []
+        },
+        process.env.JWT_SECRET,
+        { expiresIn: '24h' }
+      );
+      console.log('✅ [ADMIN LOGIN] JWT token generated successfully');
+    } catch (jwtError) {
+      console.error('❌ [ADMIN LOGIN] JWT token generation failed:', jwtError);
+      return res.status(500).json({
+        success: false,
+        error: {
+          message: 'Failed to generate authentication token',
+          code: 'JWT_GENERATION_FAILED'
+        }
+      });
+    }
 
     console.log('✅ [ADMIN LOGIN] Sending successful response...');
     console.log('📤 [ADMIN LOGIN] Response data:', {

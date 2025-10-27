@@ -85,7 +85,37 @@ class VerificationService {
       }
 
       const userData = userDoc.data();
-      const documents = userData.driver?.documents || {};
+      
+      // ✅ CRITICAL FIX: Fetch documents from BOTH locations
+      // 1. From users collection (userData.driver.documents)
+      // 2. From driverVerificationStatus collection (has verified status with snake_case keys)
+      
+      // Get from users collection first
+      const userDocuments = userData.driver?.documents || {};
+      
+      // Try to get from driverVerificationStatus collection (where verified docs are actually stored)
+      let verificationStatusDoc;
+      try {
+        const verificationStatusSnapshot = await db.collection('driverVerificationStatus')
+          .where('driverId', '==', driverId)
+          .limit(1)
+          .get();
+        
+        if (!verificationStatusSnapshot.empty) {
+          verificationStatusDoc = verificationStatusSnapshot.docs[0].data();
+          console.log('✅ Found driverVerificationStatus document');
+        }
+      } catch (verificationError) {
+        console.warn('⚠️ Could not fetch driverVerificationStatus:', verificationError.message);
+      }
+      
+      // Merge documents from both sources, prioritizing driverVerificationStatus
+      const verificationDocuments = verificationStatusDoc?.documents || {};
+      const documents = { ...userDocuments, ...verificationDocuments };
+      
+      console.log('📄 Documents from users collection:', Object.keys(userDocuments));
+      console.log('📄 Documents from driverVerificationStatus:', Object.keys(verificationDocuments));
+      console.log('📄 Combined documents:', Object.keys(documents));
 
       // Count verified documents
       const requiredDocs = ['drivingLicense', 'aadhaarCard', 'bikeInsurance', 'rcBook', 'profilePhoto'];
@@ -95,15 +125,27 @@ class VerificationService {
       requiredDocs.forEach(docType => {
         const camelKey = docType;
         const snakeCaseKey = docType.replace(/([A-Z])/g, '_$1').toLowerCase();
+        // Try both camelCase and snake_case keys
         const doc = documents[camelKey] || documents[snakeCaseKey];
 
-        if (doc && (doc.url || doc.downloadURL)) {
-          totalCount++;
-          if (doc.verified === true || doc.status === 'verified' || doc.verificationStatus === 'verified') {
-            verifiedCount++;
+        if (doc) {
+          const hasUrl = doc.url || doc.downloadURL;
+          if (hasUrl) {
+            totalCount++;
+            const isVerified = doc.verified === true || doc.status === 'verified' || doc.verificationStatus === 'verified';
+            if (isVerified) {
+              verifiedCount++;
+              console.log(`✅ Document verified: ${docType} (key: ${documents[camelKey] ? camelKey : snakeCaseKey})`);
+            } else {
+              console.log(`⏳ Document not verified: ${docType} (key: ${documents[camelKey] ? camelKey : snakeCaseKey})`);
+            }
           }
+        } else {
+          console.log(`❌ Document not found: ${docType}`);
         }
       });
+      
+      console.log(`📊 Document count summary: ${verifiedCount} verified out of ${totalCount} total`);
 
       // Determine status
       let verificationStatus;

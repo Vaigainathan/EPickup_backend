@@ -6,17 +6,11 @@ class VerificationService {
   }
 
   /**
-   * Get Firestore instance (lazy initialization with proper Firebase readiness check)
+   * Get Firestore instance (lazy initialization)
    */
   getDb() {
     if (!this.db) {
       try {
-        // ✅ CRITICAL FIX: Check Firebase apps are initialized first
-        const admin = require('firebase-admin');
-        if (!admin.apps || admin.apps.length === 0) {
-          throw new Error('No Firebase apps initialized');
-        }
-
         // ✅ CRITICAL FIX: Use the same Firebase service as other parts of the app
         this.db = getFirestore();
         
@@ -43,28 +37,14 @@ class VerificationService {
    * Get Firestore instance with safety checks
    */
   getDbSafe() {
-    try {
-      const db = this.getDb();
-      
-      // ✅ CRITICAL FIX: Verify database instance is valid
-      if (!db) {
-        throw new Error('Database instance is null - Firebase not properly initialized');
-      }
-      
-      return db;
-    } catch (error) {
-      console.error('❌ [VerificationService] getDbSafe failed:', error.message);
-      
-      // ✅ CRITICAL FIX: Provide more detailed error information
-      const admin = require('firebase-admin');
-      console.error('❌ [VerificationService] Firebase state:', {
-        appsCount: admin.apps.length,
-        hasDefaultApp: !!admin.apps.find(app => app.name === '[DEFAULT]'),
-        errorMessage: error.message
-      });
-      
-      throw error;
+    const db = this.getDb();
+    
+    // ✅ CRITICAL FIX: Verify database instance is valid
+    if (!db) {
+      throw new Error('Database instance is null - Firebase not properly initialized');
     }
+    
+    return db;
   }
 
   /**

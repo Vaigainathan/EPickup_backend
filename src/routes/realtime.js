@@ -1,15 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const { 
-  getConnectedUsersCount, 
-  getActiveBookingRoomsCount, 
-  getDriverLocations,
-  updateDriverLocationInDB,
-  sendToBooking,
-  updateBookingStatus,
-  updatePaymentStatus,
-  getPayment
-} = require('../services/socket');
+const socketService = require('../services/socket');
 const driverAssignmentService = require('../services/driverAssignmentService');
 const notificationService = require('../services/notificationService');
 const { requireRole } = require('../middleware/auth');
@@ -26,9 +17,9 @@ router.get('/status', async (req, res) => {
       success: true,
       data: {
         websocket: {
-          connectedUsers: getConnectedUsersCount(),
-          activeBookingRooms: getActiveBookingRoomsCount(),
-          driverLocations: Array.from(getDriverLocations().keys()).length
+          connectedUsers: socketService.getConnectedUsersCount(),
+          activeBookingRooms: socketService.getActiveBookingRoomsCount(),
+          driverLocations: Array.from(socketService.getDriverLocations().keys()).length
         },
         timestamp: new Date().toISOString()
       }
@@ -225,10 +216,10 @@ router.post('/location/update', [
     const driverId = req.user.uid;
 
     // Update location in database
-    await updateDriverLocationInDB(driverId, location, bookingId);
+    await socketService.updateDriverLocationInDB(driverId, location, bookingId);
 
     // Broadcast to booking room
-    sendToBooking(bookingId, 'driver-location-update', {
+    socketService.sendToBooking(bookingId, 'driver-location-update', {
       driverId,
       location,
       estimatedArrival,
@@ -285,10 +276,10 @@ router.post('/booking/status', [
     const updatedBy = req.user.uid;
 
     // Update booking status in database
-    await updateBookingStatus(bookingId, status, updatedBy);
+    await socketService.updateBookingStatus(bookingId, status, updatedBy);
 
     // Broadcast to booking room
-    sendToBooking(bookingId, 'booking-status-update', {
+    socketService.sendToBooking(bookingId, 'booking-status-update', {
       bookingId,
       status,
       message,
@@ -354,13 +345,13 @@ router.post('/payment/status', [
     const updatedBy = req.user.uid;
 
     // Update payment status in database
-    await updatePaymentStatus(paymentId, status, updatedBy);
+    await socketService.updatePaymentStatus(paymentId, status, updatedBy);
 
     // Get payment record to find booking
-    const payment = await getPayment(paymentId);
+    const payment = await socketService.getPayment(paymentId);
     if (payment) {
       // Broadcast to booking room
-      sendToBooking(payment.bookingId, 'payment-status-update', {
+      socketService.sendToBooking(payment.bookingId, 'payment-status-update', {
         paymentId,
         bookingId: payment.bookingId,
         status,
@@ -521,9 +512,9 @@ router.get('/statistics', [
         assignment: assignmentStats.success ? assignmentStats.data : null,
         notifications: notificationStats.success ? notificationStats.data : null,
         websocket: {
-          connectedUsers: getConnectedUsersCount(),
-          activeBookingRooms: getActiveBookingRoomsCount(),
-          driverLocations: Array.from(getDriverLocations().keys()).length
+          connectedUsers: socketService.getConnectedUsersCount(),
+          activeBookingRooms: socketService.getActiveBookingRoomsCount(),
+          driverLocations: Array.from(socketService.getDriverLocations().keys()).length
         },
         timestamp: new Date().toISOString()
       }

@@ -337,7 +337,6 @@ router.post('/login', async (req, res) => {
       { expiresIn: '24h' }
     );
 
-
     res.json({
       success: true,
       message: 'Admin login successful',

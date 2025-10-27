@@ -40,7 +40,7 @@ const { authMiddleware } = require('./middleware/auth');
 const { initializeFirebase } = require('./services/firebase');
 // Firestore Session Service is imported but not directly used in server.js
 // It's used by other services that import it directly
-const { initializeSocketIO } = require('./services/socket');
+const socketService = require('./services/socket');
 // const msg91Service = require('./services/msg91Service'); // Deprecated - using Firebase Auth instead
 const monitoringService = require('./services/monitoringService');
 // performanceMonitoringService removed - using monitoringService instead
@@ -81,15 +81,6 @@ try {
   
   console.log('✅ Firebase Auth methods verified');
   
-  // ✅ CRITICAL FIX: Test Firestore access before proceeding
-  console.log('🔍 Testing Firestore access...');
-  const { getFirestore } = require('firebase-admin/firestore');
-  const testDb = getFirestore();
-  if (!testDb) {
-    throw new Error('Firestore instance is null after Firebase initialization');
-  }
-  console.log('✅ Firestore access verified');
-  
   // Initialize Firebase Auth Service after Firebase is ready
   const firebaseAuthService = require('./services/firebaseAuthService');
   firebaseAuthService.initialize();
@@ -126,218 +117,41 @@ try {
 
 // MSG91 service removed - using Firebase Auth for OTP
 
-// ✅ CRITICAL FIX: Declare route variables in global scope
-let authRoutes, refreshTokenRoutes, userRoutes, customerRoutes, driverRoutes, bookingRoutes;
-let paymentRoutes, trackingRoutes, notificationRoutes, fileUploadRoutes, supportRoutes;
-let chatRoutes, googleMapsRoutes, realtimeRoutes, fcmTokenRoutes, emergencyRoutes;
-let serviceAreaRoutes, healthRoutes, walletRoutes, fareCalculationRoutes, workSlotsRoutes;
-let adminRoutes, adminAuthRoutes, adminSignupRoutes, locationTrackingRoutes;
-
-// ✅ CRITICAL FIX: Declare middleware in global scope
-let appCheckMiddleware;
-
-// ✅ CRITICAL FIX: Import routes after Firebase is fully ready
-function importRoutesAfterFirebaseReady() {
+// Import routes after Firebase initialization
 console.log('📦 Importing routes after Firebase initialization...');
-  
-  authRoutes = require('./routes/auth');
-  refreshTokenRoutes = require('./routes/refreshToken');
-  userRoutes = require('./routes/user');
-  customerRoutes = require('./routes/customer');
-  driverRoutes = require('./routes/driver');
-  bookingRoutes = require('./routes/booking');
-  paymentRoutes = require('./routes/payments');
-  trackingRoutes = require('./routes/tracking');
-  notificationRoutes = require('./routes/notification');
-  fileUploadRoutes = require('./routes/fileUpload');
-  supportRoutes = require('./routes/support');
-  chatRoutes = require('./routes/chat');
-  googleMapsRoutes = require('./routes/googleMaps');
-  realtimeRoutes = require('./routes/realtime');
-  fcmTokenRoutes = require('./routes/fcmTokens');
-  emergencyRoutes = require('./routes/emergency');
-  serviceAreaRoutes = require('./routes/serviceArea');
-  healthRoutes = require('./routes/health');
-  walletRoutes = require('./routes/wallet');
-  fareCalculationRoutes = require('./routes/fareCalculation');
-  workSlotsRoutes = require('./routes/workSlots');
-  adminRoutes = require('./routes/admin');
-  adminAuthRoutes = require('./routes/adminAuth');
-  adminSignupRoutes = require('./routes/adminSignup');
-  // adminBookingManagementRoutes = require('./routes/adminBookingManagement'); // Included in adminRoutes
-  locationTrackingRoutes = require('./routes/locationTracking');
-  
+const authRoutes = require('./routes/auth');
+const refreshTokenRoutes = require('./routes/refreshToken');
+const userRoutes = require('./routes/user');
+const customerRoutes = require('./routes/customer');
+const driverRoutes = require('./routes/driver');
+const bookingRoutes = require('./routes/booking');
+const paymentRoutes = require('./routes/payments');
+const trackingRoutes = require('./routes/tracking');
+const notificationRoutes = require('./routes/notification');
+const fileUploadRoutes = require('./routes/fileUpload');
+const supportRoutes = require('./routes/support');
+const chatRoutes = require('./routes/chat');
+const googleMapsRoutes = require('./routes/googleMaps');
+const realtimeRoutes = require('./routes/realtime');
+const fcmTokenRoutes = require('./routes/fcmTokens');
+const emergencyRoutes = require('./routes/emergency');
+const serviceAreaRoutes = require('./routes/serviceArea');
+const healthRoutes = require('./routes/health');
+const walletRoutes = require('./routes/wallet');
+const fareCalculationRoutes = require('./routes/fareCalculation');
+const workSlotsRoutes = require('./routes/workSlots');
+const adminRoutes = require('./routes/admin');
+const adminAuthRoutes = require('./routes/adminAuth');
+const adminSignupRoutes = require('./routes/adminSignup');
+// const adminBookingManagementRoutes = require('./routes/adminBookingManagement'); // Included in adminRoutes
+const locationTrackingRoutes = require('./routes/locationTracking');
 console.log('✅ All routes imported successfully');
 
-  // ✅ CRITICAL FIX: Initialize middleware after routes are imported
-  console.log('📦 Initializing middleware...');
+// Import middleware after Firebase initialization
+console.log('📦 Importing middleware after Firebase initialization...');
 const AppCheckMiddleware = require('./middleware/appCheckAuth');
-  appCheckMiddleware = new AppCheckMiddleware();
-  console.log('✅ All middleware initialized successfully');
-  
-  // Set up routes
-  setupRoutes();
-}
-
-// ✅ CRITICAL FIX: Function to set up all routes after Firebase is ready
-function setupRoutes() {
-  console.log('🔧 Setting up API routes...');
-  
-  // API Routes
-  app.use('/api/auth', authLimiter, authRoutes);
-  app.use('/api/auth', refreshTokenRoutes); // Add refresh token route
-  app.use('/api/user', appCheckMiddleware.optionalMiddleware(), userRoutes); // User profile routes (includes profile picture upload)
-
-  // =============================================================================
-  // APP CHECK MIDDLEWARE CONFIGURATION
-  // =============================================================================
-  // DEBUG MODE: Using optionalMiddleware() for debug tokens (allows requests without App Check headers)
-  // PRODUCTION MODE: Switch to middleware() for Play Integrity enforcement
-  //
-  // TO SWITCH TO PRODUCTION MODE:
-  // 1. Comment out all lines with optionalMiddleware()
-  // 2. Uncomment all lines with middleware() 
-  // 3. Update frontend to send real App Check tokens instead of null
-  // =============================================================================
-  app.use('/api/customer', appCheckMiddleware.optionalMiddleware(), authMiddleware, customerRoutes);
-  // app.use('/api/customer', appCheckMiddleware.middleware(), authMiddleware, customerRoutes); // Production mode
-
-  app.use('/api/driver', appCheckMiddleware.optionalMiddleware(), authMiddleware, driverRoutes);
-  // app.use('/api/driver', appCheckMiddleware.middleware(), authMiddleware, driverRoutes); // Production mode
-
-  app.use('/api/bookings', appCheckMiddleware.optionalMiddleware(), authMiddleware, bookingRoutes);
-  // app.use('/api/bookings', appCheckMiddleware.middleware(), authMiddleware, bookingRoutes); // Production mode
-
-  // ✅ PAYMENT WEBHOOKS MUST BE PUBLIC (no auth middleware)
-  // Payment gateway webhooks don't have user tokens - they use signature verification
-  // Register webhook route BEFORE the authenticated payment routes
-  const phonepeService = require('./services/phonepeService');
-  const mockPaymentService = require('./services/mockPaymentService');
-  app.post('/api/payments/phonepe/callback', 
-    appCheckMiddleware.optionalMiddleware(),
-    async (req, res) => {
-      try {
-        console.log('📥 [WEBHOOK] Received PhonePe callback (public endpoint)');
-        
-        // Intelligent service selection
-        const isPhonePeConfigured = process.env.PHONEPE_MERCHANT_ID && 
-                                     process.env.PHONEPE_MERCHANT_ID !== 'PGTESTPAYUAT' &&
-                                     process.env.PHONEPE_SALT_KEY &&
-                                     process.env.PHONEPE_SALT_KEY.length > 20;
-        
-        const callbackService = isPhonePeConfigured ? phonepeService : mockPaymentService;
-        console.log(`🔧 [WEBHOOK] Using ${isPhonePeConfigured ? 'Real PhonePe' : 'Mock Payment'} callback handler`);
-        
-        const result = await callbackService.handlePaymentCallback(req.body);
-
-        if (result.success) {
-          console.log('✅ [WEBHOOK] Callback processed successfully');
-          res.json({
-            success: true,
-            message: 'Callback processed successfully',
-            timestamp: new Date().toISOString()
-          });
-        } else {
-          console.warn('⚠️ [WEBHOOK] Callback processing failed:', result.error);
-          res.status(400).json({
-            success: false,
-            message: 'Callback processing failed',
-            error: result.error,
-            timestamp: new Date().toISOString()
-          });
-        }
-      } catch (error) {
-        console.error('❌ [WEBHOOK] Payment callback error:', error);
-        res.status(500).json({
-          success: false,
-          message: 'Internal server error',
-          error: {
-            code: 'CALLBACK_ERROR',
-            message: error.message
-          },
-          timestamp: new Date().toISOString()
-        });
-      }
-    }
-  );
-
-  // All other payment routes require authentication
-  app.use('/api/payments', appCheckMiddleware.optionalMiddleware(), authMiddleware, paymentRoutes);
-  // app.use('/api/payments', appCheckMiddleware.middleware(), authMiddleware, paymentRoutes); // Production mode
-
-  app.use('/api/tracking', appCheckMiddleware.optionalMiddleware(), authMiddleware, trackingRoutes);
-  // app.use('/api/tracking', appCheckMiddleware.middleware(), authMiddleware, trackingRoutes); // Production mode
-
-  app.use('/api/notifications', appCheckMiddleware.optionalMiddleware(), authMiddleware, notificationRoutes);
-  // app.use('/api/notifications', appCheckMiddleware.middleware(), authMiddleware, notificationRoutes); // Production mode
-
-  app.use('/api/file-upload', appCheckMiddleware.optionalMiddleware(), authMiddleware, fileUploadRoutes);
-  // app.use('/api/file-upload', appCheckMiddleware.middleware(), authMiddleware, fileUploadRoutes); // Production mode
-
-  app.use('/api/support', appCheckMiddleware.optionalMiddleware(), authMiddleware, supportRoutes);
-  // app.use('/api/support', appCheckMiddleware.middleware(), authMiddleware, supportRoutes); // Production mode
-
-  app.use('/api/chat', appCheckMiddleware.optionalMiddleware(), authMiddleware, chatRoutes);
-  // app.use('/api/chat', appCheckMiddleware.middleware(), authMiddleware, chatRoutes); // Production mode
-
-  app.use('/api/google-maps', googleMapsRoutes); // No auth required for Google Maps API
-
-  app.use('/api/realtime', appCheckMiddleware.optionalMiddleware(), authMiddleware, realtimeRoutes);
-  // app.use('/api/realtime', appCheckMiddleware.middleware(), authMiddleware, realtimeRoutes); // Production mode
-
-  app.use('/api/fcm-tokens', appCheckMiddleware.optionalMiddleware(), authMiddleware, fcmTokenRoutes);
-  // app.use('/api/fcm-tokens', appCheckMiddleware.middleware(), authMiddleware, fcmTokenRoutes); // Production mode
-
-  app.use('/api/emergency', appCheckMiddleware.optionalMiddleware(), authMiddleware, emergencyRoutes);
-  // app.use('/api/emergency', appCheckMiddleware.middleware(), authMiddleware, emergencyRoutes); // Production mode
-
-  app.use('/api/service-area', serviceAreaRoutes); // No auth required for service area validation
-  app.use('/service-area', serviceAreaRoutes); // Alternative path for service area validation
-  // Wallet and fare calculation routes
-  app.use('/api/wallet', appCheckMiddleware.optionalMiddleware(), walletRoutes);
-  // app.use('/api/wallet', appCheckMiddleware.middleware(), walletRoutes); // Production mode
-
-  app.use('/api/fare', appCheckMiddleware.optionalMiddleware(), fareCalculationRoutes);
-  // app.use('/api/fare', appCheckMiddleware.middleware(), fareCalculationRoutes); // Production mode
-
-  app.use('/api/slots', appCheckMiddleware.optionalMiddleware(), workSlotsRoutes);
-  // app.use('/api/slots', appCheckMiddleware.middleware(), workSlotsRoutes); // Production mode
-
-  app.use('/api/location-tracking', appCheckMiddleware.optionalMiddleware(), authMiddleware, locationTrackingRoutes);
-  // app.use('/api/location-tracking', appCheckMiddleware.middleware(), authMiddleware, locationTrackingRoutes); // Production mode
-  app.use('/api/admin/auth', adminAuthRoutes); // No auth required for admin login
-  app.use('/api/admin/signup', adminSignupRoutes); // Admin signup route (no auth required)
-  // Import admin role validation
-  const { requireAdmin } = require('./middleware/auth');
-  app.use('/api/admin', adminLimiter, authMiddleware, requireAdmin, adminRoutes); // Admin routes require admin role
-  // Note: adminBookingManagementRoutes are included in adminRoutes to avoid conflicts
-
-  // Health check routes (for keepalive script) - No auth required
-  app.use('/api/health', healthRoutes);
-  app.use('/health', healthRoutes); // Keep both for backward compatibility
-
-  console.log('✅ All API routes set up successfully');
-}
-
-// ✅ CRITICAL FIX: Set up body parsing middleware BEFORE routes
-// Body parsing middleware with security limits
-app.use(express.json({ 
-  limit: '1mb', // Reduced from 10mb for security
-  verify: (req, res, buf) => {
-    // Additional security check for JSON payload
-    if (buf.length > 1024 * 1024) { // 1MB limit
-      throw new Error('Payload too large');
-    }
-  }
-}));
-app.use(express.urlencoded({ 
-  extended: true, 
-  limit: '1mb', // Reduced from 10mb for security
-  parameterLimit: 100 // Limit number of parameters
-}));
-
-// Call the function after Firebase is ready
-importRoutesAfterFirebaseReady();
+const appCheckMiddleware = new AppCheckMiddleware();
+console.log('✅ All middleware imported successfully');
 
 // Create HTTP server
 const server = require('http').createServer(app);
@@ -458,6 +272,22 @@ if (process.env.NODE_ENV === 'development') {
 } else {
   app.use(morgan('combined'));
 }
+
+// Body parsing middleware with security limits
+app.use(express.json({ 
+  limit: '1mb', // Reduced from 10mb for security
+  verify: (req, res, buf) => {
+    // Additional security check for JSON payload
+    if (buf.length > 1024 * 1024) { // 1MB limit
+      throw new Error('Payload too large');
+    }
+  }
+}));
+app.use(express.urlencoded({ 
+  extended: true, 
+  limit: '1mb', // Reduced from 10mb for security
+  parameterLimit: 100 // Limit number of parameters
+}));
 
 // Static files (for file uploads)
 app.use('/uploads', express.static('uploads'));
@@ -627,6 +457,139 @@ app.get('/metrics', (req, res) => {
     timestamp: new Date().toISOString()
   });
 });
+
+// API Routes
+app.use('/api/auth', authLimiter, authRoutes);
+app.use('/api/auth', refreshTokenRoutes); // Add refresh token route
+app.use('/api/user', appCheckMiddleware.optionalMiddleware(), userRoutes); // User profile routes (includes profile picture upload)
+
+// =============================================================================
+// APP CHECK MIDDLEWARE CONFIGURATION
+// =============================================================================
+// DEBUG MODE: Using optionalMiddleware() for debug tokens (allows requests without App Check headers)
+// PRODUCTION MODE: Switch to middleware() for Play Integrity enforcement
+//
+// TO SWITCH TO PRODUCTION MODE:
+// 1. Comment out all lines with optionalMiddleware()
+// 2. Uncomment all lines with middleware() 
+// 3. Update frontend to send real App Check tokens instead of null
+// =============================================================================
+app.use('/api/customer', appCheckMiddleware.optionalMiddleware(), authMiddleware, customerRoutes);
+// app.use('/api/customer', appCheckMiddleware.middleware(), authMiddleware, customerRoutes); // Production mode
+
+app.use('/api/driver', appCheckMiddleware.optionalMiddleware(), authMiddleware, driverRoutes);
+// app.use('/api/driver', appCheckMiddleware.middleware(), authMiddleware, driverRoutes); // Production mode
+
+app.use('/api/bookings', appCheckMiddleware.optionalMiddleware(), authMiddleware, bookingRoutes);
+// app.use('/api/bookings', appCheckMiddleware.middleware(), authMiddleware, bookingRoutes); // Production mode
+
+// ✅ PAYMENT WEBHOOKS MUST BE PUBLIC (no auth middleware)
+// Payment gateway webhooks don't have user tokens - they use signature verification
+// Register webhook route BEFORE the authenticated payment routes
+const phonepeService = require('./services/phonepeService');
+const mockPaymentService = require('./services/mockPaymentService');
+app.post('/api/payments/phonepe/callback', 
+  appCheckMiddleware.optionalMiddleware(),
+  async (req, res) => {
+    try {
+      console.log('📥 [WEBHOOK] Received PhonePe callback (public endpoint)');
+      
+      // Intelligent service selection
+      const isPhonePeConfigured = process.env.PHONEPE_MERCHANT_ID && 
+                                   process.env.PHONEPE_MERCHANT_ID !== 'PGTESTPAYUAT' &&
+                                   process.env.PHONEPE_SALT_KEY &&
+                                   process.env.PHONEPE_SALT_KEY.length > 20;
+      
+      const callbackService = isPhonePeConfigured ? phonepeService : mockPaymentService;
+      console.log(`🔧 [WEBHOOK] Using ${isPhonePeConfigured ? 'Real PhonePe' : 'Mock Payment'} callback handler`);
+      
+      const result = await callbackService.handlePaymentCallback(req.body);
+
+      if (result.success) {
+        console.log('✅ [WEBHOOK] Callback processed successfully');
+        res.json({
+          success: true,
+          message: 'Callback processed successfully',
+          timestamp: new Date().toISOString()
+        });
+      } else {
+        console.warn('⚠️ [WEBHOOK] Callback processing failed:', result.error);
+        res.status(400).json({
+          success: false,
+          message: 'Callback processing failed',
+          error: result.error,
+          timestamp: new Date().toISOString()
+        });
+      }
+    } catch (error) {
+      console.error('❌ [WEBHOOK] Payment callback error:', error);
+      res.status(500).json({
+        success: false,
+        message: 'Internal server error',
+        error: {
+          code: 'CALLBACK_ERROR',
+          message: error.message
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+  }
+);
+
+// All other payment routes require authentication
+app.use('/api/payments', appCheckMiddleware.optionalMiddleware(), authMiddleware, paymentRoutes);
+// app.use('/api/payments', appCheckMiddleware.middleware(), authMiddleware, paymentRoutes); // Production mode
+
+app.use('/api/tracking', appCheckMiddleware.optionalMiddleware(), authMiddleware, trackingRoutes);
+// app.use('/api/tracking', appCheckMiddleware.middleware(), authMiddleware, trackingRoutes); // Production mode
+
+app.use('/api/notifications', appCheckMiddleware.optionalMiddleware(), authMiddleware, notificationRoutes);
+// app.use('/api/notifications', appCheckMiddleware.middleware(), authMiddleware, notificationRoutes); // Production mode
+
+app.use('/api/file-upload', appCheckMiddleware.optionalMiddleware(), authMiddleware, fileUploadRoutes);
+// app.use('/api/file-upload', appCheckMiddleware.middleware(), authMiddleware, fileUploadRoutes); // Production mode
+
+app.use('/api/support', appCheckMiddleware.optionalMiddleware(), authMiddleware, supportRoutes);
+// app.use('/api/support', appCheckMiddleware.middleware(), authMiddleware, supportRoutes); // Production mode
+
+app.use('/api/chat', appCheckMiddleware.optionalMiddleware(), authMiddleware, chatRoutes);
+// app.use('/api/chat', appCheckMiddleware.middleware(), authMiddleware, chatRoutes); // Production mode
+
+app.use('/api/google-maps', googleMapsRoutes); // No auth required for Google Maps API
+
+app.use('/api/realtime', appCheckMiddleware.optionalMiddleware(), authMiddleware, realtimeRoutes);
+// app.use('/api/realtime', appCheckMiddleware.middleware(), authMiddleware, realtimeRoutes); // Production mode
+
+app.use('/api/fcm-tokens', appCheckMiddleware.optionalMiddleware(), authMiddleware, fcmTokenRoutes);
+// app.use('/api/fcm-tokens', appCheckMiddleware.middleware(), authMiddleware, fcmTokenRoutes); // Production mode
+
+app.use('/api/emergency', appCheckMiddleware.optionalMiddleware(), authMiddleware, emergencyRoutes);
+// app.use('/api/emergency', appCheckMiddleware.middleware(), authMiddleware, emergencyRoutes); // Production mode
+
+app.use('/api/service-area', serviceAreaRoutes); // No auth required for service area validation
+app.use('/service-area', serviceAreaRoutes); // Alternative path for service area validation
+// Wallet and fare calculation routes
+app.use('/api/wallet', appCheckMiddleware.optionalMiddleware(), walletRoutes);
+// app.use('/api/wallet', appCheckMiddleware.middleware(), walletRoutes); // Production mode
+
+app.use('/api/fare', appCheckMiddleware.optionalMiddleware(), fareCalculationRoutes);
+// app.use('/api/fare', appCheckMiddleware.middleware(), fareCalculationRoutes); // Production mode
+
+app.use('/api/slots', appCheckMiddleware.optionalMiddleware(), workSlotsRoutes);
+// app.use('/api/slots', appCheckMiddleware.middleware(), workSlotsRoutes); // Production mode
+
+app.use('/api/location-tracking', appCheckMiddleware.optionalMiddleware(), authMiddleware, locationTrackingRoutes);
+// app.use('/api/location-tracking', appCheckMiddleware.middleware(), authMiddleware, locationTrackingRoutes); // Production mode
+app.use('/api/admin/auth', adminAuthRoutes); // No auth required for admin login
+app.use('/api/admin/signup', adminSignupRoutes); // Admin signup route (no auth required)
+// Import admin role validation
+const { requireAdmin } = require('./middleware/auth');
+app.use('/api/admin', adminLimiter, authMiddleware, requireAdmin, adminRoutes); // Admin routes require admin role
+// Note: adminBookingManagementRoutes are included in adminRoutes to avoid conflicts
+
+// Health check routes (for keepalive script) - No auth required
+app.use('/api/health', healthRoutes);
+app.use('/health', healthRoutes); // Keep both for backward compatibility
 
 // Performance metrics endpoint (Admin only)
 app.get('/api/admin/performance', authMiddleware, (req, res) => {
@@ -850,13 +813,12 @@ app.use(standardizedErrorHandler);
 
 // Initialize Socket.IO with error handling
 try {
-  initializeSocketIO(server);
+  socketService.initializeSocketIO(server);
   console.log('✅ Socket.IO service initialized successfully');
   
   // ✅ FIXED: Initialize LiveTrackingService
   const liveTrackingService = require('./services/liveTrackingService');
-  const { getSocketIO } = require('./services/socket');
-  const io = getSocketIO();
+  const io = socketService.getIO();
   if (io) {
     liveTrackingService.initialize(io);
     console.log('✅ LiveTrackingService initialized successfully');

@@ -556,6 +556,8 @@ router.get('/drivers', async (req, res) => {
         id: doc.id,
         uid: doc.id,
         ...data,
+        // ✅ CRITICAL FIX: Include driver object for compatibility
+        driver: driverData,
         // Override nested fields with flattened versions for admin dashboard compatibility
         isOnline: driverData.isOnline || false,
         isAvailable: driverData.isAvailable || false,
@@ -566,6 +568,8 @@ router.get('/drivers', async (req, res) => {
         currentLocation: driverData.currentLocation,
         vehicleDetails: driverData.vehicleDetails,
         earnings: driverData.earnings,
+        // ✅ CRITICAL FIX: Include documents for status display
+        documents: driverData.documents || data.documents || {},
         createdAt: data.createdAt?.toDate?.() || data.createdAt,
         updatedAt: data.updatedAt?.toDate?.() || data.updatedAt
       });

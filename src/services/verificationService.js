@@ -86,36 +86,13 @@ class VerificationService {
 
       const userData = userDoc.data();
       
-      // ✅ CRITICAL FIX: Fetch documents from BOTH locations
-      // 1. From users collection (userData.driver.documents)
-      // 2. From driverVerificationStatus collection (has verified status with snake_case keys)
+      // ✅ Documents are stored in Firebase Storage: drivers/{driverId}/documents/{type}/
+      // ✅ Verification status is stored in Firestore: users/{driverId}.driver.documents.{type}
       
-      // Get from users collection first
-      const userDocuments = userData.driver?.documents || {};
+      // Get documents from user collection
+      const documents = userData.driver?.documents || {};
       
-      // Try to get from driverVerificationStatus collection (where verified docs are actually stored)
-      let verificationStatusDoc;
-      try {
-        const verificationStatusSnapshot = await db.collection('driverVerificationStatus')
-          .where('driverId', '==', driverId)
-          .limit(1)
-          .get();
-        
-        if (!verificationStatusSnapshot.empty) {
-          verificationStatusDoc = verificationStatusSnapshot.docs[0].data();
-          console.log('✅ Found driverVerificationStatus document');
-        }
-      } catch (verificationError) {
-        console.warn('⚠️ Could not fetch driverVerificationStatus:', verificationError.message);
-      }
-      
-      // Merge documents from both sources, prioritizing driverVerificationStatus
-      const verificationDocuments = verificationStatusDoc?.documents || {};
-      const documents = { ...userDocuments, ...verificationDocuments };
-      
-      console.log('📄 Documents from users collection:', Object.keys(userDocuments));
-      console.log('📄 Documents from driverVerificationStatus:', Object.keys(verificationDocuments));
-      console.log('📄 Combined documents:', Object.keys(documents));
+      console.log('📄 Available document keys:', Object.keys(documents));
 
       // Count verified documents
       const requiredDocs = ['drivingLicense', 'aadhaarCard', 'bikeInsurance', 'rcBook', 'profilePhoto'];

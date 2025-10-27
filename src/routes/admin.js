@@ -582,7 +582,8 @@ router.get('/drivers', async (req, res) => {
         isOnline: driverData.isOnline || false,
         isAvailable: driverData.isAvailable || false,
         verificationStatus: driverData.verificationStatus || data.verificationStatus || 'pending',
-        rating: driverData.rating || 0,
+        // ✅ FIX: Use averageRating (what rating system updates) with fallback to rating for backward compatibility
+        rating: driverData.averageRating || driverData.rating || 0,
         totalTrips: driverData.totalTrips || 0,
         totalDeliveries: driverData.totalTrips || 0, // Alias for compatibility
         currentLocation: driverData.currentLocation,

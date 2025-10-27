@@ -291,6 +291,11 @@ router.get('/profile', requireDriver, async (req, res) => {
     
     // ✅ CRITICAL FIX: Check individual document statuses to determine accurate verification status
     const documents = driverData.documents || {};
+    
+    // Debug: Log document keys
+    console.log('📄 [PROFILE] Documents object keys:', Object.keys(documents));
+    console.log('📄 [PROFILE] Sample document:', documents[Object.keys(documents)[0]]);
+    
     const requiredDocTypes = ['drivingLicense', 'aadhaarCard', 'bikeInsurance', 'rcBook', 'profilePhoto'];
     let verifiedDocs = 0;
     let totalDocs = 0;
@@ -312,6 +317,9 @@ router.get('/profile', requireDriver, async (req, res) => {
         if (isVerified) {
           verifiedDocs++;
         }
+        console.log(`📄 [PROFILE] ${docType}: total=${totalDocs}, verified=${isVerified ? 'yes' : 'no'}`);
+      } else {
+        console.log(`📄 [PROFILE] ${docType}: not found in documents`);
       }
     });
     

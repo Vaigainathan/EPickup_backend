@@ -4,27 +4,14 @@ const { getAuth } = require('firebase-admin/auth');
 const jwt = require('jsonwebtoken');
 const router = express.Router();
 
-// Add middleware to log all requests
-router.use((req, res, next) => {
-  console.log('🔍 [ADMIN_AUTH] Request received:', req.method, req.url);
-  console.log('🔍 [ADMIN_AUTH] Request at:', new Date().toISOString());
-  next();
-});
-
 /**
  * @route   POST /api/admin/auth/login
  * @desc    Admin login with email and password
  * @access  Public
  */
 router.post('/login', async (req, res) => {
-  console.log('🔐 [ADMIN LOGIN] ==========================================');
-  console.log('🔐 [ADMIN LOGIN] Login request received at:', new Date().toISOString());
-  console.log('🔐 [ADMIN LOGIN] Request headers:', req.headers);
-  console.log('🔐 [ADMIN LOGIN] Request body:', req.body ? { ...req.body, idToken: req.body.idToken ? 'PRESENT' : 'MISSING' } : 'NO_BODY');
-  
   try {
     const { idToken } = req.body;
-    console.log('🔐 [ADMIN LOGIN] ID token received:', idToken ? 'YES' : 'NO');
 
     if (!idToken) {
       return res.status(400).json({
@@ -338,58 +325,18 @@ router.post('/login', async (req, res) => {
       });
     }
     
-    console.log('🔑 [ADMIN LOGIN] Generating JWT token...');
-    console.log('🔑 [ADMIN LOGIN] Admin user data for JWT:', {
-      uid: adminUser.uid,
-      email: adminUser.email,
-      role: adminUser.role,
-      permissions: adminUser.permissions,
-      hasUid: !!adminUser.uid,
-      hasEmail: !!adminUser.email,
-      hasRole: !!adminUser.role,
-      hasPermissions: !!adminUser.permissions
-    });
-    
-    let token;
-    try {
-      token = jwt.sign(
-        {
-          userId: adminUser.uid,
-          email: adminUser.email,
-          userType: 'admin',
-          role: adminUser.role,
-          permissions: adminUser.permissions || []
-        },
-        process.env.JWT_SECRET,
-        { expiresIn: '24h' }
-      );
-      console.log('✅ [ADMIN LOGIN] JWT token generated successfully');
-    } catch (jwtError) {
-      console.error('❌ [ADMIN LOGIN] JWT token generation failed:', jwtError);
-      return res.status(500).json({
-        success: false,
-        error: {
-          message: 'Failed to generate authentication token',
-          code: 'JWT_GENERATION_FAILED'
-        }
-      });
-    }
+    const token = jwt.sign(
+      {
+        userId: adminUser.uid,
+        email: adminUser.email,
+        userType: 'admin',
+        role: adminUser.role,
+        permissions: adminUser.permissions
+      },
+      process.env.JWT_SECRET,
+      { expiresIn: '24h' }
+    );
 
-    console.log('✅ [ADMIN LOGIN] Sending successful response...');
-    console.log('📤 [ADMIN LOGIN] Response data:', {
-      success: true,
-      message: 'Admin login successful',
-      data: {
-        user: {
-          id: adminUser.id,
-          email: adminUser.email,
-          name: adminUser.name,
-          role: adminUser.role,
-          permissions: adminUser.permissions
-        },
-        token: token ? 'JWT_TOKEN_PRESENT' : 'JWT_TOKEN_MISSING'
-      }
-    });
 
     res.json({
       success: true,
@@ -406,31 +353,18 @@ router.post('/login', async (req, res) => {
       },
       timestamp: new Date().toISOString()
     });
-    
-    console.log('✅ [ADMIN LOGIN] Response sent successfully');
 
   } catch (error) {
-    console.error('❌ [ADMIN LOGIN] ==========================================');
-    console.error('❌ [ADMIN LOGIN] ERROR OCCURRED');
-    console.error('❌ [ADMIN LOGIN] Error type:', error.constructor.name);
-    console.error('❌ [ADMIN LOGIN] Error message:', error.message);
-    console.error('❌ [ADMIN LOGIN] Error stack:', error.stack);
-    console.error('❌ [ADMIN LOGIN] ==========================================');
-    
-    // Ensure response hasn't been sent yet
-    if (!res.headersSent) {
-      res.status(500).json({
-        success: false,
-        error: {
-          code: 'LOGIN_ERROR',
-          message: 'Failed to login admin user',
-          details: error.message
-        },
-        timestamp: new Date().toISOString()
-      });
-    } else {
-      console.error('❌ [ADMIN LOGIN] Cannot send error response - headers already sent');
-    }
+    console.error('Admin login error:', error);
+    res.status(500).json({
+      success: false,
+      error: {
+        code: 'LOGIN_ERROR',
+        message: 'Failed to login admin user',
+        details: error.message
+      },
+      timestamp: new Date().toISOString()
+    });
   }
 });
 

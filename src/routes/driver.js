@@ -240,12 +240,20 @@ router.get('/profile', requireDriver, async (req, res) => {
     
     try {
       comprehensiveVerificationData = await verificationService.getDriverVerificationData(uid);
-      console.log('📊 [PROFILE] Comprehensive verification data:', comprehensiveVerificationData);
-      console.log('🔍 [PROFILE] Verification status from service:', comprehensiveVerificationData?.verificationStatus);
-      console.log('🔍 [PROFILE] Driver data verification status:', driverData.verificationStatus);
+      
+      // ✅ CRITICAL FIX: Handle null return from verification service
+      if (!comprehensiveVerificationData) {
+        console.warn('⚠️ [PROFILE] Verification service returned null, using basic data');
+        comprehensiveVerificationData = null;
+      } else {
+        console.log('📊 [PROFILE] Comprehensive verification data:', comprehensiveVerificationData);
+        console.log('🔍 [PROFILE] Verification status from service:', comprehensiveVerificationData.verificationStatus);
+        console.log('🔍 [PROFILE] Driver data verification status:', driverData.verificationStatus);
+      }
     } catch (verificationError) {
       console.warn('⚠️ [PROFILE] Failed to get comprehensive verification data, using basic data:', verificationError.message);
       console.error('❌ [PROFILE] Verification service error details:', verificationError);
+      comprehensiveVerificationData = null;
     }
     
     // Get points wallet data
@@ -6083,11 +6091,18 @@ router.get('/documents/status', requireDriver, documentStatusRateLimit, document
     
     try {
       comprehensiveVerificationData = await verificationService.getDriverVerificationData(uid);
-      console.log('📊 Comprehensive verification data:', comprehensiveVerificationData);
+      
+      // ✅ CRITICAL FIX: Handle null return from verification service
+      if (!comprehensiveVerificationData) {
+        console.warn('⚠️ Verification service returned null, using basic data');
+      } else {
+        console.log('📊 Comprehensive verification data:', comprehensiveVerificationData);
+      }
     } catch (verificationError) {
       console.warn('⚠️ Failed to get comprehensive verification data, using basic data:', verificationError.message);
+      comprehensiveVerificationData = null;
     }
-
+    
     // ✅ CRITICAL FIX: Use Firebase Storage data for document status
     const finalVerificationStatus = comprehensiveVerificationData?.verificationStatus || verificationStatus;
     

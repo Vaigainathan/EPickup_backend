@@ -7,16 +7,29 @@ class VerificationService {
 
   /**
    * Get Firestore instance (lazy initialization)
+   * ✅ CRITICAL FIX: Retry with initialization if Firestore is not available
    */
   getDb() {
     if (!this.db) {
       try {
-        // ✅ CRITICAL FIX: Use the same Firebase service as other parts of the app
+        // ✅ CRITICAL FIX: Try to get Firestore instance
         this.db = getFirestore();
         
         // ✅ CRITICAL FIX: Verify the database instance is valid
         if (!this.db) {
-          throw new Error('Firestore instance is null');
+          // Retry once - Firebase might not be fully initialized yet
+          console.log('⚠️ [VerificationService] Firestore returned null, retrying...');
+          const admin = require('firebase-admin');
+          
+          // Wait a bit for initialization
+          if (admin.apps.length > 0) {
+            const app = admin.app();
+            this.db = app.firestore();
+          }
+          
+          if (!this.db) {
+            throw new Error('Firestore instance is null after retry');
+          }
         }
         
         console.log('✅ [VerificationService] Firestore instance initialized successfully');
@@ -27,7 +40,8 @@ class VerificationService {
           stack: error.stack,
           firebaseApps: require('firebase-admin').apps.length
         });
-        throw new Error('Firebase not initialized. Please ensure Firebase is initialized before using VerificationService.');
+        // Don't throw - return null and let caller handle it gracefully
+        return null;
       }
     }
     return this.db;
@@ -35,13 +49,16 @@ class VerificationService {
 
   /**
    * Get Firestore instance with safety checks
+   * ✅ CRITICAL FIX: Return null instead of throwing to allow graceful fallback
    */
   getDbSafe() {
     const db = this.getDb();
     
-    // ✅ CRITICAL FIX: Verify database instance is valid
+    // ✅ CRITICAL FIX: If database is null, return null and let caller handle it
+    // This allows the caller to use fallback data instead of crashing
     if (!db) {
-      throw new Error('Database instance is null - Firebase not properly initialized');
+      console.warn('⚠️ [VerificationService] Database instance is null - returning null for graceful fallback');
+      return null;
     }
     
     return db;
@@ -203,8 +220,16 @@ class VerificationService {
     try {
       console.log(`🔍 Getting verification data for driver: ${driverId}`);
 
-      // Get driver from users collection
+      // ✅ CRITICAL FIX: Get database instance with null check
       const db = this.getDbSafe();
+      
+      // ✅ CRITICAL FIX: If database is null, return null to allow graceful fallback
+      if (!db) {
+        console.warn('⚠️ [VerificationService] Firestore not available, skipping verification data');
+        return null;
+      }
+      
+      // Get driver from users collection
       const driverDoc = await db.collection('users').doc(driverId).get();
       if (!driverDoc.exists) {
         throw new Error('Driver not found');
@@ -459,7 +484,13 @@ class VerificationService {
    * Update driver verification status in all relevant collections
    */
   async updateDriverVerificationStatus(driverId, verificationData) {
+    // ✅ CRITICAL FIX: Check if database is available
     const db = this.getDbSafe();
+    if (!db) {
+      console.warn('⚠️ [VerificationService] Cannot update driver status - Firestore not available');
+      return;
+    }
+    
     const batch = db.batch();
     
     try {
@@ -531,6 +562,12 @@ class VerificationService {
       
       // ✅ CRITICAL FIX: Use safer database access
       const db = this.getDbSafe();
+      
+      // ✅ CRITICAL FIX: If database is null, throw error immediately
+      if (!db) {
+        console.error('❌ [VerificationService] Cannot verify document - Firestore not available');
+        throw new Error('Firestore not available. Cannot verify document.');
+      }
       
       console.log('✅ [VerificationService] Database instance verified, proceeding with verification');
       
@@ -940,7 +977,12 @@ class VerificationService {
     try {
       console.log(`✅ Approving driver: ${driverId}`);
       
+      // ✅ CRITICAL FIX: Check if database is available
       const db = this.getDbSafe();
+      if (!db) {
+        throw new Error('Firestore not available. Cannot approve driver.');
+      }
+      
       const batch = db.batch();
       const driverRef = db.collection('users').doc(driverId);
       
@@ -1018,7 +1060,12 @@ class VerificationService {
     try {
       console.log(`❌ Rejecting driver: ${driverId}`);
       
+      // ✅ CRITICAL FIX: Check if database is available
       const db = this.getDbSafe();
+      if (!db) {
+        throw new Error('Firestore not available. Cannot reject driver.');
+      }
+      
       const batch = db.batch();
       const driverRef = db.collection('users').doc(driverId);
       

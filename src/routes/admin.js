@@ -1965,7 +1965,29 @@ router.get('/drivers/:driverId/documents', async (req, res) => {
       }
     }
 
-    // ✅ CRITICAL FIX: Map document types to expected format for admin dashboard
+    // ✅ CRITICAL FIX: Get actual verification status from Firestore
+    const firestoreDocs = driverData.driver?.documents || driverData.documents || {};
+    
+    // Helper function to get verification status for a document
+    const getDocStatus = (docType) => {
+      const firestoreDoc = firestoreDocs[docType];
+      if (!firestoreDoc) return { status: 'pending', verified: false };
+      
+      // Check multiple possible status fields for compatibility
+      const status = firestoreDoc.status || firestoreDoc.verificationStatus || 'pending';
+      const verified = firestoreDoc.verified === true || status === 'verified';
+      
+      return {
+        status: status === 'verified' ? 'verified' : status === 'rejected' ? 'rejected' : 'uploaded',
+        verified,
+        verifiedAt: firestoreDoc.verifiedAt,
+        verifiedBy: firestoreDoc.verifiedBy,
+        verificationComments: firestoreDoc.verificationComments,
+        rejectionReason: firestoreDoc.rejectionReason
+      };
+    };
+    
+    // ✅ CRITICAL FIX: Map document types to expected format with ACTUAL verification status
     const mappedDocuments = {
       drivingLicense: documents.driving_license ? {
         url: documents.driving_license.downloadURL,
@@ -1973,8 +1995,8 @@ router.get('/drivers/:driverId/documents', async (req, res) => {
         uploadedAt: documents.driving_license.uploadedAt,
         size: documents.driving_license.size,
         contentType: documents.driving_license.contentType,
-        status: 'uploaded',
-        verified: false
+        documentType: 'drivingLicense',
+        ...getDocStatus('drivingLicense')
       } : null,
       profilePhoto: documents.profile_photo ? {
         url: documents.profile_photo.downloadURL,
@@ -1982,8 +2004,8 @@ router.get('/drivers/:driverId/documents', async (req, res) => {
         uploadedAt: documents.profile_photo.uploadedAt,
         size: documents.profile_photo.size,
         contentType: documents.profile_photo.contentType,
-        status: 'uploaded',
-        verified: false
+        documentType: 'profilePhoto',
+        ...getDocStatus('profilePhoto')
       } : null,
       aadhaarCard: documents.aadhaar_card ? {
         url: documents.aadhaar_card.downloadURL,
@@ -1991,8 +2013,8 @@ router.get('/drivers/:driverId/documents', async (req, res) => {
         uploadedAt: documents.aadhaar_card.uploadedAt,
         size: documents.aadhaar_card.size,
         contentType: documents.aadhaar_card.contentType,
-        status: 'uploaded',
-        verified: false
+        documentType: 'aadhaarCard',
+        ...getDocStatus('aadhaarCard')
       } : null,
       bikeInsurance: documents.bike_insurance ? {
         url: documents.bike_insurance.downloadURL,
@@ -2000,8 +2022,8 @@ router.get('/drivers/:driverId/documents', async (req, res) => {
         uploadedAt: documents.bike_insurance.uploadedAt,
         size: documents.bike_insurance.size,
         contentType: documents.bike_insurance.contentType,
-        status: 'uploaded',
-        verified: false
+        documentType: 'bikeInsurance',
+        ...getDocStatus('bikeInsurance')
       } : null,
       rcBook: documents.rc_book ? {
         url: documents.rc_book.downloadURL,
@@ -2009,8 +2031,8 @@ router.get('/drivers/:driverId/documents', async (req, res) => {
         uploadedAt: documents.rc_book.uploadedAt,
         size: documents.rc_book.size,
         contentType: documents.rc_book.contentType,
-        status: 'uploaded',
-        verified: false
+        documentType: 'rcBook',
+        ...getDocStatus('rcBook')
       } : null
     };
     

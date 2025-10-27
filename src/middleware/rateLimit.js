@@ -97,12 +97,13 @@ const adminLimiter = rateLimit({
 });
 
 // Speed limiter for gradual slowdown
+// ✅ CRITICAL FIX: Increased thresholds to prevent premature rate limiting
 const speedLimiter = slowDown({
   windowMs: 15 * 60 * 1000, // 15 minutes
-  delayAfter: process.env.NODE_ENV === 'development' ? 2000 : 500, // Much higher threshold for mobile apps
-  delayMs: () => 200, // Reduced delay from 500ms to 200ms
-  maxDelayMs: 5000, // Reduced max delay from 20s to 5s
-  skipSuccessfulRequests: false,
+  delayAfter: process.env.NODE_ENV === 'development' ? 5000 : 2000, // ✅ Increased from 500 to 2000 for driver app
+  delayMs: () => 100, // ✅ Reduced delay from 200ms to 100ms
+  maxDelayMs: 2000, // ✅ Reduced max delay from 5s to 2s
+  skipSuccessfulRequests: true, // ✅ Skip successful requests to avoid blocking polling
   skipFailedRequests: false,
   // Skip speed limiting for localhost in development
   skip: (req) => {

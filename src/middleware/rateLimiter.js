@@ -98,10 +98,11 @@ const strictRateLimit = createRateLimiter({
 
 /**
  * Moderate rate limiter for regular endpoints
+ * ✅ CRITICAL FIX: Increased limits for driver app
  */
 const moderateRateLimit = createRateLimiter({
   windowMs: 5 * 60 * 1000, // 5 minutes
-  max: process.env.NODE_ENV === 'development' ? 1000 : 300, // Increased for mobile apps
+  max: process.env.NODE_ENV === 'development' ? 2000 : 800, // ✅ Increased from 300 to 800 for driver app
   message: {
     success: false,
     error: {
@@ -133,10 +134,11 @@ const lightRateLimit = createRateLimiter({
 /**
  * Document status specific rate limiter
  * More lenient since it's polled frequently
+ * ✅ CRITICAL FIX: Increased limits for driver app
  */
 const documentStatusRateLimit = createRateLimiter({
   windowMs: 1 * 60 * 1000, // 1 minute
-  max: process.env.NODE_ENV === 'development' ? 200 : 60, // Much higher for document polling
+  max: process.env.NODE_ENV === 'development' ? 500 : 200, // ✅ Increased from 60 to 200 for driver app
   message: {
     success: false,
     error: {

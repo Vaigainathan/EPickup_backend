@@ -549,22 +549,16 @@ class VerificationService {
       // Normalize document type
       const normalizedDocType = this.normalizeDocumentField(documentType);
       
-      // CRITICAL FIX: Always update documents in users collection, even if not present
-      // This ensures the Driver App can read the verification status
-      if (!documents[normalizedDocType]) {
-        documents[normalizedDocType] = {
-          url: '', // Will be populated from other sources
-          status: 'pending',
-          uploadedAt: '',
-          verified: false
-        };
-      }
+      console.log(`📋 [VERIFICATION] Updating document ${documentType} (normalized: ${normalizedDocType}) for driver: ${driverId}`);
+      console.log(`📋 [VERIFICATION] Current documents keys:`, Object.keys(documents));
       
-      // Update specific document in users collection with BOTH field names for compatibility
-      documents[normalizedDocType] = {
-        ...documents[normalizedDocType],
+      // CRITICAL FIX: Update BOTH camelCase and snake_case versions for compatibility
+      const snakeCaseType = this.toSnakeCase(documentType);
+      
+      // Update both versions to ensure compatibility
+      const updateFields = {
         status: status === 'verified' ? 'verified' : 'rejected',
-        verificationStatus: status === 'verified' ? 'verified' : 'rejected', // Admin App field
+        verificationStatus: status === 'verified' ? 'verified' : 'rejected',
         verified: status === 'verified',
         verifiedAt: new Date(),
         verifiedBy: adminId,
@@ -572,11 +566,49 @@ class VerificationService {
         rejectionReason: status === 'rejected' ? rejectionReason : null
       };
       
-      // Update driver's documents
-      batch.update(driverRef, {
+      // Update camelCase version
+      if (documents[normalizedDocType]) {
+        documents[normalizedDocType] = {
+          ...documents[normalizedDocType],
+          ...updateFields
+        };
+        console.log(`✅ [VERIFICATION] Updated camelCase document: ${normalizedDocType}`);
+      }
+      
+      // Update snake_case version
+      if (documents[snakeCaseType]) {
+        documents[snakeCaseType] = {
+          ...documents[snakeCaseType],
+          ...updateFields
+        };
+        console.log(`✅ [VERIFICATION] Updated snake_case document: ${snakeCaseType}`);
+      }
+      
+      // If neither exists, create camelCase version
+      if (!documents[normalizedDocType] && !documents[snakeCaseType]) {
+        documents[normalizedDocType] = {
+          url: '', // Will be populated from other sources
+          status: 'pending',
+          uploadedAt: '',
+          verified: false,
+          ...updateFields
+        };
+        console.log(`✅ [VERIFICATION] Created new camelCase document: ${normalizedDocType}`);
+      }
+      
+      // ✅ CRITICAL FIX: Update documents in BOTH locations for consistency
+      const updateData = {
         'driver.documents': documents,
         updatedAt: new Date()
-      });
+      };
+      
+      // Also update top-level documents field
+      if (driverData.documents) {
+        updateData['documents'] = documents;
+      }
+      
+      console.log(`📝 [VERIFICATION] Batch update data keys:`, Object.keys(updateData));
+      batch.update(driverRef, updateData);
 
       // Update driverDocuments collection (avoid composite index by filtering in memory)
       const snakeCaseDocType = this.toSnakeCase(documentType);

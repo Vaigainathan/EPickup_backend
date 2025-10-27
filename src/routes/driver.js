@@ -438,14 +438,35 @@ router.get('/documents', requireDriver, async (req, res) => {
     // ✅ CRITICAL FIX: Get actual verification status from Firestore
     const firestoreDocs = userData.driver?.documents || userData.documents || {};
     
+    console.log(`📋 [DRIVER_DOCS] Reading documents for user ${uid}`);
+    console.log(`📋 [DRIVER_DOCS] Firestore documents keys:`, Object.keys(firestoreDocs));
+    
     // Helper function to get verification status for a document
     const getDocStatus = (docType) => {
-      const firestoreDoc = firestoreDocs[docType];
-      if (!firestoreDoc) return { status: 'pending', verified: false };
+      // ✅ CRITICAL FIX: Check BOTH camelCase and snake_case document keys
+      // Try camelCase first
+      let firestoreDoc = firestoreDocs[docType];
+      const camelKey = docType;
+      
+      // If not found, try snake_case
+      if (!firestoreDoc) {
+        const snakeCaseKey = docType.replace(/([A-Z])/g, '_$1').toLowerCase();
+        firestoreDoc = firestoreDocs[snakeCaseKey];
+        console.log(`📋 [DRIVER_DOCS] ${docType}: Tried camelCase (${camelKey}) → snake_case (${snakeCaseKey})`, firestoreDoc ? 'found' : 'not found');
+      } else {
+        console.log(`📋 [DRIVER_DOCS] ${docType}: Found in camelCase (${camelKey})`);
+      }
+      
+      if (!firestoreDoc) {
+        console.log(`⚠️ [DRIVER_DOCS] ${docType}: No document found in Firestore`);
+        return { status: 'pending', verified: false };
+      }
       
       // Check multiple possible status fields for compatibility
       const status = firestoreDoc.status || firestoreDoc.verificationStatus || 'pending';
       const verified = firestoreDoc.verified === true || status === 'verified';
+      
+      console.log(`📋 [DRIVER_DOCS] ${docType}: status=${status}, verified=${verified}, verifiedAt=${firestoreDoc.verifiedAt || 'empty'}`);
       
       return {
         status: status === 'verified' ? 'verified' : status === 'rejected' ? 'rejected' : 'uploaded',

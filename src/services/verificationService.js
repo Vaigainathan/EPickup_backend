@@ -207,7 +207,7 @@ class VerificationService {
       const normalizedType = documentType.replace(/([A-Z])/g, '_$1').toLowerCase();
       console.log(`🔧 [VerificationService] Normalizing document type: ${documentType} → ${normalizedType}`);
       
-      // Update document status using normalized type
+      // Update document status using normalized type at driver.documents.{type}
       const docPath = `driver.documents.${normalizedType}`;
       const updates = {
         [`${docPath}.verified`]: status === 'verified',
@@ -222,7 +222,20 @@ class VerificationService {
         updates[`${docPath}.rejectionReason`] = rejectionReason || null;
       }
 
+      console.log(`📝 [VerificationService] Updating document: ${docPath} with status: ${status}`);
+      console.log(`📝 [VerificationService] Updates:`, JSON.stringify(updates, null, 2));
+      
       await db.collection('users').doc(driverId).update(updates);
+      
+      // ✅ Log the update for debugging
+      const updatedDoc = await db.collection('users').doc(driverId).get();
+      const updatedData = updatedDoc.data();
+      console.log(`✅ [VerificationService] Updated document in Firestore:`, {
+        path: docPath,
+        status,
+        verified: updatedData?.driver?.documents?.[normalizedType]?.verified,
+        verifiedAt: updatedData?.driver?.documents?.[normalizedType]?.verifiedAt
+      });
 
       // Recalculate overall status
       const verificationData = await this.getDriverVerificationData(driverId);

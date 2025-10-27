@@ -6121,22 +6121,82 @@ router.get('/documents/status', requireDriver, documentStatusRateLimit, document
     // ✅ CRITICAL FIX: Use Firebase Storage data for document status
     const finalVerificationStatus = comprehensiveVerificationData?.verificationStatus || verificationStatus;
     
+    // ✅ CRITICAL FIX: Get actual verification status from Firestore
+    const firestoreDocs = userData.driver?.documents || userData.documents || {};
+    const comprehensiveDocs = comprehensiveVerificationData?.documents || {};
+    
+    console.log('📋 [DOC_STATUS] Firestore documents data:', JSON.stringify(firestoreDocs, null, 2));
+    console.log('📋 [DOC_STATUS] Firestore documents keys:', Object.keys(firestoreDocs));
+    console.log('📋 [DOC_STATUS] Comprehensive documents data:', JSON.stringify(comprehensiveDocs, null, 2));
+    console.log('📋 [DOC_STATUS] Comprehensive documents keys:', Object.keys(comprehensiveDocs));
+    
+    // Helper function to get verification status from Firestore
+    const getFirestoreDocStatus = (docType) => {
+      // Firestore stores documents in snake_case (e.g., driving_license)
+      const firestoreDoc = firestoreDocs[docType];
+      
+      console.log(`🔍 [DOC_STATUS] Checking ${docType}:`, {
+        exists: !!firestoreDoc,
+        verified: firestoreDoc?.verified,
+        status: firestoreDoc?.status,
+        verificationStatus: firestoreDoc?.verificationStatus,
+        verifiedAt: firestoreDoc?.verifiedAt,
+        verifiedBy: firestoreDoc?.verifiedBy
+      });
+      
+      if (!firestoreDoc) {
+        console.log(`⚠️ [DOC_STATUS] No Firestore data found for ${docType}`);
+        return null;
+      }
+      
+      // Check multiple possible status fields for compatibility
+      const status = firestoreDoc.status || firestoreDoc.verificationStatus || 'pending';
+      const verified = firestoreDoc.verified === true || status === 'verified';
+      
+      console.log(`✅ [DOC_STATUS] Status for ${docType}:`, { status, verified });
+      
+      return {
+        status: status === 'verified' ? 'verified' : status === 'rejected' ? 'rejected' : 'uploaded',
+        verified,
+        verifiedAt: firestoreDoc.verifiedAt?.toDate?.()?.toISOString() || firestoreDoc.verifiedAt?.toISOString?.() || firestoreDoc.verifiedAt,
+        verifiedBy: firestoreDoc.verifiedBy,
+        comments: firestoreDoc.comments || firestoreDoc.verificationComments,
+        rejectionReason: firestoreDoc.rejectionReason
+      };
+    };
+    
     // Map Firebase Storage documents to expected format
     const requiredDocuments = ['driving_license', 'profile_photo', 'aadhaar_card', 'bike_insurance', 'rc_book'];
     const finalDocuments = {};
     
     requiredDocuments.forEach(docType => {
       const doc = documents[docType] || {};
+      
+      // ✅ CRITICAL FIX: Get Firestore verification data
+      const firestoreStatus = getFirestoreDocStatus(docType);
+      
+      // ✅ CRITICAL FIX: Fallback to comprehensive data if Firestore data is missing
+      const comprehensiveDoc = comprehensiveDocs[docType];
+      const finalStatus = firestoreStatus || (comprehensiveDoc ? {
+        status: comprehensiveDoc.verificationStatus || comprehensiveDoc.status || 'uploaded',
+        verified: comprehensiveDoc.verified === true,
+        verifiedAt: comprehensiveDoc.verifiedAt,
+        verifiedBy: comprehensiveDoc.verifiedBy,
+        comments: comprehensiveDoc.comments,
+        rejectionReason: comprehensiveDoc.rejectionReason
+      } : null);
+      
+      // Merge Storage data with Firestore verification data
       finalDocuments[docType] = {
         url: doc.downloadURL || '',
-        status: doc.downloadURL ? 'uploaded' : 'not_uploaded',
-        verificationStatus: doc.downloadURL ? 'uploaded' : 'not_uploaded',
+        status: finalStatus?.status || (doc.downloadURL ? 'uploaded' : 'not_uploaded'),
+        verificationStatus: finalStatus?.status || (doc.downloadURL ? 'uploaded' : 'not_uploaded'),
         uploadedAt: doc.uploadedAt || '',
-        verified: false,
-        rejectionReason: null,
-        verifiedAt: null,
-        verifiedBy: null,
-        comments: null,
+        verified: finalStatus?.verified || false,
+        rejectionReason: finalStatus?.rejectionReason || null,
+        verifiedAt: finalStatus?.verifiedAt || null,
+        verifiedBy: finalStatus?.verifiedBy || null,
+        comments: finalStatus?.comments || null,
         number: null,
         fileSize: doc.size || null,
         lastModified: doc.uploadedAt || null,

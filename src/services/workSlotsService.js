@@ -87,21 +87,58 @@ class WorkSlotsService {
       
       if (!existingSnapshot.empty) {
         console.log(`📋 [WORK_SLOTS] Preserving selection state from ${existingSnapshot.size} existing slots`);
+        const now = new Date();
+        
         existingSnapshot.forEach(doc => {
           const slotData = doc.data();
-          // Preserve selection if slot was selected
-          if (slotData.isSelected === true) {
-            // Use time range as key for more reliable matching (slotId format may change)
-            const startHour = slotData.startTime.toDate().getHours();
-            const endHour = slotData.endTime.toDate().getHours();
-            const timeRangeKey = `${startHour}-${endHour}`;
+          // ✅ CRITICAL FIX #3: Only preserve selection if slot was selected AND not cleared recently
+          // Check if slot was selected AND has a recent selectedAt timestamp (not stale)
+          if (slotData.isSelected === true && slotData.selectedAt) {
+            const selectedAt = slotData.selectedAt.toDate();
+            const hoursSinceSelection = (now.getTime() - selectedAt.getTime()) / (1000 * 60 * 60);
             
-            preservedSelections.set(timeRangeKey, {
-              isSelected: true,
-              selectedAt: slotData.selectedAt || null,
-              slotId: slotData.slotId || doc.id // Also preserve original slotId for reference
-            });
-            console.log(`✅ [WORK_SLOTS] Preserving selection for slot: ${slotData.label} (${timeRangeKey})`);
+            // ✅ Only preserve if selection was made recently (within last 24 hours) to avoid stale data
+            // This prevents old selections from being restored after user clears them
+            if (hoursSinceSelection < 24) {
+              // Use time range as key for more reliable matching (slotId format may change)
+              const startHour = slotData.startTime.toDate().getHours();
+              const endHour = slotData.endTime.toDate().getHours();
+              const timeRangeKey = `${startHour}-${endHour}`;
+              
+              preservedSelections.set(timeRangeKey, {
+                isSelected: true,
+                selectedAt: slotData.selectedAt || null,
+                slotId: slotData.slotId || doc.id // Also preserve original slotId for reference
+              });
+              console.log(`✅ [WORK_SLOTS] Preserving selection for slot: ${slotData.label} (${timeRangeKey})`);
+            } else {
+              console.log(`⚠️ [WORK_SLOTS] Skipping stale selection for slot: ${slotData.label} (selected ${hoursSinceSelection.toFixed(1)} hours ago)`);
+            }
+          } else if (slotData.isSelected === true && !slotData.selectedAt) {
+            // Slot marked as selected but no selectedAt timestamp - might be default/stale
+            // Only preserve if it was updated recently (updatedAt check)
+            if (slotData.updatedAt) {
+              const updatedAt = slotData.updatedAt.toDate();
+              const hoursSinceUpdate = (now.getTime() - updatedAt.getTime()) / (1000 * 60 * 60);
+              
+              // Only preserve if updated within last 1 hour (very recent activity)
+              if (hoursSinceUpdate < 1) {
+                const startHour = slotData.startTime.toDate().getHours();
+                const endHour = slotData.endTime.toDate().getHours();
+                const timeRangeKey = `${startHour}-${endHour}`;
+                
+                preservedSelections.set(timeRangeKey, {
+                  isSelected: true,
+                  selectedAt: Timestamp.now(), // Use current time as fallback
+                  slotId: slotData.slotId || doc.id
+                });
+                console.log(`⚠️ [WORK_SLOTS] Preserving selection without selectedAt for slot: ${slotData.label} (${timeRangeKey})`);
+              } else {
+                console.log(`⚠️ [WORK_SLOTS] Skipping stale selection (no selectedAt, updated ${hoursSinceUpdate.toFixed(1)} hours ago) for slot: ${slotData.label}`);
+              }
+            } else {
+              console.log(`⚠️ [WORK_SLOTS] Skipping selection without selectedAt or updatedAt for slot: ${slotData.label}`);
+            }
           }
         });
         
@@ -380,8 +417,9 @@ class WorkSlotsService {
 
       // ✅ CRITICAL FIX #1: Check if driver is online BEFORE allowing deselection
       // ✅ INDUSTRY STANDARD: Drivers cannot modify slots while online (prevents workflow conflicts)
+      // ✅ CRITICAL FIX #4: Always fetch FRESH driver status from database to avoid stale state
       if (!isSelected) {
-        // Trying to deselect - check driver status
+        // Trying to deselect - check driver status (ALWAYS fetch fresh from DB)
         const userDoc = await db.collection('users').doc(driverId).get();
         if (!userDoc.exists) {
           return {
@@ -396,6 +434,13 @@ class WorkSlotsService {
 
         const driverData = userDoc.data();
         const isDriverOnline = driverData?.driver?.isOnline === true;
+        
+        // ✅ CRITICAL FIX #4: Log actual database state for debugging
+        console.log(`🔍 [SLOT_SELECTION] Driver ${driverId} online status from DB:`, {
+          isOnline: isDriverOnline,
+          timestamp: new Date().toISOString(),
+          driverDataKeys: Object.keys(driverData || {})
+        });
 
         // ✅ VALIDATION RULE 1: Block deselection if driver is online
         if (isDriverOnline) {
@@ -455,6 +500,19 @@ class WorkSlotsService {
       const now = new Date();
       const slotStartTime = slotData.startTime.toDate();
       const slotEndTime = slotData.endTime.toDate();
+      
+      // ✅ CRITICAL FIX #2: Prevent selecting slots that have already ended
+      if (isSelected && now > slotEndTime) {
+        console.log(`❌ [SLOT_SELECTION] Driver ${driverId} attempted to select slot that has already ended`);
+        return {
+          success: false,
+          error: {
+            code: 'SLOT_ALREADY_ENDED',
+            message: 'Cannot select slot',
+            details: 'This slot has already ended. You can only select current or future slots.'
+          }
+        };
+      }
       
       // Block deselection if slot is currently active (started but not ended)
       if (now >= slotStartTime && now <= slotEndTime && !isSelected) {
@@ -650,6 +708,12 @@ class WorkSlotsService {
         const now = new Date();
         const slotStartTime = slotData.startTime.toDate();
         const slotEndTime = slotData.endTime.toDate();
+        
+        // ✅ CRITICAL FIX #2: Prevent selecting slots that have already ended
+        if (isSelected && now > slotEndTime) {
+          errors.push({ slotId, error: 'Slot already ended' });
+          continue; // Skip selection of past slots
+        }
         
         // ✅ VALIDATION RULE 3: Time-based validation per slot
         // Block deselection if slot is currently active (started but not ended)

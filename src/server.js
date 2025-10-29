@@ -837,6 +837,11 @@ async function initializeServices() {
     await monitoringService.initialize();
     console.log('✅ Monitoring service initialized');
 
+    // ✅ CRITICAL FIX: Initialize slot enforcement service
+    const slotEnforcementService = require('./services/slotEnforcementService');
+    slotEnforcementService.initialize();
+    console.log('✅ Slot enforcement service initialized');
+
     // Performance monitoring handled by monitoringService
     console.log('✅ Performance monitoring consolidated into monitoringService');
     

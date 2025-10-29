@@ -1808,6 +1808,97 @@ router.put('/status', [
       hasDriverObject: !!existingData.driver
     });
 
+    // ✅ CRITICAL FIX: Validate work slots when driver tries to go online
+    if (isOnline === true) {
+      console.log('🔍 [STATUS_UPDATE] Driver trying to go online - validating work slots');
+      
+      try {
+        const workSlotsService = require('../services/workSlotsService');
+        const slotsResult = await workSlotsService.getDriverSlots(uid, new Date());
+        
+        if (!slotsResult.success) {
+          console.error('❌ [STATUS_UPDATE] Failed to fetch work slots:', slotsResult.error);
+          return res.status(400).json({
+            success: false,
+            error: {
+              code: 'SLOT_VALIDATION_ERROR',
+              message: 'Failed to validate work slots',
+              details: 'Unable to check driver work slots'
+            },
+            timestamp: new Date().toISOString()
+          });
+        }
+
+        const slots = slotsResult.data || [];
+        const now = new Date();
+        
+        // Find selected slots
+        const selectedSlots = slots.filter(slot => slot.isSelected === true);
+        
+        if (selectedSlots.length === 0) {
+          console.log('❌ [STATUS_UPDATE] Driver has no selected slots');
+          return res.status(400).json({
+            success: false,
+            error: {
+              code: 'NO_SELECTED_SLOTS',
+              message: 'Cannot go online',
+              details: 'You must select at least one work slot before going online'
+            },
+            timestamp: new Date().toISOString()
+          });
+        }
+
+        // Check if current time falls within any selected slot
+        const activeSlot = selectedSlots.find(slot => {
+          const startTime = slot.startTime?.toDate ? slot.startTime.toDate() : new Date(slot.startTime);
+          const endTime = slot.endTime?.toDate ? slot.endTime.toDate() : new Date(slot.endTime);
+          return now >= startTime && now <= endTime;
+        });
+
+        if (!activeSlot) {
+          console.log('❌ [STATUS_UPDATE] Driver not in active slot time');
+          const nextSlot = selectedSlots
+            .filter(slot => {
+              const startTime = slot.startTime?.toDate ? slot.startTime.toDate() : new Date(slot.startTime);
+              return startTime > now;
+            })
+            .sort((a, b) => {
+              const aStart = a.startTime?.toDate ? a.startTime.toDate() : new Date(a.startTime);
+              const bStart = b.startTime?.toDate ? b.startTime.toDate() : new Date(b.startTime);
+              return aStart - bStart;
+            })[0];
+
+          const nextSlotTime = nextSlot ? 
+            (nextSlot.startTime?.toDate ? nextSlot.startTime.toDate() : new Date(nextSlot.startTime)) : null;
+
+          return res.status(400).json({
+            success: false,
+            error: {
+              code: 'NOT_IN_SLOT_TIME',
+              message: 'Cannot go online',
+              details: nextSlotTime ? 
+                `You can only go online during your selected slot times. Next slot starts at ${nextSlotTime.toLocaleTimeString()}` :
+                'You can only go online during your selected slot times'
+            },
+            timestamp: new Date().toISOString()
+          });
+        }
+
+        console.log('✅ [STATUS_UPDATE] Driver is in active slot, allowing online status');
+      } catch (slotError) {
+        console.error('❌ [STATUS_UPDATE] Error validating work slots:', slotError);
+        return res.status(500).json({
+          success: false,
+          error: {
+            code: 'SLOT_VALIDATION_ERROR',
+            message: 'Failed to validate work slots',
+            details: 'An error occurred while checking work slots'
+          },
+          timestamp: new Date().toISOString()
+        });
+      }
+    }
+
     const updateData = {
       'driver.isOnline': isOnline,
       updatedAt: new Date()
@@ -3515,6 +3606,8 @@ router.post('/bookings/:id/confirm-payment', [
       });
     }
     
+    const bookingData = bookingDoc.data();
+    
     // Create payment record
     const paymentRecord = {
       bookingId: id,
@@ -3529,21 +3622,101 @@ router.post('/bookings/:id/confirm-payment', [
     
     await db.collection('payments').add(paymentRecord);
     
-    // Update booking with payment confirmation
+    // Update booking with payment confirmation and status
     await bookingRef.update({
       payment: {
         ...paymentRecord,
         confirmed: true
       },
+      status: 'payment_confirmed', // ✅ CRITICAL FIX: Update status for workflow
+      paymentConfirmed: true,
+      paymentConfirmedAt: new Date(),
       updatedAt: new Date()
     });
+
+    // ✅ CRITICAL FIX: Send real-time notifications
+    try {
+      const socketService = require('../services/socket');
+      const io = socketService.getSocketIO();
+      
+      // Notify customer about payment completion
+      if (bookingData.customerId) {
+        io.to(`user:${bookingData.customerId}`).emit('payment_completed', {
+          bookingId: id,
+          amount: amount,
+          paymentMethod: paymentMethod,
+          transactionId: transactionId,
+          confirmedAt: new Date().toISOString(),
+          message: 'Payment has been collected successfully'
+        });
+      }
+      
+      // Notify admin dashboard about payment completion
+      io.to('type:admin').emit('payment_completed', {
+        bookingId: id,
+        customerId: bookingData.customerId,
+        driverId: uid,
+        amount: amount,
+        paymentMethod: paymentMethod,
+        transactionId: transactionId,
+        confirmedAt: new Date().toISOString()
+      });
+      
+      console.log(`📡 [PAYMENT_CONFIRM] Real-time notifications sent for payment ${transactionId}`);
+    } catch (notificationError) {
+      console.error('❌ [PAYMENT_CONFIRM] Failed to send real-time notifications:', notificationError);
+      // Don't fail the payment confirmation if notifications fail
+    }
+
+    // ✅ CRITICAL FIX: Update driver earnings
+    try {
+      const driverRef = db.collection('users').doc(uid);
+      const driverDoc = await driverRef.get();
+      
+      if (driverDoc.exists) {
+        const driverData = driverDoc.data();
+        const currentEarnings = driverData.totalEarnings || 0;
+        const currentBalance = driverData.wallet?.balance || 0;
+        
+        // Calculate driver earnings (assuming 80% to driver, 20% commission)
+        const driverEarnings = amount * 0.8;
+        const commission = amount * 0.2;
+        
+        await driverRef.update({
+          totalEarnings: currentEarnings + driverEarnings,
+          'wallet.balance': currentBalance + driverEarnings,
+          'wallet.lastUpdated': new Date(),
+          updatedAt: new Date()
+        });
+
+        // Create earnings record
+        await db.collection('driver_earnings').add({
+          bookingId: id,
+          driverId: uid,
+          amount: driverEarnings,
+          commission: commission,
+          totalFare: amount,
+          earnedAt: new Date(),
+          status: 'completed',
+          paymentMethod: paymentMethod,
+          transactionId: transactionId
+        });
+
+        console.log(`💰 [PAYMENT_CONFIRM] Driver earnings updated: ₹${driverEarnings}`);
+      }
+    } catch (earningsError) {
+      console.error('❌ [PAYMENT_CONFIRM] Failed to update driver earnings:', earningsError);
+      // Don't fail the payment confirmation if earnings update fails
+    }
     
     res.status(200).json({
       success: true,
       data: {
         message: 'Payment confirmed successfully',
         amount,
-        transactionId
+        transactionId,
+        paymentConfirmed: true,
+        confirmedAt: new Date().toISOString()
       }
     });
     
@@ -3843,29 +4016,60 @@ router.post('/bookings/:id/reject', [
 
     const bookingData = bookingDoc.data();
     
-    // Check if driver was assigned to this booking
-    if (bookingData.driverId !== uid) {
-      return res.status(403).json({
+    // ✅ CRITICAL FIX: Allow drivers to reject available bookings (not just assigned ones)
+    // Check if booking is in a state where it can be rejected
+    if (bookingData.status !== 'pending' && bookingData.status !== 'driver_assigned') {
+      return res.status(400).json({
         success: false,
         error: {
-          code: 'ACCESS_DENIED',
-          message: 'Access denied',
-          details: 'You can only reject bookings assigned to you'
+          code: 'INVALID_BOOKING_STATUS',
+          message: 'Cannot reject booking',
+          details: 'Booking is not in a rejectable state'
         },
         timestamp: new Date().toISOString()
       });
     }
 
-    // Reject booking
-    await bookingRef.update({
-      status: 'pending',
-      driverId: null,
-      'timing.assignedAt': null,
-      'cancellation.cancelledBy': 'driver',
-      'cancellation.reason': reason || 'Rejected by driver',
-      'cancellation.cancelledAt': new Date(),
-      updatedAt: new Date()
-    });
+    // ✅ CRITICAL FIX: Check if driver is assigned OR if booking is available for rejection
+    const isAssignedToDriver = bookingData.driverId === uid;
+    const isAvailableForRejection = bookingData.status === 'pending' && !bookingData.driverId;
+    
+    if (!isAssignedToDriver && !isAvailableForRejection) {
+      return res.status(403).json({
+        success: false,
+        error: {
+          code: 'ACCESS_DENIED',
+          message: 'Access denied',
+          details: 'You can only reject bookings assigned to you or available bookings'
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    // ✅ CRITICAL FIX: Handle rejection based on booking state
+    if (isAssignedToDriver) {
+      // Driver is rejecting an assigned booking - make it available again
+      await bookingRef.update({
+        status: 'pending',
+        driverId: null,
+        'timing.assignedAt': null,
+        'cancellation.cancelledBy': 'driver',
+        'cancellation.reason': reason || 'Rejected by driver',
+        'cancellation.cancelledAt': new Date(),
+        updatedAt: new Date()
+      });
+      
+      // Remove current trip from driver location
+      await db.collection('driverLocations').doc(uid).update({
+        currentTripId: null,
+        lastUpdated: new Date()
+      });
+      
+      console.log(`✅ [BOOKING_REJECTION] Driver ${uid} rejected assigned booking ${id}, made available again`);
+    } else {
+      // Driver is rejecting an available booking - just track the rejection
+      console.log(`✅ [BOOKING_REJECTION] Driver ${uid} rejected available booking ${id}, tracking rejection only`);
+    }
 
     // ✅ CRITICAL FIX: Track rejection to prevent driver from seeing same booking again
     try {
@@ -3882,37 +4086,40 @@ router.post('/bookings/:id/reject', [
       // Don't fail the rejection if tracking fails
     }
 
-    // Remove current trip from driver location
-    await db.collection('driverLocations').doc(uid).update({
-      currentTripId: null,
-      lastUpdated: new Date()
-    });
-
-    // ✅ CRITICAL FIX: Notify other drivers that booking is available again
-    try {
-      const wsEventHandler = require('../services/websocketEventHandler');
-      const wsHandler = new wsEventHandler();
-      await wsHandler.initialize();
-      
-      // Get updated booking data for notification
-      const updatedBookingDoc = await bookingRef.get();
-      const updatedBookingData = updatedBookingDoc.data();
-      
-      if (updatedBookingData) {
-        console.log(`🔔 [BOOKING_REJECTION] Notifying other drivers that booking ${id} is available again`);
-        await wsHandler.notifyDriversOfNewBooking({
-          id: id,
-          ...updatedBookingData
-        });
+    // ✅ CRITICAL FIX: Notify other drivers only when booking becomes available again
+    if (isAssignedToDriver) {
+      try {
+        const wsEventHandler = require('../services/websocketEventHandler');
+        const wsHandler = new wsEventHandler();
+        await wsHandler.initialize();
+        
+        // Get updated booking data for notification
+        const updatedBookingDoc = await bookingRef.get();
+        const updatedBookingData = updatedBookingDoc.data();
+        
+        if (updatedBookingData) {
+          console.log(`🔔 [BOOKING_REJECTION] Notifying other drivers that booking ${id} is available again`);
+          await wsHandler.notifyDriversOfNewBooking({
+            id: id,
+            ...updatedBookingData
+          });
+        }
+      } catch (notificationError) {
+        console.error('❌ [BOOKING_REJECTION] Failed to notify other drivers:', notificationError);
+        // Don't fail the rejection if notification fails
       }
-    } catch (notificationError) {
-      console.error('❌ [BOOKING_REJECTION] Failed to notify other drivers:', notificationError);
-      // Don't fail the rejection if notification fails
     }
 
     res.status(200).json({
       success: true,
-      message: 'Booking rejected successfully',
+      message: isAssignedToDriver ? 'Booking rejected and made available for other drivers' : 'Booking rejection tracked successfully',
+      data: {
+        bookingId: id,
+        driverId: uid,
+        rejectionType: isAssignedToDriver ? 'assigned_booking' : 'available_booking',
+        reason: reason || 'Rejected by driver',
+        rejectedAt: new Date().toISOString()
+      },
       timestamp: new Date().toISOString()
     });
 
@@ -4594,6 +4801,61 @@ router.post('/complete-delivery', [
       updatedAt: new Date()
     });
 
+    // ✅ CRITICAL FIX: Send real-time notifications
+    try {
+      const socketService = require('../services/socket');
+      const io = socketService.getSocketIO();
+      
+      // Notify customer about delivery completion
+      if (bookingData.customerId) {
+        io.to(`user:${bookingData.customerId}`).emit('delivery_completed', {
+          bookingId: bookingId,
+          status: 'delivered',
+          deliveredAt: new Date().toISOString(),
+          duration: duration,
+          message: 'Your package has been delivered successfully'
+        });
+      }
+      
+      // Notify admin dashboard about delivery completion
+      io.to('type:admin').emit('delivery_completed', {
+        bookingId: bookingId,
+        customerId: bookingData.customerId,
+        driverId: uid,
+        status: 'delivered',
+        deliveredAt: new Date().toISOString(),
+        duration: duration,
+        earnings: driverEarnings
+      });
+      
+      console.log(`📡 [COMPLETE_DELIVERY] Real-time notifications sent for delivery ${bookingId}`);
+    } catch (notificationError) {
+      console.error('❌ [COMPLETE_DELIVERY] Failed to send real-time notifications:', notificationError);
+      // Don't fail the delivery completion if notifications fail
+    }
+
+    // ✅ CRITICAL FIX: Update admin revenue tracking
+    try {
+      const revenueRef = db.collection('adminRevenue').doc();
+      await revenueRef.set({
+        id: revenueRef.id,
+        bookingId: bookingId,
+        customerId: bookingData.customerId,
+        driverId: uid,
+        totalFare: fare.total || 0,
+        driverEarnings: driverEarnings,
+        platformCommission: (fare.total || 0) - driverEarnings,
+        paymentMethod: bookingData.paymentMethod || 'cash',
+        completedAt: new Date(),
+        status: 'completed'
+      });
+
+      console.log(`💰 [COMPLETE_DELIVERY] Revenue tracking updated for booking ${bookingId}`);
+    } catch (revenueError) {
+      console.error('❌ [COMPLETE_DELIVERY] Failed to update revenue tracking:', revenueError);
+      // Don't fail the delivery completion if revenue tracking fails
+    }
+
     console.log('✅ [COMPLETE_DELIVERY] Delivery completed successfully for booking:', bookingId);
 
     res.status(200).json({
@@ -4609,7 +4871,8 @@ router.post('/complete-delivery', [
         recipientPhone: recipientPhone,
         deliveredAt: new Date().toISOString(),
         duration: duration,
-        earnings: driverEarnings
+        earnings: driverEarnings,
+        paymentRequired: !bookingData.paymentConfirmed // ✅ CRITICAL FIX: Indicate if payment is still needed
       },
       timestamp: new Date().toISOString()
     });

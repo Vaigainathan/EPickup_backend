@@ -1007,10 +1007,86 @@ router.post('/:id/start-trip', [
 });
 
 /**
- * @route   POST /api/bookings/:id/complete-trip
- * @desc    Complete trip (Driver only)
- * @access  Private (Driver only)
+ * @route   POST /api/bookings/:id/handle-timeout
+ * @desc    Handle booking timeout when no driver assigned (Customer only)
+ * @access  Private (Customer only)
  */
+router.post('/:id/handle-timeout', [
+  requireCustomer,
+], async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { uid } = req.user;
+
+    console.log(`⏰ Handling timeout for booking ${id} by customer ${uid}`);
+
+    // Verify customer owns this booking
+    const db = getFirestore();
+    const bookingDoc = await db.collection('bookings').doc(id).get();
+    if (!bookingDoc.exists) {
+      return res.status(404).json({
+        success: false,
+        error: {
+          code: 'BOOKING_NOT_FOUND',
+          message: 'Booking not found'
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    const bookingData = bookingDoc.data();
+    if (bookingData.customerId !== uid) {
+      return res.status(403).json({
+        success: false,
+        error: {
+          code: 'ACCESS_DENIED',
+          message: 'You can only handle timeout for your own bookings'
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    // Handle timeout using driver matching service
+    const driverMatchingService = require('../services/driverMatchingService');
+    const timeoutResult = await driverMatchingService.handleBookingTimeout(id);
+
+    if (timeoutResult.success) {
+      res.status(200).json({
+        success: true,
+        data: {
+          message: timeoutResult.message,
+          action: timeoutResult.action || 'timeout_handled',
+          driver: timeoutResult.driver || null
+        },
+        timestamp: new Date().toISOString()
+      });
+    } else {
+      res.status(500).json({
+        success: false,
+        error: {
+          code: 'TIMEOUT_HANDLING_ERROR',
+          message: 'Failed to handle booking timeout',
+          details: timeoutResult.error
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
+  } catch (error) {
+    console.error('Error handling booking timeout:', error);
+    res.status(500).json({
+      success: false,
+      error: {
+        code: 'TIMEOUT_HANDLING_ERROR',
+        message: 'Failed to handle booking timeout',
+        details: error.message
+      },
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+/**
 router.post('/:id/complete-trip', [
   requireDriver,
   body('location')

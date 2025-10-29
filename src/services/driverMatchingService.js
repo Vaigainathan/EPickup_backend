@@ -446,7 +446,7 @@ class DriverMatchingService {
         driverId: driver.driverId,
         status: 'pending',
         assignedAt: new Date(),
-        expiresAt: null, // ✅ FIX: Remove timeout - let it run indefinitely until driver accepts
+        expiresAt: new Date(Date.now() + 3 * 60 * 1000), // ✅ FIX: 3-minute timeout for driver assignment
         driverDetails: {
           name: driver.name,
           phone: driver.phone,
@@ -493,10 +493,66 @@ class DriverMatchingService {
   }
 
   /**
-   * Handle driver response to assignment
-   * @param {string} assignmentId - Assignment ID
-   * @param {string} driverId - Driver ID
-   * @param {string} response - 'accepted' or 'rejected'
+   * Handle expired driver assignments
+   * @param {string} bookingId - Booking ID
+   * @returns {Object} Result of handling expired assignments
+   */
+  async handleExpiredAssignments(bookingId) {
+    try {
+      console.log(`🕐 Checking for expired assignments for booking ${bookingId}`);
+      
+      // Find expired assignments for this booking
+      const expiredAssignments = await this.db.collection('driverAssignments')
+        .where('bookingId', '==', bookingId)
+        .where('status', '==', 'pending')
+        .where('expiresAt', '<', new Date())
+        .get();
+
+      if (expiredAssignments.empty) {
+        return { success: true, expiredCount: 0 };
+      }
+
+      console.log(`⏰ Found ${expiredAssignments.size} expired assignments for booking ${bookingId}`);
+
+      // Reset driver statuses for expired assignments
+      const batch = this.db.batch();
+      const driverIds = [];
+
+      expiredAssignments.forEach(doc => {
+        const assignment = doc.data();
+        driverIds.push(assignment.driverId);
+        
+        // Mark assignment as expired
+        batch.update(doc.ref, {
+          status: 'expired',
+          expiredAt: new Date()
+        });
+
+        // Reset driver location status
+        const driverLocationRef = this.db.collection('driverLocations').doc(assignment.driverId);
+        batch.update(driverLocationRef, {
+          currentTripId: null,
+          lastUpdated: new Date()
+        });
+      });
+
+      await batch.commit();
+
+      console.log(`✅ Reset ${driverIds.length} drivers from expired assignments`);
+
+      return {
+        success: true,
+        expiredCount: expiredAssignments.size,
+        driverIds: driverIds
+      };
+
+    } catch (error) {
+      console.error('Error handling expired assignments:', error);
+      return { success: false, error: error.message };
+    }
+  }
+
+  /**
    * @param {string} reason - Reason for rejection (optional)
    * @returns {Object} Response result
    */
@@ -714,10 +770,80 @@ class DriverMatchingService {
   }
 
   /**
-   * Send push notification to driver for assignment
-   * @param {string} driverId - Driver ID
-   * @param {Object} assignment - Assignment details
+   * Handle booking timeout when no driver is assigned within 3 minutes
+   * @param {string} bookingId - Booking ID
+   * @returns {Object} Result of timeout handling
    */
+  async handleBookingTimeout(bookingId) {
+    try {
+      console.log(`⏰ Handling booking timeout for booking ${bookingId}`);
+      
+      // Get booking details
+      const bookingDoc = await this.db.collection('bookings').doc(bookingId).get();
+      if (!bookingDoc.exists) {
+        return { success: false, error: 'Booking not found' };
+      }
+
+      const bookingData = bookingDoc.data();
+      
+      // Check if booking is still in searching state
+      if (bookingData.status !== 'searching' && bookingData.status !== 'confirmed') {
+        return { success: true, message: 'Booking already processed' };
+      }
+
+      // Handle expired assignments first
+      await this.handleExpiredAssignments(bookingId);
+
+      // Try to find alternative drivers
+      const alternativeDrivers = await this.findAvailableDrivers(
+        bookingData.pickup.coordinates,
+        10, // Expanded radius
+        bookingData.vehicle?.type,
+        bookingData.package?.weight
+      );
+
+      if (alternativeDrivers.length > 0) {
+        console.log(`🔄 Found ${alternativeDrivers.length} alternative drivers, attempting assignment`);
+        
+        // Try to assign the best alternative driver
+        const assignmentResult = await this.attemptDriverAssignment(
+          bookingId,
+          alternativeDrivers[0],
+          bookingData
+        );
+
+        if (assignmentResult.success) {
+          return {
+            success: true,
+            message: 'Alternative driver assigned',
+            driver: assignmentResult.driver
+          };
+        }
+      }
+
+      // If no alternative drivers found, cancel the booking
+      console.log(`❌ No drivers available, cancelling booking ${bookingId}`);
+      
+      await this.db.collection('bookings').doc(bookingId).update({
+        status: 'cancelled',
+        cancellationReason: 'No drivers available within timeout period',
+        cancelledAt: new Date(),
+        updatedAt: new Date()
+      });
+
+      return {
+        success: true,
+        message: 'Booking cancelled due to no drivers available',
+        action: 'cancelled'
+      };
+
+    } catch (error) {
+      console.error('Error handling booking timeout:', error);
+      return { success: false, error: error.message };
+    }
+  }
+
+  /**
   async sendDriverAssignmentNotification(driverId, assignment) {
     try {
       // Get driver's FCM token

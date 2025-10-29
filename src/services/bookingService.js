@@ -761,11 +761,11 @@ class BookingService {
               console.log(`💰 Deducting commission for trip ${bookingId}: Fare ₹${tripFare}`);
               
               // Calculate commission based on fare amount (not raw distance)
-              // Commission = (Fare ÷ ₹10/km) × ₹1/km
+              // Commission = (Fare ÷ ₹10/km) × ₹2/km
               // This ensures commission matches the rounded fare calculation
               const fareCalculationService = require('./fareCalculationService');
               const fareBreakdown = fareCalculationService.calculateFare(exactDistanceKm);
-              const commissionAmount = fareBreakdown.commission;
+              const commissionAmount = fareBreakdown.commission; // ₹2 per km
               const roundedDistanceKm = fareBreakdown.roundedDistanceKm;
               
               console.log(`📊 Fare breakdown: ${exactDistanceKm}km → ${roundedDistanceKm}km → ₹${tripFare} → Commission ₹${commissionAmount}`);

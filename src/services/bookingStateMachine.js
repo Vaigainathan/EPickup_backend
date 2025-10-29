@@ -18,7 +18,8 @@ class BookingStateMachine {
       'driver_arrived': ['picked_up', 'cancelled'],
       'picked_up': ['in_transit', 'cancelled'],
       'in_transit': ['delivered', 'cancelled'],
-      'delivered': ['completed'],
+      'delivered': ['money_collection', 'completed'], // ✅ FIX: Add money_collection state for cash payments
+      'money_collection': ['completed'], // ✅ FIX: Money collection state
       'completed': [], // Terminal state
       'cancelled': [], // Terminal state
       'rejected': ['pending', 'cancelled'] // Can be reassigned or cancelled
@@ -33,6 +34,7 @@ class BookingStateMachine {
       'picked_up': ['pickedUpAt', 'driverId'],
       'in_transit': ['inTransitAt', 'driverId'],
       'delivered': ['deliveredAt', 'driverId'],
+      'money_collection': ['moneyCollectionAt', 'driverId'], // ✅ FIX: Add money collection requirements
       'completed': ['completedAt', 'driverId'],
       'cancelled': ['cancelledAt', 'cancellationReason'],
       'rejected': ['rejectedAt', 'rejectionReason']

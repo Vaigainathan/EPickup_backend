@@ -66,7 +66,8 @@ class WorkSlotsService {
       // Mark generation as in progress
       this.ongoingGenerations.set(driverId, Date.now());
       
-      // CRITICAL FIX: Delete existing slots for this driver and date first to prevent duplicates
+      // ✅ CRITICAL FIX: Atomic slot generation with state preservation
+      // ✅ INDUSTRY STANDARD: Preserve selections during slot regeneration
       const startOfDay = new Date(date);
       startOfDay.setHours(0, 0, 0, 0);
       
@@ -80,13 +81,40 @@ class WorkSlotsService {
 
       const existingSnapshot = await existingQuery.get();
       
+      // ✅ FIX: Store selected slots from existing data before deleting
+      // Use a more robust preservation strategy based on time ranges (not just slotId)
+      const preservedSelections = new Map(); // timeRange -> { isSelected, selectedAt }
+      
       if (!existingSnapshot.empty) {
+        console.log(`📋 [WORK_SLOTS] Preserving selection state from ${existingSnapshot.size} existing slots`);
+        existingSnapshot.forEach(doc => {
+          const slotData = doc.data();
+          // Preserve selection if slot was selected
+          if (slotData.isSelected === true) {
+            // Use time range as key for more reliable matching (slotId format may change)
+            const startHour = slotData.startTime.toDate().getHours();
+            const endHour = slotData.endTime.toDate().getHours();
+            const timeRangeKey = `${startHour}-${endHour}`;
+            
+            preservedSelections.set(timeRangeKey, {
+              isSelected: true,
+              selectedAt: slotData.selectedAt || null,
+              slotId: slotData.slotId || doc.id // Also preserve original slotId for reference
+            });
+            console.log(`✅ [WORK_SLOTS] Preserving selection for slot: ${slotData.label} (${timeRangeKey})`);
+          }
+        });
+        
+        // Now delete existing slots (atomic operation)
         console.log(`🗑️ [WORK_SLOTS] Deleting ${existingSnapshot.size} existing slots to prevent duplicates`);
         const deleteBatch = db.batch();
         existingSnapshot.forEach(doc => {
           deleteBatch.delete(doc.ref);
         });
         await deleteBatch.commit();
+        console.log(`✅ [WORK_SLOTS] Deleted ${existingSnapshot.size} existing slots`);
+      } else {
+        console.log('ℹ️ [WORK_SLOTS] No existing slots found, creating new ones');
       }
 
       const slots = [];
@@ -112,20 +140,26 @@ class WorkSlotsService {
         
         console.log(`🔍 [WORK_SLOTS] Creating slot: ${config.label} (${config.start}-${config.end})`);
         
+        // ✅ CRITICAL FIX: Match preserved selection by time range (more reliable than slotId)
+        const timeRangeKey = `${config.start}-${config.end}`;
+        const preservedSelection = preservedSelections.get(timeRangeKey);
+        const wasSelected = preservedSelection?.isSelected === true;
+        
         const slot = {
           slotId,
           startTime: Timestamp.fromDate(startTime),
           endTime: Timestamp.fromDate(endTime),
           label: config.label,
           status: 'available',
-          isSelected: false, // 🔥 NEW: Track driver's selection
+          isSelected: wasSelected, // ✅ FIX: Preserve selection state
+          selectedAt: wasSelected ? (preservedSelection.selectedAt || Timestamp.now()) : null, // ✅ FIX: Preserve selectedAt timestamp
           driverId,
           createdAt: Timestamp.now(),
           updatedAt: Timestamp.now()
         };
 
         slots.push(slot);
-        console.log(`✅ [WORK_SLOTS] Slot added to batch: ${config.label}`);
+        console.log(`✅ [WORK_SLOTS] Slot added to batch: ${config.label}${wasSelected ? ' (selected preserved)' : ''}`);
       }
       
       console.log(`📊 [WORK_SLOTS] Total slots prepared for batch write: ${slots.length}`);
@@ -308,6 +342,7 @@ class WorkSlotsService {
 
   /**
    * 🔥 NEW: Update slot selection (driver selects/deselects slots)
+   * ✅ INDUSTRY STANDARD: Comprehensive validation including online status and active bookings
    */
   async updateSlotSelection(slotId, isSelected, driverId) {
     try {
@@ -343,27 +378,137 @@ class WorkSlotsService {
         };
       }
 
-      // ✅ UPDATED: Allow selecting slots that have started (for current day)
-      // But prevent deselecting slots that are currently active or have started
+      // ✅ CRITICAL FIX #1: Check if driver is online BEFORE allowing deselection
+      // ✅ INDUSTRY STANDARD: Drivers cannot modify slots while online (prevents workflow conflicts)
+      if (!isSelected) {
+        // Trying to deselect - check driver status
+        const userDoc = await db.collection('users').doc(driverId).get();
+        if (!userDoc.exists) {
+          return {
+            success: false,
+            error: {
+              code: 'DRIVER_NOT_FOUND',
+              message: 'Driver not found',
+              details: 'Driver profile does not exist'
+            }
+          };
+        }
+
+        const driverData = userDoc.data();
+        const isDriverOnline = driverData?.driver?.isOnline === true;
+
+        // ✅ VALIDATION RULE 1: Block deselection if driver is online
+        if (isDriverOnline) {
+          console.log(`❌ [SLOT_SELECTION] Driver ${driverId} attempted to deselect slot while online`);
+          return {
+            success: false,
+            error: {
+              code: 'DRIVER_ONLINE_CANNOT_DESELECT',
+              message: 'Cannot deselect slot',
+              details: 'You cannot deselect slots while online. Please go offline first to modify your slot selections.'
+            }
+          };
+        }
+
+        // ✅ VALIDATION RULE 2: Block deselection if driver has active booking
+        // ✅ INDUSTRY STANDARD: Active booking exemption - driver must complete order
+        const activeBookingStatuses = [
+          'driver_assigned', 
+          'accepted', 
+          'driver_enroute', 
+          'driver_arrived', 
+          'picked_up', 
+          'in_transit', 
+          'at_dropoff',
+          'delivered', // Driver still at dropoff, needs to collect payment
+          'money_collection'
+        ];
+        
+        const activeBookingQuery = db.collection('bookings')
+          .where('driverId', '==', driverId)
+          .where('status', 'in', activeBookingStatuses)
+          .limit(1);
+        
+        const activeBookingSnapshot = await activeBookingQuery.get();
+        
+        if (!activeBookingSnapshot.empty) {
+          const activeBooking = activeBookingSnapshot.docs[0].data();
+          console.log(`❌ [SLOT_SELECTION] Driver ${driverId} attempted to deselect slot with active booking:`, {
+            bookingId: activeBookingSnapshot.docs[0].id,
+            status: activeBooking.status
+          });
+          
+          return {
+            success: false,
+            error: {
+              code: 'ACTIVE_BOOKING_CANNOT_DESELECT',
+              message: 'Cannot deselect slot',
+              details: `You have an active booking (${activeBooking.status}). Please complete it before modifying your slot selections.`
+            }
+          };
+        }
+      }
+
+      // ✅ VALIDATION RULE 3: Time-based validation
+      // Allow selecting slots that have started (for current day) - enables mid-session join
+      // But prevent deselecting slots that are currently active
       const now = new Date();
       const slotStartTime = slotData.startTime.toDate();
       const slotEndTime = slotData.endTime.toDate();
       
-      // Only block deselection if slot has started and hasn't ended yet
+      // Block deselection if slot is currently active (started but not ended)
       if (now >= slotStartTime && now <= slotEndTime && !isSelected) {
-        // Trying to deselect a slot that is currently active
+        console.log(`❌ [SLOT_SELECTION] Driver ${driverId} attempted to deselect currently active slot`);
         return {
           success: false,
           error: {
             code: 'SLOT_CURRENTLY_ACTIVE',
             message: 'Cannot deselect slot',
-            details: 'This slot is currently active and cannot be cancelled'
+            details: 'This slot is currently active and cannot be cancelled. Please wait for the slot to end.'
           }
         };
       }
       
-      // Allow selecting slots that have started (as long as they haven't ended)
-      // This enables drivers to join a slot mid-session if they forgot to select it earlier
+      // ✅ VALIDATION RULE 4: Prevent deselecting slots that have started (even if ended)
+      // Reason: Historical data integrity - slots that were active should remain selected
+      if (!isSelected && now >= slotStartTime) {
+        // Slot has started (may or may not have ended)
+        // Allow only if slot has clearly ended AND driver is offline AND no active booking
+        // (Already validated above - if we reach here, driver is offline and no active booking)
+        
+        // ✅ CRITICAL FIX: Only check grace period if slot has actually ENDED
+        // Previous logic incorrectly blocked future slots (negative time difference)
+        if (now > slotEndTime) {
+          // Slot has ended - apply grace period
+          const slotEndedAgo = now.getTime() - slotEndTime.getTime();
+          if (slotEndedAgo < 60000 && slotEndedAgo >= 0) { // Less than 1 minute ago AND positive (actually ended)
+            return {
+              success: false,
+              error: {
+                code: 'SLOT_JUST_ENDED',
+                message: 'Cannot deselect slot',
+                details: 'This slot just ended. Please wait a moment before deselecting it.'
+              }
+            };
+          }
+          // Slot ended more than 1 minute ago - allow deselection
+        } else {
+          // Slot hasn't ended yet - this is handled by VALIDATION RULE 3 above
+          // But if we reach here, it means slot started but not ended (currently active)
+          // This should already be blocked by rule 3, but adding safety check
+          if (now >= slotStartTime && now <= slotEndTime) {
+            // This case should not reach here (rule 3 handles it), but safety check
+            return {
+              success: false,
+              error: {
+                code: 'SLOT_CURRENTLY_ACTIVE',
+                message: 'Cannot deselect slot',
+                details: 'This slot is currently active and cannot be cancelled.'
+              }
+            };
+          }
+        }
+      }
 
       // ✅ FIX: Track when slot was selected (for validation - can go online if selected before it started)
       const updateData = {
@@ -374,9 +519,11 @@ class WorkSlotsService {
       // If selecting, record when it was selected
       if (isSelected) {
         updateData.selectedAt = Timestamp.now();
+        console.log(`✅ [SLOT_SELECTION] Driver ${driverId} selected slot ${slotId}`);
       } else {
         // If deselecting, clear selectedAt timestamp
         updateData.selectedAt = null;
+        console.log(`✅ [SLOT_SELECTION] Driver ${driverId} deselected slot ${slotId}`);
       }
 
       await slotRef.update(updateData);
@@ -406,6 +553,7 @@ class WorkSlotsService {
 
   /**
    * 🔥 NEW: Batch update slot selections
+   * ✅ INDUSTRY STANDARD: Comprehensive validation for batch operations
    */
   async batchUpdateSlotSelections(slotIds, isSelected, driverId) {
     try {
@@ -415,14 +563,86 @@ class WorkSlotsService {
         throw new Error('Failed to initialize Firestore database connection');
       }
 
+      // ✅ CRITICAL FIX: Validate driver status BEFORE processing any slots
+      // Prevents partial updates if validation fails mid-batch
+      if (!isSelected) {
+        // Trying to deselect - check driver status first
+        const userDoc = await db.collection('users').doc(driverId).get();
+        if (!userDoc.exists) {
+          return {
+            success: false,
+            error: {
+              code: 'DRIVER_NOT_FOUND',
+              message: 'Driver not found',
+              details: 'Driver profile does not exist'
+            }
+          };
+        }
+
+        const driverData = userDoc.data();
+        const isDriverOnline = driverData?.driver?.isOnline === true;
+
+        // ✅ VALIDATION RULE 1: Block batch deselection if driver is online
+        if (isDriverOnline) {
+          console.log(`❌ [BATCH_SLOT_SELECTION] Driver ${driverId} attempted batch deselection while online`);
+          return {
+            success: false,
+            error: {
+              code: 'DRIVER_ONLINE_CANNOT_DESELECT',
+              message: 'Cannot deselect slots',
+              details: 'You cannot deselect slots while online. Please go offline first to modify your slot selections.'
+            }
+          };
+        }
+
+        // ✅ VALIDATION RULE 2: Block batch deselection if driver has active booking
+        const activeBookingStatuses = [
+          'driver_assigned', 
+          'accepted', 
+          'driver_enroute', 
+          'driver_arrived', 
+          'picked_up', 
+          'in_transit', 
+          'at_dropoff',
+          'delivered',
+          'money_collection'
+        ];
+        
+        const activeBookingQuery = db.collection('bookings')
+          .where('driverId', '==', driverId)
+          .where('status', 'in', activeBookingStatuses)
+          .limit(1);
+        
+        const activeBookingSnapshot = await activeBookingQuery.get();
+        
+        if (!activeBookingSnapshot.empty) {
+          const activeBookingData = activeBookingSnapshot.docs[0].data();
+          console.log(`❌ [BATCH_SLOT_SELECTION] Driver ${driverId} attempted batch deselection with active booking:`, {
+            bookingId: activeBookingSnapshot.docs[0].id,
+            status: activeBookingData.status
+          });
+          
+          return {
+            success: false,
+            error: {
+              code: 'ACTIVE_BOOKING_CANNOT_DESELECT',
+              message: 'Cannot deselect slots',
+              details: `You have an active booking. Please complete it before modifying your slot selections.`
+            }
+          };
+        }
+      }
+
       const batch = db.batch();
       const results = [];
+      const errors = [];
 
       for (const slotId of slotIds) {
         const slotRef = db.collection('workSlots').doc(slotId);
         const slotDoc = await slotRef.get();
 
         if (!slotDoc.exists || slotDoc.data().driverId !== driverId) {
+          errors.push({ slotId, error: 'Slot not found or unauthorized' });
           continue; // Skip invalid slots
         }
 
@@ -431,10 +651,25 @@ class WorkSlotsService {
         const slotStartTime = slotData.startTime.toDate();
         const slotEndTime = slotData.endTime.toDate();
         
-        // ✅ UPDATED: Only block deselection if slot is currently active (started but not ended)
-        // Allow selecting slots that have started (for joining mid-session)
+        // ✅ VALIDATION RULE 3: Time-based validation per slot
+        // Block deselection if slot is currently active (started but not ended)
         if (now >= slotStartTime && now <= slotEndTime && !isSelected) {
+          errors.push({ slotId, error: 'Slot currently active' });
           continue; // Skip deselection of currently active slots
+        }
+
+        // ✅ VALIDATION RULE 4: Prevent deselecting slots that just ended (grace period)
+        // ✅ CRITICAL FIX: Only check grace period if slot has actually ENDED
+        if (!isSelected && now >= slotStartTime) {
+          // Only apply grace period check if slot has actually ended
+          if (now > slotEndTime) {
+            const slotEndedAgo = now.getTime() - slotEndTime.getTime();
+            if (slotEndedAgo < 60000 && slotEndedAgo >= 0) { // Less than 1 minute ago AND positive (actually ended)
+              errors.push({ slotId, error: 'Slot just ended' });
+              continue;
+            }
+          }
+          // If slot hasn't ended yet, it's currently active - already handled by rule 3 above
         }
 
         // ✅ FIX: Track when slot was selected
@@ -450,18 +685,39 @@ class WorkSlotsService {
         }
         
         batch.update(slotRef, updateData);
-
         results.push(slotId);
       }
 
-      await batch.commit();
+      // Only commit if we have at least one valid update
+      if (results.length > 0) {
+        await batch.commit();
+        console.log(`✅ [BATCH_SLOT_SELECTION] Driver ${driverId} batch ${isSelected ? 'selected' : 'deselected'} ${results.length} slots`);
+        
+        if (errors.length > 0) {
+          console.warn(`⚠️ [BATCH_SLOT_SELECTION] ${errors.length} slots could not be updated:`, errors);
+        }
+      } else {
+        // All slots failed validation
+        return {
+          success: false,
+          error: {
+            code: 'NO_SLOTS_UPDATED',
+            message: 'No slots updated',
+            details: errors.length > 0 
+              ? `All slots failed validation: ${errors.map(e => e.error).join(', ')}`
+              : 'No valid slots found for batch update'
+          }
+        };
+      }
 
       return {
         success: true,
-        message: `${results.length} slots updated successfully`,
+        message: `${results.length} slots updated successfully${errors.length > 0 ? `, ${errors.length} failed` : ''}`,
         data: {
           updatedSlots: results,
-          count: results.length
+          failedSlots: errors,
+          count: results.length,
+          failedCount: errors.length
         }
       };
 

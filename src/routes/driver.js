@@ -1809,82 +1809,129 @@ router.put('/status', [
     });
 
     // ✅ CRITICAL FIX: Validate work slots when driver tries to go online
+    // ✅ INDUSTRY STANDARD: Active booking exemption - allow staying online if driver has active order
     if (isOnline === true) {
       console.log('🔍 [STATUS_UPDATE] Driver trying to go online - validating work slots');
       
       try {
-        const workSlotsService = require('../services/workSlotsService');
-        const slotsResult = await workSlotsService.getDriverSlots(uid, new Date());
+        // ✅ STEP 1: Check if driver has active booking (EXEMPTION RULE)
+        // ✅ CRITICAL: Include 'delivered' - driver still needs to collect payment
+        const activeBookingStatuses = ['driver_assigned', 'accepted', 'driver_enroute', 'driver_arrived', 'picked_up', 'in_transit', 'at_dropoff', 'delivered', 'money_collection'];
+        const activeBookingQuery = db.collection('bookings')
+          .where('driverId', '==', uid)
+          .where('status', 'in', activeBookingStatuses)
+          .limit(1);
         
-        if (!slotsResult.success) {
-          console.error('❌ [STATUS_UPDATE] Failed to fetch work slots:', slotsResult.error);
-          return res.status(400).json({
-            success: false,
-            error: {
-              code: 'SLOT_VALIDATION_ERROR',
-              message: 'Failed to validate work slots',
-              details: 'Unable to check driver work slots'
-            },
-            timestamp: new Date().toISOString()
-          });
-        }
-
-        const slots = slotsResult.data || [];
-        const now = new Date();
+        const activeBookingSnapshot = await activeBookingQuery.get();
         
-        // Find selected slots
-        const selectedSlots = slots.filter(slot => slot.isSelected === true);
-        
-        if (selectedSlots.length === 0) {
-          console.log('❌ [STATUS_UPDATE] Driver has no selected slots');
-          return res.status(400).json({
-            success: false,
-            error: {
-              code: 'NO_SELECTED_SLOTS',
-              message: 'Cannot go online',
-              details: 'You must select at least one work slot before going online'
-            },
-            timestamp: new Date().toISOString()
+        if (!activeBookingSnapshot.empty) {
+          const activeBooking = activeBookingSnapshot.docs[0].data();
+          console.log('✅ [STATUS_UPDATE] Driver has active booking - slot validation EXEMPTED:', {
+            bookingId: activeBookingSnapshot.docs[0].id,
+            status: activeBooking.status
           });
-        }
+          // Allow going/staying online if driver has active booking (industry standard)
+          // Driver must complete order even if slot ended
+        } else {
+          // ✅ STEP 2: Only validate slots if driver has NO active booking
+          console.log('🔍 [STATUS_UPDATE] No active booking - validating work slots');
+          
+          const workSlotsService = require('../services/workSlotsService');
+          const slotsResult = await workSlotsService.getDriverSlots(uid, new Date());
+          
+          if (!slotsResult.success) {
+            console.error('❌ [STATUS_UPDATE] Failed to fetch work slots:', slotsResult.error);
+            return res.status(400).json({
+              success: false,
+              error: {
+                code: 'SLOT_VALIDATION_ERROR',
+                message: 'Failed to validate work slots',
+                details: 'Unable to check driver work slots'
+              },
+              timestamp: new Date().toISOString()
+            });
+          }
 
-        // Check if current time falls within any selected slot
-        const activeSlot = selectedSlots.find(slot => {
-          const startTime = slot.startTime?.toDate ? slot.startTime.toDate() : new Date(slot.startTime);
-          const endTime = slot.endTime?.toDate ? slot.endTime.toDate() : new Date(slot.endTime);
-          return now >= startTime && now <= endTime;
-        });
+          const slots = slotsResult.data || [];
+          const now = new Date();
+          
+          // Find selected slots
+          const selectedSlots = slots.filter(slot => slot.isSelected === true);
+          
+          if (selectedSlots.length === 0) {
+            console.log('❌ [STATUS_UPDATE] Driver has no selected slots');
+            return res.status(400).json({
+              success: false,
+              error: {
+                code: 'NO_SELECTED_SLOTS',
+                message: 'Cannot go online',
+                details: 'You must select at least one work slot before going online'
+              },
+              timestamp: new Date().toISOString()
+            });
+          }
 
-        if (!activeSlot) {
-          console.log('❌ [STATUS_UPDATE] Driver not in active slot time');
-          const nextSlot = selectedSlots
-            .filter(slot => {
-              const startTime = slot.startTime?.toDate ? slot.startTime.toDate() : new Date(slot.startTime);
-              return startTime > now;
-            })
-            .sort((a, b) => {
-              const aStart = a.startTime?.toDate ? a.startTime.toDate() : new Date(a.startTime);
-              const bStart = b.startTime?.toDate ? b.startTime.toDate() : new Date(b.startTime);
-              return aStart - bStart;
-            })[0];
-
-          const nextSlotTime = nextSlot ? 
-            (nextSlot.startTime?.toDate ? nextSlot.startTime.toDate() : new Date(nextSlot.startTime)) : null;
-
-          return res.status(400).json({
-            success: false,
-            error: {
-              code: 'NOT_IN_SLOT_TIME',
-              message: 'Cannot go online',
-              details: nextSlotTime ? 
-                `You can only go online during your selected slot times. Next slot starts at ${nextSlotTime.toLocaleTimeString()}` :
-                'You can only go online during your selected slot times'
-            },
-            timestamp: new Date().toISOString()
+          // ✅ UPDATED LOGIC: Check if driver can go online based on slot times
+          // Rules:
+          // 1. Can go online if currently WITHIN a selected slot (startTime <= now <= endTime) - REGARDLESS of when selected
+          // 2. Can go online if slot is UPCOMING and was selected (now < startTime && selectedAt exists)
+          // 3. Cannot go online for slots that have ENDED (now > endTime)
+          
+          const validSlot = selectedSlots.find(slot => {
+            const startTime = slot.startTime?.toDate ? slot.startTime.toDate() : new Date(slot.startTime);
+            const endTime = slot.endTime?.toDate ? slot.endTime.toDate() : new Date(slot.endTime);
+            const selectedAt = slot.selectedAt?.toDate ? slot.selectedAt.toDate() : (slot.selectedAt ? new Date(slot.selectedAt) : null);
+            
+            // Case 1: Currently within slot time - ALWAYS allow (driver can join mid-session)
+            if (now >= startTime && now <= endTime) {
+              return true; // Slot is active, allow going online regardless of when it was selected
+            }
+            
+            // Case 2: Slot is upcoming (can prepare to go online)
+            if (now < startTime) {
+              // Must have been selected (selectedAt exists) - allows preparation
+              if (selectedAt || slot.isSelected) {
+                return true;
+              }
+            }
+            
+            // Case 3: Slot has ended - cannot go online (returns false)
+            return false;
           });
-        }
 
-        console.log('✅ [STATUS_UPDATE] Driver is in active slot, allowing online status');
+          if (!validSlot) {
+            console.log('❌ [STATUS_UPDATE] Driver cannot go online - no valid slot found');
+            
+            // Find next available slot for error message
+            const nextSlot = selectedSlots
+              .filter(slot => {
+                const endTime = slot.endTime?.toDate ? slot.endTime.toDate() : new Date(slot.endTime);
+                return endTime > now; // Not yet ended
+              })
+              .sort((a, b) => {
+                const aStart = a.startTime?.toDate ? a.startTime.toDate() : new Date(a.startTime);
+                const bStart = b.startTime?.toDate ? b.startTime.toDate() : new Date(b.startTime);
+                return aStart - bStart;
+              })[0];
+
+            const nextSlotTime = nextSlot ? 
+              (nextSlot.startTime?.toDate ? nextSlot.startTime.toDate() : new Date(nextSlot.startTime)) : null;
+
+            return res.status(400).json({
+              success: false,
+              error: {
+                code: 'NOT_IN_SLOT_TIME',
+                message: 'Cannot go online',
+                details: nextSlotTime ? 
+                  `You can only go online during your selected slot times. Next slot starts at ${nextSlotTime.toLocaleTimeString()}` :
+                  'You can only go online during your selected slot times. All selected slots have ended.'
+              },
+              timestamp: new Date().toISOString()
+            });
+          }
+
+          console.log('✅ [STATUS_UPDATE] Driver is in active slot, allowing online status');
+        }
       } catch (slotError) {
         console.error('❌ [STATUS_UPDATE] Error validating work slots:', slotError);
         return res.status(500).json({
@@ -2716,6 +2763,77 @@ router.get('/bookings/test-backdoor', requireDriver, async (req, res) => {
       success: false,
       error: 'TEST BACKDOOR - Failed to retrieve bookings',
       timestamp: new Date().toISOString()
+    });
+  }
+});
+
+/**
+ * @route   GET /api/driver/bookings/active
+ * @desc    Get driver's active booking (for slot exemption)
+ * @access  Private (Driver only)
+ */
+router.get('/bookings/active', requireDriver, async (req, res) => {
+  try {
+    const { uid } = req.user;
+    const db = getFirestore();
+    
+    console.log(`🔍 [DRIVER_ACTIVE_BOOKING] Getting active booking for driver: ${uid}`);
+    
+    // ✅ INDUSTRY STANDARD: Check for active booking statuses
+    // ✅ CRITICAL: Include 'delivered' - driver still needs to collect payment
+    const activeBookingStatuses = [
+      'driver_assigned', 
+      'accepted', 
+      'driver_enroute', 
+      'driver_arrived', 
+      'picked_up', 
+      'in_transit', 
+      'at_dropoff',
+      'delivered', // ✅ CRITICAL: Driver still at dropoff, needs to collect payment
+      'money_collection'
+    ];
+    
+    // ✅ FIX: No orderBy needed - just check if any active booking exists
+    const activeBookingsQuery = db.collection('bookings')
+      .where('driverId', '==', uid)
+      .where('status', 'in', activeBookingStatuses)
+      .limit(1);
+    
+    const snapshot = await activeBookingsQuery.get();
+    
+    if (snapshot.empty) {
+      return res.json({
+        success: true,
+        data: { booking: null },
+        message: 'No active booking found'
+      });
+    }
+    
+    const bookingDoc = snapshot.docs[0];
+    const bookingData = bookingDoc.data();
+    
+    // Format the response
+    const booking = {
+      id: bookingDoc.id,
+      ...bookingData,
+      createdAt: bookingData.createdAt?.toDate?.() || bookingData.createdAt,
+      updatedAt: bookingData.updatedAt?.toDate?.() || bookingData.updatedAt
+    };
+    
+    console.log(`✅ [DRIVER_ACTIVE_BOOKING] Found active booking: ${bookingDoc.id}, status: ${bookingData.status}`);
+    
+    res.json({
+      success: true,
+      data: { booking },
+      message: 'Active booking retrieved successfully'
+    });
+    
+  } catch (error) {
+    console.error('❌ [DRIVER_ACTIVE_BOOKING] Error getting active booking:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to retrieve active booking',
+      details: error.message
     });
   }
 });

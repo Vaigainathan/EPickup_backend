@@ -343,26 +343,43 @@ class WorkSlotsService {
         };
       }
 
-      // 🔥 CRITICAL: Check if slot time has already started
+      // ✅ UPDATED: Allow selecting slots that have started (for current day)
+      // But prevent deselecting slots that are currently active or have started
       const now = new Date();
       const slotStartTime = slotData.startTime.toDate();
+      const slotEndTime = slotData.endTime.toDate();
       
-      if (now >= slotStartTime && !isSelected) {
-        // Trying to deselect a slot that has already started
+      // Only block deselection if slot has started and hasn't ended yet
+      if (now >= slotStartTime && now <= slotEndTime && !isSelected) {
+        // Trying to deselect a slot that is currently active
         return {
           success: false,
           error: {
-            code: 'SLOT_ALREADY_STARTED',
+            code: 'SLOT_CURRENTLY_ACTIVE',
             message: 'Cannot deselect slot',
-            details: 'This slot has already started and cannot be cancelled'
+            details: 'This slot is currently active and cannot be cancelled'
           }
         };
       }
+      
+      // Allow selecting slots that have started (as long as they haven't ended)
+      // This enables drivers to join a slot mid-session if they forgot to select it earlier
 
-      await slotRef.update({
+      // ✅ FIX: Track when slot was selected (for validation - can go online if selected before it started)
+      const updateData = {
         isSelected: isSelected,
         updatedAt: Timestamp.now()
-      });
+      };
+      
+      // If selecting, record when it was selected
+      if (isSelected) {
+        updateData.selectedAt = Timestamp.now();
+      } else {
+        // If deselecting, clear selectedAt timestamp
+        updateData.selectedAt = null;
+      }
+
+      await slotRef.update(updateData);
 
       return {
         success: true,
@@ -412,16 +429,27 @@ class WorkSlotsService {
         const slotData = slotDoc.data();
         const now = new Date();
         const slotStartTime = slotData.startTime.toDate();
+        const slotEndTime = slotData.endTime.toDate();
         
-        // Skip if trying to deselect a started slot
-        if (now >= slotStartTime && !isSelected) {
-          continue;
+        // ✅ UPDATED: Only block deselection if slot is currently active (started but not ended)
+        // Allow selecting slots that have started (for joining mid-session)
+        if (now >= slotStartTime && now <= slotEndTime && !isSelected) {
+          continue; // Skip deselection of currently active slots
         }
 
-        batch.update(slotRef, {
+        // ✅ FIX: Track when slot was selected
+        const updateData = {
           isSelected: isSelected,
           updatedAt: Timestamp.now()
-        });
+        };
+        
+        if (isSelected) {
+          updateData.selectedAt = Timestamp.now();
+        } else {
+          updateData.selectedAt = null;
+        }
+        
+        batch.update(slotRef, updateData);
 
         results.push(slotId);
       }

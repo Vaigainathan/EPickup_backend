@@ -660,6 +660,14 @@ class FileUploadService {
       // Also update the user's driver documents for verification request
       await this.updateUserDriverDocuments(driverId, documentType, downloadURL);
 
+      // Invalidate driver document status cache so the mobile app sees the update immediately
+      try {
+        const { invalidateUserCache } = require('../middleware/cache');
+        invalidateUserCache(driverId);
+      } catch (cacheError) {
+        console.warn('⚠️ Could not invalidate document status cache:', cacheError?.message);
+      }
+
       return {
         success: true,
         message: 'Document registered successfully',

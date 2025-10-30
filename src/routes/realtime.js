@@ -318,6 +318,73 @@ router.post('/booking/status', [
 });
 
 /**
+ * @route   POST /api/realtime/test/simulate
+ * @desc    Admin-only: simulate websocket events for a booking
+ * @access  Private (Admin)
+ */
+router.post('/test/simulate', [
+  requireRole(['admin']),
+  body('bookingId').notEmpty().withMessage('Booking ID is required'),
+  body('driverId').optional().isString(),
+  body('event').isIn(['booking_status_update', 'driver-location-update']).withMessage('Valid event is required'),
+  body('payload').optional().isObject()
+], async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'VALIDATION_ERROR',
+          message: 'Validation failed',
+          details: errors.array()
+        }
+      });
+    }
+
+    const { bookingId, driverId, event, payload = {} } = req.body;
+
+    // Broadcast to booking room and relevant users
+    if (event === 'booking_status_update') {
+      socketService.sendToBooking(bookingId, 'booking_status_update', {
+        bookingId,
+        status: payload.status || 'driver_enroute',
+        message: payload.message || 'Test status update',
+        updatedBy: req.user.uid,
+        timestamp: new Date().toISOString(),
+        testingMode: true
+      });
+    }
+
+    if (event === 'driver-location-update') {
+      const loc = payload.location || { lat: 12.973, lng: 77.595 };
+      socketService.sendToBooking(bookingId, 'driver-location-update', {
+        driverId: driverId || 'test-driver',
+        location: { lat: loc.lat, lng: loc.lng },
+        estimatedArrival: payload.estimatedArrival || 8,
+        timestamp: new Date().toISOString(),
+        testingMode: true
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: 'Test event emitted',
+      data: { bookingId, event, payload }
+    });
+  } catch (error) {
+    console.error('Realtime test simulate error:', error);
+    return res.status(500).json({
+      success: false,
+      error: {
+        code: 'SIMULATION_ERROR',
+        message: 'Failed to emit test event'
+      }
+    });
+  }
+});
+
+/**
  * @route   POST /api/realtime/payment/status
  * @desc    Update payment status
  * @access  Private (Customer, Driver)

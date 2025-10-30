@@ -382,30 +382,25 @@ router.post('/refresh', async (req, res) => {
     // Verify refresh token
     const decoded = jwtService.verifyRefreshToken(refreshToken);
     
-    if (!decoded) {
-      return res.status(401).json({
-        success: false,
-        error: {
-          code: 'INVALID_REFRESH_TOKEN',
-          message: 'Invalid or expired refresh token'
-        }
-      });
-    }
-
-    // Generate new access token
-    const newAccessToken = jwtService.generateAccessToken({
-      uid: decoded.uid,
-      userType: decoded.userType,
-      phone: decoded.phone,
-      originalUID: decoded.originalUID
+    // decoded is validated by verifyRefreshToken, no need for null check
+    console.log('✅ [AUTH] Refresh token verified:', {
+      userId: decoded.userId,
+      userType: decoded.userType
     });
 
-    // Generate new refresh token
-    const newRefreshToken = jwtService.generateRefreshToken({
-      uid: decoded.uid,
+    // Generate new access token - preserve role-based UID from refresh token
+    const newAccessToken = jwtService.generateAccessToken({
+      userId: decoded.userId, // This is the role-based UID
       userType: decoded.userType,
       phone: decoded.phone,
-      originalUID: decoded.originalUID
+      metadata: decoded.metadata || {}
+    });
+
+    // Generate new refresh token - preserve role-based UID from refresh token
+    const newRefreshToken = jwtService.generateRefreshToken({
+      userId: decoded.userId, // This is the role-based UID
+      userType: decoded.userType,
+      phone: decoded.phone
     });
 
     console.log('✅ [AUTH] JWT token refreshed successfully');

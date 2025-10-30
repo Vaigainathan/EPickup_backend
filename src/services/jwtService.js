@@ -140,6 +140,26 @@ class JWTService {
   }
 
   /**
+   * Verify refresh token specifically
+   * @param {string} token - Refresh token
+   * @returns {Object} Decoded token payload
+   */
+  verifyRefreshToken(token) {
+    try {
+      const decoded = this.verifyToken(token);
+      
+      if (decoded.type !== 'refresh') {
+        throw new Error('Invalid refresh token type');
+      }
+
+      return decoded;
+    } catch (error) {
+      console.error('Refresh token verification failed:', error.message);
+      throw error;
+    }
+  }
+
+  /**
    * Refresh access token using refresh token
    * @param {string} refreshToken - Refresh token
    * @returns {Object} New token pair
@@ -152,12 +172,12 @@ class JWTService {
         throw new Error('Invalid refresh token');
       }
 
-      // Generate new token pair
+      // Generate new token pair with role-based UID
       const newPayload = {
-        userId: decoded.userId,
+        userId: decoded.userId, // This is the role-based UID
         userType: decoded.userType,
         phone: decoded.phone,
-        metadata: {}
+        metadata: decoded.metadata || {}
       };
 
       return this.generateTokenPair(newPayload);

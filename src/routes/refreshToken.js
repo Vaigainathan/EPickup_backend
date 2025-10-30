@@ -19,7 +19,7 @@ router.post('/refresh', async (req, res) => {
 
     console.log('🔄 [REFRESH] Attempting to refresh access token...');
 
-    // Use JWT service to refresh the token
+    // Use JWT service to refresh the token (it handles verification internally)
     const newTokenPair = jwtService.refreshAccessToken(refreshToken);
 
     console.log('✅ [REFRESH] Access token refreshed successfully');

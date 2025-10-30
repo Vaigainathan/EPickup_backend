@@ -230,7 +230,20 @@ router.post('/firebase/verify-token', firebaseTokenVerifyLimiter, createProgress
     }
 
     console.log('🔐 [FIREBASE_AUTH] Verifying Firebase ID token...');
-    console.log('🔐 [FIREBASE_AUTH] User type:', userType || 'admin');
+    // Normalize and validate userType; never allow undefined to slip through
+    const normalizedType = (userType || '').toString().trim().toLowerCase();
+    const allowedTypes = new Set(['customer', 'driver', 'admin']);
+    let finalUserType = allowedTypes.has(normalizedType) ? normalizedType : undefined;
+    // Optional hints from headers
+    const headerAppType = (req.headers['x-app-type'] || '').toString().trim().toLowerCase();
+    if (!finalUserType) {
+      if (headerAppType.includes('driver')) finalUserType = 'driver';
+      else if (headerAppType.includes('admin')) finalUserType = 'admin';
+      else if (headerAppType.includes('customer')) finalUserType = 'customer';
+    }
+    // Safe default
+    if (!finalUserType) finalUserType = 'customer';
+    console.log('🔐 [FIREBASE_AUTH] User type:', finalUserType);
     console.log('🔐 [FIREBASE_AUTH] Token length:', idToken.length);
 
     // Import Firebase Admin SDK service
@@ -266,32 +279,33 @@ router.post('/firebase/verify-token', firebaseTokenVerifyLimiter, createProgress
       uid: decodedToken.uid,
       email: decodedToken.email,
       phone_number: decodedToken.phone_number,
-      userType: userType || 'admin'
+      userType: finalUserType
     });
 
     // Get or create role-specific user with role-based UID
     const roleBasedAuthService = require('../services/roleBasedAuthService');
     const roleBasedUser = await roleBasedAuthService.getOrCreateRoleSpecificUser(
       decodedToken,
-      userType,
+      finalUserType,
       { name: name || decodedToken.name || decodedToken.email || decodedToken.phone_number }
     );
     
     const roleBasedUID = roleBasedUser.id || roleBasedUser.uid;
     console.log('✅ [FIREBASE_AUTH] Role-based user created/retrieved:', {
       roleBasedUID,
-      userType,
+      userType: finalUserType,
       originalUID: decodedToken.uid
     });
 
     // Set Firebase custom claims with role-based UID
     try {
+      const appTypeMap = { customer: 'customer_app', driver: 'driver_app', admin: 'admin_dashboard' };
       await firebaseAuthService.setCustomClaims(decodedToken.uid, {
         roleBasedUID: roleBasedUID,
-        userType: userType,
-        role: userType,
+        userType: finalUserType,
+        role: finalUserType,
         phone: decodedToken.phone_number,
-        appType: 'customer_app',
+        appType: appTypeMap[finalUserType] || 'customer_app',
         verified: true,
         createdAt: Date.now()
       });
@@ -305,7 +319,7 @@ router.post('/firebase/verify-token', firebaseTokenVerifyLimiter, createProgress
     const jwtService = require('../services/jwtService');
     const backendToken = jwtService.generateAccessToken({
       userId: roleBasedUID, // Use role-based UID instead of Firebase UID
-      userType: userType || 'admin',
+      userType: finalUserType,
       phone: decodedToken.phone_number,
       metadata: {
         email: decodedToken.email,
@@ -316,7 +330,7 @@ router.post('/firebase/verify-token', firebaseTokenVerifyLimiter, createProgress
 
     const refreshToken = jwtService.generateRefreshToken({
       userId: roleBasedUID, // Use role-based UID instead of Firebase UID
-      userType: userType || 'admin',
+      userType: finalUserType,
       phone: decodedToken.phone_number,
       metadata: {
         email: decodedToken.email,
@@ -337,7 +351,7 @@ router.post('/firebase/verify-token', firebaseTokenVerifyLimiter, createProgress
           email: decodedToken.email,
           phone_number: decodedToken.phone_number,
           name: name || decodedToken.name || decodedToken.email || decodedToken.phone_number,
-          userType: userType || 'admin'
+          userType: finalUserType
         }
       },
       message: 'Token exchange successful'

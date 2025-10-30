@@ -73,8 +73,11 @@ class RoleBasedAuthService {
    * @returns {string} Role-specific UID
    */
   generateRoleSpecificUID(phoneNumber, userType) {
+    const normalizedType = (userType || '').toString().trim().toLowerCase();
+    const allowed = new Set(['customer', 'driver', 'admin']);
+    const safeType = allowed.has(normalizedType) ? normalizedType : 'customer';
     // Create a deterministic but role-specific UID
-    const baseString = `${phoneNumber}_${userType}`;
+    const baseString = `${phoneNumber}_${safeType}`;
     const hash = crypto.createHash('sha256').update(baseString).digest('hex');
     
     // Take first 28 characters and ensure it starts with a letter
@@ -97,8 +100,11 @@ class RoleBasedAuthService {
     try {
       const phoneNumber = decodedToken.phone_number;
       const roleSpecificUID = this.generateRoleSpecificUID(phoneNumber, userType);
+      const normalizedType = (userType || '').toString().trim().toLowerCase();
+      const allowed = new Set(['customer', 'driver', 'admin']);
+      const safeType = allowed.has(normalizedType) ? normalizedType : 'customer';
       
-      console.log(`🔑 Generated role-specific UID for ${userType}: ${roleSpecificUID}`);
+      console.log(`🔑 Generated role-specific UID for ${safeType}: ${roleSpecificUID}`);
       
       // Check if user with this role-specific UID exists
       const userDoc = await this.db.collection('users').doc(roleSpecificUID).get();
@@ -109,10 +115,10 @@ class RoleBasedAuthService {
         // ✅ CRITICAL FIX: Ensure custom claims are set for existing users
         try {
           await admin.auth().setCustomUserClaims(decodedToken.uid, {
-            role: userType,
+            role: safeType,
             roleBasedUID: roleSpecificUID,
             phone: decodedToken.phone_number,
-            appType: 'customer_app',
+            appType: safeType === 'driver' ? 'driver_app' : (safeType === 'admin' ? 'admin_dashboard' : 'customer_app'),
             verified: true
           });
           console.log(`✅ Custom claims updated for existing user: ${decodedToken.uid}`);
@@ -124,8 +130,8 @@ class RoleBasedAuthService {
       }
       
       // Create new user with role-specific UID
-      console.log(`👤 Creating new ${userType} user: ${roleSpecificUID}`);
-      const userData = await this.createRoleSpecificUser(decodedToken, userType, roleSpecificUID, additionalData);
+      console.log(`👤 Creating new ${safeType} user: ${roleSpecificUID}`);
+      const userData = await this.createRoleSpecificUser(decodedToken, safeType, roleSpecificUID, additionalData);
       
       return userData;
       
@@ -226,7 +232,7 @@ class RoleBasedAuthService {
           role: userType,
           roleBasedUID: roleSpecificUID,
           phone: decodedToken.phone_number,
-          appType: 'customer_app',
+          appType: userType === 'driver' ? 'driver_app' : (userType === 'admin' ? 'admin_dashboard' : 'customer_app'),
           verified: true
         });
         console.log(`✅ Custom claims set for Firebase UID: ${decodedToken.uid}`);

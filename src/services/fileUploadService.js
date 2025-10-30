@@ -407,6 +407,10 @@ class FileUploadService {
       const driverData = driverDoc.data();
       console.log(`📋 Driver data retrieved:`, { name: driverData.name, phone: driverData.phone });
       
+      // ✅ FIX: Try multiple possible name fields
+      const driverName = driverData.name || driverData.driver?.name || driverData.user?.name || 'Unknown Driver';
+      const driverPhone = driverData.phone || driverData.driver?.phone || driverData.user?.phone || 'Unknown Phone';
+      
       // Check if verification request already exists
       const existingRequestQuery = await this.getDb().collection('documentVerificationRequests')
         .where('driverId', '==', driverId)
@@ -485,8 +489,8 @@ class FileUploadService {
 
       const verificationRequestData = {
         driverId,
-        driverName: driverData.name || 'Unknown Driver',
-        driverPhone: driverData.phone || 'Unknown Phone',
+        driverName: driverName,
+        driverPhone: driverPhone,
         documents: normalizedDocuments,
         status: 'pending',
         requestedAt: new Date(),

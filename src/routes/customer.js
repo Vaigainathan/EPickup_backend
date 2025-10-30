@@ -923,6 +923,16 @@ router.delete('/addresses/:addressId', authenticateToken, async (req, res) => {
       updatedAt: new Date()
     });
     
+    // 🚀 BACKEND CACHING: Invalidate cache when addresses are deleted
+    const cacheKey = `addresses_${userId}`;
+    const cachingService = require('../services/cachingService');
+    try {
+      await cachingService.delete(cacheKey, 'memory');
+      console.log(`🗑️ Invalidated address cache for customer: ${userId}`);
+    } catch (cacheError) {
+      console.log('⚠️ Cache invalidation failed, but continuing:', cacheError.message);
+    }
+    
     console.log(`✅ Deleted address ${addressId} for customer: ${userId}`);
     
     res.json({

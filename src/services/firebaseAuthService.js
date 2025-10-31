@@ -363,6 +363,8 @@ class FirebaseAuthService {
       }
 
       // Set custom claims for userType
+      // Note: This method is legacy - custom claims are now set by roleBasedAuthService
+      // Keeping this for backward compatibility but claims here may be incomplete
       if (userType === 'admin') {
         // For admin users, set proper role based on user data
         const adminRole = userData.role || 'super_admin';

@@ -181,6 +181,15 @@ class VerificationService {
 
       await db.collection('users').doc(driverId).update(updates);
       
+      // ✅ CRITICAL FIX: Invalidate document status cache so driver app sees verification immediately
+      try {
+        const { invalidateUserCache } = require('../middleware/cache');
+        invalidateUserCache(driverId);
+        console.log('✅ [VerificationService] Document status cache invalidated for driver:', driverId);
+      } catch (cacheError) {
+        console.warn('⚠️ [VerificationService] Could not invalidate document status cache:', cacheError?.message);
+      }
+      
       console.log('✅ [VerificationService] Updated driver verification status:', driverId);
       
       return { success: true };
@@ -241,6 +250,15 @@ class VerificationService {
       const verificationData = await this.getDriverVerificationData(driverId);
       if (verificationData) {
         await this.updateDriverVerificationStatus(driverId, verificationData);
+      }
+
+      // ✅ CRITICAL FIX: Invalidate document status cache so driver app sees verification immediately
+      try {
+        const { invalidateUserCache } = require('../middleware/cache');
+        invalidateUserCache(driverId);
+        console.log('✅ [VerificationService] Document status cache invalidated for driver:', driverId);
+      } catch (cacheError) {
+        console.warn('⚠️ [VerificationService] Could not invalidate document status cache:', cacheError?.message);
       }
 
       console.log('✅ [VerificationService] Document verified:', driverId, documentType, status);

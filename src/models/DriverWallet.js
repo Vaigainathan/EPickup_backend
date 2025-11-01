@@ -1,3 +1,15 @@
+/**
+ * ⚠️ IMPORTANT: Keep in sync with fare calculation rates
+ * 
+ * AUTHORITATIVE SOURCE: backend/src/services/fareCalculationService.js
+ * 
+ * CURRENT RATES:
+ * - Commission: ₹2/km (deducted from driver points wallet)
+ * 
+ * This model is LEGACY - use PointsService instead.
+ * Kept for backward compatibility with old driverWallets collection.
+ */
+
 const { getFirestore } = require('../services/firebase');
 
 class DriverWallet {
@@ -21,9 +33,10 @@ class DriverWallet {
   }
 
   // Get remaining trips based on current balance
+  // UPDATED: Commission is now ₹2/km (was ₹1/km)
   getRemainingTrips() {
-    const commissionPerTrip = 1; // ₹1 per km, assuming average 1km per trip
-    return Math.floor(this.currentBalance / commissionPerTrip);
+    const commissionPerKm = 2; // ₹2 per km (UPDATED from 1)
+    return Math.floor(this.currentBalance / commissionPerKm);
   }
 
   // Check if balance is low

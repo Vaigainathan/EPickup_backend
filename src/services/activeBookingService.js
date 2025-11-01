@@ -37,17 +37,10 @@ class ActiveBookingService {
         this.db = this.getDb();
       }
       
-      const activeStatuses = [
-        'pending', 
-        'driver_assigned', 
-        'accepted', 
-        'driver_enroute', 
-        'driver_arrived', 
-        'picked_up', 
-        'in_transit',
-        'at_dropoff',
-        'money_collection'
-      ];
+      // ✅ Use shared constants for consistency
+      const { ACTIVE_BOOKING_STATUSES } = require('../constants/bookingStatuses');
+      // Note: 'at_dropoff' is not in standard statuses, using ACTIVE_BOOKING_STATUSES
+      const activeStatuses = [...ACTIVE_BOOKING_STATUSES, 'at_dropoff']; // Include at_dropoff if needed
 
       const activeBookingsSnapshot = await this.db.collection('bookings')
         .where('customerId', '==', customerId)
@@ -88,9 +81,12 @@ class ActiveBookingService {
         const customerId = bookingData.customerId;
         
         // Check for active bookings within transaction
+        // ✅ Use shared constants for consistency
+        const { ACTIVE_BOOKING_STATUSES } = require('../constants/bookingStatuses');
+        const activeStatuses = [...ACTIVE_BOOKING_STATUSES, 'at_dropoff']; // Include at_dropoff if needed
         const activeBookingsQuery = this.db.collection('bookings')
           .where('customerId', '==', customerId)
-          .where('status', 'in', ['pending', 'driver_assigned', 'accepted', 'driver_enroute', 'driver_arrived', 'picked_up', 'in_transit', 'at_dropoff', 'money_collection'])
+          .where('status', 'in', activeStatuses)
           .limit(1);
 
         const activeBookingsSnapshot = await transaction.get(activeBookingsQuery);
@@ -140,9 +136,12 @@ class ActiveBookingService {
     try {
       const result = await this.db.runTransaction(async (transaction) => {
         // Find active booking
+        // ✅ Use shared constants for consistency
+        const { ACTIVE_BOOKING_STATUSES } = require('../constants/bookingStatuses');
+        const activeStatuses = [...ACTIVE_BOOKING_STATUSES, 'at_dropoff']; // Include at_dropoff if needed
         const activeBookingsQuery = this.db.collection('bookings')
           .where('customerId', '==', customerId)
-          .where('status', 'in', ['pending', 'driver_assigned', 'accepted', 'driver_enroute', 'driver_arrived', 'picked_up', 'in_transit', 'at_dropoff', 'money_collection'])
+          .where('status', 'in', activeStatuses)
           .limit(1);
 
         const activeBookingsSnapshot = await transaction.get(activeBookingsQuery);

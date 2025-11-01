@@ -1,3 +1,17 @@
+/**
+ * ⚠️ IMPORTANT: Fare calculation logic must match fareCalculationService.js
+ * 
+ * AUTHORITATIVE SOURCE: backend/src/services/fareCalculationService.js
+ * 
+ * CURRENT RATES (DO NOT CHANGE WITHOUT UPDATING ALL FILES):
+ * - Customer Rate: ₹10/km
+ * - Rounding: Math.ceil() (round up to next km)
+ * - Base Fare: ₹0
+ * - Commission: ₹2/km (deducted from driver points wallet)
+ * 
+ * See fareCalculationService.js header for full update checklist.
+ */
+
 const { getFirestore } = require('./firebase');
 const { GeoPoint, FieldValue } = require('firebase-admin/firestore');
 const axios = require('axios');
@@ -35,10 +49,12 @@ class BookingService {
         estimatedDeliveryTime
       } = bookingData;
 
-      // ✅ CRITICAL FIX: Check for existing active bookings
+      // ✅ CRITICAL FIX: Check for existing active bookings (exclude delivered/completed)
+      // ✅ Use shared constants for consistency
+      const { ACTIVE_BOOKING_STATUSES } = require('../constants/bookingStatuses');
       const existingActiveBooking = await this.db.collection('bookings')
         .where('customerId', '==', customerId)
-        .where('status', 'in', ['pending', 'driver_assigned', 'accepted', 'driver_enroute', 'driver_arrived', 'picked_up', 'in_transit', 'delivered'])
+        .where('status', 'in', ACTIVE_BOOKING_STATUSES)
         .limit(1)
         .get();
 
@@ -93,6 +109,8 @@ class BookingService {
           estimatedDeliveryTime: estimatedDeliveryTime ? new Date(estimatedDeliveryTime) : null,
           createdAt: new Date(),
           updatedAt: new Date(),
+          // ✅ FIX: Persist idempotency key for duplicate detection and debugging
+          idempotencyKey: bookingData.idempotencyKey || null,
           // Driver assignment fields (initially null)
           driverId: null,
           assignedAt: null,
@@ -188,10 +206,13 @@ class BookingService {
           throw new Error('Driver is not available');
         }
 
-        // ✅ CRITICAL FIX: Check if driver already has an active booking
+        // ✅ CRITICAL FIX: Check if driver already has an active booking (exclude delivered/completed)
+        // ✅ Use shared constants for consistency (excluding pending as drivers don't have pending bookings)
+        const { ACTIVE_BOOKING_STATUSES } = require('../constants/bookingStatuses');
+        const driverActiveStatuses = ACTIVE_BOOKING_STATUSES.filter(s => s !== 'pending');
         const driverActiveBooking = await this.db.collection('bookings')
           .where('driverId', '==', driverId)
-          .where('status', 'in', ['driver_assigned', 'accepted', 'driver_enroute', 'driver_arrived', 'picked_up', 'in_transit', 'delivered'])
+          .where('status', 'in', driverActiveStatuses)
           .limit(1)
           .get();
 
@@ -703,11 +724,9 @@ class BookingService {
         throw new Error('Booking not found');
       }
 
-      // ✅ UNIFIED STATUS DEFINITION: Match BookingStateMachine exactly
-      const validStatuses = [
-        'pending', 'driver_assigned', 'accepted', 'driver_enroute',
-        'driver_arrived', 'picked_up', 'in_transit', 'delivered', 'completed', 'cancelled', 'rejected'
-      ];
+      // ✅ UNIFIED STATUS DEFINITION: Use shared constants for consistency
+      const { VALID_BOOKING_STATUSES } = require('../constants/bookingStatuses');
+      const validStatuses = VALID_BOOKING_STATUSES;
 
       if (!validStatuses.includes(status)) {
         throw new Error('Invalid status');
@@ -782,7 +801,7 @@ class BookingService {
               };
               
               // Deduct commission from driver wallet
-              const commissionResult = await walletService.deductCommission(
+              const commissionResult = await walletService.deductPoints(
                 driverId,
                 bookingId,
                 roundedDistanceKm, // Use rounded distance for commission calculation

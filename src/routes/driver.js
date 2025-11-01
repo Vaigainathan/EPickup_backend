@@ -3434,9 +3434,14 @@ router.post('/bookings/:id/accept', requireDriver, async (req, res) => {
       }
 
       // Check if driver is already assigned to another booking
+      // ✅ Use shared constants for consistency
+      const { ACTIVE_BOOKING_STATUSES } = require('../constants/bookingStatuses');
+      const driverActiveStatuses = ACTIVE_BOOKING_STATUSES.filter(s => 
+        s !== 'pending' && s !== 'delivered' && s !== 'money_collection'
+      );
       const activeBookingsQuery = db.collection('bookings')
         .where('driverId', '==', uid)
-        .where('status', 'in', ['driver_assigned', 'driver_enroute', 'picked_up', 'in_transit']);
+        .where('status', 'in', driverActiveStatuses);
       
       const activeBookingsSnapshot = await transaction.get(activeBookingsQuery);
       if (!activeBookingsSnapshot.empty) {
@@ -3830,17 +3835,44 @@ router.post('/bookings/:id/confirm-payment', [
     
     await db.collection('payments').add(paymentRecord);
     
-    // Update booking with payment confirmation and status
-    await bookingRef.update({
-      payment: {
-        ...paymentRecord,
-        confirmed: true
-      },
-      status: 'payment_confirmed', // ✅ CRITICAL FIX: Update status for workflow
-      paymentConfirmed: true,
-      paymentConfirmedAt: new Date(),
-      updatedAt: new Date()
-    });
+    // ✅ CRITICAL FIX: Use state machine to transition from money_collection to completed
+    const BookingStateMachine = require('../services/bookingStateMachine');
+    const stateMachine = new BookingStateMachine();
+    
+    // Check if booking is in money_collection status before transitioning
+    if (bookingData.status === 'money_collection') {
+      // Use state machine to transition to completed
+      await stateMachine.transitionBooking(
+        id,
+        'completed',
+        {
+          payment: {
+            ...paymentRecord,
+            confirmed: true,
+            confirmedBy: uid
+          },
+          paymentConfirmed: true,
+          paymentConfirmedAt: new Date()
+        },
+        {
+          userId: uid,
+          userType: 'driver',
+          driverId: uid
+        }
+      );
+    } else {
+      // If not in money_collection, just update payment fields (for backward compatibility)
+      await bookingRef.update({
+        payment: {
+          ...paymentRecord,
+          confirmed: true,
+          confirmedBy: uid
+        },
+        paymentConfirmed: true,
+        paymentConfirmedAt: new Date(),
+        updatedAt: new Date()
+      });
+    }
 
     // ✅ CRITICAL FIX: Send real-time notifications
     try {

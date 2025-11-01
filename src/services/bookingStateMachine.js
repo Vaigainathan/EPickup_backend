@@ -12,8 +12,8 @@ class BookingStateMachine {
     // Define valid state transitions
     this.stateTransitions = {
       'pending': ['driver_assigned', 'cancelled', 'rejected'],
-      'driver_assigned': ['accepted', 'rejected', 'cancelled'],
-      'accepted': ['driver_enroute', 'cancelled'],
+      'driver_assigned': ['driver_enroute', 'rejected', 'cancelled'], // ✅ FIX: Remove 'accepted' intermediate state, allow direct transition to driver_enroute
+      'accepted': ['driver_enroute', 'cancelled'], // ✅ KEEP: For backward compatibility with existing bookings
       'driver_enroute': ['driver_arrived', 'cancelled'],
       'driver_arrived': ['picked_up', 'cancelled'],
       'picked_up': ['in_transit', 'cancelled'],
@@ -202,6 +202,9 @@ class BookingStateMachine {
       case 'delivered':
         stateData.deliveredAt = now;
         break;
+      case 'money_collection':
+        stateData.moneyCollectionAt = now;
+        break;
       case 'completed':
         stateData.completedAt = now;
         break;
@@ -258,7 +261,12 @@ class BookingStateMachine {
         break;
 
       case 'delivered':
-        // Update driver availability
+        // ✅ NOTE: Driver remains unavailable during money_collection phase
+        // Driver will be released when status transitions to 'completed'
+        break;
+
+      case 'completed':
+        // ✅ FIX: Release driver availability when booking is completed
         if (context.driverId) {
           const driverRef = this.db.collection('users').doc(context.driverId);
           transaction.update(driverRef, {
@@ -266,6 +274,14 @@ class BookingStateMachine {
             'driver.currentBookingId': null,
             'driver.status': 'available',
             updatedAt: new Date()
+          });
+          
+          // Also update driverLocations collection
+          const driverLocationRef = this.db.collection('driverLocations').doc(context.driverId);
+          transaction.update(driverLocationRef, {
+            isAvailable: true,
+            currentTripId: null,
+            lastUpdated: new Date()
           });
         }
         break;

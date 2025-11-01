@@ -620,14 +620,14 @@ router.post('/confirm',
         });
       }
 
-      // Check if booking is in correct status for payment confirmation
-      if (!['picked_up', 'in_transit', 'driver_arrived', 'delivered'].includes(bookingData.status)) {
+      // ✅ FIX: Require money_collection status for payment confirmation (as per audit)
+      if (bookingData.status !== 'money_collection') {
         return res.status(400).json({
           success: false,
           error: {
             code: 'INVALID_BOOKING_STATUS',
             message: 'Invalid booking status for payment confirmation',
-            details: `Booking must be in picked_up, in_transit, driver_arrived, or delivered status. Current status: ${bookingData.status}`
+            details: `Booking must be in money_collection status for payment confirmation. Current status: ${bookingData.status}`
           },
           timestamp: new Date().toISOString()
         });
@@ -651,17 +651,45 @@ router.post('/confirm',
         updatedAt: new Date()
       });
 
-      // Update booking with payment confirmation
-      await bookingRef.update({
-        'payment.confirmed': true,
-        'payment.confirmedAt': new Date(),
-        'payment.confirmedBy': driverId,
-        'payment.amount': amount,
-        'payment.method': paymentMethod,
-        'payment.transactionId': transactionId,
-        'payment.notes': notes || null,
-        updatedAt: new Date()
-      });
+      // ✅ CRITICAL FIX: Use state machine to transition status if in money_collection
+      const BookingStateMachine = require('../services/bookingStateMachine');
+      const stateMachine = new BookingStateMachine();
+      
+      if (bookingData.status === 'money_collection') {
+        // Transition to completed using state machine
+        await stateMachine.transitionBooking(
+          bookingId,
+          'completed',
+          {
+            payment: {
+              confirmed: true,
+              confirmedAt: new Date(),
+              confirmedBy: driverId,
+              amount: amount,
+              method: paymentMethod,
+              transactionId: transactionId,
+              notes: notes || null
+            }
+          },
+          {
+            userId: driverId,
+            userType: 'driver',
+            driverId: driverId
+          }
+        );
+      } else {
+        // Just update payment fields if not in money_collection
+        await bookingRef.update({
+          'payment.confirmed': true,
+          'payment.confirmedAt': new Date(),
+          'payment.confirmedBy': driverId,
+          'payment.amount': amount,
+          'payment.method': paymentMethod,
+          'payment.transactionId': transactionId,
+          'payment.notes': notes || null,
+          updatedAt: new Date()
+        });
+      }
 
       // Update trip tracking
       const tripTrackingRef = db.collection('tripTracking').doc(bookingId);

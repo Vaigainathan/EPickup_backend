@@ -1,3 +1,25 @@
+/**
+ * ⚠️ AUTHORITATIVE SOURCE OF TRUTH for fare calculations
+ * 
+ * This is the ONLY authoritative source for pricing logic.
+ * All other files (customer app, driver app, bookingService.js) should match this.
+ * 
+ * CURRENT RATES:
+ * - Customer Rate: ₹10/km
+ * - Rounding: Math.ceil() (round up to next km, e.g. 8.4km → 9km = ₹90)
+ * - Base Fare: ₹0 (removed completely)
+ * - Commission: ₹2/km (deducted from driver points wallet)
+ * - Driver Earnings: Full fare collected from customer
+ * - Company Revenue: Points deducted from driver wallet
+ * 
+ * WHEN CHANGING RATES, UPDATE ALL:
+ * 1. backend/src/services/fareCalculationService.js (THIS FILE)
+ * 2. backend/src/services/bookingService.js
+ * 3. customer-app/services/chargeCalculation.ts
+ * 4. customer-app/services/routeCalculationService.ts
+ * 5. customer-app/services/fareCalculationService.ts
+ */
+
 const axios = require('axios');
 
 class FareCalculationService {

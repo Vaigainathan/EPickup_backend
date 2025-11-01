@@ -72,10 +72,9 @@ class ValidationService {
         }),
 
       // Booking status validation
+      // ✅ Use shared constants for consistency
       bookingStatus: Joi.string()
-        .valid('pending', 'driver_assigned', 'accepted', 'driver_enroute', 
-               'driver_arrived', 'picked_up', 'in_transit', 'delivered', 
-               'completed', 'cancelled', 'rejected')
+        .valid(...require('../constants/bookingStatuses').VALID_BOOKING_STATUSES)
         .required()
         .messages({
           'any.only': 'Invalid booking status',

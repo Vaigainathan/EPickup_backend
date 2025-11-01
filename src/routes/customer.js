@@ -378,10 +378,11 @@ router.get('/active-booking', authenticateToken, async (req, res) => {
     console.log(`🔍 Getting active booking for customer: ${userId}`);
     
     // ✅ CRITICAL FIX: Only consider bookings with assigned drivers as "active"
-    // 'pending' and 'confirmed' should NOT redirect to trip progress
+    // ✅ Use shared constants for consistency (includes money_collection and delivered for payment flow)
+    const { ACTIVE_BOOKING_WITH_DRIVER_STATUSES } = require('../constants/bookingStatuses');
     const activeBookingsQuery = db.collection('bookings')
       .where('customerId', '==', userId)
-      .where('status', 'in', ['driver_assigned', 'driver_enroute', 'driver_arrived', 'picked_up', 'in_transit', 'at_dropoff'])
+      .where('status', 'in', ACTIVE_BOOKING_WITH_DRIVER_STATUSES)
       .orderBy('createdAt', 'desc')
       .limit(1);
     
@@ -434,10 +435,11 @@ router.get('/pending-booking', authenticateToken, async (req, res) => {
     
     console.log(`🔍 Getting pending booking for customer: ${userId}`);
     
-    // Query for pending bookings (waiting for driver assignment)
+    // ✅ Use shared constants for consistency
+    const { PENDING_BOOKING_STATUSES } = require('../constants/bookingStatuses');
     const pendingBookingsQuery = db.collection('bookings')
       .where('customerId', '==', userId)
-      .where('status', 'in', ['pending', 'confirmed', 'searching'])
+      .where('status', 'in', PENDING_BOOKING_STATUSES)
       .orderBy('createdAt', 'desc')
       .limit(1);
     
@@ -1764,16 +1766,45 @@ router.post('/bookings/:id/confirm-payment', authenticateToken, async (req, res)
       createdAt: new Date()
     };
     
-    // Update booking status to delivered
-    await db.collection('bookings').doc(bookingId).update({
-      status: 'delivered',
-      paymentConfirmed: true,
-      paymentData,
-      updatedAt: new Date()
-    });
+    // ✅ CRITICAL FIX: Use state machine to transition from money_collection to completed
+    const BookingStateMachine = require('../services/bookingStateMachine');
+    const stateMachine = new BookingStateMachine();
     
     // Add payment record
     await db.collection('payments').add(paymentData);
+    
+    // If booking is in money_collection, transition to completed
+    if (bookingData.status === 'money_collection') {
+      await stateMachine.transitionBooking(
+        bookingId,
+        'completed',
+        {
+          payment: {
+            ...paymentData,
+            confirmed: true,
+            confirmedByCustomer: true
+          },
+          paymentConfirmed: true,
+          paymentConfirmedByCustomer: true
+        },
+        {
+          userId: userId,
+          userType: 'customer'
+        }
+      );
+    } else {
+      // For backward compatibility, just update payment fields
+      await db.collection('bookings').doc(bookingId).update({
+        payment: {
+          ...paymentData,
+          confirmed: true,
+          confirmedByCustomer: true
+        },
+        paymentConfirmed: true,
+        paymentConfirmedByCustomer: true,
+        updatedAt: new Date()
+      });
+    }
     
     console.log(`✅ [PAYMENT_CONFIRM] Payment confirmed for booking ${bookingId}: ₹${amount}`);
     
@@ -1781,9 +1812,9 @@ router.post('/bookings/:id/confirm-payment', authenticateToken, async (req, res)
       success: true,
       message: 'Payment confirmed successfully',
       data: {
-        paymentId: paymentData.id,
+        bookingId: bookingId,
         amount: paymentData.amount,
-        status: 'confirmed'
+        status: bookingData.status === 'money_collection' ? 'completed' : bookingData.status
       }
     });
     

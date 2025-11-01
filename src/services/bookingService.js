@@ -566,8 +566,10 @@ class BookingService {
         surgeMultiplier,
         subtotal,
         total: finalTotal,
+        totalAmount: finalTotal, // Alias for backward compatibility
         currency: 'INR',
         ratePerKm: perKmRate, // ₹10 per km
+        timeCharge: 0, // No time-based charges
         breakdown: {
           exactDistance: parseFloat(exactDistance.toFixed(2)),
           roundedDistance: roundedDistance,

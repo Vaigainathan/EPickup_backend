@@ -4,7 +4,7 @@ class FareCalculationService {
     constructor() {
         this.BASE_FARE_PER_KM = 10; // ₹10 per km (updated from previous rate)
         this.COMMISSION_PER_KM = 2; // 2 points per km commission (increased from 1)
-        this.MINIMUM_FARE = 50; // Minimum fare for any trip
+        this.MINIMUM_FARE = 0; // NO MINIMUM FARE - removed to match customer app pricing
         this.GOOGLE_MAPS_API_KEY = process.env.GOOGLE_MAPS_API_KEY;
     }
 
@@ -18,8 +18,8 @@ class FareCalculationService {
         // e.g., 6.3km → 7km, 6.1km → 7km, 6.0km → 6km
         const roundedDistanceKm = Math.ceil(exactDistanceKm);
         
-        // Calculate fare using rounded distance
-        const baseFare = Math.max(this.MINIMUM_FARE, roundedDistanceKm * this.BASE_FARE_PER_KM);
+        // Calculate fare using rounded distance - NO MINIMUM FARE
+        const baseFare = roundedDistanceKm * this.BASE_FARE_PER_KM;
         const commission = roundedDistanceKm * this.COMMISSION_PER_KM;
         const driverNet = baseFare; // Driver gets full amount from customer
         const companyRevenue = commission; // Company gets commission from wallet
@@ -279,7 +279,7 @@ class FareCalculationService {
         
         // Basic validation
         if (distanceKm <= 0) return false;
-        if (baseFare < this.MINIMUM_FARE) return false;
+        // Removed MINIMUM_FARE check - no minimum fare requirement
         if (commission !== distanceKm * this.COMMISSION_PER_KM) return false;
         if (driverNet !== baseFare) return false;
         

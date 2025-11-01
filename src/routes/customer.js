@@ -566,7 +566,7 @@ router.post('/bookings', authenticateToken, async (req, res) => {
       paymentStatus: 'pending',
       fare: {
         baseFare: fareDetails.baseFare,
-        distanceFare: fareDetails.baseFare - fareCalculationService.MINIMUM_FARE,
+        distanceFare: fareDetails.baseFare, // Simple fare: distance charge only, no minimum fare
         totalFare: fareDetails.baseFare,
         currency: 'INR',
         commission: fareDetails.commission,
@@ -575,7 +575,7 @@ router.post('/bookings', authenticateToken, async (req, res) => {
       },
       pricing: {
         baseFare: fareDetails.baseFare,
-        distanceFare: fareDetails.baseFare - fareCalculationService.MINIMUM_FARE,
+        distanceFare: fareDetails.baseFare, // Simple fare: distance charge only, no minimum fare
         totalFare: fareDetails.baseFare,
         currency: 'INR',
         commission: fareDetails.commission,

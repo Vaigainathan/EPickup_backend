@@ -847,6 +847,12 @@ router.post('/earnings/report', requireDriver, async (req, res) => {
       totalEarnings += earnings;
       totalTrips++;
 
+      // Calculate commission based on distance (₹2 per km)
+      const exactDistance = data.distance?.total || 0;
+      const fareCalculationService = require('../services/fareCalculationService');
+      const fareBreakdown = fareCalculationService.calculateFare(exactDistance);
+      const commissionPoints = fareBreakdown.commission; // ₹2 per km
+      
       tripDetails.push({
         id: doc.id,
         completedAt: data.completedAt,
@@ -854,8 +860,8 @@ router.post('/earnings/report', requireDriver, async (req, res) => {
         pickupLocation: data.pickup?.address || 'Unknown',
         dropoffLocation: data.dropoff?.address || 'Unknown',
         fare: data.fare?.totalFare || 0,
-        driverEarnings: earnings,
-        commission: (data.fare?.totalFare || 0) * 0.2,
+        driverEarnings: earnings, // Driver gets full fare
+        commission: commissionPoints, // Commission deducted from points wallet
         distance: data.distance || 0,
         duration: data.actualDuration || 0,
         rating: data.rating?.customerRating || 0
@@ -883,12 +889,22 @@ router.post('/earnings/report', requireDriver, async (req, res) => {
         doc.text(`Period: ${period} (${startDate.toLocaleDateString()} - ${endDate.toLocaleDateString()})`, 50, 100);
         doc.text(`Generated: ${new Date().toLocaleString()}`, 50, 120);
         
+        // Calculate total commission
+        let totalCommission = 0;
+        bookingsSnapshot.forEach(doc => {
+          const data = doc.data();
+          const exactDistance = data.distance?.total || 0;
+          const fareCalculationService = require('../services/fareCalculationService');
+          const fareBreakdown = fareCalculationService.calculateFare(exactDistance);
+          totalCommission += fareBreakdown.commission;
+        });
+        
         // Summary
         doc.text('Summary:', 50, 160);
         doc.text(`Total Trips: ${totalTrips}`, 70, 180);
         doc.text(`Total Earnings: ₹${totalEarnings.toFixed(2)}`, 70, 200);
-        doc.text(`Driver Earnings (80%): ₹${(totalEarnings * 0.8).toFixed(2)}`, 70, 220);
-        doc.text(`Platform Commission (20%): ₹${(totalEarnings * 0.2).toFixed(2)}`, 70, 240);
+        doc.text(`Driver Earnings (Full Fare): ₹${totalEarnings.toFixed(2)}`, 70, 220);
+        doc.text(`Commission Deducted: ₹${totalCommission.toFixed(2)} (Points)`, 70, 240);
         
         // Trip Details
         doc.text('Trip Details:', 50, 280);
@@ -923,6 +939,12 @@ router.post('/earnings/report', requireDriver, async (req, res) => {
       }
     }
     
+    // Calculate total commission
+    let totalCommission = 0;
+    tripDetails.forEach(trip => {
+      totalCommission += trip.commission || 0;
+    });
+    
     // Default JSON response
     res.json({
       success: true,
@@ -932,8 +954,8 @@ router.post('/earnings/report', requireDriver, async (req, res) => {
         summary: {
           totalTrips,
           totalEarnings,
-          driverEarnings: totalEarnings * 0.8,
-          platformCommission: totalEarnings * 0.2
+          driverEarnings: totalEarnings, // Full fare
+          commissionDeducted: totalCommission // Points deducted
         },
         trips: tripDetails,
         generatedAt: new Date().toISOString()
@@ -1029,9 +1051,19 @@ router.get('/earnings/detailed', requireDriver, async (req, res) => {
       totalTrips++;
     });
 
-    // Calculate commission (assuming 80% for driver, 20% for platform)
-    const commission = totalEarnings * 0.8;
-    const platformFee = totalEarnings * 0.2;
+    // Calculate commission correctly: Drivers get full fare, commission is ₹2 per km deducted from points wallet
+    // commission field here represents points deducted, not money
+    const fareCalculationService = require('../services/fareCalculationService');
+    let totalCommissionPoints = 0;
+    
+    trips.forEach(trip => {
+      const distance = trip.distance || 0;
+      const fareBreakdown = fareCalculationService.calculateFare(distance);
+      totalCommissionPoints += fareBreakdown.commission;
+    });
+    
+    const commission = totalCommissionPoints; // Points deducted
+    const platformFee = 0; // No money fee, commission deducted from points wallet
 
     // Get earnings by payment method
     const earningsByMethod = trips.reduce((acc, trip) => {
@@ -3364,7 +3396,20 @@ router.post('/bookings/:id/accept', requireDriver, async (req, res) => {
       const freshBookingData = freshBookingDoc.data();
       
       // Check if booking is still available (not assigned to another driver)
-      if (freshBookingData.status !== 'pending' || freshBookingData.driverId !== null) {
+      // ✅ FIX: Allow driver to accept if they're already assigned to this booking (idempotent)
+      if (freshBookingData.status !== 'pending') {
+        // If booking is already assigned to this driver, allow it (idempotent accept)
+        if (freshBookingData.driverId === uid && freshBookingData.status === 'driver_assigned') {
+          console.log('ℹ️ [ACCEPT_BOOKING] Booking already assigned to this driver, returning success');
+          // Return early - booking already assigned to this driver, no updates needed
+          return { success: true, alreadyAssigned: true };
+        }
+        // Booking is assigned to another driver or in different status
+        throw new Error('BOOKING_ALREADY_ASSIGNED');
+      }
+      
+      // Check if booking has a driverId set (shouldn't happen with status='pending', but double-check)
+      if (freshBookingData.driverId !== null && freshBookingData.driverId !== uid) {
         throw new Error('BOOKING_ALREADY_ASSIGNED');
       }
 
@@ -3398,12 +3443,20 @@ router.post('/bookings/:id/accept', requireDriver, async (req, res) => {
         throw new Error('DRIVER_ALREADY_ASSIGNED');
       }
 
-      // Update booking
+      // Update booking with driver info for admin panel visibility
       transaction.update(bookingRef, {
         driverId: uid,
         status: 'driver_assigned',
         'timing.assignedAt': new Date(),
-        updatedAt: new Date()
+        updatedAt: new Date(),
+        // ✅ FIX: Populate driverInfo so admin panel can display driver name
+        driverInfo: {
+          name: freshDriverData.name || 'Driver',
+          phone: freshDriverData.phone || '',
+          rating: freshDriverData.driver?.rating || 0,
+          vehicleNumber: freshDriverData.driver?.vehicleDetails?.vehicleNumber || '',
+          vehicleModel: freshDriverData.driver?.vehicleDetails?.vehicleModel || ''
+        }
       });
 
       // Update driver availability
@@ -3423,7 +3476,29 @@ router.post('/bookings/:id/accept', requireDriver, async (req, res) => {
       return { success: true };
     });
 
-    await transaction;
+    const transactionResult = await transaction;
+    
+    // ✅ FIX: Skip notifications if booking was already assigned to this driver
+    if (transactionResult?.alreadyAssigned) {
+      console.log('ℹ️ [ACCEPT_BOOKING] Booking was already assigned, skipping notifications');
+      
+      // ✅ CRITICAL FIX: Release lock before returning
+      try {
+        await bookingLockService.releaseBookingLock(id, uid);
+      } catch (lockError) {
+        console.error('Error releasing booking lock:', lockError);
+      }
+      
+      return res.status(200).json({
+        success: true,
+        message: 'Booking already accepted',
+        data: {
+          bookingId: id,
+          status: 'driver_assigned'
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
 
     // Get booking data for notifications (re-read to get updated data)
     const updatedBookingDoc = await db.collection('bookings').doc(id).get();
@@ -3811,9 +3886,9 @@ router.post('/bookings/:id/confirm-payment', [
         const currentEarnings = driverData.totalEarnings || 0;
         const currentBalance = driverData.wallet?.balance || 0;
         
-        // Calculate driver earnings (assuming 80% to driver, 20% commission)
-        const driverEarnings = amount * 0.8;
-        const commission = amount * 0.2;
+        // CORRECT: Driver gets full fare amount, commission deducted from points wallet
+        const driverEarnings = amount; // Full amount
+        const commission = 0; // Commission deducted separately from points wallet
         
         await driverRef.update({
           totalEarnings: currentEarnings + driverEarnings,
@@ -4511,6 +4586,74 @@ router.put('/bookings/:id/status', [
 
     await bookingRef.update(updateData);
 
+    // ✅ CRITICAL FIX: Release driver availability and deduct commission when booking is delivered
+    if (status === 'delivered' || status === 'completed') {
+      console.log('🔄 [STATUS_UPDATE] Processing delivery completion');
+      
+      // Deduct commission from driver's points wallet
+      try {
+        const exactDistanceKm = bookingData.distance?.total || 0;
+        const tripFare = bookingData.fare?.totalFare || bookingData.fare || 0;
+        
+        if (exactDistanceKm > 0 && tripFare > 0) {
+          const fareCalculationService = require('../services/fareCalculationService');
+          const fareBreakdown = fareCalculationService.calculateFare(exactDistanceKm);
+          const commissionAmount = fareBreakdown.commission; // ₹2 per km
+          const roundedDistanceKm = fareBreakdown.roundedDistanceKm;
+          
+          console.log(`💰 [STATUS_UPDATE] Deducting commission: ₹${commissionAmount} for ${roundedDistanceKm}km (fare: ₹${tripFare})`);
+          
+          // Prepare trip details for commission transaction
+          const tripDetails = {
+            pickupLocation: bookingData.pickup || {},
+            dropoffLocation: bookingData.dropoff || {},
+            tripFare: tripFare,
+            exactDistanceKm: exactDistanceKm,
+            roundedDistanceKm: roundedDistanceKm
+          };
+          
+          // Deduct commission from driver points wallet
+          const walletService = require('../services/walletService');
+          const pointsService = new walletService();
+          const commissionResult = await pointsService.deductPoints(
+            uid,
+            id,
+            roundedDistanceKm,
+            commissionAmount,
+            tripDetails
+          );
+          
+          if (commissionResult.success) {
+            console.log(`✅ [STATUS_UPDATE] Commission deducted from points: ₹${commissionAmount}`);
+          } else {
+            console.error('❌ [STATUS_UPDATE] Commission deduction failed:', commissionResult.error);
+          }
+        }
+      } catch (commissionError) {
+        console.error('❌ [STATUS_UPDATE] Error deducting commission:', commissionError);
+        // Don't fail status update if commission deduction fails
+      }
+      
+      // Release driver availability
+      const driverRef = db.collection('users').doc(uid);
+      await driverRef.update({
+        'driver.isAvailable': true,
+        'driver.currentBookingId': null,
+        'driver.status': 'available',
+        updatedAt: new Date()
+      });
+      
+      // Update driverLocations collection
+      const driverLocationRef = db.collection('driverLocations').doc(uid);
+      await driverLocationRef.update({
+        isAvailable: true,
+        currentTripId: null,
+        lastUpdated: new Date()
+      });
+      
+      console.log('✅ [STATUS_UPDATE] Driver availability released');
+    }
+
     // Update trip tracking
     const tripTrackingRef = db.collection('tripTracking').doc(id);
     await tripTrackingRef.set({
@@ -4920,6 +5063,50 @@ router.post('/complete-delivery', [
       lastUpdated: new Date()
     }, { merge: true });
 
+    // ✅ CRITICAL: Deduct commission from driver's points wallet
+    try {
+      const exactDistanceKm = bookingData.distance?.total || 0;
+      const tripFare = bookingData.fare?.totalFare || bookingData.fare || 0;
+      
+      if (exactDistanceKm > 0 && tripFare > 0) {
+        const fareCalculationService = require('../services/fareCalculationService');
+        const fareBreakdown = fareCalculationService.calculateFare(exactDistanceKm);
+        const commissionAmount = fareBreakdown.commission; // ₹2 per km
+        const roundedDistanceKm = fareBreakdown.roundedDistanceKm;
+        
+        console.log(`💰 [COMPLETE_DELIVERY] Deducting commission: ₹${commissionAmount} for ${roundedDistanceKm}km (fare: ₹${tripFare})`);
+        
+        // Prepare trip details for commission transaction
+        const tripDetails = {
+          pickupLocation: bookingData.pickup || {},
+          dropoffLocation: bookingData.dropoff || {},
+          tripFare: tripFare,
+          exactDistanceKm: exactDistanceKm,
+          roundedDistanceKm: roundedDistanceKm
+        };
+        
+        // Deduct commission from driver points wallet
+        const walletService = require('../services/walletService');
+        const pointsService = new walletService();
+        const commissionResult = await pointsService.deductPoints(
+          uid,
+          bookingId,
+          roundedDistanceKm,
+          commissionAmount,
+          tripDetails
+        );
+        
+        if (commissionResult.success) {
+          console.log(`✅ [COMPLETE_DELIVERY] Commission deducted from points: ₹${commissionAmount}`);
+        } else {
+          console.error('❌ [COMPLETE_DELIVERY] Commission deduction failed:', commissionResult.error);
+        }
+      }
+    } catch (commissionError) {
+      console.error('❌ [COMPLETE_DELIVERY] Error deducting commission:', commissionError);
+      // Don't fail delivery if commission deduction fails
+    }
+
     // Calculate and update driver earnings
     const fare = bookingData.fare || {};
     const driverEarnings = fare.driverEarnings || fare.total || 0;
@@ -4969,6 +5156,12 @@ router.post('/complete-delivery', [
 
     // ✅ CRITICAL FIX: Update admin revenue tracking
     try {
+      // Calculate commission from distance for proper tracking
+      const exactDistanceKm = bookingData.distance?.total || 0;
+      const fareCalculationService = require('../services/fareCalculationService');
+      const fareBreakdown = fareCalculationService.calculateFare(exactDistanceKm);
+      const commissionPoints = fareBreakdown.commission; // ₹2 per km
+      
       const revenueRef = db.collection('adminRevenue').doc();
       await revenueRef.set({
         id: revenueRef.id,
@@ -4977,7 +5170,7 @@ router.post('/complete-delivery', [
         driverId: uid,
         totalFare: fare.total || 0,
         driverEarnings: driverEarnings,
-        platformCommission: (fare.total || 0) - driverEarnings,
+        platformCommission: commissionPoints, // Points deducted, not money difference
         paymentMethod: bookingData.paymentMethod || 'cash',
         completedAt: new Date(),
         status: 'completed'
@@ -7805,7 +7998,8 @@ router.post('/bookings/:id/payment', [
     if (driverDoc.exists) {
       const driverData = driverDoc.data();
       const currentEarnings = driverData.driver?.earnings || { total: 0, thisMonth: 0, thisWeek: 0 };
-      const tripEarnings = parseFloat(amount) * 0.8; // 80% for driver, 20% for platform
+      // CORRECT: Driver gets full fare, commission deducted from points wallet
+      const tripEarnings = parseFloat(amount); // Full fare amount
       
       const newEarnings = {
         total: currentEarnings.total + tripEarnings,

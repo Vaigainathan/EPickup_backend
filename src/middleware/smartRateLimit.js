@@ -34,7 +34,7 @@ function decodeTokenPayload(idToken) {
     const payload = parts[1];
     const decoded = Buffer.from(payload, 'base64').toString('utf-8');
     return JSON.parse(decoded);
-  } catch (error) {
+  } catch {
     // If decoding fails, return null (fallback to IP-based limiting)
     return null;
   }
@@ -48,7 +48,6 @@ const createSmartAuthRateLimit = (options = {}) => {
   const {
     windowMs = 5 * 60 * 1000, // 5 minutes
     maxPerUser = 50, // Per user per window
-    maxPerIP = 200, // Per IP per window (for shared networks or when user can't be identified)
     skipSuccessfulRequests = true,
     skipFailedRequests = false,
   } = options;
@@ -241,8 +240,6 @@ const createProgressiveSlowDown = (options = {}) => {
 const firebaseTokenVerifyLimiter = createSmartAuthRateLimit({
   windowMs: 5 * 60 * 1000, // 5 minutes
   maxPerUser: 30, // ✅ FIX: Reduced from 100 to 30 - 30 attempts per user per 5 minutes (prevents abuse while allowing legitimate refresh)
-  maxPerIP: 200, // ✅ FIX: Reduced from 500 - Fallback IP limit for shared networks or unauthenticated requests
-  userType: 'all',
   skipSuccessfulRequests: true, // ✅ Don't count successful authentications (prevents legitimate refresh from hitting limit)
   skipFailedRequests: false, // Count failed attempts (to catch abuse)
 });
@@ -254,8 +251,6 @@ const firebaseTokenVerifyLimiter = createSmartAuthRateLimit({
 const otpVerifyLimiter = createSmartAuthRateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
   maxPerUser: 10, // 10 OTP attempts per user per 15 minutes
-  maxPerIP: 50, // 50 OTP attempts per IP per 15 minutes
-  userType: 'all',
   skipSuccessfulRequests: true,
   skipFailedRequests: false,
 });
@@ -267,8 +262,6 @@ const otpVerifyLimiter = createSmartAuthRateLimit({
 const loginAttemptLimiter = createSmartAuthRateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
   maxPerUser: 5, // 5 login attempts per user per 15 minutes
-  maxPerIP: 20, // 20 login attempts per IP per 15 minutes
-  userType: 'all',
   skipSuccessfulRequests: true,
   skipFailedRequests: false,
 });

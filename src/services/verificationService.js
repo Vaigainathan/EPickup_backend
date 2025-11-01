@@ -161,6 +161,7 @@ class VerificationService {
 
   /**
    * Update driver verification status
+   * ✅ CORE FIX: Ensures both nested and top-level isVerified are set
    */
   async updateDriverVerificationStatus(driverId, verificationData) {
     const db = this.getDbSafe();
@@ -174,6 +175,7 @@ class VerificationService {
       const updates = {
         'driver.verificationStatus': verificationData.verificationStatus,
         'driver.isVerified': verificationData.isVerified || false,
+        'isVerified': verificationData.isVerified || false, // ✅ CORE FIX: Also set top-level isVerified for dashboard consistency
         'driver.verifiedDocumentsCount': verificationData.verifiedDocumentsCount || 0,
         'driver.totalDocumentsCount': verificationData.totalDocumentsCount || 0,
         'driver.lastVerificationUpdate': admin.firestore.FieldValue.serverTimestamp()
@@ -316,10 +318,11 @@ class VerificationService {
     }
 
     try {
-      // ✅ CRITICAL FIX: Update driver verification status
+      // ✅ CORE FIX: Update driver verification status (both nested AND top-level for consistency)
       const updates = {
         'driver.verificationStatus': 'approved',
         'driver.isVerified': true,
+        'isVerified': true, // ✅ CORE FIX: Also set top-level isVerified for dashboard consistency
         'driver.approvedAt': admin.firestore.FieldValue.serverTimestamp(),
         'driver.approvedBy': adminId
       };

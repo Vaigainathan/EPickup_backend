@@ -14,7 +14,7 @@ const { env } = require('./config');
 
 // Import security middleware
 const { sanitizeInput } = require('./middleware/validation');
-const { generalLimiter, authLimiter, adminLimiter, speedLimiter } = require('./middleware/rateLimit');
+const { generalLimiter, adminLimiter, speedLimiter } = require('./middleware/rateLimit');
 const { securityHeaders } = require('./middleware/security');
 
 // Routes will be imported after Firebase initialization
@@ -459,7 +459,10 @@ app.get('/metrics', (req, res) => {
 });
 
 // API Routes
-app.use('/api/auth', authLimiter, authRoutes);
+// ✅ CORE FIX: Don't apply general authLimiter to /api/auth routes
+// Individual routes have their own user-isolated rate limiters (firebaseTokenVerifyLimiter, etc.)
+// General authLimiter was causing 429 errors for legitimate customer logins (only 5 requests/15min in production)
+app.use('/api/auth', authRoutes); // Removed authLimiter - routes have their own user-isolated limiters
 app.use('/api/auth', refreshTokenRoutes); // Add refresh token route
 app.use('/api/user', appCheckMiddleware.optionalMiddleware(), userRoutes); // User profile routes (includes profile picture upload)
 
@@ -580,8 +583,10 @@ app.use('/api/slots', appCheckMiddleware.optionalMiddleware(), workSlotsRoutes);
 
 app.use('/api/location-tracking', appCheckMiddleware.optionalMiddleware(), authMiddleware, locationTrackingRoutes);
 // app.use('/api/location-tracking', appCheckMiddleware.middleware(), authMiddleware, locationTrackingRoutes); // Production mode
+// ✅ CORE FIX: Admin signup needs lenient rate limiting to avoid 429 errors
+const { lightRateLimit } = require('./middleware/rateLimit');
 app.use('/api/admin/auth', adminAuthRoutes); // No auth required for admin login
-app.use('/api/admin/signup', adminSignupRoutes); // Admin signup route (no auth required)
+app.use('/api/admin/signup', lightRateLimit, adminSignupRoutes); // Admin signup route (no auth required, but with light rate limiting)
 // Import admin role validation
 const { requireAdmin } = require('./middleware/auth');
 app.use('/api/admin', adminLimiter, authMiddleware, requireAdmin, adminRoutes); // Admin routes require admin role

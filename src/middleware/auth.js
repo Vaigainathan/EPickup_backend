@@ -175,11 +175,13 @@ const authMiddleware = async (req, res, next) => {
       });
     }
     
-    // ✅ AUTO-SYNC: Update Firestore if userType or phone is missing but available in token
-    // This ensures consistency between JWT token and Firestore
+    // ✅ CORE FIX: Auto-sync userType, phone, AND createdAt if missing
+    // Missing createdAt causes documents to be excluded from queries with orderBy('createdAt')
     const phoneFromToken = decodedToken.phone || decodedToken.phone_number || null;
+    const admin = require('firebase-admin');
     const needsSync = (decodedToken.userType && !userData.userType) || 
-                      (phoneFromToken && !userData.phone);
+                      (phoneFromToken && !userData.phone) ||
+                      (!userData.createdAt); // ✅ CORE FIX: Check for missing createdAt
     
     if (needsSync) {
       try {
@@ -197,14 +199,22 @@ const authMiddleware = async (req, res, next) => {
           console.log(`🔄 [AUTH] Syncing phone to Firestore: ${userId} -> ${phoneFromToken}`);
         }
         
+        // ✅ CORE FIX: If createdAt is missing, set it to serverTimestamp
+        // This is critical - admin queries with orderBy('createdAt') will exclude documents without this field
+        if (!userData.createdAt) {
+          updateData.createdAt = admin.firestore.FieldValue.serverTimestamp();
+          console.log(`🔄 [AUTH] Setting missing createdAt for user: ${userId} (CRITICAL for admin queries)`);
+        }
+        
         if (Object.keys(updateData).length > 0) {
-          updateData.updatedAt = new Date();
+          updateData.updatedAt = admin.firestore.FieldValue.serverTimestamp();
           await userRef.update(updateData);
           console.log(`✅ [AUTH] Firestore synced for user: ${userId}`);
           
           // Update userData object with synced values
           userData.userType = updateData.userType || userData.userType;
           userData.phone = updateData.phone || userData.phone;
+          // Note: createdAt will be serverTimestamp, not actual value, but that's OK for queries
         }
       } catch (syncError) {
         // Don't fail authentication if sync fails, just log it

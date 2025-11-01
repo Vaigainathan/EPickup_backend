@@ -131,9 +131,12 @@ class RoleBasedAuthService {
         // Note: Custom claims will be set by the calling code in auth.js
         const userData = userDoc.data();
         
-        // ✅ AUTO-SYNC: Ensure phone and userType are set in Firestore if missing
+        // ✅ CORE FIX: Ensure phone, userType, AND createdAt are set in Firestore if missing
+        // Missing createdAt will cause drivers to be excluded from admin queries with orderBy
+        const admin = require('firebase-admin');
         const needsSync = (!userData.phone && decodedToken.phone_number) || 
-                         (!userData.userType && userType);
+                         (!userData.userType && userType) ||
+                         (!userData.createdAt); // ✅ CORE FIX: Check for missing createdAt
         
         if (needsSync) {
           try {
@@ -146,15 +149,22 @@ class RoleBasedAuthService {
               updateData.userType = userType;
               console.log(`🔄 [ROLE_BASED_AUTH] Syncing userType for existing user: ${roleSpecificUID} -> ${userType}`);
             }
+            // ✅ CORE FIX: If createdAt is missing, set it to serverTimestamp
+            // This is critical - queries with orderBy('createdAt') will exclude documents without this field
+            if (!userData.createdAt) {
+              updateData.createdAt = admin.firestore.FieldValue.serverTimestamp();
+              console.log(`🔄 [ROLE_BASED_AUTH] Setting missing createdAt for existing user: ${roleSpecificUID} (CRITICAL for admin queries)`);
+            }
             
             if (Object.keys(updateData).length > 0) {
-              updateData.updatedAt = new Date().toISOString();
+              updateData.updatedAt = admin.firestore.FieldValue.serverTimestamp();
               await this.db.collection('users').doc(roleSpecificUID).update(updateData);
               console.log(`✅ [ROLE_BASED_AUTH] Firestore synced for existing user: ${roleSpecificUID}`);
               
               // Update userData object with synced values
               userData.phone = updateData.phone || userData.phone;
               userData.userType = updateData.userType || userData.userType;
+              // Note: createdAt will be serverTimestamp, not actual value, but that's OK for queries
             }
           } catch (syncError) {
             console.warn('⚠️ [ROLE_BASED_AUTH] Failed to sync existing user data:', syncError.message);
@@ -200,6 +210,10 @@ class RoleBasedAuthService {
         console.warn(`⚠️ [ROLE_BASED_AUTH] Creating user without phone number: ${roleSpecificUID}`);
       }
       
+      // ✅ CRITICAL FIX: Use Firestore Timestamp for createdAt/updatedAt for proper query ordering
+      const admin = require('firebase-admin');
+      const now = admin.firestore.FieldValue.serverTimestamp();
+      
       const baseUserData = {
         id: roleSpecificUID,
         uid: roleSpecificUID,
@@ -212,8 +226,8 @@ class RoleBasedAuthService {
         isVerified: true,
         isActive: true,
         accountStatus: 'active',
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
+        createdAt: now, // ✅ Use Firestore serverTimestamp for proper ordering
+        updatedAt: now, // ✅ Use Firestore serverTimestamp for proper ordering
         ...additionalData
       };
       
@@ -226,10 +240,11 @@ class RoleBasedAuthService {
       if (userType === 'driver') {
         baseUserData.driver = {
           vehicleDetails: {
-            type: 'motorcycle',
-            model: '',
-            number: '',
-            color: ''
+            vehicleType: 'motorcycle', // ✅ Use vehicleType (matches profile endpoint)
+            vehicleModel: '',          // ✅ Use vehicleModel (matches profile endpoint)
+            vehicleNumber: '',         // ✅ Use vehicleNumber (matches profile endpoint)
+            licenseNumber: '',         // ✅ Include license fields (matches profile endpoint)
+            licenseExpiry: ''          // ✅ Include license expiry (matches profile endpoint)
           },
           verificationStatus: 'pending',
           isOnline: false,

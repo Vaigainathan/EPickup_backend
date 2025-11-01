@@ -1,4 +1,5 @@
 const express = require('express');
+const admin = require('firebase-admin');
 const { getFirestore } = require('firebase-admin/firestore');
 const { getStorage } = require('../services/firebase');
 const verificationService = require('../services/verificationService');
@@ -530,6 +531,39 @@ router.get('/drivers', async (req, res) => {
     const db = getFirestore();
     const { limit = 20, offset = 0, status, verificationStatus } = req.query;
 
+    // ✅ CORE FIX: First, ensure all drivers have createdAt field (fix missing ones)
+    // This prevents drivers from being excluded from queries
+    try {
+      const allDriversSnapshot = await db.collection('users')
+        .where('userType', '==', 'driver')
+        .get();
+      
+      const driversNeedingFix = [];
+      for (const doc of allDriversSnapshot.docs) {
+        const data = doc.data();
+        if (!data.createdAt) {
+          driversNeedingFix.push(doc.id);
+        }
+      }
+      
+      if (driversNeedingFix.length > 0) {
+        console.log(`🔄 [ADMIN] Fixing ${driversNeedingFix.length} drivers missing createdAt field...`);
+        const batch = db.batch();
+        for (const driverId of driversNeedingFix) {
+          const driverRef = db.collection('users').doc(driverId);
+          batch.update(driverRef, {
+            createdAt: admin.firestore.FieldValue.serverTimestamp(),
+            updatedAt: admin.firestore.FieldValue.serverTimestamp()
+          });
+        }
+        await batch.commit();
+        console.log(`✅ [ADMIN] Fixed ${driversNeedingFix.length} drivers with missing createdAt`);
+      }
+    } catch (fixError) {
+      console.warn('⚠️ [ADMIN] Failed to fix drivers with missing createdAt:', fixError.message);
+      // Continue anyway - fallback query will handle it
+    }
+
     let query = db.collection('users').where('userType', '==', 'driver');
 
     // Apply filters
@@ -540,10 +574,61 @@ router.get('/drivers', async (req, res) => {
       query = query.where('isVerified', '==', verificationStatus === 'verified');
     }
 
-    // Apply pagination and ordering
-    query = query.orderBy('createdAt', 'desc').limit(Math.max(1, Math.min(100, parseInt(limit) || 20))).offset(Math.max(0, parseInt(offset) || 0));
-
-    const snapshot = await query.get();
+    // ✅ CRITICAL FIX: Try indexed query first, fallback to simple query if it fails
+    let snapshot;
+    try {
+      // Apply pagination and ordering with index
+      query = query.orderBy('createdAt', 'desc').limit(Math.max(1, Math.min(100, parseInt(limit) || 20))).offset(Math.max(0, parseInt(offset) || 0));
+      snapshot = await query.get();
+    } catch (indexError) {
+      // Fallback: Query without orderBy if index is missing or createdAt has wrong type
+      console.warn('⚠️ [ADMIN] Indexed query failed, using fallback query:', indexError.message);
+      let fallbackQuery = db.collection('users').where('userType', '==', 'driver');
+      
+      if (status) {
+        fallbackQuery = fallbackQuery.where('isActive', '==', status === 'active');
+      }
+      if (verificationStatus) {
+        fallbackQuery = fallbackQuery.where('isVerified', '==', verificationStatus === 'verified');
+      }
+      
+      // Get all matching drivers, then sort in-memory
+      const allDrivers = await fallbackQuery.get();
+      const driversArray = allDrivers.docs.map(doc => {
+        const data = doc.data();
+        // Handle createdAt: Firestore Timestamp, ISO string, or missing
+        let createdAt = new Date(0); // Default to epoch for missing dates
+        if (data.createdAt) {
+          if (data.createdAt.toDate) {
+            createdAt = data.createdAt.toDate(); // Firestore Timestamp
+          } else if (typeof data.createdAt === 'string') {
+            createdAt = new Date(data.createdAt); // ISO string
+          } else if (data.createdAt.seconds) {
+            createdAt = new Date(data.createdAt.seconds * 1000); // Timestamp object
+          }
+        }
+        
+        return {
+          doc,
+          data,
+          createdAt
+        };
+      });
+      
+      // Sort by createdAt descending
+      driversArray.sort((a, b) => b.createdAt - a.createdAt);
+      
+      // Apply pagination
+      const startIdx = Math.max(0, parseInt(offset) || 0);
+      const endIdx = startIdx + Math.max(1, Math.min(100, parseInt(limit) || 20));
+      const paginatedDocs = driversArray.slice(startIdx, endIdx);
+      
+      // Create a mock snapshot-like object
+      snapshot = {
+        docs: paginatedDocs.map(item => item.doc),
+        empty: paginatedDocs.length === 0
+      };
+    }
     const drivers = [];
 
     for (const doc of snapshot.docs) {
@@ -587,7 +672,28 @@ router.get('/drivers', async (req, res) => {
         totalTrips: driverData.totalTrips || 0,
         totalDeliveries: driverData.totalTrips || 0, // Alias for compatibility
         currentLocation: driverData.currentLocation,
-        vehicleDetails: driverData.vehicleDetails,
+        vehicleDetails: (() => {
+          // ✅ CRITICAL FIX: Normalize vehicleDetails from different possible formats
+          const vd = driverData.vehicleDetails;
+          if (!vd) {
+            return {
+              vehicleType: 'motorcycle',
+              vehicleModel: '',
+              vehicleNumber: '',
+              licenseNumber: '',
+              licenseExpiry: ''
+            };
+          }
+          
+          // Handle old format (type, model, number) and convert to new format
+          return {
+            vehicleType: vd.vehicleType || vd.type || 'motorcycle',
+            vehicleModel: vd.vehicleModel || vd.model || '',
+            vehicleNumber: vd.vehicleNumber || vd.number || '',
+            licenseNumber: vd.licenseNumber || '',
+            licenseExpiry: vd.licenseExpiry || ''
+          };
+        })(),
         earnings: driverData.earnings,
         // ✅ CRITICAL FIX: Include normalized documents for status display
         documents: normalizedDocuments,
@@ -598,10 +704,21 @@ router.get('/drivers', async (req, res) => {
 
     console.log(`✅ [ADMIN] Fetched ${drivers.length} drivers with flattened status data`);
     
-    // Debug: Log document counts for first driver
+    // Debug: Log all driver IDs to help identify missing drivers
     if (drivers.length > 0) {
       console.log(`📄 [ADMIN] First driver documents count: ${Object.keys(drivers[0].documents || {}).length}`);
       console.log(`📄 [ADMIN] Document types: ${Object.keys(drivers[0].documents || {}).join(', ')}`);
+      console.log(`📋 [ADMIN] Driver IDs fetched: ${drivers.map(d => d.id).join(', ')}`);
+    } else {
+      console.warn('⚠️ [ADMIN] No drivers found in query. Checking total driver count...');
+      // Log total driver count for debugging
+      const totalDriversQuery = db.collection('users').where('userType', '==', 'driver');
+      const totalSnapshot = await totalDriversQuery.get();
+      console.log(`📊 [ADMIN] Total drivers in database: ${totalSnapshot.size}`);
+      if (totalSnapshot.size > 0) {
+        const driverIds = totalSnapshot.docs.map(doc => doc.id);
+        console.log(`📋 [ADMIN] All driver IDs in database: ${driverIds.join(', ')}`);
+      }
     }
 
     res.json({
@@ -4070,6 +4187,39 @@ router.get('/customers', async (req, res) => {
     const db = getFirestore();
     const { limit = 20, offset = 0, status, search } = req.query;
 
+    // ✅ CORE FIX: First, ensure all customers have createdAt field (fix missing ones)
+    // This prevents customers from being excluded from queries
+    try {
+      const allCustomersSnapshot = await db.collection('users')
+        .where('userType', '==', 'customer')
+        .get();
+      
+      const customersNeedingFix = [];
+      for (const doc of allCustomersSnapshot.docs) {
+        const data = doc.data();
+        if (!data.createdAt) {
+          customersNeedingFix.push(doc.id);
+        }
+      }
+      
+      if (customersNeedingFix.length > 0) {
+        console.log(`🔄 [ADMIN] Fixing ${customersNeedingFix.length} customers missing createdAt field...`);
+        const batch = db.batch();
+        for (const customerId of customersNeedingFix) {
+          const customerRef = db.collection('users').doc(customerId);
+          batch.update(customerRef, {
+            createdAt: admin.firestore.FieldValue.serverTimestamp(),
+            updatedAt: admin.firestore.FieldValue.serverTimestamp()
+          });
+        }
+        await batch.commit();
+        console.log(`✅ [ADMIN] Fixed ${customersNeedingFix.length} customers with missing createdAt`);
+      }
+    } catch (fixError) {
+      console.warn('⚠️ [ADMIN] Failed to fix customers with missing createdAt:', fixError.message);
+      // Continue anyway - fallback query will handle it
+    }
+
     // ✅ CRITICAL FIX: Base query with userType filter
     let query = db.collection('users').where('userType', '==', 'customer');
 
@@ -4079,33 +4229,61 @@ router.get('/customers', async (req, res) => {
       query = query.where('accountStatus', '==', status);
     }
 
-    // ✅ CRITICAL FIX: Apply ordering - this requires composite index if status filter is used
-    // Index required: userType + accountStatus + createdAt (added to firestore.indexes.json)
-    query = query.orderBy('createdAt', 'desc');
-
     // Apply pagination
     const validatedLimit = Math.max(1, Math.min(100, parseInt(limit) || 20));
     const validatedOffset = Math.max(0, parseInt(offset) || 0);
-    query = query.limit(validatedLimit).offset(validatedOffset);
 
+    // ✅ CRITICAL FIX: Try indexed query first, fallback to simple query if it fails
     let snapshot;
     try {
+      // Apply ordering with index
+      query = query.orderBy('createdAt', 'desc').limit(validatedLimit).offset(validatedOffset);
       snapshot = await query.get();
-    } catch (queryError) {
-      // ✅ CRITICAL FIX: If query fails (missing index or missing fields), try simpler query
-      console.error('❌ [ADMIN_CUSTOMERS] Query failed, trying fallback:', queryError.message);
-      
-      // Fallback: Simple query without status filter and ordering
+    } catch (indexError) {
+      // Fallback: Query without orderBy if index is missing or createdAt has wrong type
+      console.warn('⚠️ [ADMIN_CUSTOMERS] Indexed query failed, using fallback query:', indexError.message);
       let fallbackQuery = db.collection('users').where('userType', '==', 'customer');
-      fallbackQuery = fallbackQuery.limit(validatedLimit).offset(validatedOffset);
       
-      try {
-        snapshot = await fallbackQuery.get();
-        console.warn('⚠️ [ADMIN_CUSTOMERS] Using fallback query (no status filter or ordering)');
-      } catch (fallbackError) {
-        console.error('❌ [ADMIN_CUSTOMERS] Fallback query also failed:', fallbackError.message);
-        throw new Error(`Failed to query customers: ${queryError.message}. Please ensure Firestore indexes are deployed.`);
+      if (status) {
+        fallbackQuery = fallbackQuery.where('accountStatus', '==', status);
       }
+      
+      // Get all matching customers, then sort in-memory
+      const allCustomers = await fallbackQuery.get();
+      const customersArray = allCustomers.docs.map(doc => {
+        const data = doc.data();
+        // Handle createdAt: Firestore Timestamp, ISO string, or missing
+        let createdAt = new Date(0); // Default to epoch for missing dates
+        if (data.createdAt) {
+          if (data.createdAt.toDate) {
+            createdAt = data.createdAt.toDate(); // Firestore Timestamp
+          } else if (typeof data.createdAt === 'string') {
+            createdAt = new Date(data.createdAt); // ISO string
+          } else if (data.createdAt.seconds) {
+            createdAt = new Date(data.createdAt.seconds * 1000); // Timestamp object
+          }
+        }
+        
+        return {
+          doc,
+          data,
+          createdAt
+        };
+      });
+      
+      // Sort by createdAt descending
+      customersArray.sort((a, b) => b.createdAt - a.createdAt);
+      
+      // Apply pagination
+      const startIdx = Math.max(0, validatedOffset);
+      const endIdx = startIdx + validatedLimit;
+      const paginatedDocs = customersArray.slice(startIdx, endIdx);
+      
+      // Create a mock snapshot-like object
+      snapshot = {
+        docs: paginatedDocs.map(item => item.doc),
+        empty: paginatedDocs.length === 0
+      };
     }
     let customers = [];
 
@@ -4150,6 +4328,23 @@ router.get('/customers', async (req, res) => {
                email.includes(searchTerm) || 
                phone.includes(searchTerm);
       });
+    }
+
+    // Debug logging for customer visibility
+    console.log(`✅ [ADMIN] Fetched ${customers.length} customers`);
+    
+    if (customers.length > 0) {
+      console.log(`📋 [ADMIN] Customer IDs fetched: ${customers.map(c => c.id).join(', ')}`);
+    } else {
+      console.warn('⚠️ [ADMIN] No customers found in query. Checking total customer count...');
+      // Log total customer count for debugging
+      const totalCustomersQuery = db.collection('users').where('userType', '==', 'customer');
+      const totalSnapshot = await totalCustomersQuery.get();
+      console.log(`📊 [ADMIN] Total customers in database: ${totalSnapshot.size}`);
+      if (totalSnapshot.size > 0) {
+        const customerIds = totalSnapshot.docs.map(doc => doc.id);
+        console.log(`📋 [ADMIN] All customer IDs in database: ${customerIds.join(', ')}`);
+      }
     }
 
     res.json({
@@ -4249,8 +4444,8 @@ router.post('/customers', async (req, res) => {
         }
       },
       photoURL: null, // ✅ Customers only have profile photo, no document verification
-      createdAt: new Date().toISOString(), // ✅ CRITICAL: Must have createdAt for queries
-      updatedAt: new Date().toISOString(),
+      createdAt: admin.firestore.FieldValue.serverTimestamp(), // ✅ Use Firestore serverTimestamp for proper ordering
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(), // ✅ Use Firestore serverTimestamp for proper ordering
       createdBy: adminId,
       createdVia: 'admin_management' // Track creation source
     };

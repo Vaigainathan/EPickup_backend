@@ -341,13 +341,28 @@ router.get('/profile', requireDriver, async (req, res) => {
         requiresTopUp: pointsWalletData?.requiresTopUp ?? true,
         canWork: pointsWalletData?.canWork ?? false,
         driver: {
-          vehicleDetails: normalizedDriver.vehicleDetails || {
-            vehicleType: 'motorcycle',
-            vehicleModel: '',
-            vehicleNumber: '',
-            licenseNumber: '',
-            licenseExpiry: ''
-          },
+          vehicleDetails: (() => {
+            // ✅ CRITICAL FIX: Normalize vehicleDetails from different possible formats
+            const vd = normalizedDriver.vehicleDetails;
+            if (!vd) {
+              return {
+                vehicleType: 'motorcycle',
+                vehicleModel: '',
+                vehicleNumber: '',
+                licenseNumber: '',
+                licenseExpiry: ''
+              };
+            }
+            
+            // Handle old format (type, model, number) and convert to new format
+            return {
+              vehicleType: vd.vehicleType || vd.type || 'motorcycle',
+              vehicleModel: vd.vehicleModel || vd.model || '',
+              vehicleNumber: vd.vehicleNumber || vd.number || '',
+              licenseNumber: vd.licenseNumber || '',
+              licenseExpiry: vd.licenseExpiry || ''
+            };
+          })(),
           verificationStatus: finalVerificationStatus,
           isOnline: normalizedDriver.isOnline || false,
           isAvailable: normalizedDriver.isAvailable || false,

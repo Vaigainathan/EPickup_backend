@@ -116,12 +116,35 @@ class JWTAuthMiddleware {
         });
       }
 
+      // ✅ CRITICAL FIX: Prefer userType from JWT token (more authoritative)
+      // JWT token contains the correct userType when it was issued
+      // Fallback to Firestore userType if token doesn't have it
+      const userType = decodedToken.userType || userData.userType;
+      
+      // ✅ CRITICAL FIX: Ensure userType is never undefined
+      if (!userType) {
+        console.error('❌ [JWT_AUTH] userType is undefined for user:', decodedToken.userId, {
+          tokenUserType: decodedToken.userType,
+          firestoreUserType: userData.userType
+        });
+        return res.status(500).json({
+          success: false,
+          error: {
+            code: 'AUTH_ERROR',
+            message: 'Authentication failed',
+            details: 'User type could not be determined. Please login again.'
+          },
+          timestamp: new Date().toISOString()
+        });
+      }
+
       // Add user info to request
+      // ✅ CRITICAL FIX: Spread userData first, then override userType to ensure correct value
       req.user = {
+        ...userData,
         uid: decodedToken.userId,
         phone: decodedToken.phone,
-        userType: decodedToken.userType,
-        ...userData
+        userType: userType // ✅ Override userType from Firestore with token userType
       };
 
       // Add token info for potential use
@@ -204,11 +227,13 @@ class JWTAuthMiddleware {
           
           if (userDoc.exists) {
             const userData = userDoc.data();
+            // ✅ CRITICAL FIX: Prefer userType from JWT token (more authoritative)
+            const userType = decodedToken.userType || userData.userType;
             req.user = {
+              ...userData,
               uid: decodedToken.userId,
               phone: decodedToken.phone,
-              userType: decodedToken.userType,
-              ...userData
+              userType: userType // ✅ Override userType from Firestore with token userType
             };
             req.token = {
               issuedAt: decodedToken.iat,

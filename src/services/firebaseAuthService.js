@@ -277,10 +277,25 @@ class FirebaseAuthService {
    * Create or update user data in Firestore
    * @param {Object} decodedToken - Decoded Firebase token
    * @param {Object} additionalData - Additional user data
-   * @param {string} userType - Type of user (customer, driver, admin)
+   * @param {string} userType - Type of user (customer, driver, admin) - REQUIRED
    * @returns {Promise<Object>} Created/updated user data
    */
-  async createOrUpdateUser(decodedToken, additionalData = {}, userType = 'customer') {
+  async createOrUpdateUser(decodedToken, additionalData = {}, userType) {
+    // ✅ CRITICAL FIX: Require userType explicitly - don't default to customer
+    if (!userType || typeof userType !== 'string') {
+      console.error('❌ [FIREBASE_AUTH_SERVICE] userType is required for createOrUpdateUser');
+      throw new Error('userType is required and must be a string (customer, driver, or admin)');
+    }
+    
+    const allowedTypes = ['customer', 'driver', 'admin'];
+    const normalizedType = userType.trim().toLowerCase();
+    if (!allowedTypes.includes(normalizedType)) {
+      console.error('❌ [FIREBASE_AUTH_SERVICE] Invalid userType:', userType);
+      throw new Error(`Invalid userType: ${userType}. Must be one of: ${allowedTypes.join(', ')}`);
+    }
+    
+    // Use normalized type
+    userType = normalizedType;
     try {
       this.ensureInitialized();
       const uid = decodedToken.uid;

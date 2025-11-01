@@ -42,7 +42,21 @@ router.post('/ticket', [
 
     const { subject, description, category, priority } = req.body;
     const userId = req.user.uid;
-    const userType = req.user.userType || 'customer';
+    
+    // ✅ CRITICAL FIX: Validate userType from middleware - don't default to customer
+    // If middleware worked correctly, userType should always be set
+    if (!req.user.userType) {
+      console.error('❌ [SUPPORT] Missing userType in request user:', userId);
+      return res.status(500).json({
+        success: false,
+        error: {
+          code: 'AUTH_ERROR',
+          message: 'User type could not be determined. Please login again.'
+        }
+      });
+    }
+    
+    const userType = req.user.userType;
 
     // Create ticket
     const ticketData = {
@@ -258,7 +272,18 @@ router.post('/ticket/:ticketId/message', [
     const { ticketId } = req.params;
     const { message } = req.body;
     const userId = req.user.uid;
-    const userType = req.user.userType || 'customer';
+    // ✅ CRITICAL FIX: Validate userType from middleware - don't default to customer
+    if (!req.user.userType) {
+      console.error('❌ [SUPPORT] Missing userType in request user:', req.user.uid);
+      return res.status(500).json({
+        success: false,
+        error: {
+          code: 'AUTH_ERROR',
+          message: 'User type could not be determined. Please login again.'
+        }
+      });
+    }
+    const userType = req.user.userType;
 
     // Get ticket
     const ticketRef = getDb().collection('supportTickets').doc(ticketId);
@@ -1065,7 +1090,18 @@ router.post('/feedback', [
 
     const { rating, comment, category } = req.body;
     const userId = req.user.uid;
-    const userType = req.user.userType || 'customer';
+    // ✅ CRITICAL FIX: Validate userType from middleware - don't default to customer
+    if (!req.user.userType) {
+      console.error('❌ [SUPPORT] Missing userType in request user:', req.user.uid);
+      return res.status(500).json({
+        success: false,
+        error: {
+          code: 'AUTH_ERROR',
+          message: 'User type could not be determined. Please login again.'
+        }
+      });
+    }
+    const userType = req.user.userType;
 
     // Create feedback
     const feedbackData = {
@@ -1149,7 +1185,18 @@ router.post('/report-issue', [
 
     const { bookingId, issueType, description, priority = 'medium', timestamp } = req.body;
     const userId = req.user.uid;
-    const userType = req.user.userType || 'customer';
+    // ✅ CRITICAL FIX: Validate userType from middleware - don't default to customer
+    if (!req.user.userType) {
+      console.error('❌ [SUPPORT] Missing userType in request user:', req.user.uid);
+      return res.status(500).json({
+        success: false,
+        error: {
+          code: 'AUTH_ERROR',
+          message: 'User type could not be determined. Please login again.'
+        }
+      });
+    }
+    const userType = req.user.userType;
 
     console.log(`🚨 Issue reported by ${userType} ${userId}: ${issueType}`);
 
@@ -1233,7 +1280,18 @@ router.post('/message', [
 
     const { message, category = 'general', priority = 'normal' } = req.body;
     const userId = req.user.uid;
-    const userType = req.user.userType || 'customer';
+    // ✅ CRITICAL FIX: Validate userType from middleware - don't default to customer
+    if (!req.user.userType) {
+      console.error('❌ [SUPPORT] Missing userType in request user:', req.user.uid);
+      return res.status(500).json({
+        success: false,
+        error: {
+          code: 'AUTH_ERROR',
+          message: 'User type could not be determined. Please login again.'
+        }
+      });
+    }
+    const userType = req.user.userType;
 
     // Create support message
     const messageData = {

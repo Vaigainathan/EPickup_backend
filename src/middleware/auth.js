@@ -153,12 +153,35 @@ const authMiddleware = async (req, res, next) => {
       });
     }
 
+    // ✅ CRITICAL FIX: Prefer userType from JWT token (more authoritative)
+    // JWT token contains the correct userType when it was issued
+    // Fallback to Firestore userType if token doesn't have it
+    const userType = decodedToken.userType || userData.userType;
+    
+    // ✅ CRITICAL FIX: Ensure userType is never undefined
+    if (!userType) {
+      console.error('❌ [AUTH] userType is undefined for user:', userId, {
+        tokenUserType: decodedToken.userType,
+        firestoreUserType: userData.userType
+      });
+      return res.status(500).json({
+        success: false,
+        error: {
+          code: 'AUTH_ERROR',
+          message: 'Authentication failed',
+          details: 'User type could not be determined. Please login again.'
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
     // Add user info to request
+    // ✅ CRITICAL FIX: Spread userData first, then override userType to ensure correct value
     req.user = {
+      ...userData,
       uid: userId,
       phone: decodedToken.phone,
-      userType: userData.userType,
-      ...userData
+      userType: userType // ✅ Override userType from Firestore with token userType
     };
 
     // Add token info for potential use
@@ -434,15 +457,18 @@ const optionalAuth = async (req, res, next) => {
     
     if (decodedToken) {
       const db = getFirestore();
-      const userDoc = await db.collection('users').doc(decodedToken.uid).get();
+      const userId = decodedToken.userId || decodedToken.uid;
+      const userDoc = await db.collection('users').doc(userId).get();
       
       if (userDoc.exists) {
         const userData = userDoc.data();
+        // ✅ CRITICAL FIX: Prefer userType from JWT token (more authoritative)
+        const userType = decodedToken.userType || userData.userType;
         req.user = {
-          uid: decodedToken.uid,
-          phone: decodedToken.phone_number,
-          userType: userData.userType,
-          ...userData
+          ...userData,
+          uid: userId,
+          phone: decodedToken.phone || decodedToken.phone_number,
+          userType: userType // ✅ Override userType from Firestore with token userType
         };
         req.token = {
           issuedAt: decodedToken.iat,

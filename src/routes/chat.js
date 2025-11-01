@@ -34,7 +34,21 @@ router.post('/send', [
 
     const { bookingId, message, senderType, timestamp } = req.body;
     const userId = req.user.uid;
-    const userType = req.user.userType || 'customer';
+    
+    // ✅ CRITICAL FIX: Validate userType from middleware - don't default to customer
+    // If middleware worked correctly, userType should always be set
+    if (!req.user.userType) {
+      console.error('❌ [CHAT] Missing userType in request user:', userId);
+      return res.status(500).json({
+        success: false,
+        error: {
+          code: 'AUTH_ERROR',
+          message: 'User type could not be determined. Please login again.'
+        }
+      });
+    }
+    
+    const userType = req.user.userType;
     const db = getFirestore();
 
     console.log(`💬 Chat message from ${userType} ${userId} for booking ${bookingId}`);

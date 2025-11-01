@@ -2,6 +2,7 @@ const express = require('express');
 const multer = require('multer');
 const { getStorage } = require('firebase-admin/storage');
 const { getFirestore } = require('firebase-admin/firestore');
+const { requireDriver } = require('../middleware/auth');
 const router = express.Router();
 
 // Configure multer for memory storage
@@ -17,12 +18,49 @@ const upload = multer({
  * @desc Upload driver document via backend proxy
  * @access Private (Driver)
  */
-router.post('/driver-document', upload.single('document'), async (req, res) => {
+router.post('/driver-document', requireDriver, upload.single('document'), async (req, res) => {
   try {
     console.log('📤 [BACKEND PROXY] Driver document upload request received');
     
     const { driverId, documentType } = req.body;
     const file = req.file;
+
+    // ✅ CRITICAL FIX: Validate authentication and authorization
+    if (!req.user || !req.user.uid) {
+      return res.status(401).json({
+        success: false,
+        error: 'Authentication required'
+      });
+    }
+
+    // ✅ CRITICAL FIX: Verify user is a driver
+    if (req.user.userType !== 'driver') {
+      console.error('❌ [BACKEND PROXY] Non-driver attempted document upload:', {
+        userId: req.user.uid,
+        userType: req.user.userType
+      });
+      return res.status(403).json({
+        success: false,
+        error: 'Only drivers can upload driver documents'
+      });
+    }
+
+    // ✅ CRITICAL FIX: Verify driverId matches authenticated user
+    // Use authenticated user's UID instead of body driverId for security
+    const authenticatedDriverId = req.user.uid;
+    if (driverId && driverId !== authenticatedDriverId) {
+      console.error('❌ [BACKEND PROXY] Driver ID mismatch:', {
+        authenticatedDriverId,
+        providedDriverId: driverId
+      });
+      return res.status(403).json({
+        success: false,
+        error: 'You can only upload documents for your own account'
+      });
+    }
+
+    // Use authenticated driver ID (more secure)
+    const finalDriverId = authenticatedDriverId;
 
     // Validate file
     if (!file) {
@@ -33,12 +71,12 @@ router.post('/driver-document', upload.single('document'), async (req, res) => {
       });
     }
 
-    // Validate required fields
-    if (!driverId || !documentType) {
-      console.log('❌ [BACKEND PROXY] Missing required fields:', { driverId, documentType });
+    // Validate required fields (documentType is still required)
+    if (!documentType) {
+      console.log('❌ [BACKEND PROXY] Missing required fields:', { documentType });
       return res.status(400).json({
         success: false,
-        error: 'Driver ID and document type are required'
+        error: 'Document type is required'
       });
     }
 
@@ -60,7 +98,7 @@ router.post('/driver-document', upload.single('document'), async (req, res) => {
       normalizedDocType = documentType.replace(/([A-Z])/g, '_$1').toLowerCase();
     }
 
-    console.log('📤 [BACKEND PROXY] Uploading document:', { driverId, documentType, fileSize: file.size });
+    console.log('📤 [BACKEND PROXY] Uploading document:', { driverId: finalDriverId, documentType, fileSize: file.size });
 
     // Get Firebase Storage instance
     const bucket = getStorage().bucket();
@@ -68,7 +106,7 @@ router.post('/driver-document', upload.single('document'), async (req, res) => {
     // Generate unique filename
     const timestamp = Date.now();
     const fileName = `${timestamp}_${normalizedDocType}.jpg`;
-    const filePath = `drivers/${driverId}/documents/${normalizedDocType}/${fileName}`;
+    const filePath = `drivers/${finalDriverId}/documents/${normalizedDocType}/${fileName}`;
     
     console.log('📤 [BACKEND PROXY] File path:', filePath);
     
@@ -80,7 +118,7 @@ router.post('/driver-document', upload.single('document'), async (req, res) => {
       metadata: {
         contentType: file.mimetype,
         customMetadata: {
-          driverId: driverId,
+          driverId: finalDriverId,
           documentType: documentType,
           uploadedAt: new Date().toISOString(),
           uploadedBy: 'backend_proxy',
@@ -100,7 +138,7 @@ router.post('/driver-document', upload.single('document'), async (req, res) => {
     // Update user document in Firestore
     try {
       const db = getFirestore();
-      const userRef = db.collection('users').doc(driverId);
+      const userRef = db.collection('users').doc(finalDriverId);
       
       // Update both document type formats for compatibility
       const updateData = {
@@ -142,7 +180,7 @@ router.post('/driver-document', upload.single('document'), async (req, res) => {
         size: file.size,
         uploadedAt: new Date().toISOString(),
         documentType: documentType,
-        driverId: driverId
+        driverId: finalDriverId
       }
     });
 
@@ -161,12 +199,32 @@ router.post('/driver-document', upload.single('document'), async (req, res) => {
  * @desc Get all driver documents via backend proxy
  * @access Private (Driver/Admin)
  */
-router.get('/drivers/:driverId/documents', async (req, res) => {
+router.get('/drivers/:driverId/documents', requireDriver, async (req, res) => {
   try {
-    console.log('📥 [BACKEND PROXY] Getting driver documents for:', req.params.driverId);
-    
+    // ✅ CRITICAL FIX: Verify user is a driver
+    if (!req.user || req.user.userType !== 'driver') {
+      return res.status(403).json({
+        success: false,
+        error: 'Only drivers can access driver documents'
+      });
+    }
+
     const { driverId } = req.params;
 
+    // ✅ CRITICAL FIX: Verify driverId matches authenticated user
+    if (driverId !== req.user.uid) {
+      console.error('❌ [BACKEND PROXY] Driver ID mismatch:', {
+        authenticatedDriverId: req.user.uid,
+        providedDriverId: driverId
+      });
+      return res.status(403).json({
+        success: false,
+        error: 'You can only access your own documents'
+      });
+    }
+
+    console.log('📥 [BACKEND PROXY] Getting driver documents for:', req.user.uid);
+    
     if (!driverId) {
       return res.status(400).json({
         success: false,
@@ -259,11 +317,31 @@ router.get('/drivers/:driverId/documents', async (req, res) => {
  * @desc Get specific driver document via backend proxy
  * @access Private (Driver/Admin)
  */
-router.get('/driver-document/:driverId/:documentType', async (req, res) => {
+router.get('/driver-document/:driverId/:documentType', requireDriver, async (req, res) => {
   try {
-    console.log('📥 [BACKEND PROXY] Getting specific document:', req.params);
-    
+    // ✅ CRITICAL FIX: Verify user is a driver
+    if (!req.user || req.user.userType !== 'driver') {
+      return res.status(403).json({
+        success: false,
+        error: 'Only drivers can access driver documents'
+      });
+    }
+
     const { driverId, documentType } = req.params;
+
+    // ✅ CRITICAL FIX: Verify driverId matches authenticated user
+    if (driverId !== req.user.uid) {
+      console.error('❌ [BACKEND PROXY] Driver ID mismatch:', {
+        authenticatedDriverId: req.user.uid,
+        providedDriverId: driverId
+      });
+      return res.status(403).json({
+        success: false,
+        error: 'You can only access your own documents'
+      });
+    }
+
+    console.log('📥 [BACKEND PROXY] Getting specific document:', req.params);
 
     if (!driverId || !documentType) {
       return res.status(400).json({
@@ -367,13 +445,14 @@ router.post('/customer-document', upload.single('document'), async (req, res) =>
       });
     }
 
-    // Validate document type
-    const validDocumentTypes = ['profile_photo', 'id_proof', 'address_proof'];
+    // ✅ CRITICAL FIX: Customers only have profile photo, no document verification
+    // Validate document type - only profile_photo is allowed for customers
+    const validDocumentTypes = ['profile_photo'];
     if (!validDocumentTypes.includes(documentType)) {
-      console.log('❌ [BACKEND PROXY] Invalid document type:', documentType);
+      console.log('❌ [BACKEND PROXY] Invalid document type for customer:', documentType);
       return res.status(400).json({
         success: false,
-        error: `Invalid document type. Must be one of: ${validDocumentTypes.join(', ')}`
+        error: `Invalid document type. Customers can only upload profile photo.`
       });
     }
 
@@ -419,7 +498,10 @@ router.post('/customer-document', upload.single('document'), async (req, res) =>
       const db = getFirestore();
       const userRef = db.collection('users').doc(customerId);
       
-      await userRef.update({
+      // ✅ CRITICAL FIX: For customers, only store profile photo in photoURL field
+      // Customers don't have document verification like drivers - only profile photo
+      const updateData = {
+        photoURL: downloadURL, // Store in photoURL for easy access
         [`documents.${documentType}`]: {
           fileName: fileName,
           filePath: filePath,
@@ -429,9 +511,11 @@ router.post('/customer-document', upload.single('document'), async (req, res) =>
           uploadedBy: 'backend_proxy'
         },
         updatedAt: new Date()
-      });
+      };
       
-      console.log('✅ [BACKEND PROXY] Customer user document updated in Firestore');
+      await userRef.update(updateData);
+      
+      console.log('✅ [BACKEND PROXY] Customer profile photo updated in Firestore');
     } catch (firestoreError) {
       console.error('⚠️ [BACKEND PROXY] Error updating Firestore:', firestoreError);
       // Don't fail the upload for Firestore errors

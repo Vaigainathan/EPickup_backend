@@ -38,7 +38,18 @@ class AuthService {
     try {
       // Normalize phone number (remove spaces, dashes, etc.)
       const normalizedPhone = this.normalizePhoneNumber(phoneNumber);
-      const userType = userData.userType || 'customer';
+      
+      // ✅ CRITICAL FIX: Require userType explicitly - don't default to customer
+      // This prevents driver accounts from being looked up as customer accounts
+      if (!userData.userType || typeof userData.userType !== 'string') {
+        console.error('❌ [AUTH_SERVICE] userType is required for getOrCreateUser');
+        throw new Error('userType is required in userData parameter (customer, driver, or admin)');
+      }
+      
+      const userType = userData.userType.trim().toLowerCase();
+      if (!this.isValidUserType(userType)) {
+        throw new Error(`Invalid userType: ${userType}. Must be one of: customer, driver, admin`);
+      }
       
       // Check if user exists in Firestore with user type filtering
       let query = this.db.collection('users').where('phone', '==', normalizedPhone);
@@ -72,12 +83,9 @@ class AuthService {
           throw new Error('NAME_REQUIRED_FOR_NEW_USER');
         }
 
-        const userType = userData.userType || 'customer';
-
-        // Validate user type
-        if (!this.isValidUserType(userType)) {
-          throw new Error(`INVALID_USER_TYPE: ${userType}`);
-        }
+        // ✅ CRITICAL FIX: userType already validated above, no need to default
+        // userType is already set and validated in the code above
+        // This is just a reference for clarity - userType is already guaranteed to be valid
 
         // Create unique user ID
         const userId = `user_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;

@@ -75,7 +75,14 @@ class RoleBasedAuthService {
   generateRoleSpecificUID(phoneNumber, userType) {
     const normalizedType = (userType || '').toString().trim().toLowerCase();
     const allowed = new Set(['customer', 'driver', 'admin']);
-    const safeType = allowed.has(normalizedType) ? normalizedType : 'customer';
+    
+    // ✅ CRITICAL FIX: Never default to customer - validate userType
+    if (!normalizedType || !allowed.has(normalizedType)) {
+      console.error('❌ [ROLE_BASED_AUTH] Invalid or missing userType for UID generation:', userType);
+      throw new Error(`Invalid userType: ${userType}. Must be one of: customer, driver, admin`);
+    }
+    
+    const safeType = normalizedType; // Now guaranteed to be valid
     // Create a deterministic but role-specific UID
     const baseString = `${phoneNumber}_${safeType}`;
     const hash = crypto.createHash('sha256').update(baseString).digest('hex');
@@ -99,10 +106,18 @@ class RoleBasedAuthService {
   async getOrCreateRoleSpecificUser(decodedToken, userType, additionalData = {}) {
     try {
       const phoneNumber = decodedToken.phone_number;
-      const roleSpecificUID = this.generateRoleSpecificUID(phoneNumber, userType);
       const normalizedType = (userType || '').toString().trim().toLowerCase();
       const allowed = new Set(['customer', 'driver', 'admin']);
-      const safeType = allowed.has(normalizedType) ? normalizedType : 'customer';
+      
+      // ✅ CRITICAL FIX: Never default to customer without validation
+      // This ensures driver users don't accidentally get customer role
+      if (!normalizedType || !allowed.has(normalizedType)) {
+        console.error('❌ [ROLE_BASED_AUTH] Invalid or missing userType:', userType);
+        throw new Error(`Invalid userType: ${userType}. Must be one of: customer, driver, admin`);
+      }
+      
+      const safeType = normalizedType; // Now guaranteed to be valid
+      const roleSpecificUID = this.generateRoleSpecificUID(phoneNumber, safeType);
       
       console.log(`🔑 Generated role-specific UID for ${safeType}: ${roleSpecificUID}`);
       

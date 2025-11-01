@@ -230,20 +230,51 @@ router.post('/firebase/verify-token', firebaseTokenVerifyLimiter, createProgress
     }
 
     console.log('🔐 [FIREBASE_AUTH] Verifying Firebase ID token...');
-    // Normalize and validate userType; never allow undefined to slip through
+    
+    // ✅ CRITICAL FIX: Check header FIRST (more reliable for driver/customer apps)
+    // Header is set by the app itself, so it's the most authoritative source
+    const headerAppType = (req.headers['x-app-type'] || req.headers['X-App-Type'] || '').toString().trim().toLowerCase();
+    console.log('🔐 [FIREBASE_AUTH] Header app type:', headerAppType);
+    console.log('🔐 [FIREBASE_AUTH] Body userType:', userType);
+    
+    // Normalize and validate userType from body
     const normalizedType = (userType || '').toString().trim().toLowerCase();
     const allowedTypes = new Set(['customer', 'driver', 'admin']);
-    let finalUserType = allowedTypes.has(normalizedType) ? normalizedType : undefined;
-    // Optional hints from headers
-    const headerAppType = (req.headers['x-app-type'] || '').toString().trim().toLowerCase();
-    if (!finalUserType) {
-      if (headerAppType.includes('driver')) finalUserType = 'driver';
-      else if (headerAppType.includes('admin')) finalUserType = 'admin';
-      else if (headerAppType.includes('customer')) finalUserType = 'customer';
+    
+    let finalUserType = undefined;
+    
+    // ✅ CRITICAL FIX: Prioritize header check for app identification
+    // Driver app always sends 'driver_app' or 'driver' in header
+    if (headerAppType.includes('driver') || headerAppType === 'driver_app') {
+      finalUserType = 'driver';
+      console.log('✅ [FIREBASE_AUTH] User type determined from header: driver');
+    } else if (headerAppType.includes('admin') || headerAppType === 'admin_dashboard') {
+      finalUserType = 'admin';
+      console.log('✅ [FIREBASE_AUTH] User type determined from header: admin');
+    } else if (headerAppType.includes('customer') || headerAppType === 'customer_app') {
+      finalUserType = 'customer';
+      console.log('✅ [FIREBASE_AUTH] User type determined from header: customer');
+    } else if (allowedTypes.has(normalizedType)) {
+      // Fallback to body userType if header doesn't match
+      finalUserType = normalizedType;
+      console.log(`✅ [FIREBASE_AUTH] User type determined from body: ${normalizedType}`);
     }
-    // Safe default
-    if (!finalUserType) finalUserType = 'customer';
-    console.log('🔐 [FIREBASE_AUTH] User type:', finalUserType);
+    
+    // ✅ CRITICAL FIX: Only default to customer if no header AND no body userType
+    // This prevents driver app from accidentally getting customer role
+    if (!finalUserType) {
+      console.warn('⚠️ [FIREBASE_AUTH] No userType found in header or body, defaulting to customer');
+      finalUserType = 'customer';
+    }
+    
+    // ✅ CRITICAL FIX: Validate that driver_app header matches driver userType
+    if (headerAppType.includes('driver') && finalUserType !== 'driver') {
+      console.error('❌ [FIREBASE_AUTH] MISMATCH: Header says driver_app but userType is:', finalUserType);
+      console.error('🔧 [FIREBASE_AUTH] CORRECTING: Setting userType to driver based on header');
+      finalUserType = 'driver';
+    }
+    
+    console.log('🔐 [FIREBASE_AUTH] Final user type:', finalUserType);
     console.log('🔐 [FIREBASE_AUTH] Token length:', idToken.length);
 
     // Import Firebase Admin SDK service

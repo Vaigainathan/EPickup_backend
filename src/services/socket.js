@@ -161,8 +161,16 @@ const initializeSocketIO = async (server) => {
           
           // Set user info for successful authentication
           socket.userId = decodedToken.userId;
-          socket.userType = decodedToken.userType || 'customer';
-          socket.userRole = decodedToken.role || 'customer';
+          
+          // ✅ CRITICAL FIX: Validate userType from token - don't default to customer
+          // If userType is missing, this is an error condition
+          if (!decodedToken.userType) {
+            console.error('❌ [SOCKET] Missing userType in token for user:', decodedToken.userId);
+            throw new Error('Invalid token: userType is required');
+          }
+          
+          socket.userType = decodedToken.userType;
+          socket.userRole = decodedToken.role || decodedToken.userType; // Use userType as fallback for role
           socket.userRooms = new Set();
           
           console.log(`✅ Socket authentication successful for ${socket.userType}: ${socket.userId}`);
@@ -179,8 +187,16 @@ const initializeSocketIO = async (server) => {
               decodedToken = jwt.decode(token);
               if (decodedToken && decodedToken.userId) {
                 socket.userId = decodedToken.userId;
-                socket.userType = decodedToken.userType || 'customer';
-                socket.userRole = decodedToken.role || 'customer';
+                
+                // ✅ CRITICAL FIX: Even for expired tokens, validate userType exists
+                // If missing, this indicates token was generated incorrectly
+                if (!decodedToken.userType) {
+                  console.error('❌ [SOCKET] Missing userType in expired token for user:', decodedToken.userId);
+                  return next(new Error('Invalid token: userType is required'));
+                }
+                
+                socket.userType = decodedToken.userType;
+                socket.userRole = decodedToken.role || decodedToken.userType; // Use userType as fallback for role
                 socket.userRooms = new Set();
                 return next();
               }
@@ -334,8 +350,19 @@ const initializeSocketIO = async (server) => {
           
           // Update socket with new token info
           socket.userId = decodedToken.userId;
-          socket.userType = decodedToken.userType || 'customer';
-          socket.userRole = decodedToken.role || 'customer';
+          
+          // ✅ CRITICAL FIX: Validate userType from refreshed token
+          if (!decodedToken.userType) {
+            console.error('❌ [SOCKET] Missing userType in refreshed token for user:', decodedToken.userId);
+            socket.emit('token_refresh_failed', {
+              message: 'Invalid token: userType is required',
+              timestamp: new Date().toISOString()
+            });
+            return;
+          }
+          
+          socket.userType = decodedToken.userType;
+          socket.userRole = decodedToken.role || decodedToken.userType; // Use userType as fallback for role
           socket.needsTokenRefresh = false;
           
           socket.emit('token_refresh_success', {

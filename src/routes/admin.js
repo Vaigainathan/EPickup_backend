@@ -4070,17 +4070,43 @@ router.get('/customers', async (req, res) => {
     const db = getFirestore();
     const { limit = 20, offset = 0, status, search } = req.query;
 
+    // ✅ CRITICAL FIX: Base query with userType filter
     let query = db.collection('users').where('userType', '==', 'customer');
 
-    // Apply status filter
+    // ✅ CRITICAL FIX: Apply status filter only if provided
+    // Note: This requires composite index: userType + accountStatus + createdAt
     if (status) {
       query = query.where('accountStatus', '==', status);
     }
 
-    // Apply pagination and ordering
-    query = query.orderBy('createdAt', 'desc').limit(Math.max(1, Math.min(100, parseInt(limit) || 20))).offset(Math.max(0, parseInt(offset) || 0));
+    // ✅ CRITICAL FIX: Apply ordering - this requires composite index if status filter is used
+    // Index required: userType + accountStatus + createdAt (added to firestore.indexes.json)
+    query = query.orderBy('createdAt', 'desc');
 
-    const snapshot = await query.get();
+    // Apply pagination
+    const validatedLimit = Math.max(1, Math.min(100, parseInt(limit) || 20));
+    const validatedOffset = Math.max(0, parseInt(offset) || 0);
+    query = query.limit(validatedLimit).offset(validatedOffset);
+
+    let snapshot;
+    try {
+      snapshot = await query.get();
+    } catch (queryError) {
+      // ✅ CRITICAL FIX: If query fails (missing index or missing fields), try simpler query
+      console.error('❌ [ADMIN_CUSTOMERS] Query failed, trying fallback:', queryError.message);
+      
+      // Fallback: Simple query without status filter and ordering
+      let fallbackQuery = db.collection('users').where('userType', '==', 'customer');
+      fallbackQuery = fallbackQuery.limit(validatedLimit).offset(validatedOffset);
+      
+      try {
+        snapshot = await fallbackQuery.get();
+        console.warn('⚠️ [ADMIN_CUSTOMERS] Using fallback query (no status filter or ordering)');
+      } catch (fallbackError) {
+        console.error('❌ [ADMIN_CUSTOMERS] Fallback query also failed:', fallbackError.message);
+        throw new Error(`Failed to query customers: ${queryError.message}. Please ensure Firestore indexes are deployed.`);
+      }
+    }
     let customers = [];
 
     snapshot.forEach(doc => {
@@ -4143,6 +4169,135 @@ router.get('/customers', async (req, res) => {
       error: {
         code: 'FETCH_CUSTOMERS_ERROR',
         message: 'Failed to fetch customers',
+        details: error.message
+      }
+    });
+  }
+});
+
+/**
+ * @route   POST /api/admin/customers
+ * @desc    Create new customer user
+ * @access  Private (Admin only)
+ */
+router.post('/customers', async (req, res) => {
+  try {
+    const { phone, name, email } = req.body;
+    const adminId = req.user.uid || req.user.userId;
+    const db = getFirestore();
+
+    if (!phone || !name) {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'MISSING_FIELDS',
+          message: 'Phone number and name are required'
+        }
+      });
+    }
+
+    // Normalize phone number
+    let normalizedPhone = phone.replace(/[^0-9+]/g, '');
+    if (!normalizedPhone.startsWith('+')) {
+      normalizedPhone = `+91${normalizedPhone}`;
+      console.log(`📱 Normalized phone: ${phone} -> ${normalizedPhone}`);
+    }
+
+    // ✅ CRITICAL FIX: Use roleBasedAuthService to generate proper role-based UID
+    const roleBasedAuthService = require('../services/roleBasedAuthService');
+    const roleBasedUID = roleBasedAuthService.generateRoleSpecificUID(normalizedPhone, 'customer');
+
+    // Check if customer already exists with this phone number
+    const existingQuery = await db.collection('users')
+      .where('phone', '==', normalizedPhone)
+      .where('userType', '==', 'customer')
+      .limit(1)
+      .get();
+
+    if (!existingQuery.empty) {
+      const existingDoc = existingQuery.docs[0];
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'CUSTOMER_EXISTS',
+          message: 'Customer with this phone number already exists',
+          customerId: existingDoc.id
+        }
+      });
+    }
+
+    // ✅ CRITICAL FIX: Create customer with proper structure matching customer app format
+    const customerData = {
+      id: roleBasedUID,
+      uid: roleBasedUID,
+      phone: normalizedPhone,
+      name: name.trim(),
+      email: email?.trim() || null,
+      userType: 'customer', // ✅ CRITICAL: Explicit userType
+      accountStatus: 'active',
+      isActive: true,
+      isVerified: false,
+      customer: {
+        name: name.trim(),
+        email: email?.trim() || null,
+        phone: normalizedPhone,
+        totalBookings: 0,
+        totalSpent: 0,
+        preferences: {
+          vehicleType: 'motorcycle',
+          notifications: true
+        }
+      },
+      photoURL: null, // ✅ Customers only have profile photo, no document verification
+      createdAt: new Date().toISOString(), // ✅ CRITICAL: Must have createdAt for queries
+      updatedAt: new Date().toISOString(),
+      createdBy: adminId,
+      createdVia: 'admin_management' // Track creation source
+    };
+
+    // Store customer in users collection
+    await db.collection('users').doc(roleBasedUID).set(customerData);
+
+    console.log(`✅ [ADMIN_CUSTOMERS] Created customer: ${roleBasedUID} (${normalizedPhone})`);
+
+    // Log the creation action
+    const auditLogRef = db.collection('adminLogs').doc();
+    await auditLogRef.set({
+      action: 'customer_created',
+      adminId,
+      targetUserId: roleBasedUID,
+      targetUserType: 'customer',
+      details: {
+        phone: normalizedPhone,
+        name: name.trim(),
+        email: email?.trim() || null,
+        timestamp: new Date()
+      },
+      timestamp: new Date()
+    });
+
+    res.status(201).json({
+      success: true,
+      data: {
+        id: roleBasedUID,
+        uid: roleBasedUID,
+        phone: normalizedPhone,
+        name: name.trim(),
+        email: email?.trim() || null,
+        userType: 'customer',
+        accountStatus: 'active',
+        createdAt: customerData.createdAt
+      },
+      message: 'Customer created successfully'
+    });
+
+  } catch (error) {
+    console.error('❌ [ADMIN_CUSTOMERS] Error creating customer:', error);
+    res.status(500).json({
+      success: false,
+      error: {
+        code: 'CREATE_CUSTOMER_ERROR',
+        message: 'Failed to create customer',
         details: error.message
       }
     });

@@ -174,15 +174,64 @@ const authMiddleware = async (req, res, next) => {
         timestamp: new Date().toISOString()
       });
     }
+    
+    // ✅ AUTO-SYNC: Update Firestore if userType or phone is missing but available in token
+    // This ensures consistency between JWT token and Firestore
+    const phoneFromToken = decodedToken.phone || decodedToken.phone_number || null;
+    const needsSync = (decodedToken.userType && !userData.userType) || 
+                      (phoneFromToken && !userData.phone);
+    
+    if (needsSync) {
+      try {
+        const db = getFirestore();
+        const userRef = db.collection('users').doc(userId);
+        const updateData = {};
+        
+        if (decodedToken.userType && !userData.userType) {
+          updateData.userType = decodedToken.userType;
+          console.log(`🔄 [AUTH] Syncing userType to Firestore: ${userId} -> ${decodedToken.userType}`);
+        }
+        
+        if (phoneFromToken && !userData.phone) {
+          updateData.phone = phoneFromToken;
+          console.log(`🔄 [AUTH] Syncing phone to Firestore: ${userId} -> ${phoneFromToken}`);
+        }
+        
+        if (Object.keys(updateData).length > 0) {
+          updateData.updatedAt = new Date();
+          await userRef.update(updateData);
+          console.log(`✅ [AUTH] Firestore synced for user: ${userId}`);
+          
+          // Update userData object with synced values
+          userData.userType = updateData.userType || userData.userType;
+          userData.phone = updateData.phone || userData.phone;
+        }
+      } catch (syncError) {
+        // Don't fail authentication if sync fails, just log it
+        console.warn('⚠️ [AUTH] Failed to sync user data to Firestore:', syncError.message);
+      }
+    }
 
     // Add user info to request
     // ✅ CRITICAL FIX: Spread userData first, then override userType to ensure correct value
+    // ✅ phoneFromToken already declared above (line 180), reuse it here
+    
     req.user = {
       ...userData,
       uid: userId,
-      phone: decodedToken.phone,
+      phone: phoneFromToken || userData.phone || null, // ✅ Ensure phone is never undefined (phoneFromToken from line 180)
       userType: userType // ✅ Override userType from Firestore with token userType
     };
+    
+    // ✅ IMPROVED LOGGING: Show both Firestore and token userType for clarity
+    console.log('✅ [AUTH] User authenticated:', {
+      userId,
+      userType: userType,
+      source: decodedToken.userType ? 'JWT_TOKEN' : 'FIRESTORE',
+      firestoreUserType: userData.userType,
+      tokenUserType: decodedToken.userType,
+      phone: req.user.phone
+    });
 
     // Add token info for potential use
     req.token = {
@@ -642,11 +691,7 @@ authMiddleware.getUserData = async (userId) => {
     userDoc = await db.collection('users').doc(userId).get();
     if (userDoc.exists) {
       const userData = userDoc.data();
-      console.log('✅ [AUTH] Found user:', {
-        userId,
-        userType: userData.userType,
-        hasUserType: !!userData.userType
-      });
+      // Note: userType may be undefined in Firestore, but will be synced from JWT token if needed
       return userData;
     }
     

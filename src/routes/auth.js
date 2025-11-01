@@ -347,11 +347,17 @@ router.post('/firebase/verify-token', firebaseTokenVerifyLimiter, createProgress
     }
 
     // Generate backend JWT token with role-based UID
+    // ✅ CRITICAL FIX: Ensure phone is always included (use phone_number from Firebase token)
+    const phoneNumber = decodedToken.phone_number || null;
+    if (!phoneNumber) {
+      console.warn('⚠️ [FIREBASE_AUTH] Warning: Firebase token missing phone_number for user:', decodedToken.uid);
+    }
+    
     const jwtService = require('../services/jwtService');
     const backendToken = jwtService.generateAccessToken({
       userId: roleBasedUID, // Use role-based UID instead of Firebase UID
       userType: finalUserType,
-      phone: decodedToken.phone_number,
+      phone: phoneNumber, // ✅ Can be null but never undefined
       metadata: {
         email: decodedToken.email,
         name: name || decodedToken.name || decodedToken.email || decodedToken.phone_number,
@@ -362,7 +368,7 @@ router.post('/firebase/verify-token', firebaseTokenVerifyLimiter, createProgress
     const refreshToken = jwtService.generateRefreshToken({
       userId: roleBasedUID, // Use role-based UID instead of Firebase UID
       userType: finalUserType,
-      phone: decodedToken.phone_number,
+      phone: phoneNumber, // ✅ Can be null but never undefined
       metadata: {
         email: decodedToken.email,
         originalUID: decodedToken.uid

@@ -130,10 +130,44 @@ class RoleBasedAuthService {
         // ✅ CRITICAL FIX: Ensure returned data includes id and uid fields
         // Note: Custom claims will be set by the calling code in auth.js
         const userData = userDoc.data();
+        
+        // ✅ AUTO-SYNC: Ensure phone and userType are set in Firestore if missing
+        const needsSync = (!userData.phone && decodedToken.phone_number) || 
+                         (!userData.userType && userType);
+        
+        if (needsSync) {
+          try {
+            const updateData = {};
+            if (!userData.phone && decodedToken.phone_number) {
+              updateData.phone = decodedToken.phone_number;
+              console.log(`🔄 [ROLE_BASED_AUTH] Syncing phone for existing user: ${roleSpecificUID} -> ${decodedToken.phone_number}`);
+            }
+            if (!userData.userType && userType) {
+              updateData.userType = userType;
+              console.log(`🔄 [ROLE_BASED_AUTH] Syncing userType for existing user: ${roleSpecificUID} -> ${userType}`);
+            }
+            
+            if (Object.keys(updateData).length > 0) {
+              updateData.updatedAt = new Date().toISOString();
+              await this.db.collection('users').doc(roleSpecificUID).update(updateData);
+              console.log(`✅ [ROLE_BASED_AUTH] Firestore synced for existing user: ${roleSpecificUID}`);
+              
+              // Update userData object with synced values
+              userData.phone = updateData.phone || userData.phone;
+              userData.userType = updateData.userType || userData.userType;
+            }
+          } catch (syncError) {
+            console.warn('⚠️ [ROLE_BASED_AUTH] Failed to sync existing user data:', syncError.message);
+            // Continue anyway - don't fail authentication
+          }
+        }
+        
         return {
           ...userData,
           id: roleSpecificUID,
-          uid: roleSpecificUID
+          uid: roleSpecificUID,
+          phone: userData.phone || decodedToken.phone_number || null,
+          userType: userData.userType || userType
         };
       }
       
@@ -159,15 +193,22 @@ class RoleBasedAuthService {
    */
   async createRoleSpecificUser(decodedToken, userType, roleSpecificUID, additionalData = {}) {
     try {
+      // ✅ CRITICAL FIX: Ensure phone is always set (use phone_number from token)
+      // If phone_number is missing from token, log warning but continue
+      const phone = decodedToken.phone_number || null;
+      if (!phone) {
+        console.warn(`⚠️ [ROLE_BASED_AUTH] Creating user without phone number: ${roleSpecificUID}`);
+      }
+      
       const baseUserData = {
         id: roleSpecificUID,
         uid: roleSpecificUID,
         originalFirebaseUID: decodedToken.uid, // Keep original Firebase UID for reference
         email: decodedToken.email || null,
-        phone: decodedToken.phone_number || null,
+        phone: phone, // ✅ Always set phone (can be null, but never undefined)
         name: decodedToken.name || additionalData.name || null,
         photoURL: decodedToken.picture || null,
-        userType: userType,
+        userType: userType, // ✅ Always set userType
         isVerified: true,
         isActive: true,
         accountStatus: 'active',
@@ -175,6 +216,11 @@ class RoleBasedAuthService {
         updatedAt: new Date().toISOString(),
         ...additionalData
       };
+      
+      // ✅ CRITICAL FIX: Ensure additionalData doesn't override critical fields
+      // Force phone and userType to be set even if additionalData tries to override
+      baseUserData.phone = phone;
+      baseUserData.userType = userType;
 
       // Add role-specific fields
       if (userType === 'driver') {

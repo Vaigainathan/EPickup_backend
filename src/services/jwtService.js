@@ -22,10 +22,13 @@ class JWTService {
    * @returns {string} JWT token
    */
   generateAccessToken(payload) {
+    // ✅ CRITICAL FIX: Ensure phone is never undefined (can be null)
+    const phone = payload.phone !== undefined ? payload.phone : null;
+    
     const tokenPayload = {
       userId: payload.userId,
       userType: payload.userType,
-      phone: payload.phone,
+      phone: phone, // ✅ Always set, never undefined
       type: 'access',
       iat: Math.floor(Date.now() / 1000),
       ...payload.metadata
@@ -44,10 +47,13 @@ class JWTService {
    * @returns {string} JWT refresh token
    */
   generateRefreshToken(payload) {
+    // ✅ CRITICAL FIX: Ensure phone is never undefined (can be null)
+    const phone = payload.phone !== undefined ? payload.phone : null;
+    
     const tokenPayload = {
       userId: payload.userId,
       userType: payload.userType,
-      phone: payload.phone,
+      phone: phone, // ✅ Always set, never undefined
       type: 'refresh',
       iat: Math.floor(Date.now() / 1000)
     };

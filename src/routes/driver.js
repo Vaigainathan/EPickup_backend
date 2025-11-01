@@ -6786,7 +6786,31 @@ router.post('/documents/request-verification', requireDriver, async (req, res) =
       });
     }
 
-    const userData = userDoc.data();
+    let userData = userDoc.data();
+    
+    // ✅ CRITICAL FIX: If req.user has phone/userType but userData doesn't, sync them
+    // This handles edge cases where auth middleware sync might have failed
+    if ((req.user.phone && !userData.phone) || (req.user.userType && !userData.userType)) {
+      try {
+        const updateData = {};
+        if (req.user.phone && !userData.phone) {
+          updateData.phone = req.user.phone;
+        }
+        if (req.user.userType && !userData.userType) {
+          updateData.userType = req.user.userType;
+        }
+        if (Object.keys(updateData).length > 0) {
+          updateData.updatedAt = new Date();
+          await userRef.update(updateData);
+          // Refresh userData
+          const refreshedDoc = await userRef.get();
+          userData = refreshedDoc.data();
+        }
+      } catch (syncError) {
+        console.warn('⚠️ [VERIFICATION_REQUEST] Failed to sync userData:', syncError.message);
+        // Continue - req.user still has correct values
+      }
+    }
     
     // ✅ CRITICAL FIX: Check Firebase Storage instead of Firestore
     const bucket = getStorage().bucket();
@@ -6885,11 +6909,72 @@ router.post('/documents/request-verification', requireDriver, async (req, res) =
 
     // Create verification request record with normalized document structure
     const verificationRequestRef = db.collection('documentVerificationRequests').doc();
+    
+    // ✅ CRITICAL FIX: Get phone from req.user (JWT token) as primary source, ensure it's never undefined
+    let driverPhone = req.user.phone || userData.phone || '';
+    
+    // ✅ FALLBACK: If phone is still missing, try to get from JWT token metadata
+    if (!driverPhone && req.token) {
+      // Token might be in different format - check both
+      const tokenData = req.token;
+      driverPhone = tokenData.phone || tokenData.phone_number || '';
+    }
+    
+    // ✅ LAST RESORT: If still missing, phone should have been synced by auth middleware
+    // This should only happen in edge cases where token doesn't have phone
+    if (!driverPhone) {
+      // Check if we can get phone from the JWT token payload (already decoded by auth middleware)
+      // req.user.phone should already be set by auth middleware from decodedToken
+      // If it's still missing, this indicates the JWT token itself doesn't have phone
+      console.error('❌ [VERIFICATION_REQUEST] Phone missing from all sources. This should not happen if user authenticated properly.');
+    }
+    
+    if (!driverPhone) {
+      console.error('❌ [VERIFICATION_REQUEST] Driver phone is missing after all attempts:', {
+        userId: uid,
+        reqUserPhone: req.user?.phone,
+        userDataPhone: userData.phone,
+        hasToken: !!req.token
+      });
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'MISSING_PHONE',
+          message: 'Phone number required',
+          details: 'Driver phone number is missing. Please contact support.'
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+    
+    console.log('✅ [VERIFICATION_REQUEST] Phone validated:', {
+      userId: uid,
+      phone: driverPhone,
+      source: req.user.phone ? 'req.user' : userData.phone ? 'userData' : 'synced'
+    });
+    
+    // ✅ CRITICAL FIX: Helper function to remove undefined values (Firestore doesn't allow undefined)
+    const removeUndefined = (obj) => {
+      if (obj === null || typeof obj !== 'object') {
+        return obj;
+      }
+      if (Array.isArray(obj)) {
+        return obj.map(removeUndefined);
+      }
+      const cleaned = {};
+      for (const [key, value] of Object.entries(obj)) {
+        if (value !== undefined) {
+          cleaned[key] = removeUndefined(value);
+        }
+      }
+      return cleaned;
+    };
+
     const verificationRequest = {
       id: verificationRequestRef.id,
       driverId: uid,
-      driverName: userData.name,
-      driverPhone: userData.phone,
+      driverName: userData.name || req.user.name || 'Unknown',
+      driverPhone: driverPhone, // ✅ Already validated above - never undefined
       documents: {
         drivingLicense: {
           downloadURL: documents.driving_license?.downloadURL || '',
@@ -6941,7 +7026,16 @@ router.post('/documents/request-verification', requireDriver, async (req, res) =
       updatedAt: new Date()
     };
 
-    await verificationRequestRef.set(verificationRequest);
+    // ✅ CRITICAL FIX: Remove any undefined values before saving to Firestore
+    const cleanedVerificationRequest = removeUndefined(verificationRequest);
+    
+    console.log('📝 [VERIFICATION_REQUEST] Saving verification request:', {
+      driverId: uid,
+      driverPhone: cleanedVerificationRequest.driverPhone,
+      hasPhone: !!cleanedVerificationRequest.driverPhone
+    });
+
+    await verificationRequestRef.set(cleanedVerificationRequest);
 
     // Send notification to admin (if notification service is available)
     try {

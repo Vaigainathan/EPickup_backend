@@ -6887,17 +6887,62 @@ router.post('/documents/request-verification', requireDriver, async (req, res) =
       });
     }
 
-    // Check if verification is already requested
-    if (userData.driver?.verificationStatus === 'pending_verification') {
-      return res.status(400).json({
-        success: false,
-        error: {
-          code: 'VERIFICATION_ALREADY_REQUESTED',
-          message: 'Verification already requested',
-          details: 'Document verification has already been requested and is pending review'
-        },
-        timestamp: new Date().toISOString()
-      });
+    // ✅ CRITICAL FIX: Check for existing verification requests in documentVerificationRequests collection
+    // This is more reliable than just checking userData.driver.verificationStatus
+    const existingRequestsQuery = db.collection('documentVerificationRequests')
+      .where('driverId', '==', uid)
+      .orderBy('requestedAt', 'desc')
+      .limit(1);
+    
+    const existingRequestsSnapshot = await existingRequestsQuery.get();
+    
+    if (!existingRequestsSnapshot.empty) {
+      const latestRequest = existingRequestsSnapshot.docs[0].data();
+      const requestStatus = latestRequest.status || 'pending';
+      const requestedAt = latestRequest.requestedAt?.toDate?.() || latestRequest.requestedAt || new Date();
+      const daysSinceRequest = (Date.now() - new Date(requestedAt).getTime()) / (1000 * 60 * 60 * 24);
+      
+      // If there's a recent pending request (< 7 days old), block re-request
+      if (requestStatus === 'pending' && daysSinceRequest < 7) {
+        console.log(`⚠️ [VERIFICATION_REQUEST] Driver ${uid} already has a pending verification request (${daysSinceRequest.toFixed(1)} days old)`);
+        return res.status(400).json({
+          success: false,
+          error: {
+            code: 'VERIFICATION_ALREADY_REQUESTED',
+            message: 'Verification already requested',
+            details: 'Document verification has already been requested and is pending review. Please wait for admin approval.'
+          },
+          timestamp: new Date().toISOString()
+        });
+      }
+      
+      // If status is 'pending_verification' but request is old or completed/rejected, allow re-request
+      // Also reset the userData verificationStatus if it's stuck
+      if (userData.driver?.verificationStatus === 'pending_verification' && 
+          (requestStatus !== 'pending' || daysSinceRequest >= 7)) {
+        console.log(`🔄 [VERIFICATION_REQUEST] Resetting stuck verificationStatus for driver ${uid}. Previous request: ${requestStatus} (${daysSinceRequest.toFixed(1)} days old)`);
+        
+        // Reset verificationStatus to 'pending' to allow new request
+        await userRef.update({
+          'driver.verificationStatus': 'pending',
+          updatedAt: new Date()
+        });
+        
+        // Update userData to reflect the reset
+        userData.driver = userData.driver || {};
+        userData.driver.verificationStatus = 'pending';
+      }
+    } else {
+      // No existing request found - reset verificationStatus if it's stuck as 'pending_verification'
+      if (userData.driver?.verificationStatus === 'pending_verification') {
+        console.log(`🔄 [VERIFICATION_REQUEST] Resetting stuck verificationStatus for driver ${uid} (no verification request found)`);
+        await userRef.update({
+          'driver.verificationStatus': 'pending',
+          updatedAt: new Date()
+        });
+        userData.driver = userData.driver || {};
+        userData.driver.verificationStatus = 'pending';
+      }
     }
 
     // Update verification status

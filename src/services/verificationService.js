@@ -316,6 +316,7 @@ class VerificationService {
     }
 
     try {
+      // ✅ CRITICAL FIX: Update driver verification status
       const updates = {
         'driver.verificationStatus': 'approved',
         'driver.isVerified': true,
@@ -328,6 +329,28 @@ class VerificationService {
       }
 
       await db.collection('users').doc(driverId).update(updates);
+      
+      // ✅ CRITICAL FIX: Update documentVerificationRequests collection to mark as approved
+      // This ensures the driver can request verification again if needed
+      const verificationRequestsQuery = db.collection('documentVerificationRequests')
+        .where('driverId', '==', driverId)
+        .where('status', '==', 'pending')
+        .orderBy('requestedAt', 'desc')
+        .limit(1);
+      
+      const verificationRequestsSnapshot = await verificationRequestsQuery.get();
+      
+      if (!verificationRequestsSnapshot.empty) {
+        const latestRequest = verificationRequestsSnapshot.docs[0];
+        await latestRequest.ref.update({
+          status: 'approved',
+          reviewedAt: admin.firestore.FieldValue.serverTimestamp(),
+          reviewedBy: adminId,
+          reviewNotes: comments || null,
+          updatedAt: admin.firestore.FieldValue.serverTimestamp()
+        });
+        console.log(`✅ [VerificationService] Updated verification request ${latestRequest.id} to approved`);
+      }
       
       return { success: true };
     } catch (error) {
@@ -347,6 +370,7 @@ class VerificationService {
     }
 
     try {
+      // ✅ CRITICAL FIX: Update driver verification status
       const updates = {
         'driver.verificationStatus': 'rejected',
         'driver.isVerified': false,
@@ -356,6 +380,28 @@ class VerificationService {
       };
 
       await db.collection('users').doc(driverId).update(updates);
+      
+      // ✅ CRITICAL FIX: Update documentVerificationRequests collection to mark as rejected
+      // This ensures the driver can request verification again if needed
+      const verificationRequestsQuery = db.collection('documentVerificationRequests')
+        .where('driverId', '==', driverId)
+        .where('status', '==', 'pending')
+        .orderBy('requestedAt', 'desc')
+        .limit(1);
+      
+      const verificationRequestsSnapshot = await verificationRequestsQuery.get();
+      
+      if (!verificationRequestsSnapshot.empty) {
+        const latestRequest = verificationRequestsSnapshot.docs[0];
+        await latestRequest.ref.update({
+          status: 'rejected',
+          reviewedAt: admin.firestore.FieldValue.serverTimestamp(),
+          reviewedBy: adminId,
+          reviewNotes: reason || null,
+          updatedAt: admin.firestore.FieldValue.serverTimestamp()
+        });
+        console.log(`✅ [VerificationService] Updated verification request ${latestRequest.id} to rejected`);
+      }
       
       return { success: true };
     } catch (error) {

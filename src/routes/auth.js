@@ -29,6 +29,18 @@ router.post('/check-phone', async (req, res) => {
     // Import Firebase Admin SDK service
     const firebaseAuthService = require('../services/firebaseAuthService');
     
+    // Ensure Firebase Auth Service is initialized
+    try {
+      firebaseAuthService.ensureInitialized();
+    } catch (initError) {
+      console.error('❌ [AUTH] Firebase Auth Service not initialized:', initError.message);
+      return res.status(503).json({
+        success: false,
+        error: 'Authentication service is temporarily unavailable. Please try again in a moment.',
+        code: 'SERVICE_UNAVAILABLE'
+      });
+    }
+    
     try {
       // Check if user exists in Firebase Auth by phone number
       const userRecord = await firebaseAuthService.getUserByPhoneNumber(phoneNumber);
@@ -117,16 +129,51 @@ router.post('/check-phone', async (req, res) => {
         });
       }
       
-      // Other errors
+      // Firebase Auth service might not be initialized
+      if (getUserError.message && getUserError.message.includes('Firebase Admin SDK')) {
+        console.error('❌ [AUTH] Firebase Admin SDK not initialized properly');
+        return res.status(503).json({
+          success: false,
+          error: 'Service temporarily unavailable. Please try again in a moment.',
+          code: 'SERVICE_UNAVAILABLE'
+        });
+      }
+      
+      // Other Firebase errors
       console.error('❌ [AUTH] Error checking user:', getUserError);
-      throw getUserError;
+      console.error('❌ [AUTH] Error details:', {
+        code: getUserError.code,
+        message: getUserError.message,
+        stack: getUserError.stack
+      });
+      
+      // Return a user-friendly error instead of throwing
+      return res.status(500).json({
+        success: false,
+        error: 'Failed to verify phone number. Please try again.',
+        code: 'PHONE_CHECK_ERROR',
+        details: process.env.NODE_ENV === 'development' ? getUserError.message : undefined
+      });
     }
 
   } catch (error) {
     console.error('❌ [AUTH] Phone check error:', error);
+    console.error('❌ [AUTH] Error stack:', error.stack);
+    
+    // Check if it's a Firebase initialization error
+    if (error.message && (error.message.includes('Firebase') || error.message.includes('initialized'))) {
+      return res.status(503).json({
+        success: false,
+        error: 'Authentication service is temporarily unavailable. Please try again in a moment.',
+        code: 'SERVICE_UNAVAILABLE'
+      });
+    }
+    
     return res.status(500).json({
       success: false,
-      error: 'Internal server error during phone check'
+      error: 'Internal server error during phone check. Please try again.',
+      code: 'INTERNAL_ERROR',
+      details: process.env.NODE_ENV === 'development' ? error.message : undefined
     });
   }
 });

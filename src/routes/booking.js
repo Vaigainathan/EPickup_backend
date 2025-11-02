@@ -834,7 +834,9 @@ router.post('/:id/accept', [
         
         if (freshBookingCheck.exists) {
           const freshBooking = freshBookingCheck.data();
-          if (freshBooking.status === 'pending' && (!freshBooking.driverId || freshBooking.driverId === null)) {
+          // ✅ USE VALIDATION UTILITY: Comprehensive check for all driverId edge cases
+          const bookingValidation = require('../utils/bookingValidation');
+          if (freshBooking.status === 'pending' && bookingValidation.isDriverIdEmpty(freshBooking.driverId)) {
             console.warn(`⚠️ [BOOKING_ACCEPT] Lock exists but booking ${id} is still pending. Possible stale lock. Attempting to continue...`);
             // Continue - let transaction handle race condition
           } else {

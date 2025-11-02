@@ -64,9 +64,12 @@ class BookingLockService {
           throw new Error('BOOKING_ALREADY_ASSIGNED');
         }
         
-        if (bookingData.driverId !== null && bookingData.driverId !== undefined && bookingData.driverId !== '') {
+        // ✅ USE VALIDATION UTILITY: Comprehensive check for all driverId edge cases
+        const bookingValidation = require('../utils/bookingValidation');
+        if (!bookingValidation.isDriverIdEmpty(bookingData.driverId)) {
           // Booking already has a driver assigned - no need for lock
-          console.log(`⚠️ [BookingLock] Booking ${bookingId} already has driverId: ${bookingData.driverId}`);
+          const normalizedDriverId = bookingValidation.normalizeDriverId(bookingData.driverId);
+          console.log(`⚠️ [BookingLock] Booking ${bookingId} already has driverId: ${bookingData.driverId} (normalized: ${normalizedDriverId})`);
           throw new Error('BOOKING_ALREADY_ASSIGNED');
         }
         
@@ -92,7 +95,9 @@ class BookingLockService {
               const lockAge = now - lockTimestamp;
               const STALE_LOCK_THRESHOLD = 5000; // 5 seconds
               
-              if (lockAge > STALE_LOCK_THRESHOLD && bookingData.status === 'pending' && (!bookingData.driverId || bookingData.driverId === null || bookingData.driverId === '')) {
+              // ✅ USE VALIDATION UTILITY: Comprehensive check for all driverId edge cases
+              const isDriverIdEmpty = bookingValidation.isDriverIdEmpty(bookingData.driverId);
+              if (lockAge > STALE_LOCK_THRESHOLD && bookingData.status === 'pending' && isDriverIdEmpty) {
                 // Stale lock detected - booking is still available, override the lock
                 console.warn(`⚠️ [BookingLock] Stale lock detected for booking ${bookingId}. Lock age: ${lockAge}ms. Overriding stale lock.`);
                 // Delete stale lock and continue

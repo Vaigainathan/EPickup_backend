@@ -197,8 +197,14 @@ class BookingService {
           throw new Error(`Booking cannot be accepted. Current status: ${booking.status}`);
         }
 
-        if (booking.driverId && booking.driverId !== driverId) {
-          throw new Error('Booking is already assigned to another driver');
+        // ✅ USE VALIDATION UTILITY: Comprehensive check for all driverId edge cases
+        const bookingValidation = require('../utils/bookingValidation');
+        if (!bookingValidation.isDriverIdEmpty(booking.driverId)) {
+          const normalizedDriverId = bookingValidation.normalizeDriverId(booking.driverId);
+          if (normalizedDriverId !== driverId) {
+            throw new Error('Booking is already assigned to another driver');
+          }
+          // Same driver - allow idempotent accept
         }
 
         // Check if driver is available

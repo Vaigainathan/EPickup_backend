@@ -1044,7 +1044,9 @@ class WebSocketEventHandler {
           
           if (freshBookingCheck.exists) {
             const freshBooking = freshBookingCheck.data();
-            if (freshBooking.status === 'pending' && (!freshBooking.driverId || freshBooking.driverId === null || freshBooking.driverId === '')) {
+            // ✅ USE VALIDATION UTILITY: Comprehensive check for all driverId edge cases
+            const bookingValidation = require('../utils/bookingValidation');
+            if (freshBooking.status === 'pending' && bookingValidation.isDriverIdEmpty(freshBooking.driverId)) {
               // Booking is still available - lock is likely stale, log and continue anyway
               console.warn(`⚠️ [WEBSOCKET_ACCEPT] Lock exists but booking ${bookingId} is still pending. Possible stale lock. Attempting to continue...`);
               // Don't return - let the transaction handle the race condition
@@ -1116,8 +1118,14 @@ class WebSocketEventHandler {
           }
 
           // Check if booking already has a driverId set
-          if (bookingData.driverId !== null && bookingData.driverId !== undefined && bookingData.driverId !== userId) {
-            throw new Error('BOOKING_ALREADY_ASSIGNED');
+          // ✅ USE VALIDATION UTILITY: Comprehensive check for all driverId edge cases
+          const bookingValidation = require('../utils/bookingValidation');
+          if (!bookingValidation.isDriverIdEmpty(bookingData.driverId)) {
+            const normalizedDriverId = bookingValidation.normalizeDriverId(bookingData.driverId);
+            if (normalizedDriverId !== userId) {
+              throw new Error('BOOKING_ALREADY_ASSIGNED');
+            }
+            // Same driver - allow idempotent accept
           }
 
           // Check if driver is still available

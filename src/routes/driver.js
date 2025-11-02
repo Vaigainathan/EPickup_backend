@@ -3043,11 +3043,14 @@ router.get('/bookings/available', requireDriver, async (req, res) => {
       
       // ✅ CRITICAL FIX: Filter out bookings that are already assigned to a driver
       // This check is critical to prevent showing already-assigned bookings to drivers
-      if (bookingData.driverId !== null && bookingData.driverId !== undefined && bookingData.driverId !== '') {
+      // ✅ USE VALIDATION UTILITY: Comprehensive check for all driverId edge cases
+      const bookingValidation = require('../utils/bookingValidation');
+      if (!bookingValidation.isDriverIdEmpty(bookingData.driverId)) {
         console.log('🔍 [DRIVER_API] Skipping assigned booking:', {
           id: doc.id,
           status: bookingData.status,
           driverId: bookingData.driverId,
+          normalizedDriverId: bookingValidation.normalizeDriverId(bookingData.driverId),
           reason: 'Booking already has a driver assigned'
         });
         return; // Skip this booking
@@ -3083,7 +3086,7 @@ router.get('/bookings/available', requireDriver, async (req, res) => {
         hasPickup: !!bookingData.pickup,
         hasCoordinates: !!bookingData.pickup?.coordinates,
         pickupCoords: bookingData.pickup?.coordinates,
-        verifiedAsAvailable: bookingData.status === 'pending' && (bookingData.driverId === null || bookingData.driverId === undefined || bookingData.driverId === '')
+        verifiedAsAvailable: bookingData.status === 'pending' && bookingValidation.isDriverIdEmpty(bookingData.driverId)
       });
       
       // Calculate distance from driver to pickup location
@@ -3395,7 +3398,9 @@ router.post('/bookings/:id/accept', requireDriver, async (req, res) => {
         const freshBookingCheck = await bookingRef.get();
         if (freshBookingCheck.exists) {
           const freshBooking = freshBookingCheck.data();
-          if (freshBooking.status === 'pending' && (!freshBooking.driverId || freshBooking.driverId === null)) {
+          // ✅ USE VALIDATION UTILITY: Comprehensive check for all driverId edge cases
+          const bookingValidation = require('../utils/bookingValidation');
+          if (freshBooking.status === 'pending' && bookingValidation.isDriverIdEmpty(freshBooking.driverId)) {
             // Booking is still available - lock is likely stale, log and continue anyway
             console.warn(`⚠️ [ACCEPT_BOOKING] Lock exists but booking ${id} is still pending. Possible stale lock. Attempting to continue...`);
             // Don't throw - let the transaction handle the race condition
@@ -3457,22 +3462,40 @@ router.post('/bookings/:id/accept', requireDriver, async (req, res) => {
 
       const freshBookingData = freshBookingDoc.data();
       
-      // Check if booking is still available (not assigned to another driver)
-      // ✅ FIX: Allow driver to accept if they're already assigned to this booking (idempotent)
-      if (freshBookingData.status !== 'pending') {
-        // If booking is already assigned to this driver, allow it (idempotent accept)
-        if (freshBookingData.driverId === uid && freshBookingData.status === 'driver_assigned') {
-          console.log('ℹ️ [ACCEPT_BOOKING] Booking already assigned to this driver, returning success');
-          // Return early - booking already assigned to this driver, no updates needed
-          return { success: true, alreadyAssigned: true };
-        }
-        // Booking is assigned to another driver or in different status
-        throw new Error('BOOKING_ALREADY_ASSIGNED');
+      // ✅ CRITICAL FIX: Log booking state for debugging race conditions
+      console.log(`🔍 [ACCEPT_BOOKING] Transaction check for booking ${id}:`, {
+        status: freshBookingData.status,
+        driverId: freshBookingData.driverId,
+        driverIdType: typeof freshBookingData.driverId,
+        requestingDriverId: uid,
+        isPending: freshBookingData.status === 'pending',
+        hasDriverId: freshBookingData.driverId != null && freshBookingData.driverId !== '',
+        driverIdMatches: freshBookingData.driverId === uid,
+        driverIdIsNull: freshBookingData.driverId === null,
+        driverIdIsUndefined: freshBookingData.driverId === undefined,
+        driverIdIsEmpty: freshBookingData.driverId === ''
+      });
+      
+      // ✅ COMPREHENSIVE FIX: Use validation utility to handle ALL edge cases
+      // This validates status, driverId (handles: null, undefined, '', whitespace, 0, false, invalid types, etc.)
+      // and handles idempotent accepts properly
+      const bookingValidation = require('../utils/bookingValidation');
+      const validation = bookingValidation.validateBookingAcceptance(freshBookingData, uid);
+      
+      if (!validation.valid) {
+        console.warn(`⚠️ [ACCEPT_BOOKING] Booking ${id} validation failed:`, {
+          error: validation.error,
+          message: validation.message,
+          details: validation.details
+        });
+        throw new Error(validation.error || 'BOOKING_ALREADY_ASSIGNED');
       }
       
-      // Check if booking has a driverId set (shouldn't happen with status='pending', but double-check)
-      if (freshBookingData.driverId !== null && freshBookingData.driverId !== uid) {
-        throw new Error('BOOKING_ALREADY_ASSIGNED');
+      // ✅ Handle idempotent accepts (booking already assigned to this driver)
+      if (validation.details?.isIdempotent) {
+        console.log(`ℹ️ [ACCEPT_BOOKING] Booking ${id} already assigned to driver ${uid}, allowing idempotent accept`);
+        // Return early - booking already assigned to this driver, no updates needed
+        return { success: true, alreadyAssigned: true };
       }
 
       // Check if driver is still available
@@ -4333,8 +4356,10 @@ router.post('/bookings/:id/reject', [
     }
 
     // ✅ CRITICAL FIX: Check if driver is assigned OR if booking is available for rejection
-    const isAssignedToDriver = bookingData.driverId === uid;
-    const isAvailableForRejection = bookingData.status === 'pending' && !bookingData.driverId;
+    const bookingValidation = require('../utils/bookingValidation');
+    const normalizedDriverId = bookingValidation.normalizeDriverId(bookingData.driverId);
+    const isAssignedToDriver = normalizedDriverId === uid;
+    const isAvailableForRejection = bookingData.status === 'pending' && bookingValidation.isDriverIdEmpty(bookingData.driverId);
     
     if (!isAssignedToDriver && !isAvailableForRejection) {
       return res.status(403).json({

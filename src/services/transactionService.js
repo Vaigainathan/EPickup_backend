@@ -159,7 +159,9 @@ class TransactionService {
           throw new Error('BOOKING_NOT_AVAILABLE');
         }
 
-        if (bookingData.driverId) {
+        // ✅ USE VALIDATION UTILITY: Comprehensive check for all driverId edge cases
+        const bookingValidation = require('../utils/bookingValidation');
+        if (!bookingValidation.isDriverIdEmpty(bookingData.driverId)) {
           throw new Error('BOOKING_ALREADY_ASSIGNED');
         }
 

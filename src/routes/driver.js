@@ -3964,8 +3964,23 @@ router.post('/bookings/:id/confirm-payment', [
       const socketService = require('../services/socket');
       const io = socketService.getSocketIO();
       
-      // Notify customer about payment completion
+      // Get updated booking data after state transition
+      const updatedBookingDoc = await bookingRef.get();
+      const updatedBookingData = updatedBookingDoc.data();
+      
+      // ✅ CRITICAL FIX: Send booking status update to customer (this is what customer app listens to)
       if (bookingData.customerId) {
+        // Send booking status update
+        io.to(`user:${bookingData.customerId}`).emit('booking_status_update', {
+          bookingId: id,
+          status: 'completed',
+          booking: updatedBookingData,
+          timestamp: new Date().toISOString(),
+          updatedBy: uid,
+          message: 'Booking completed - payment collected successfully'
+        });
+        
+        // Also send payment completion event
         io.to(`user:${bookingData.customerId}`).emit('payment_completed', {
           bookingId: id,
           amount: amount,
@@ -3975,6 +3990,16 @@ router.post('/bookings/:id/confirm-payment', [
           message: 'Payment has been collected successfully'
         });
       }
+      
+      // ✅ CRITICAL FIX: Notify driver about booking completion
+      io.to(`user:${uid}`).emit('booking_status_update', {
+        bookingId: id,
+        status: 'completed',
+        booking: updatedBookingData,
+        timestamp: new Date().toISOString(),
+        updatedBy: uid,
+        message: 'Booking completed - you can now accept new orders'
+      });
       
       // Notify admin dashboard about payment completion
       io.to('type:admin').emit('payment_completed', {
@@ -3987,13 +4012,22 @@ router.post('/bookings/:id/confirm-payment', [
         confirmedAt: new Date().toISOString()
       });
       
+      // ✅ CRITICAL FIX: Send booking status update to admin
+      io.to('type:admin').emit('booking_status_update', {
+        bookingId: id,
+        status: 'completed',
+        booking: updatedBookingData,
+        timestamp: new Date().toISOString(),
+        updatedBy: uid
+      });
+      
       console.log(`📡 [PAYMENT_CONFIRM] Real-time notifications sent for payment ${transactionId}`);
     } catch (notificationError) {
       console.error('❌ [PAYMENT_CONFIRM] Failed to send real-time notifications:', notificationError);
       // Don't fail the payment confirmation if notifications fail
     }
 
-    // ✅ CRITICAL FIX: Update driver earnings
+    // ✅ CRITICAL FIX: Update driver earnings and deduct commission
     try {
       const driverRef = db.collection('users').doc(uid);
       const driverDoc = await driverRef.get();
@@ -4005,7 +4039,47 @@ router.post('/bookings/:id/confirm-payment', [
         
         // CORRECT: Driver gets full fare amount, commission deducted from points wallet
         const driverEarnings = amount; // Full amount
-        const commission = 0; // Commission deducted separately from points wallet
+        
+        // ✅ CRITICAL FIX: Deduct commission from points wallet
+        let commissionAmount = 0;
+        try {
+          const pointsService = require('../services/walletService');
+          const fareCalculationService = require('../services/fareCalculationService');
+          
+          // Get distance from booking for commission calculation
+          const exactDistanceKm = bookingData.distance?.total || bookingData.exactDistance || 0;
+          
+          if (exactDistanceKm > 0) {
+            const fareBreakdown = fareCalculationService.calculateFare(exactDistanceKm);
+            commissionAmount = fareBreakdown.commission; // ₹2 per km
+            
+            // Deduct commission from points wallet
+            const commissionResult = await pointsService.deductPoints(
+              uid,
+              id,
+              exactDistanceKm,
+              commissionAmount,
+              {
+                bookingId: id,
+                fare: amount,
+                distance: exactDistanceKm,
+                paymentMethod: paymentMethod
+              }
+            );
+            
+            if (commissionResult.success) {
+              console.log(`✅ [PAYMENT_CONFIRM] Commission deducted from points: ₹${commissionAmount} (${exactDistanceKm}km)`);
+            } else {
+              console.error('❌ [PAYMENT_CONFIRM] Commission deduction failed:', commissionResult.error);
+              // Continue - commission deduction failure shouldn't block payment
+            }
+          } else {
+            console.warn('⚠️ [PAYMENT_CONFIRM] Cannot deduct commission - no distance data');
+          }
+        } catch (commissionError) {
+          console.error('❌ [PAYMENT_CONFIRM] Error deducting commission:', commissionError);
+          // Continue - commission deduction failure shouldn't block payment
+        }
         
         await driverRef.update({
           totalEarnings: currentEarnings + driverEarnings,
@@ -4019,7 +4093,7 @@ router.post('/bookings/:id/confirm-payment', [
           bookingId: id,
           driverId: uid,
           amount: driverEarnings,
-          commission: commission,
+          commission: commissionAmount, // Points deducted (₹2 per km)
           totalFare: amount,
           earnedAt: new Date(),
           status: 'completed',
@@ -4027,7 +4101,7 @@ router.post('/bookings/:id/confirm-payment', [
           transactionId: transactionId
         });
 
-        console.log(`💰 [PAYMENT_CONFIRM] Driver earnings updated: ₹${driverEarnings}`);
+        console.log(`💰 [PAYMENT_CONFIRM] Driver earnings updated: ₹${driverEarnings}, Commission: ₹${commissionAmount} (points deducted)`);
       }
     } catch (earningsError) {
       console.error('❌ [PAYMENT_CONFIRM] Failed to update driver earnings:', earningsError);

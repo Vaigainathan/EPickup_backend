@@ -1182,7 +1182,11 @@ class WebSocketEventHandler {
         const driverDoc = await this.db.collection('users').doc(userId).get();
         const driverData = driverDoc.data();
 
-        // ✅ FIXED: Notify customer with correct event name and data structure
+        // ✅ CRITICAL FIX: Get full updated booking data for customer notification
+        const fullBookingDoc = await this.db.collection('bookings').doc(bookingId).get();
+        const fullBookingData = fullBookingDoc.data();
+        
+        // ✅ FIXED: Notify customer with correct event name and data structure, including full booking
         this.io.to(`user:${updatedBookingData.customerId}`).emit('driver_assigned', {
           bookingId,
           driverId: userId,
@@ -1193,18 +1197,28 @@ class WebSocketEventHandler {
             vehicleNumber: driverData?.driver?.vehicleDetails?.vehicleNumber || '',
             rating: driverData?.driver?.rating || 4.5
           },
-          timestamp: new Date().toISOString()
-        });
-
-        // ✅ FIXED: Also send booking status update
-        this.io.to(`user:${updatedBookingData.customerId}`).emit('booking_status_update', {
-          bookingId,
-          status: 'driver_assigned',
+          booking: fullBookingData, // ✅ CRITICAL: Include full booking data
           driverInfo: {
             id: userId,
             name: driverData?.name || 'Driver',
             phone: driverData?.phone || '',
-            vehicleNumber: driverData?.driver?.vehicleDetails?.vehicleNumber || ''
+            vehicleNumber: driverData?.driver?.vehicleDetails?.vehicleNumber || '',
+            vehicleDetails: driverData?.driver?.vehicleDetails || {}
+          },
+          timestamp: new Date().toISOString()
+        });
+
+        // ✅ FIXED: Also send booking status update with full booking data
+        this.io.to(`user:${updatedBookingData.customerId}`).emit('booking_status_update', {
+          bookingId,
+          status: 'driver_assigned',
+          booking: fullBookingData, // ✅ CRITICAL: Include full booking data
+          driverInfo: {
+            id: userId,
+            name: driverData?.name || 'Driver',
+            phone: driverData?.phone || '',
+            vehicleNumber: driverData?.driver?.vehicleDetails?.vehicleNumber || '',
+            vehicleDetails: driverData?.driver?.vehicleDetails || {}
           },
           timestamp: new Date().toISOString(),
           updatedBy: userId
@@ -1697,9 +1711,20 @@ class WebSocketEventHandler {
    */
   async notifyCustomerOfDriverAssignment(customerId, assignmentData) {
     try {
-      if (!this.io) return;
+      if (!this.io || !this.db) return;
 
       console.log(`🔔 Notifying customer ${customerId} of driver assignment`);
+
+      // ✅ CRITICAL FIX: Get full booking data to include in notification
+      let fullBookingData = null;
+      try {
+        const bookingDoc = await this.db.collection('bookings').doc(assignmentData.bookingId).get();
+        if (bookingDoc.exists) {
+          fullBookingData = bookingDoc.data();
+        }
+      } catch (bookingError) {
+        console.warn('⚠️ Could not fetch full booking data for notification:', bookingError);
+      }
 
       const notificationData = {
         type: 'driver_assigned',
@@ -1709,6 +1734,16 @@ class WebSocketEventHandler {
           name: assignmentData.driverName,
           phone: assignmentData.driverPhone,
           vehicleInfo: assignmentData.vehicleInfo,
+          vehicleDetails: assignmentData.vehicleDetails || {},
+          rating: assignmentData.driverRating || 0
+        },
+        booking: fullBookingData, // ✅ CRITICAL: Include full booking data
+        driverInfo: {
+          id: assignmentData.driverId,
+          name: assignmentData.driverName,
+          phone: assignmentData.driverPhone,
+          vehicleInfo: assignmentData.vehicleInfo,
+          vehicleDetails: assignmentData.vehicleDetails || {},
           rating: assignmentData.driverRating || 0
         },
         estimatedArrival: assignmentData.estimatedArrival,
@@ -1716,6 +1751,18 @@ class WebSocketEventHandler {
       };
 
       this.io.to(`user:${customerId}`).emit('driver_assigned', notificationData);
+      
+      // ✅ CRITICAL FIX: Also emit booking_status_update with full booking
+      if (fullBookingData) {
+        this.io.to(`user:${customerId}`).emit('booking_status_update', {
+          bookingId: assignmentData.bookingId,
+          status: fullBookingData.status || 'driver_assigned',
+          booking: fullBookingData,
+          driverInfo: notificationData.driverInfo,
+          timestamp: new Date().toISOString()
+        });
+      }
+      
       console.log(`✅ Driver assignment notification sent to customer ${customerId}`);
 
     } catch (error) {

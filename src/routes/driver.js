@@ -2983,6 +2983,8 @@ router.get('/bookings/available', requireDriver, async (req, res) => {
 
     // ✅ CRITICAL FIX: Get both pending bookings AND assigned bookings for this driver
     // First, get pending bookings (not assigned to any driver)
+    // ✅ CRITICAL FIX: Filter by driverId == null at query level for better performance and correctness
+    // Note: Firestore doesn't support querying for null directly, so we filter after fetch
     const pendingQuery = db.collection('bookings')
       .where('status', '==', 'pending')
       .orderBy('createdAt', 'desc')
@@ -3039,11 +3041,25 @@ router.get('/bookings/available', requireDriver, async (req, res) => {
         return; // Skip this booking
       }
       
-      // Filter out bookings that are already assigned to a driver
-      if (bookingData.driverId !== null && bookingData.driverId !== undefined) {
+      // ✅ CRITICAL FIX: Filter out bookings that are already assigned to a driver
+      // This check is critical to prevent showing already-assigned bookings to drivers
+      if (bookingData.driverId !== null && bookingData.driverId !== undefined && bookingData.driverId !== '') {
         console.log('🔍 [DRIVER_API] Skipping assigned booking:', {
           id: doc.id,
-          driverId: bookingData.driverId
+          status: bookingData.status,
+          driverId: bookingData.driverId,
+          reason: 'Booking already has a driver assigned'
+        });
+        return; // Skip this booking
+      }
+      
+      // ✅ ADDITIONAL SAFETY CHECK: Double-check status
+      if (bookingData.status !== 'pending') {
+        console.log('🔍 [DRIVER_API] Skipping non-pending booking:', {
+          id: doc.id,
+          status: bookingData.status,
+          driverId: bookingData.driverId,
+          reason: 'Booking status is not pending'
         });
         return; // Skip this booking
       }
@@ -3060,12 +3076,14 @@ router.get('/bookings/available', requireDriver, async (req, res) => {
         return; // Skip cancelled bookings
       }
       
-      console.log('🔍 [DRIVER_API] Processing available booking:', {
+      console.log('✅ [DRIVER_API] Processing available booking:', {
         id: doc.id,
         status: bookingData.status,
+        driverId: bookingData.driverId, // Should be null/undefined
         hasPickup: !!bookingData.pickup,
         hasCoordinates: !!bookingData.pickup?.coordinates,
-        pickupCoords: bookingData.pickup?.coordinates
+        pickupCoords: bookingData.pickup?.coordinates,
+        verifiedAsAvailable: bookingData.status === 'pending' && (bookingData.driverId === null || bookingData.driverId === undefined || bookingData.driverId === '')
       });
       
       // Calculate distance from driver to pickup location
@@ -3372,12 +3390,56 @@ router.post('/bookings/:id/accept', requireDriver, async (req, res) => {
       await bookingLockService.acquireBookingLock(id, uid);
     } catch (error) {
       if (error.message === 'BOOKING_LOCKED') {
+        // ✅ CRITICAL FIX: Before returning error, verify booking state one more time
+        // This handles edge cases where lock exists but booking wasn't actually accepted
+        const freshBookingCheck = await bookingRef.get();
+        if (freshBookingCheck.exists) {
+          const freshBooking = freshBookingCheck.data();
+          if (freshBooking.status === 'pending' && (!freshBooking.driverId || freshBooking.driverId === null)) {
+            // Booking is still available - lock is likely stale, log and continue anyway
+            console.warn(`⚠️ [ACCEPT_BOOKING] Lock exists but booking ${id} is still pending. Possible stale lock. Attempting to continue...`);
+            // Don't throw - let the transaction handle the race condition
+          } else {
+            // Booking is actually assigned
+            return res.status(409).json({
+              success: false,
+              error: {
+                code: 'BOOKING_ALREADY_ASSIGNED',
+                message: 'Booking already assigned',
+                details: 'This booking has already been assigned to another driver'
+              },
+              timestamp: new Date().toISOString()
+            });
+          }
+        } else {
+          return res.status(404).json({
+            success: false,
+            error: {
+              code: 'BOOKING_NOT_FOUND',
+              message: 'Booking not found',
+              details: 'Booking does not exist'
+            },
+            timestamp: new Date().toISOString()
+          });
+        }
+      } else if (error.message === 'BOOKING_ALREADY_ASSIGNED') {
+        // Booking was already assigned (checked during lock acquisition)
         return res.status(409).json({
           success: false,
           error: {
-            code: 'BOOKING_ALREADY_ACCEPTED',
-            message: 'This booking has already been accepted by another driver',
-            details: 'Another driver accepted this booking just now. Please try other available bookings.'
+            code: 'BOOKING_ALREADY_ASSIGNED',
+            message: 'Booking already assigned',
+            details: 'This booking has already been assigned to another driver'
+          },
+          timestamp: new Date().toISOString()
+        });
+      } else if (error.message === 'BOOKING_NOT_FOUND') {
+        return res.status(404).json({
+          success: false,
+          error: {
+            code: 'BOOKING_NOT_FOUND',
+            message: 'Booking not found',
+            details: 'Booking does not exist'
           },
           timestamp: new Date().toISOString()
         });

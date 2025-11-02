@@ -1026,95 +1026,234 @@ class WebSocketEventHandler {
         return;
       }
 
-      console.log(`✅ Driver ${userId} accepting booking ${bookingId}`);
+      console.log(`✅ Driver ${userId} accepting booking ${bookingId} via WebSocket`);
 
-      // Update booking status in Firestore
-      const bookingRef = this.db.collection('bookings').doc(bookingId);
-      const bookingDoc = await bookingRef.get();
+      // ✅ CRITICAL FIX: Use BookingLockService for atomic locking
+      const BookingLockService = require('./bookingLockService');
+      const bookingLockService = new BookingLockService();
 
-      if (!bookingDoc.exists) {
-        socket.emit('error', {
-          code: 'BOOKING_NOT_FOUND',
-          message: 'Booking not found'
-        });
-        return;
+      // Acquire exclusive lock for booking acceptance
+      try {
+        await bookingLockService.acquireBookingLock(bookingId, userId);
+      } catch (error) {
+        if (error.message === 'BOOKING_LOCKED') {
+          // ✅ CRITICAL FIX: Before returning error, verify booking state one more time
+          // This handles edge cases where lock exists but booking wasn't actually accepted
+          const bookingRef = this.db.collection('bookings').doc(bookingId);
+          const freshBookingCheck = await bookingRef.get();
+          
+          if (freshBookingCheck.exists) {
+            const freshBooking = freshBookingCheck.data();
+            if (freshBooking.status === 'pending' && (!freshBooking.driverId || freshBooking.driverId === null || freshBooking.driverId === '')) {
+              // Booking is still available - lock is likely stale, log and continue anyway
+              console.warn(`⚠️ [WEBSOCKET_ACCEPT] Lock exists but booking ${bookingId} is still pending. Possible stale lock. Attempting to continue...`);
+              // Don't return - let the transaction handle the race condition
+            } else {
+              // Booking is actually assigned
+              socket.emit('error', {
+                code: 'BOOKING_ALREADY_ASSIGNED',
+                message: 'Booking already assigned',
+                details: 'This booking has already been assigned to another driver'
+              });
+              return;
+            }
+          } else {
+            socket.emit('error', {
+              code: 'BOOKING_NOT_FOUND',
+              message: 'Booking not found'
+            });
+            return;
+          }
+        } else if (error.message === 'BOOKING_ALREADY_ASSIGNED') {
+          // Booking was already assigned (checked during lock acquisition)
+          socket.emit('error', {
+            code: 'BOOKING_ALREADY_ASSIGNED',
+            message: 'Booking already assigned',
+            details: 'This booking has already been assigned to another driver'
+          });
+          return;
+        } else if (error.message === 'BOOKING_NOT_FOUND') {
+          socket.emit('error', {
+            code: 'BOOKING_NOT_FOUND',
+            message: 'Booking not found'
+          });
+          return;
+        }
+        throw error;
       }
 
-      const bookingData = bookingDoc.data();
-      
-      // Check if booking is still available
-      if (bookingData.status !== 'pending') {
-        socket.emit('error', {
-          code: 'BOOKING_NOT_AVAILABLE',
-          message: 'Booking is no longer available'
+      try {
+        // ✅ CRITICAL FIX: Use atomic Firestore transaction for booking acceptance
+        const bookingRef = this.db.collection('bookings').doc(bookingId);
+        const driverRef = this.db.collection('users').doc(userId);
+
+        await this.db.runTransaction(async (transaction) => {
+          // Get current booking and driver data within transaction
+          const [bookingDoc, driverDoc] = await Promise.all([
+            transaction.get(bookingRef),
+            transaction.get(driverRef)
+          ]);
+
+          if (!bookingDoc.exists) {
+            throw new Error('BOOKING_NOT_FOUND');
+          }
+
+          if (!driverDoc.exists) {
+            throw new Error('DRIVER_NOT_FOUND');
+          }
+
+          const bookingData = bookingDoc.data();
+          const driverData = driverDoc.data();
+
+          // ✅ CRITICAL: Check if booking is still available (atomic check)
+          if (bookingData.status !== 'pending') {
+            // If already assigned to this driver, allow it (idempotent)
+            if (bookingData.driverId === userId && bookingData.status === 'driver_assigned') {
+              console.log(`ℹ️ [WEBSOCKET_ACCEPT] Booking already assigned to driver ${userId}`);
+              return { success: true, alreadyAssigned: true };
+            }
+            throw new Error('BOOKING_ALREADY_ASSIGNED');
+          }
+
+          // Check if booking already has a driverId set
+          if (bookingData.driverId !== null && bookingData.driverId !== undefined && bookingData.driverId !== userId) {
+            throw new Error('BOOKING_ALREADY_ASSIGNED');
+          }
+
+          // Check if driver is still available
+          if (!driverData.driver?.isAvailable || !driverData.driver?.isOnline) {
+            throw new Error('DRIVER_NOT_AVAILABLE');
+          }
+
+          // ✅ CRITICAL FIX: Update booking atomically within transaction
+          transaction.update(bookingRef, {
+            status: 'driver_assigned',
+            driverId: userId,
+            acceptedAt: new Date(),
+            assignedAt: new Date(),
+            updatedAt: new Date(),
+            // Populate driverInfo for admin panel
+            driverInfo: {
+              name: driverData.name || 'Driver',
+              phone: driverData.phone || '',
+              rating: driverData.driver?.rating || 0,
+              vehicleNumber: driverData.driver?.vehicleDetails?.vehicleNumber || '',
+              vehicleModel: driverData.driver?.vehicleDetails?.vehicleModel || ''
+            }
+          });
+
+          // Update driver availability
+          transaction.update(driverRef, {
+            'driver.isAvailable': false,
+            'driver.currentBookingId': bookingId,
+            updatedAt: new Date()
+          });
+
+          return { success: true };
         });
-        return;
+
+        console.log(`✅ [WEBSOCKET_ACCEPT] Booking ${bookingId} accepted atomically by driver ${userId}`);
+
+        // Get updated booking data for notifications
+        const updatedBookingDoc = await bookingRef.get();
+        const updatedBookingData = updatedBookingDoc.data();
+
+        // ✅ FIXED: Create booking status update with correct status
+        const statusUpdate = {
+          bookingId,
+          status: 'driver_assigned',
+          driverId: userId,
+          timestamp: new Date().toISOString(),
+          updatedBy: userId
+        };
+
+        // Store status update
+        await this.db.collection('booking_status_updates').add(statusUpdate);
+
+        // Get driver data for notifications
+        const driverDoc = await this.db.collection('users').doc(userId).get();
+        const driverData = driverDoc.data();
+
+        // ✅ FIXED: Notify customer with correct event name and data structure
+        this.io.to(`user:${updatedBookingData.customerId}`).emit('driver_assigned', {
+          bookingId,
+          driverId: userId,
+          driver: {
+            id: userId,
+            name: driverData?.name || 'Driver',
+            phone: driverData?.phone || '',
+            vehicleNumber: driverData?.driver?.vehicleDetails?.vehicleNumber || '',
+            rating: driverData?.driver?.rating || 4.5
+          },
+          timestamp: new Date().toISOString()
+        });
+
+        // ✅ FIXED: Also send booking status update
+        this.io.to(`user:${updatedBookingData.customerId}`).emit('booking_status_update', {
+          bookingId,
+          status: 'driver_assigned',
+          driverInfo: {
+            id: userId,
+            name: driverData?.name || 'Driver',
+            phone: driverData?.phone || '',
+            vehicleNumber: driverData?.driver?.vehicleDetails?.vehicleNumber || ''
+          },
+          timestamp: new Date().toISOString(),
+          updatedBy: userId
+        });
+
+        // Notify admin
+        this.io.to(`type:admin`).emit('booking_status_update', statusUpdate);
+
+        // Confirm acceptance
+        socket.emit('booking_accepted_confirmed', {
+          success: true,
+          message: 'Booking accepted successfully',
+          data: { bookingId, driverId: userId }
+        });
+
+      } catch (transactionError) {
+        // Handle transaction errors
+        if (transactionError.message === 'BOOKING_ALREADY_ASSIGNED') {
+          socket.emit('error', {
+            code: 'BOOKING_ALREADY_ASSIGNED',
+            message: 'Booking already assigned',
+            details: 'This booking has already been assigned to another driver'
+          });
+        } else if (transactionError.message === 'DRIVER_NOT_AVAILABLE') {
+          socket.emit('error', {
+            code: 'DRIVER_NOT_AVAILABLE',
+            message: 'Driver not available',
+            details: 'Driver must be online and available to accept bookings'
+          });
+        } else if (transactionError.message === 'BOOKING_NOT_FOUND') {
+          socket.emit('error', {
+            code: 'BOOKING_NOT_FOUND',
+            message: 'Booking not found'
+          });
+        } else if (transactionError.message === 'DRIVER_NOT_FOUND') {
+          socket.emit('error', {
+            code: 'DRIVER_NOT_FOUND',
+            message: 'Driver not found'
+          });
+        } else {
+          throw transactionError;
+        }
+      } finally {
+        // ✅ CRITICAL: Always release lock
+        try {
+          await bookingLockService.releaseBookingLock(bookingId, userId);
+        } catch (lockError) {
+          console.error(`❌ [WEBSOCKET_ACCEPT] Error releasing lock for booking ${bookingId}:`, lockError);
+        }
       }
-
-      // ✅ FIXED: Update booking with correct status
-      await bookingRef.update({
-        status: 'driver_assigned',  // ✅ FIXED: Use correct status
-        driverId: userId,
-        acceptedAt: new Date(),
-        assignedAt: new Date(),  // ✅ FIXED: Add assignedAt timestamp
-        updatedAt: new Date()
-      });
-
-      // ✅ FIXED: Create booking status update with correct status
-      const statusUpdate = {
-        bookingId,
-        status: 'driver_assigned',  // ✅ FIXED: Use correct status
-        driverId: userId,
-        timestamp: new Date().toISOString(),
-        updatedBy: userId
-      };
-
-      // Store status update
-      await this.db.collection('booking_status_updates').add(statusUpdate);
-
-      // ✅ FIXED: Notify customer with correct event name and data structure
-      this.io.to(`user:${bookingData.customerId}`).emit('driver_assigned', {
-        bookingId,
-        driverId: userId,
-        driver: {
-          id: userId,
-          name: bookingData.driver?.name || 'Driver',
-          phone: bookingData.driver?.phone || '',
-          vehicleNumber: bookingData.driver?.vehicleNumber || '',
-          rating: bookingData.driver?.rating || 4.5
-        },
-        timestamp: new Date().toISOString()
-      });
-
-      // ✅ FIXED: Also send booking status update
-      this.io.to(`user:${bookingData.customerId}`).emit('booking_status_update', {
-        bookingId,
-        status: 'driver_assigned',
-        driverInfo: {
-          id: userId,
-          name: bookingData.driver?.name || 'Driver',
-          phone: bookingData.driver?.phone || '',
-          vehicleNumber: bookingData.driver?.vehicleNumber || ''
-        },
-        timestamp: new Date().toISOString(),
-        updatedBy: userId
-      });
-
-      // Notify admin
-      this.io.to(`type:admin`).emit('booking_status_update', statusUpdate);
-
-      // Confirm acceptance
-      socket.emit('booking_accepted_confirmed', {
-        success: true,
-        message: 'Booking accepted successfully',
-        data: { bookingId, driverId: userId }
-      });
 
     } catch (error) {
-      console.error('Error handling booking acceptance:', error);
+      console.error('❌ [WEBSOCKET_ACCEPT] Error handling booking acceptance:', error);
       socket.emit('error', {
         code: 'BOOKING_ACCEPTANCE_ERROR',
-        message: 'Failed to accept booking'
+        message: 'Failed to accept booking',
+        details: error.message
       });
     }
   }

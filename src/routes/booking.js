@@ -816,10 +816,61 @@ router.post('/:id/accept', [
     const { uid } = req.user;
     const { estimatedArrival } = req.body;
 
-    // Use atomic transaction for driver acceptance
-    const result = await bookingService.acceptBookingAtomically(id, uid, {
-      estimatedArrival: estimatedArrival ? new Date(estimatedArrival) : null
-    });
+    // ✅ CRITICAL FIX: Use BookingLockService for distributed locking (consistent with main endpoint)
+    // Note: This endpoint may be deprecated in favor of /api/driver/bookings/:id/accept
+    // But keeping it updated for backward compatibility
+    const BookingLockService = require('../services/bookingLockService');
+    const bookingLockService = new BookingLockService();
+    
+    // Acquire exclusive lock for booking acceptance
+    try {
+      await bookingLockService.acquireBookingLock(id, uid);
+    } catch (error) {
+      if (error.message === 'BOOKING_LOCKED') {
+        // Verify booking state before returning error
+        const db = getFirestore();
+        const bookingRef = db.collection('bookings').doc(id);
+        const freshBookingCheck = await bookingRef.get();
+        
+        if (freshBookingCheck.exists) {
+          const freshBooking = freshBookingCheck.data();
+          if (freshBooking.status === 'pending' && (!freshBooking.driverId || freshBooking.driverId === null)) {
+            console.warn(`⚠️ [BOOKING_ACCEPT] Lock exists but booking ${id} is still pending. Possible stale lock. Attempting to continue...`);
+            // Continue - let transaction handle race condition
+          } else {
+            return res.status(409).json({
+              success: false,
+              error: {
+                code: 'BOOKING_ALREADY_ASSIGNED',
+                message: 'Booking already assigned',
+                details: 'This booking has already been assigned to another driver'
+              },
+              timestamp: new Date().toISOString()
+            });
+          }
+        }
+      } else if (error.message === 'BOOKING_ALREADY_ASSIGNED' || error.message === 'BOOKING_NOT_FOUND') {
+        return res.status(error.message === 'BOOKING_NOT_FOUND' ? 404 : 409).json({
+          success: false,
+          error: {
+            code: error.message,
+            message: error.message === 'BOOKING_NOT_FOUND' ? 'Booking not found' : 'Booking already assigned',
+            details: error.message
+          },
+          timestamp: new Date().toISOString()
+        });
+      }
+      throw error;
+    }
+
+    try {
+      // Use atomic transaction for driver acceptance
+      const result = await bookingService.acceptBookingAtomically(id, uid, {
+        estimatedArrival: estimatedArrival ? new Date(estimatedArrival) : null
+      });
+      
+      // Release lock on success
+      await bookingLockService.releaseBookingLock(id, uid);
 
     if (result.success) {
       // ✅ FIXED: Notify customer of driver acceptance with proper WebSocket events
@@ -861,6 +912,9 @@ router.post('/:id/accept', [
         timestamp: new Date().toISOString()
       });
     } else {
+      // Release lock on failure
+      await bookingLockService.releaseBookingLock(id, uid);
+      
       res.status(400).json({
         success: false,
         error: {
@@ -874,6 +928,14 @@ router.post('/:id/accept', [
 
   } catch (error) {
     console.error('Error accepting booking:', error);
+    
+    // Release lock on error
+    try {
+      await bookingLockService.releaseBookingLock(id, uid);
+    } catch (lockError) {
+      console.error('Error releasing booking lock:', lockError);
+    }
+    
     res.status(500).json({
       success: false,
       error: {

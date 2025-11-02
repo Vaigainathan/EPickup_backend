@@ -872,70 +872,82 @@ router.post('/:id/accept', [
       // Release lock on success
       await bookingLockService.releaseBookingLock(id, uid);
 
-    if (result.success) {
-      // ✅ FIXED: Notify customer of driver acceptance with proper WebSocket events
-      const wsEventHandler = new WebSocketEventHandler();
-      await wsEventHandler.initialize();
-      
-      // Send driver_assigned event to customer
-      await wsEventHandler.io.to(`user:${result.data.booking.customerId}`).emit('driver_assigned', {
-        bookingId: id,
-        driverId: uid,
-        driver: {
-          id: uid,
-          name: result.data.driver.name,
-          phone: result.data.driver.phone,
-          vehicleNumber: result.data.driver.vehicleInfo?.vehicleNumber || '',
-          rating: result.data.driver.rating || 4.5
-        },
-        timestamp: new Date().toISOString()
-      });
+      if (result.success) {
+        // ✅ FIXED: Notify customer of driver acceptance with proper WebSocket events
+        const wsEventHandler = new WebSocketEventHandler();
+        await wsEventHandler.initialize();
+        
+        // Send driver_assigned event to customer
+        await wsEventHandler.io.to(`user:${result.data.booking.customerId}`).emit('driver_assigned', {
+          bookingId: id,
+          driverId: uid,
+          driver: {
+            id: uid,
+            name: result.data.driver.name,
+            phone: result.data.driver.phone,
+            vehicleNumber: result.data.driver.vehicleInfo?.vehicleNumber || '',
+            rating: result.data.driver.rating || 4.5
+          },
+          timestamp: new Date().toISOString()
+        });
 
-      // Send booking status update
-      await wsEventHandler.io.to(`user:${result.data.booking.customerId}`).emit('booking_status_update', {
-        bookingId: id,
-        status: 'driver_assigned',
-        driverInfo: {
-          id: uid,
-          name: result.data.driver.name,
-          phone: result.data.driver.phone,
-          vehicleNumber: result.data.driver.vehicleInfo?.vehicleNumber || ''
-        },
-        timestamp: new Date().toISOString(),
-        updatedBy: uid
-      });
+        // Send booking status update
+        await wsEventHandler.io.to(`user:${result.data.booking.customerId}`).emit('booking_status_update', {
+          bookingId: id,
+          status: 'driver_assigned',
+          driverInfo: {
+            id: uid,
+            name: result.data.driver.name,
+            phone: result.data.driver.phone,
+            vehicleNumber: result.data.driver.vehicleInfo?.vehicleNumber || ''
+          },
+          timestamp: new Date().toISOString(),
+          updatedBy: uid
+        });
 
-      res.status(200).json({
-        success: true,
-        message: 'Booking accepted successfully',
-        data: result.data,
-        timestamp: new Date().toISOString()
-      });
-    } else {
-      // Release lock on failure
-      await bookingLockService.releaseBookingLock(id, uid);
+        res.status(200).json({
+          success: true,
+          message: 'Booking accepted successfully',
+          data: result.data,
+          timestamp: new Date().toISOString()
+        });
+      } else {
+        // Release lock on failure
+        await bookingLockService.releaseBookingLock(id, uid);
+        
+        res.status(400).json({
+          success: false,
+          error: {
+            code: 'BOOKING_ACCEPTANCE_ERROR',
+            message: result.message,
+            details: result.error
+          },
+          timestamp: new Date().toISOString()
+        });
+      }
+
+    } catch (error) {
+      console.error('Error accepting booking:', error);
       
-      res.status(400).json({
+      // Release lock on error
+      try {
+        await bookingLockService.releaseBookingLock(id, uid);
+      } catch (lockError) {
+        console.error('Error releasing booking lock:', lockError);
+      }
+      
+      res.status(500).json({
         success: false,
         error: {
           code: 'BOOKING_ACCEPTANCE_ERROR',
-          message: result.message,
-          details: result.error
+          message: 'Failed to accept booking',
+          details: error.message
         },
         timestamp: new Date().toISOString()
       });
     }
-
   } catch (error) {
-    console.error('Error accepting booking:', error);
-    
-    // Release lock on error
-    try {
-      await bookingLockService.releaseBookingLock(id, uid);
-    } catch (lockError) {
-      console.error('Error releasing booking lock:', lockError);
-    }
-    
+    console.error('Error in booking acceptance route:', error);
     res.status(500).json({
       success: false,
       error: {

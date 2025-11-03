@@ -652,12 +652,11 @@ router.post('/confirm',
       });
 
       // ✅ CRITICAL FIX: Use state machine to transition status if in money_collection
-      const BookingStateMachine = require('../services/bookingStateMachine');
-      const stateMachine = new BookingStateMachine();
+      const bookingStateMachine = require('../services/bookingStateMachine');
       
       if (bookingData.status === 'money_collection') {
         // Transition to completed using state machine
-        await stateMachine.transitionBooking(
+        await bookingStateMachine.transitionBooking(
           bookingId,
           'completed',
           {

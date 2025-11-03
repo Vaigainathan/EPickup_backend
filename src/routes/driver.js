@@ -5,7 +5,6 @@ const { requireDriver } = require('../middleware/auth');
 const { documentStatusRateLimit } = require('../middleware/rateLimiter');
 const { speedLimiter } = require('../middleware/rateLimit');
 const { documentStatusCache, invalidateUserCache } = require('../middleware/cache');
-const admin = require('firebase-admin');
 const BookingLockService = require('../services/bookingLockService');
 const bookingLockService = new BookingLockService();
 
@@ -4034,15 +4033,14 @@ router.post('/bookings/:id/confirm-payment', [
     await db.collection('payments').add(paymentRecord);
     
     // ✅ CRITICAL FIX: Use state machine to transition from money_collection to completed
-    const BookingStateMachine = require('../services/bookingStateMachine');
-    const stateMachine = new BookingStateMachine();
+    const bookingStateMachine = require('../services/bookingStateMachine');
     
     // Check if booking is in money_collection status before transitioning
     if (bookingData.status === 'money_collection') {
       console.log(`🔄 [PAYMENT_CONFIRM] Transitioning booking from money_collection to completed`);
       try {
         // Use state machine to transition to completed
-        await stateMachine.transitionBooking(
+        await bookingStateMachine.transitionBooking(
           id,
           'completed',
           {
@@ -4066,6 +4064,30 @@ router.post('/bookings/:id/confirm-payment', [
         console.error(`❌ [PAYMENT_CONFIRM] State machine transition failed:`, stateMachineError);
         // ✅ CRITICAL FIX: Fallback to direct status update if state machine fails
         console.log(`⚠️ [PAYMENT_CONFIRM] Falling back to direct status update`);
+        
+        // ✅ FIX: Manually release driver in fallback case
+        try {
+          const driverRef = db.collection('users').doc(uid);
+          await driverRef.update({
+            'driver.isAvailable': true,
+            'driver.currentBookingId': null,
+            'driver.status': 'available',
+            updatedAt: new Date()
+          });
+          
+          // Also update driverLocations collection
+          const driverLocationRef = db.collection('driverLocations').doc(uid);
+          await driverLocationRef.update({
+            isAvailable: true,
+            currentTripId: null,
+            lastUpdated: new Date()
+          });
+          console.log(`✅ [PAYMENT_CONFIRM] Driver released in fallback mode`);
+        } catch (driverReleaseError) {
+          console.error(`❌ [PAYMENT_CONFIRM] Failed to release driver in fallback:`, driverReleaseError);
+          // Continue - driver release failure shouldn't block payment
+        }
+        
         try {
           await bookingRef.update({
             status: 'completed',
@@ -4089,7 +4111,7 @@ router.post('/bookings/:id/confirm-payment', [
       // Transition from delivered to money_collection first, then to completed
       console.log(`🔄 [PAYMENT_CONFIRM] Booking is in 'delivered' status, transitioning to completed`);
       try {
-        await stateMachine.transitionBooking(
+        await bookingStateMachine.transitionBooking(
           id,
           'completed',
           {
@@ -4113,6 +4135,30 @@ router.post('/bookings/:id/confirm-payment', [
         console.error(`❌ [PAYMENT_CONFIRM] State machine transition failed:`, stateMachineError);
         // If state machine fails, update payment fields directly as fallback
         console.log(`⚠️ [PAYMENT_CONFIRM] Falling back to direct status update`);
+        
+        // ✅ FIX: Manually release driver in fallback case
+        try {
+          const driverRef = db.collection('users').doc(uid);
+          await driverRef.update({
+            'driver.isAvailable': true,
+            'driver.currentBookingId': null,
+            'driver.status': 'available',
+            updatedAt: new Date()
+          });
+          
+          // Also update driverLocations collection
+          const driverLocationRef = db.collection('driverLocations').doc(uid);
+          await driverLocationRef.update({
+            isAvailable: true,
+            currentTripId: null,
+            lastUpdated: new Date()
+          });
+          console.log(`✅ [PAYMENT_CONFIRM] Driver released in fallback mode`);
+        } catch (driverReleaseError) {
+          console.error(`❌ [PAYMENT_CONFIRM] Failed to release driver in fallback:`, driverReleaseError);
+          // Continue - driver release failure shouldn't block payment
+        }
+        
         await bookingRef.update({
           status: 'completed',
           payment: {
@@ -4358,6 +4404,33 @@ router.post('/bookings/:id/confirm-payment', [
         } catch (socketError) {
           console.warn('⚠️ [PAYMENT_CONFIRM] Failed to emit earnings update event:', socketError);
           // Don't fail payment if socket emit fails
+        }
+        
+        // ✅ CRITICAL FIX: Update admin revenue tracking after payment confirmation
+        try {
+          const exactDistanceKm = bookingData.distance?.total || bookingData.exactDistance || bookingData.pricing?.distance || 0;
+          const fareCalculationService = require('../services/fareCalculationService');
+          const fareBreakdown = fareCalculationService.calculateFare(exactDistanceKm);
+          const commissionPoints = fareBreakdown.commission; // ₹2 per km
+          
+          const revenueRef = db.collection('adminRevenue').doc();
+          await revenueRef.set({
+            id: revenueRef.id,
+            bookingId: id,
+            customerId: bookingData.customerId,
+            driverId: uid,
+            totalFare: parseFloat(amount),
+            driverEarnings: driverEarnings,
+            platformCommission: commissionPoints, // Points deducted from driver wallet
+            paymentMethod: paymentMethod,
+            confirmedAt: new Date(),
+            status: 'completed'
+          });
+          
+          console.log(`💰 [PAYMENT_CONFIRM] Revenue tracking updated for booking ${id}`);
+        } catch (revenueError) {
+          console.error('❌ [PAYMENT_CONFIRM] Failed to update revenue tracking:', revenueError);
+          // Don't fail payment if revenue tracking fails
         }
       } else {
         console.warn(`⚠️ [PAYMENT_CONFIRM] Driver document not found: ${uid}`);
@@ -5668,80 +5741,12 @@ router.post('/complete-delivery', [
       lastUpdated: new Date()
     }, { merge: true });
 
-    // ✅ CRITICAL: Deduct commission from driver's points wallet
-    // ⚠️ NOTE: Commission should be deducted during payment confirmation, not delivery completion
-    // This is a fallback only if payment confirmation hasn't happened yet
-    try {
-      // ✅ CRITICAL FIX: Check if commission was already deducted to prevent duplicate deductions
-      const alreadyDeducted = bookingData.commissionDeducted?.amount || bookingData.commissionDeducted || false;
-      if (alreadyDeducted) {
-        console.log(`⚠️ [COMPLETE_DELIVERY] Commission already deducted for booking ${bookingId}. Skipping duplicate deduction.`);
-      } else {
-        const exactDistanceKm = bookingData.distance?.total || 0;
-        const tripFare = bookingData.fare?.totalFare || bookingData.fare || 0;
-        
-        if (exactDistanceKm > 0 && tripFare > 0) {
-          const fareCalculationService = require('../services/fareCalculationService');
-          const fareBreakdown = fareCalculationService.calculateFare(exactDistanceKm);
-          const commissionAmount = fareBreakdown.commission; // ₹2 per km
-          const roundedDistanceKm = fareBreakdown.roundedDistanceKm;
-          
-          console.log(`💰 [COMPLETE_DELIVERY] Deducting commission: ₹${commissionAmount} for ${roundedDistanceKm}km (fare: ₹${tripFare})`);
-          
-          // Prepare trip details for commission transaction
-          const tripDetails = {
-            pickupLocation: bookingData.pickup || {},
-            dropoffLocation: bookingData.dropoff || {},
-            tripFare: tripFare,
-            exactDistanceKm: exactDistanceKm,
-            roundedDistanceKm: roundedDistanceKm
-          };
-          
-          // Deduct commission from driver points wallet
-          const walletService = require('../services/walletService');
-          const pointsService = new walletService();
-          const commissionResult = await pointsService.deductPoints(
-            uid,
-            bookingId,
-            roundedDistanceKm,
-            commissionAmount,
-            tripDetails
-          );
-          
-          if (commissionResult.success) {
-            console.log(`✅ [COMPLETE_DELIVERY] Commission deducted from points: ₹${commissionAmount}`);
-            // Mark booking as commission deducted to prevent duplicate deductions
-            await bookingRef.update({
-              commissionDeducted: {
-                amount: commissionAmount,
-                deductedAt: new Date(),
-                transactionId: commissionResult.data?.transactionId,
-                deductedBy: uid
-              }
-            });
-          } else {
-            console.error('❌ [COMPLETE_DELIVERY] Commission deduction failed:', commissionResult.error);
-          }
-        }
-      }
-    } catch (commissionError) {
-      console.error('❌ [COMPLETE_DELIVERY] Error deducting commission:', commissionError);
-      // Don't fail delivery if commission deduction fails
-    }
-
-    // Calculate and update driver earnings
-    const fare = bookingData.fare || {};
-    const driverEarnings = fare.driverEarnings || fare.total || 0;
-    
-    // Update driver's total earnings
-    const driverRef = db.collection('users').doc(uid);
-    await driverRef.update({
-      'driver.earnings.total': admin.firestore.FieldValue.increment(driverEarnings),
-      'driver.earnings.thisMonth': admin.firestore.FieldValue.increment(driverEarnings),
-      'driver.earnings.thisWeek': admin.firestore.FieldValue.increment(driverEarnings),
-      'driver.tripsCompleted': admin.firestore.FieldValue.increment(1),
-      updatedAt: new Date()
-    });
+    // ✅ CRITICAL FIX: Commission deduction and earnings updates are handled during payment confirmation
+    // NOT during delivery completion - this ensures proper workflow:
+    // 1. Delivery completes → Status: 'delivered' (payment required)
+    // 2. Driver confirms payment → Commission deducted, earnings updated, Status: 'completed'
+    // This prevents premature commission deduction and earnings inconsistency
+    console.log(`ℹ️ [COMPLETE_DELIVERY] Commission and earnings will be processed during payment confirmation`);
 
     // ✅ CRITICAL FIX: Send real-time notifications (duplicate notification removed - already handled above)
     // Note: liveTrackingService.updateBookingStatus already sends delivery_completed event
@@ -5759,7 +5764,7 @@ router.post('/complete-delivery', [
           status: 'delivered',
           deliveredAt: new Date().toISOString(),
           duration: duration,
-          earnings: driverEarnings
+          paymentRequired: true // ✅ CRITICAL FIX: Indicate payment is required
         });
         
         console.log(`📡 [COMPLETE_DELIVERY] Admin notification sent for delivery ${bookingId}`);
@@ -5769,33 +5774,9 @@ router.post('/complete-delivery', [
       // Don't fail the delivery completion if notifications fail
     }
 
-    // ✅ CRITICAL FIX: Update admin revenue tracking
-    try {
-      // Calculate commission from distance for proper tracking
-      const exactDistanceKm = bookingData.distance?.total || 0;
-      const fareCalculationService = require('../services/fareCalculationService');
-      const fareBreakdown = fareCalculationService.calculateFare(exactDistanceKm);
-      const commissionPoints = fareBreakdown.commission; // ₹2 per km
-      
-      const revenueRef = db.collection('adminRevenue').doc();
-      await revenueRef.set({
-        id: revenueRef.id,
-        bookingId: bookingId,
-        customerId: bookingData.customerId,
-        driverId: uid,
-        totalFare: fare.total || 0,
-        driverEarnings: driverEarnings,
-        platformCommission: commissionPoints, // Points deducted, not money difference
-        paymentMethod: bookingData.paymentMethod || 'cash',
-        completedAt: new Date(),
-        status: 'completed'
-      });
-
-      console.log(`💰 [COMPLETE_DELIVERY] Revenue tracking updated for booking ${bookingId}`);
-    } catch (revenueError) {
-      console.error('❌ [COMPLETE_DELIVERY] Failed to update revenue tracking:', revenueError);
-      // Don't fail the delivery completion if revenue tracking fails
-    }
+    // ✅ CRITICAL FIX: Revenue tracking should be updated during payment confirmation, not delivery
+    // This ensures accurate revenue data only after payment is confirmed
+    console.log(`ℹ️ [COMPLETE_DELIVERY] Revenue tracking will be updated during payment confirmation`);
 
     console.log('✅ [COMPLETE_DELIVERY] Delivery completed successfully for booking:', bookingId);
 
@@ -5812,7 +5793,6 @@ router.post('/complete-delivery', [
         recipientPhone: recipientPhone,
         deliveredAt: new Date().toISOString(),
         duration: duration,
-        earnings: driverEarnings,
         paymentRequired: !bookingData.paymentConfirmed // ✅ CRITICAL FIX: Indicate if payment is still needed
       },
       timestamp: new Date().toISOString()

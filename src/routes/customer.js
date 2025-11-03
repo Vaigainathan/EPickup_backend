@@ -1767,15 +1767,14 @@ router.post('/bookings/:id/confirm-payment', authenticateToken, async (req, res)
     };
     
     // ✅ CRITICAL FIX: Use state machine to transition from money_collection to completed
-    const BookingStateMachine = require('../services/bookingStateMachine');
-    const stateMachine = new BookingStateMachine();
+    const bookingStateMachine = require('../services/bookingStateMachine');
     
     // Add payment record
     await db.collection('payments').add(paymentData);
     
     // If booking is in money_collection, transition to completed
     if (bookingData.status === 'money_collection') {
-      await stateMachine.transitionBooking(
+      await bookingStateMachine.transitionBooking(
         bookingId,
         'completed',
         {

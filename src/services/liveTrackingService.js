@@ -175,15 +175,19 @@ class LiveTrackingService {
           
         case 'delivered':
           eventName = 'package_delivered_notification';
+          // ✅ CRITICAL FIX: Include full booking data in delivered notification for navigation
           eventData = {
             bookingId,
+            status: 'delivered',
             driverInfo: {
               id: driverId,
               name: bookingData.driver?.name || 'Driver',
               phone: bookingData.driver?.phone || '',
               vehicleNumber: bookingData.driver?.vehicleNumber || ''
             },
-            timestamp: new Date().toISOString()
+            booking: bookingData, // ✅ CRITICAL: Include full booking data for navigation
+            timestamp: new Date().toISOString(),
+            ...additionalData // Include any additional data (photoUrl, notes, etc.)
           };
           break;
       }
@@ -191,11 +195,12 @@ class LiveTrackingService {
       // Send notification to customer
       this.io.to(`user:${bookingData.customerId}`).emit(eventName, eventData);
       
-      // Also send general status update
+      // Also send general status update with full booking data
       this.io.to(`user:${bookingData.customerId}`).emit('booking_status_update', {
         bookingId,
         status,
         driverId,
+        booking: bookingData, // ✅ CRITICAL: Include full booking data
         timestamp: new Date().toISOString(),
         updatedBy: driverId
       });

@@ -117,7 +117,7 @@ router.post('/', [
     // Create booking with atomic transaction
     const result = await bookingService.createBookingAtomically(bookingData);
 
-    // If booking creation succeeded, notify drivers (manual acceptance workflow)
+    // If booking creation succeeded, notify drivers and admin (manual acceptance workflow)
     if (result.success && result.data.booking) {
       // Notify drivers in background (non-blocking)
       setImmediate(async () => {
@@ -130,6 +130,28 @@ router.post('/', [
           await wsEventHandler.notifyDriversOfNewBooking(result.data.booking);
           
           console.log(`✅ Booking ${result.data.booking.id} broadcasted to nearby drivers for manual acceptance`);
+          
+          // ✅ CRITICAL FIX: Notify admin dashboard of new booking for real-time customer count updates
+          try {
+            const socketService = require('../services/socket');
+            const io = socketService.getSocketIO();
+            if (io) {
+              io.to('type:admin').emit('booking_created', {
+                bookingId: result.data.booking.id,
+                customerId: result.data.booking.customerId,
+                status: result.data.booking.status || 'pending',
+                pickupLocation: result.data.booking.pickup,
+                dropoffLocation: result.data.booking.dropoff,
+                fare: result.data.booking.pricing?.total || result.data.booking.fare?.total || 0,
+                createdAt: result.data.booking.createdAt?.toISOString?.() || new Date().toISOString(),
+                timestamp: new Date().toISOString()
+              });
+              console.log(`📤 [BOOKING_CREATE] Emitted booking_created event to admin dashboard for booking ${result.data.booking.id}`);
+            }
+          } catch (adminNotificationError) {
+            console.warn('⚠️ [BOOKING_CREATE] Failed to notify admin of booking creation:', adminNotificationError);
+            // Don't fail if admin notification fails
+          }
           
           // Note: Auto-assignment disabled - drivers manually accept bookings
           // If you want to enable auto-assignment in the future, uncomment below:

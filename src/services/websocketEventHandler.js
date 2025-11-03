@@ -1186,8 +1186,9 @@ class WebSocketEventHandler {
         const fullBookingDoc = await this.db.collection('bookings').doc(bookingId).get();
         const fullBookingData = fullBookingDoc.data();
         
-        // ✅ FIXED: Notify customer with correct event name and data structure, including full booking
-        this.io.to(`user:${updatedBookingData.customerId}`).emit('driver_assigned', {
+        // ✅ CRITICAL FIX: Enhanced logging for customer notification
+        const customerRoom = `user:${updatedBookingData.customerId}`;
+        const driverAssignedEvent = {
           bookingId,
           driverId: userId,
           driver: {
@@ -1206,10 +1207,27 @@ class WebSocketEventHandler {
             vehicleDetails: driverData?.driver?.vehicleDetails || {}
           },
           timestamp: new Date().toISOString()
+        };
+        
+        console.log(`📤 [WEBSOCKET_ACCEPT] Emitting driver_assigned to room: ${customerRoom}`, {
+          bookingId,
+          driverId: userId,
+          driverName: driverData?.name,
+          customerId: updatedBookingData.customerId,
+          hasBooking: !!fullBookingData,
+          hasDriverInfo: !!driverAssignedEvent.driverInfo
         });
+        
+        // Check if room has listeners
+        const room = this.io.sockets.adapter.rooms.get(customerRoom);
+        const roomSize = room ? room.size : 0;
+        console.log(`📊 [WEBSOCKET_ACCEPT] Room ${customerRoom} has ${roomSize} connected socket(s)`);
+        
+        // ✅ FIXED: Notify customer with correct event name and data structure, including full booking
+        this.io.to(customerRoom).emit('driver_assigned', driverAssignedEvent);
 
         // ✅ FIXED: Also send booking status update with full booking data
-        this.io.to(`user:${updatedBookingData.customerId}`).emit('booking_status_update', {
+        const statusUpdateEvent = {
           bookingId,
           status: 'driver_assigned',
           booking: fullBookingData, // ✅ CRITICAL: Include full booking data
@@ -1222,7 +1240,10 @@ class WebSocketEventHandler {
           },
           timestamp: new Date().toISOString(),
           updatedBy: userId
-        });
+        };
+        
+        console.log(`📤 [WEBSOCKET_ACCEPT] Emitting booking_status_update to room: ${customerRoom}`);
+        this.io.to(customerRoom).emit('booking_status_update', statusUpdateEvent);
 
         // Notify admin
         this.io.to(`type:admin`).emit('booking_status_update', statusUpdate);

@@ -18,7 +18,7 @@ class BookingStateMachine {
       'driver_arrived': ['picked_up', 'cancelled'],
       'picked_up': ['in_transit', 'cancelled'],
       'in_transit': ['delivered', 'cancelled'],
-      'delivered': ['money_collection', 'completed'], // ✅ FIX: Add money_collection state for cash payments
+      'delivered': ['money_collection', 'completed'], // ✅ FIX: Allow direct transition to completed for payment confirmation
       'money_collection': ['completed'], // ✅ FIX: Money collection state
       'completed': [], // Terminal state
       'cancelled': [], // Terminal state

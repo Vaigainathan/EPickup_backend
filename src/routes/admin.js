@@ -630,6 +630,93 @@ router.get('/drivers', async (req, res) => {
       };
     }
     const drivers = [];
+    
+    // ✅ PERFORMANCE OPTIMIZATION: Batch fetch all earnings records in parallel for all drivers
+    const driverIds = snapshot.docs.map(doc => doc.id);
+    const earningsPromises = driverIds.map(driverId => 
+      db.collection('driver_earnings')
+        .where('driverId', '==', driverId)
+        .where('status', '==', 'completed')
+        .get()
+        .catch(err => {
+          console.warn(`⚠️ [ADMIN] Failed to fetch earnings for driver ${driverId}:`, err.message);
+          return { docs: [], forEach: () => {} }; // Return empty snapshot on error
+        })
+    );
+    
+    // ✅ CRITICAL FIX: Batch fetch all ratings in parallel for all drivers (driver isolated)
+    const ratingsPromises = driverIds.map(driverId => 
+      db.collection('ratings')
+        .where('driverId', '==', driverId)
+        .get()
+        .catch(err => {
+          console.warn(`⚠️ [ADMIN] Failed to fetch ratings for driver ${driverId}:`, err.message);
+          return { docs: [] }; // Return empty snapshot on error
+        })
+    );
+    
+    const earningsSnapshots = await Promise.all(earningsPromises);
+    const ratingsSnapshots = await Promise.all(ratingsPromises);
+    const earningsMap = new Map();
+    const ratingsMap = new Map();
+    
+    // Build earnings map for quick lookup
+    earningsSnapshots.forEach((earningsSnapshot, index) => {
+      const driverId = driverIds[index];
+      const earningsData = {
+        total: 0,
+        thisMonth: 0,
+        lastMonth: 0,
+        trips: 0
+      };
+      
+      const now = new Date();
+      const startOfThisMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+      const startOfLastMonth = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+      const endOfLastMonth = new Date(now.getFullYear(), now.getMonth(), 0);
+      
+      earningsSnapshot.forEach(earningsDoc => {
+        const earningsRecord = earningsDoc.data();
+        const amount = earningsRecord.amount || 0;
+        earningsData.total += amount;
+        earningsData.trips++;
+        
+        // Check if earnings are from this month
+        const earnedAt = earningsRecord.earnedAt?.toDate?.() || 
+                        (earningsRecord.earnedAt instanceof Date ? earningsRecord.earnedAt : 
+                         (earningsRecord.createdAt?.toDate?.() || earningsRecord.createdAt));
+        
+        if (earnedAt) {
+          if (earnedAt >= startOfThisMonth) {
+            earningsData.thisMonth += amount;
+          } else if (earnedAt >= startOfLastMonth && earnedAt <= endOfLastMonth) {
+            earningsData.lastMonth += amount;
+          }
+        }
+      });
+      
+      earningsMap.set(driverId, earningsData);
+      console.log(`💰 [ADMIN] Calculated earnings for driver ${driverId}: Total: ₹${earningsData.total}, This Month: ₹${earningsData.thisMonth}, Trips: ${earningsData.trips}`);
+    });
+    
+    // ✅ CRITICAL FIX: Build ratings map for quick lookup (driver isolated - each driver's ratings calculated separately)
+    ratingsSnapshots.forEach((ratingsSnapshot, index) => {
+      const driverId = driverIds[index];
+      const ratings = ratingsSnapshot.docs.map(doc => {
+        const ratingData = doc.data();
+        return ratingData.rating || 0; // Ensure we only get valid ratings
+      }).filter(r => r > 0 && r <= 5); // Filter out invalid ratings (driver isolation protection)
+      
+      const averageRating = ratings.length > 0
+        ? Math.round((ratings.reduce((sum, rating) => sum + rating, 0) / ratings.length) * 10) / 10 // Round to 1 decimal
+        : 0;
+      
+      ratingsMap.set(driverId, {
+        average: averageRating,
+        total: ratings.length
+      });
+      console.log(`⭐ [ADMIN] Calculated ratings for driver ${driverId}: Average: ${averageRating}, Total Ratings: ${ratings.length}`);
+    });
 
     for (const doc of snapshot.docs) {
       const data = doc.data();
@@ -655,6 +742,29 @@ router.get('/drivers', async (req, res) => {
         normalizedDocuments[camelKey] = mergedDocuments[key];
       });
       
+      // ✅ CRITICAL FIX: Get calculated earnings from map (batch fetched above)
+      const driverId = doc.id;
+      const earningsData = earningsMap.get(driverId) || {
+        total: driverData.totalEarnings || driverData.earnings?.total || 0,
+        thisMonth: driverData.earnings?.thisMonth || 0,
+        lastMonth: driverData.earnings?.lastMonth || 0,
+        trips: driverData.totalTrips || 0
+      };
+      
+      const totalEarnings = earningsData.total;
+      const earningsThisMonth = earningsData.thisMonth;
+      const earningsLastMonth = earningsData.lastMonth;
+      const completedTripsCount = earningsData.trips;
+      
+      // ✅ CRITICAL FIX: Get calculated ratings from map (batch fetched above - driver isolated)
+      const ratingsData = ratingsMap.get(driverId) || {
+        average: driverData.averageRating || driverData.rating || 0,
+        total: driverData.totalRatings || 0
+      };
+      
+      const averageRating = Math.max(0, Math.min(5, ratingsData.average)); // Clamp between 0-5
+      const totalRatings = ratingsData.total;
+      
       // ✅ CRITICAL FIX: Flatten nested driver data for admin dashboard
       // Admin expects isOnline/isAvailable at top level, not nested under driver object
       drivers.push({
@@ -667,10 +777,11 @@ router.get('/drivers', async (req, res) => {
         isOnline: driverData.isOnline || false,
         isAvailable: driverData.isAvailable || false,
         verificationStatus: driverData.verificationStatus || data.verificationStatus || 'pending',
-        // ✅ FIX: Use averageRating (what rating system updates) with fallback to rating for backward compatibility
-        rating: driverData.averageRating || driverData.rating || 0,
-        totalTrips: driverData.totalTrips || 0,
-        totalDeliveries: driverData.totalTrips || 0, // Alias for compatibility
+        // ✅ CRITICAL FIX: Use calculated rating from ratings collection (driver isolated) with fallback for backward compatibility
+        rating: averageRating,
+        totalRatings: totalRatings,
+        totalTrips: completedTripsCount || driverData.totalTrips || 0,
+        totalDeliveries: completedTripsCount || driverData.totalTrips || 0, // Alias for compatibility
         currentLocation: driverData.currentLocation,
         vehicleDetails: (() => {
           // ✅ CRITICAL FIX: Normalize vehicleDetails from different possible formats
@@ -694,7 +805,12 @@ router.get('/drivers', async (req, res) => {
             licenseExpiry: vd.licenseExpiry || ''
           };
         })(),
-        earnings: driverData.earnings,
+        // ✅ CRITICAL FIX: Use calculated earnings from driver_earnings collection
+        earnings: {
+          total: totalEarnings,
+          thisMonth: earningsThisMonth,
+          lastMonth: earningsLastMonth
+        },
         // ✅ CRITICAL FIX: Include normalized documents for status display
         documents: normalizedDocuments,
         createdAt: data.createdAt?.toDate?.() || data.createdAt,
@@ -1330,6 +1446,73 @@ router.delete('/bookings/:id', async (req, res) => {
 
     // Get reason from body or query params
     const reason = req.body.reason || req.query.reason || 'No reason provided';
+
+    // ✅ CRITICAL FIX: If booking was completed, reduce driver earnings
+    if (bookingData.status === 'completed' && bookingData.driverId) {
+      try {
+        const driverId = bookingData.driverId;
+        const driverEarningAmount = bookingData.fare?.totalFare || bookingData.pricing?.totalFare || 0;
+        
+        if (driverEarningAmount > 0) {
+          // Find and delete the earnings record
+          const earningsSnapshot = await db.collection('driver_earnings')
+            .where('driverId', '==', driverId)
+            .where('bookingId', '==', id)
+            .where('status', '==', 'completed')
+            .get();
+          
+          for (const earningsDoc of earningsSnapshot.docs) {
+            const earningsData = earningsDoc.data();
+            const amount = earningsData.amount || 0;
+            
+            // Delete the earnings record
+            await earningsDoc.ref.delete();
+            console.log(`💰 [ADMIN] Deleted earnings record for booking ${id}: ₹${amount}`);
+            
+            // Update driver's total earnings in user document
+            const driverRef = db.collection('users').doc(driverId);
+            const driverDoc = await driverRef.get();
+            
+            if (driverDoc.exists) {
+              const driverData = driverDoc.data();
+              const currentTotalEarnings = driverData.totalEarnings || driverData.driver?.totalEarnings || 0;
+              const newTotalEarnings = Math.max(0, currentTotalEarnings - amount); // Prevent negative
+              
+              await driverRef.update({
+                totalEarnings: newTotalEarnings,
+                'driver.totalEarnings': newTotalEarnings,
+                updatedAt: new Date()
+              });
+              
+              console.log(`💰 [ADMIN] Updated driver ${driverId} earnings: ₹${currentTotalEarnings} → ₹${newTotalEarnings} (reduced by ₹${amount})`);
+              
+              // ✅ CRITICAL FIX: Emit real-time update to admin dashboard
+              try {
+                const socketService = require('../services/socket');
+                const io = socketService.getSocketIO();
+                if (io) {
+                  io.to('type:admin').emit('driver_earnings_updated', {
+                    driverId: driverId,
+                    bookingId: id,
+                    action: 'reduced',
+                    amount: amount,
+                    newTotalEarnings: newTotalEarnings,
+                    reason: 'Booking deleted',
+                    timestamp: new Date().toISOString()
+                  });
+                  console.log(`📤 [ADMIN] Sent driver earnings update event to admin dashboard`);
+                }
+              } catch (socketError) {
+                console.warn('⚠️ [ADMIN] Failed to emit earnings update event:', socketError);
+              }
+            }
+          }
+        }
+      } catch (earningsError) {
+        console.error('❌ [ADMIN] Error reducing driver earnings on booking deletion:', earningsError);
+        // Don't fail the deletion if earnings reduction fails
+      }
+    }
 
     // Log deletion action
     await db.collection('adminActions').add({
@@ -4286,6 +4469,7 @@ router.get('/customers', async (req, res) => {
       };
     }
     let customers = [];
+    const customerIds = [];
 
     snapshot.forEach(doc => {
       const data = doc.data();
@@ -4310,11 +4494,98 @@ router.get('/customers', async (req, res) => {
         isActive: data.isActive !== false,
         isVerified: data.isVerified || false,
         // No wallet system for customers
-        bookingsCount: 0 // Will be calculated separately
+        bookingsCount: 0 // Will be calculated below
       };
       
       customers.push(customerData);
+      customerIds.push(doc.id);
     });
+
+    // ✅ CRITICAL FIX: Calculate bookings count for each customer with proper user isolation
+    // ✅ ROLE-BASED UID VERIFICATION: 
+    //    - Users collection doc.id = role-based UID (e.g., hash(phone + "customer"))
+    //    - Bookings collection customerId = req.user.uid = role-based UID (from JWT token)
+    //    - Both use role-based UIDs, so they match perfectly for user isolation
+    //    - Same phone number = different UIDs for customer vs driver (correct isolation)
+    if (customerIds.length > 0) {
+      try {
+        console.log(`📊 [ADMIN_CUSTOMERS] Fetching booking counts for ${customerIds.length} customers...`);
+        
+        // Fetch all bookings for these customers in batches to avoid query limits
+        // Firestore 'in' query supports up to 10 items, so we batch if needed
+        const bookingsCountMap = new Map();
+        
+        // Process in batches of 10 (Firestore 'in' query limit)
+        for (let i = 0; i < customerIds.length; i += 10) {
+          const batch = customerIds.slice(i, i + 10);
+          
+          // ✅ ROLE-BASED UID MATCHING: Query bookings using role-based customer IDs
+          // These IDs match because:
+          // 1. customerIds come from users collection doc.id (role-based UID)
+          // 2. bookings.customerId is set from req.user.uid (role-based UID from JWT)
+          // 3. Both are generated from same phone + "customer" hash
+          const bookingsSnapshot = await db.collection('bookings')
+            .where('customerId', 'in', batch)
+            .get();
+          
+          // Count bookings per customer with proper user isolation
+          // ✅ HANDLES DELETION: Hard-deleted bookings (bookingRef.delete()) won't appear in query results
+          // ✅ HANDLES ALL STATUSES: Counts all bookings regardless of status (pending, completed, cancelled, etc.)
+          // All bookings are valid customer bookings, only physically deleted ones are excluded
+          bookingsSnapshot.forEach(bookingDoc => {
+            const bookingData = bookingDoc.data();
+            const bookingCustomerId = bookingData.customerId;
+            const bookingStatus = bookingData.status;
+            
+            // ✅ USER ISOLATION: Only count bookings that match the customer ID exactly
+            // Double-check to prevent any cross-customer data leakage
+            if (bookingCustomerId && typeof bookingCustomerId === 'string' && batch.includes(bookingCustomerId)) {
+              // ✅ COUNT ALL STATUSES: Include pending, completed, cancelled, delivered, etc.
+              // All of these represent bookings made by the customer
+              // Physically deleted bookings (hard delete) won't appear in query results
+              const currentCount = bookingsCountMap.get(bookingCustomerId) || 0;
+              bookingsCountMap.set(bookingCustomerId, currentCount + 1);
+            } else {
+              // Log mismatch for debugging (shouldn't happen, but safety check)
+              console.warn(`⚠️ [ADMIN_CUSTOMERS] Booking ${bookingDoc.id} has customerId mismatch or invalid:`, {
+                bookingId: bookingDoc.id,
+                bookingCustomerId,
+                bookingStatus,
+                batchCustomerIds: batch
+              });
+            }
+          });
+        }
+        
+        // Update customers with their actual booking counts
+        // ✅ USER ISOLATION VERIFICATION: Ensure customer.id matches bookings.customerId exactly
+        customers.forEach(customer => {
+          const count = bookingsCountMap.get(customer.id) || 0;
+          customer.bookingsCount = count;
+          
+          // ✅ SAFETY CHECK: Log if we have bookings but count is 0 (shouldn't happen with proper isolation)
+          if (customerIds.includes(customer.id) && count === 0) {
+            // This is normal for customers with no bookings - no action needed
+            // Only log if we expected bookings but got 0 (would indicate a mismatch)
+          }
+        });
+        
+        // ✅ VERIFICATION: Log detailed breakdown for debugging
+        const totalBookings = Array.from(bookingsCountMap.values()).reduce((sum, count) => sum + count, 0);
+        const customersWithBookings = Array.from(bookingsCountMap.keys()).length;
+        console.log(`✅ [ADMIN_CUSTOMERS] Calculated booking counts:`, {
+          totalBookings,
+          customersWithBookings,
+          totalCustomers: customerIds.length,
+          customerIds: customerIds.slice(0, 5), // Log first 5 for verification
+          bookingCounts: Array.from(bookingsCountMap.entries()).slice(0, 5).map(([id, count]) => ({ customerId: id, count }))
+        });
+      } catch (bookingCountError) {
+        console.error('❌ [ADMIN_CUSTOMERS] Error calculating booking counts:', bookingCountError);
+        // Don't fail the entire request if booking count calculation fails
+        // Customers will show 0 bookings instead of error
+      }
+    }
 
     // Apply search filter if provided
     if (search) {

@@ -1919,6 +1919,28 @@ router.post('/bookings/:id/rate', authenticateToken, async (req, res) => {
     });
     
     console.log(`✅ [RATING] Rating submitted for booking ${bookingId}: ${rating} stars`);
+    console.log(`⭐ [RATING] Updated driver ${bookingData.driverId} average rating: ${averageRating} (from ${ratings.length} total ratings)`);
+    
+    // ✅ CRITICAL FIX: Emit real-time rating update to admin dashboard (driver isolated)
+    try {
+      const socketService = require('../services/socket');
+      const io = socketService.getIO();
+      if (io) {
+        io.to('type:admin').emit('driver_rating_updated', {
+          driverId: bookingData.driverId,
+          bookingId: bookingId,
+          action: 'added',
+          rating: parseInt(rating),
+          newAverageRating: averageRating,
+          totalRatings: ratings.length,
+          timestamp: new Date().toISOString()
+        });
+        console.log(`📤 [RATING] Sent driver rating update event to admin dashboard for driver ${bookingData.driverId}`);
+      }
+    } catch (socketError) {
+      console.warn('⚠️ [RATING] Failed to emit rating update event:', socketError);
+      // Don't fail rating submission if socket emit fails
+    }
     
     res.json({
       success: true,

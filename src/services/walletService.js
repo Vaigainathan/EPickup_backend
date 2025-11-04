@@ -318,26 +318,87 @@ class PointsService {
    */
   async getTransactionHistory(driverId, filters = {}) {
     try {
+      // ✅ CRITICAL FIX: Firestore doesn't support offset with orderBy, use cursor-based pagination
+      // For now, we'll use limit and fetch all, then slice (not ideal for large datasets but works)
       let query = this.db.collection('pointsTransactions')
         .where('driverId', '==', driverId)
         .orderBy('createdAt', 'desc');
 
-      if (filters.limit) {
-        query = query.limit(filters.limit);
-      }
+      // Get total count first (for pagination info)
+      const totalSnapshot = await this.db.collection('pointsTransactions')
+        .where('driverId', '==', driverId)
+        .get();
+      const totalCount = totalSnapshot.size;
 
+      // Apply limit (default 20, max 100)
+      const limit = Math.min(filters.limit || 20, 100);
+      query = query.limit(limit + (filters.offset || 0));
+
+      // Fetch all and then slice for offset (for small datasets this is acceptable)
+      // For production with large datasets, implement cursor-based pagination
       const snapshot = await query.get();
-      const transactions = snapshot.docs.map(doc => doc.data());
+      const allTransactions = snapshot.docs;
+      const offset = filters.offset || 0;
+      const paginatedDocs = allTransactions.slice(offset, offset + limit);
+
+      const transactions = paginatedDocs.map(doc => {
+        const data = doc.data();
+        // ✅ CRITICAL FIX: Map backend transaction format to frontend format
+        const tripDetails = data.tripDetails || {};
+        const bookingId = data.tripId || tripDetails.bookingId || 'N/A';
+        const distance = data.distanceKm || tripDetails.distance || 0;
+        
+        // Generate description based on transaction type
+        let description = '';
+        if (data.type === 'debit') {
+          if (tripDetails.bookingId || data.tripId) {
+            description = `Commission for booking ${bookingId} (${Math.ceil(distance)}km × ₹2/km)`;
+          } else {
+            description = 'Commission deduction';
+          }
+        } else if (data.type === 'credit') {
+          description = tripDetails.paymentMethod ? `Top-up via ${tripDetails.paymentMethod}` : 'Points added';
+        } else {
+          description = 'Transaction';
+        }
+        
+        return {
+          id: data.id || doc.id,
+          driverId: data.driverId,
+          type: data.type || (data.pointsAmount > 0 ? 'credit' : 'debit'),
+          amount: data.type === 'debit' ? -Math.abs(data.pointsAmount || 0) : Math.abs(data.pointsAmount || 0), // Negative for debit, positive for credit
+          previousBalance: data.previousBalance || 0,
+          newBalance: data.newBalance || 0,
+          paymentMethod: tripDetails.paymentMethod || data.paymentMethod || 'points',
+          status: data.status || 'completed',
+          metadata: {
+            tripId: data.tripId,
+            distanceKm: distance,
+            bookingId: bookingId,
+            ...tripDetails
+          },
+          createdAt: data.createdAt?.toDate?.() ? data.createdAt.toDate().toISOString() : (data.createdAt?.toISOString?.() || new Date(data.createdAt).toISOString()),
+          description: description
+        };
+      });
 
       return {
         success: true,
-        transactions
+        transactions,
+        total: totalCount,
+        pagination: {
+          limit: limit,
+          offset: offset,
+          total: totalCount,
+          hasMore: (offset + limit) < totalCount
+        }
       };
     } catch (error) {
       console.error('Error getting transaction history:', error);
       return {
         success: false,
-        error: 'Failed to get transaction history'
+        error: 'Failed to get transaction history',
+        details: error.message
       };
     }
   }

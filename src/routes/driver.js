@@ -2136,6 +2136,34 @@ router.post('/location', [
       lastUpdated: new Date()
     }, { merge: true });
 
+    // ✅ CRITICAL FIX: If driver is on an active trip, broadcast location to customer
+    try {
+      // Check if driver has an active booking
+      const activeBookingQuery = await db.collection('bookings')
+        .where('driverId', '==', uid)
+        .where('status', 'in', ['driver_assigned', 'accepted', 'driver_enroute', 'driver_arrived', 'picked_up', 'in_transit'])
+        .limit(1)
+        .get();
+      
+      if (!activeBookingQuery.empty) {
+        const activeBooking = activeBookingQuery.docs[0];
+        
+        // Use liveTrackingService to broadcast location update to customer
+        const liveTrackingService = require('../services/liveTrackingService');
+        await liveTrackingService.updateDriverLocation(uid, {
+          latitude,
+          longitude,
+          accuracy,
+          timestamp: new Date()
+        }, activeBooking.id);
+        
+        console.log(`📍 [DRIVER_LOCATION] Broadcasted location update for booking ${activeBooking.id}`);
+      }
+    } catch (broadcastError) {
+      console.error('⚠️ [DRIVER_LOCATION] Failed to broadcast location update (non-critical):', broadcastError);
+      // Don't fail the request if broadcast fails
+    }
+
     res.status(200).json({
       success: true,
       message: 'Location updated successfully',
@@ -3532,6 +3560,103 @@ router.post('/bookings/:id/accept', requireDriver, async (req, res) => {
         throw new Error('DRIVER_ALREADY_ASSIGNED');
       }
 
+      // ✅ CRITICAL FIX: Check wallet balance for commission before accepting booking
+      try {
+        const pointsService = require('../services/walletService');
+        const fareCalculationService = require('../services/fareCalculationService');
+        
+        // Get or create wallet first
+        await pointsService.createOrGetPointsWallet(uid, 0);
+        
+        // Get estimated distance from booking (use existing distance or calculate from coordinates)
+        let estimatedDistanceKm = freshBookingData.distance?.total || 
+                                  freshBookingData.exactDistance || 
+                                  freshBookingData.pricing?.distance || 0;
+        
+        // If no distance, calculate from coordinates
+        if (estimatedDistanceKm === 0 && freshBookingData.pickup?.coordinates && freshBookingData.dropoff?.coordinates) {
+          try {
+            const pickupCoords = {
+              lat: freshBookingData.pickup.coordinates._latitude || freshBookingData.pickup.coordinates.latitude,
+              lng: freshBookingData.pickup.coordinates._longitude || freshBookingData.pickup.coordinates.longitude
+            };
+            const dropoffCoords = {
+              lat: freshBookingData.dropoff.coordinates._latitude || freshBookingData.dropoff.coordinates.latitude,
+              lng: freshBookingData.dropoff.coordinates._longitude || freshBookingData.dropoff.coordinates.longitude
+            };
+            
+            if (pickupCoords.lat && pickupCoords.lng && dropoffCoords.lat && dropoffCoords.lng) {
+              const distanceResult = await fareCalculationService.calculateDistanceAndFare(pickupCoords, dropoffCoords);
+              estimatedDistanceKm = distanceResult.distanceKm;
+            }
+          } catch (calcError) {
+            console.warn('⚠️ [ACCEPT_BOOKING] Could not calculate distance from coordinates:', calcError.message);
+            // Use minimum estimate (5km) if calculation fails
+            estimatedDistanceKm = 5;
+          }
+        }
+        
+        // If still no distance, use minimum estimate
+        if (estimatedDistanceKm === 0) {
+          estimatedDistanceKm = 5; // Minimum 5km estimate
+        }
+        
+        // Calculate commission based on distance (₹2 per km, rounded up)
+        const roundedDistance = Math.ceil(estimatedDistanceKm);
+        const estimatedCommission = roundedDistance * 2; // ₹2 per km
+        
+        console.log(`💰 [ACCEPT_BOOKING] Checking wallet balance for commission:`, {
+          driverId: uid,
+          estimatedDistanceKm,
+          roundedDistance,
+          estimatedCommission
+        });
+        
+        // Check wallet balance
+        const walletDoc = await transaction.get(db.collection('driverPointsWallets').doc(uid));
+        if (!walletDoc.exists) {
+          // Wallet doesn't exist - create it with 0 balance
+          transaction.set(db.collection('driverPointsWallets').doc(uid), {
+            driverId: uid,
+            pointsBalance: 0,
+            totalPointsEarned: 0,
+            totalPointsSpent: 0,
+            status: 'active',
+            requiresTopUp: true,
+            createdAt: new Date(),
+            lastUpdated: new Date()
+          });
+          throw new Error('INSUFFICIENT_WALLET_BALANCE');
+        }
+        
+        const walletData = walletDoc.data();
+        const currentBalance = walletData.pointsBalance || 0;
+        
+        if (currentBalance < estimatedCommission) {
+          console.warn(`⚠️ [ACCEPT_BOOKING] Insufficient wallet balance:`, {
+            driverId: uid,
+            currentBalance,
+            requiredCommission: estimatedCommission,
+            shortfall: estimatedCommission - currentBalance
+          });
+          throw new Error('INSUFFICIENT_WALLET_BALANCE');
+        }
+        
+        console.log(`✅ [ACCEPT_BOOKING] Wallet balance sufficient:`, {
+          driverId: uid,
+          currentBalance,
+          requiredCommission: estimatedCommission,
+          remainingBalance: currentBalance - estimatedCommission
+        });
+      } catch (walletError) {
+        if (walletError.message === 'INSUFFICIENT_WALLET_BALANCE') {
+          throw walletError; // Re-throw to be handled below
+        }
+        console.error('❌ [ACCEPT_BOOKING] Error checking wallet balance:', walletError);
+        // Don't block acceptance if wallet check fails - log warning but continue
+        console.warn('⚠️ [ACCEPT_BOOKING] Continuing with acceptance despite wallet check error');
+      }
+
       // Update booking with driver info for admin panel visibility
       transaction.update(bookingRef, {
         driverId: uid,
@@ -3713,6 +3838,34 @@ router.post('/bookings/:id/accept', requireDriver, async (req, res) => {
           code: 'DRIVER_NOT_AVAILABLE',
           message: 'Driver not available',
           details: 'Driver is no longer available to accept bookings'
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+    
+    if (error.message === 'INSUFFICIENT_WALLET_BALANCE') {
+      // Get booking to calculate commission for error message
+      let commissionMessage = 'Insufficient wallet balance to cover commission';
+      try {
+        const db = getFirestore();
+        const bookingDoc = await db.collection('bookings').doc(id).get();
+        if (bookingDoc.exists) {
+          const bookingData = bookingDoc.data();
+          const distance = bookingData.distance?.total || bookingData.exactDistance || bookingData.pricing?.distance || 5;
+          const roundedDistance = Math.ceil(distance);
+          const estimatedCommission = roundedDistance * 2;
+          commissionMessage = `Insufficient wallet balance. Required: ₹${estimatedCommission} (${roundedDistance}km × ₹2/km). Please recharge your wallet to accept this booking.`;
+        }
+      } catch {
+        // Ignore errors in error message generation
+      }
+      
+      return res.status(402).json({
+        success: false,
+        error: {
+          code: 'INSUFFICIENT_WALLET_BALANCE',
+          message: 'Insufficient wallet balance',
+          details: commissionMessage
         },
         timestamp: new Date().toISOString()
       });
@@ -4049,6 +4202,7 @@ router.post('/bookings/:id/confirm-payment', [
               confirmed: true,
               confirmedBy: uid
             },
+            paymentStatus: 'confirmed', // ✅ CRITICAL FIX: Update paymentStatus for admin panel
             paymentConfirmed: true,
             paymentConfirmedAt: new Date(),
             completedAt: new Date()
@@ -4096,6 +4250,7 @@ router.post('/bookings/:id/confirm-payment', [
               confirmed: true,
               confirmedBy: uid
             },
+            paymentStatus: 'confirmed', // ✅ CRITICAL FIX: Update paymentStatus for admin panel
             paymentConfirmed: true,
             paymentConfirmedAt: new Date(),
             completedAt: new Date(),
@@ -4120,6 +4275,7 @@ router.post('/bookings/:id/confirm-payment', [
               confirmed: true,
               confirmedBy: uid
             },
+            paymentStatus: 'confirmed', // ✅ CRITICAL FIX: Update paymentStatus for admin panel
             paymentConfirmed: true,
             paymentConfirmedAt: new Date(),
             completedAt: new Date()
@@ -4166,6 +4322,7 @@ router.post('/bookings/:id/confirm-payment', [
             confirmed: true,
             confirmedBy: uid
           },
+          paymentStatus: 'confirmed', // ✅ CRITICAL FIX: Update paymentStatus for admin panel
           paymentConfirmed: true,
           paymentConfirmedAt: new Date(),
           completedAt: new Date(),
@@ -4181,6 +4338,7 @@ router.post('/bookings/:id/confirm-payment', [
           confirmed: true,
           confirmedBy: uid
         },
+        paymentStatus: 'confirmed', // ✅ CRITICAL FIX: Update paymentStatus for admin panel
         paymentConfirmed: true,
         paymentConfirmedAt: new Date(),
         updatedAt: new Date()
@@ -4255,127 +4413,160 @@ router.post('/bookings/:id/confirm-payment', [
       // Don't fail the payment confirmation if notifications fail
     }
 
-    // ✅ CRITICAL FIX: Update driver earnings and deduct commission
+    // ✅ CRITICAL FIX: Update driver earnings and deduct commission - ALL IN ONE TRANSACTION
     let commissionDeducted = false;
     let commissionAmount = 0;
+    let commissionTransactionId = null;
+    let newPointsBalance = 0;
+    let driverEarnings = 0;
+    let currentEarnings = 0;
+    let currentBalance = 0;
+    
     try {
-      const driverRef = db.collection('users').doc(uid);
-      const driverDoc = await driverRef.get();
-      
-      if (driverDoc.exists) {
+      // ✅ INDUSTRY STANDARD: Use transaction for atomic payment operations
+      await db.runTransaction(async (transaction) => {
+        const driverRef = db.collection('users').doc(uid);
+        const driverDoc = await transaction.get(driverRef);
+        
+        if (!driverDoc.exists) {
+          throw new Error('DRIVER_NOT_FOUND');
+        }
+        
         const driverData = driverDoc.data();
-        const currentEarnings = driverData.totalEarnings || 0;
-        const currentBalance = driverData.wallet?.balance || 0;
+        currentEarnings = driverData.totalEarnings || 0;
+        currentBalance = driverData.wallet?.balance || 0;
         
         // CORRECT: Driver gets full fare amount, commission deducted from points wallet
-        const driverEarnings = parseFloat(amount); // Full amount
+        driverEarnings = parseFloat(amount); // Full amount
         
-        // ✅ CRITICAL FIX: Deduct commission from points wallet
-        try {
-          const pointsService = require('../services/walletService');
-          const fareCalculationService = require('../services/fareCalculationService');
+        // ✅ CRITICAL FIX: Deduct commission from points wallet (atomic within transaction)
+        const fareCalculationService = require('../services/fareCalculationService');
+        
+        // ✅ CRITICAL FIX: Check if commission was already deducted to prevent duplicate deductions
+        const alreadyDeducted = bookingData.commissionDeducted?.amount || bookingData.commissionDeducted || false;
+        if (alreadyDeducted) {
+          console.log(`⚠️ [PAYMENT_CONFIRM] Commission already deducted for booking ${id}. Skipping duplicate deduction.`);
+          commissionAmount = bookingData.commissionDeducted?.amount || 0;
+          commissionDeducted = true;
+          commissionTransactionId = bookingData.commissionDeducted?.transactionId || null;
           
-          // ✅ CRITICAL FIX: Check if commission was already deducted to prevent duplicate deductions
-          const alreadyDeducted = bookingData.commissionDeducted?.amount || bookingData.commissionDeducted || false;
-          if (alreadyDeducted) {
-            console.log(`⚠️ [PAYMENT_CONFIRM] Commission already deducted for booking ${id}. Skipping duplicate deduction.`);
-            commissionAmount = bookingData.commissionDeducted?.amount || 0;
-            commissionDeducted = true;
-          } else {
-            // Get distance from booking for commission calculation
-            const exactDistanceKm = bookingData.distance?.total || bookingData.exactDistance || bookingData.pricing?.distance || 0;
+          // Get current points balance
+          const walletDoc = await transaction.get(db.collection('driverPointsWallets').doc(uid));
+          if (walletDoc.exists) {
+            newPointsBalance = walletDoc.data().pointsBalance || 0;
+          }
+        } else {
+          // Get distance from booking for commission calculation
+          const exactDistanceKm = bookingData.distance?.total || bookingData.exactDistance || bookingData.pricing?.distance || 0;
+          
+          if (exactDistanceKm > 0) {
+            console.log(`💵 [PAYMENT_CONFIRM] Calculating commission for ${exactDistanceKm}km`);
+            const fareBreakdown = fareCalculationService.calculateFare(exactDistanceKm);
+            commissionAmount = fareBreakdown.commission; // ₹2 per km
             
-            if (exactDistanceKm > 0) {
-              console.log(`💵 [PAYMENT_CONFIRM] Calculating commission for ${exactDistanceKm}km`);
-              const fareBreakdown = fareCalculationService.calculateFare(exactDistanceKm);
-              commissionAmount = fareBreakdown.commission; // ₹2 per km
+            console.log(`💵 [PAYMENT_CONFIRM] Attempting to deduct commission: ₹${commissionAmount} from driver ${uid}`);
+            
+            // ✅ CRITICAL FIX: Ensure wallet exists before deducting
+            const walletRef = db.collection('driverPointsWallets').doc(uid);
+            const walletDoc = await transaction.get(walletRef);
+            
+            if (!walletDoc.exists) {
+              // Create wallet in transaction
+              transaction.set(walletRef, {
+                driverId: uid,
+                pointsBalance: 0,
+                totalPointsEarned: 0,
+                totalPointsSpent: 0,
+                status: 'active',
+                requiresTopUp: true,
+                createdAt: new Date(),
+                lastUpdated: new Date()
+              });
+              console.log(`🔧 [PAYMENT_CONFIRM] Created wallet for driver ${uid} in transaction`);
+            }
+            
+            const walletData = walletDoc.exists ? walletDoc.data() : { pointsBalance: 0, totalPointsSpent: 0 };
+            const currentPointsBalance = walletData.pointsBalance || 0;
+            
+            // Check if sufficient balance
+            if (currentPointsBalance < commissionAmount) {
+              console.error(`❌ [PAYMENT_CONFIRM] Insufficient points balance: ${currentPointsBalance} < ${commissionAmount}`);
+              // Don't throw - allow payment to continue, but log for manual adjustment
+              commissionDeducted = false;
+            } else {
+              // Deduct commission atomically within transaction
+              const newPointsBalanceAfter = currentPointsBalance - commissionAmount;
+              const newTotalSpent = (walletData.totalPointsSpent || 0) + commissionAmount;
               
-              console.log(`💵 [PAYMENT_CONFIRM] Attempting to deduct commission: ₹${commissionAmount} from driver ${uid}`);
+              // Update points wallet in transaction
+              transaction.update(walletRef, {
+                pointsBalance: newPointsBalanceAfter,
+                totalPointsSpent: newTotalSpent,
+                lastUpdated: new Date()
+              });
               
-              // Deduct commission from points wallet
-              const commissionResult = await pointsService.deductPoints(
-                uid,
-                id,
-                exactDistanceKm,
-                commissionAmount,
-                {
+              // Create commission transaction record in transaction
+              const { v4: uuidv4 } = require('uuid');
+              commissionTransactionId = uuidv4();
+              const transactionRef = db.collection('pointsTransactions').doc(commissionTransactionId);
+              transaction.set(transactionRef, {
+                id: commissionTransactionId,
+                driverId: uid,
+                type: 'debit',
+                pointsAmount: commissionAmount,
+                previousBalance: currentPointsBalance,
+                newBalance: newPointsBalanceAfter,
+                tripId: id,
+                distanceKm: exactDistanceKm,
+                tripDetails: {
                   bookingId: id,
                   fare: amount,
                   distance: exactDistanceKm,
                   paymentMethod: paymentMethod
-                }
-              );
-            
-            if (commissionResult.success) {
+                },
+                status: 'completed',
+                createdAt: new Date()
+              });
+              
               commissionDeducted = true;
-              console.log(`✅ [PAYMENT_CONFIRM] Commission deducted from points: ₹${commissionAmount} (${exactDistanceKm}km)`);
-              console.log(`💰 [PAYMENT_CONFIRM] New points balance: ₹${commissionResult.data?.newBalance || 'unknown'}`);
-              
-              // ✅ CRITICAL FIX: Mark booking as commission deducted to prevent duplicate deductions
-              await bookingRef.update({
-                commissionDeducted: {
-                  amount: commissionAmount,
-                  deductedAt: new Date(),
-                  transactionId: commissionResult.data?.transactionId,
-                  deductedBy: uid
-                }
-              });
-              console.log(`✅ [PAYMENT_CONFIRM] Booking marked with commission deducted flag`);
-              
-              // ✅ CRITICAL FIX: Emit wallet update event to driver via Socket.IO
-              try {
-                const io = require('../services/socket').getIO();
-                if (io) {
-                  io.to(`driver:${uid}`).emit('wallet_balance_updated', {
-                    driverId: uid,
-                    newBalance: commissionResult.data?.newBalance || 0,
-                    pointsDeducted: commissionAmount,
-                    transactionId: commissionResult.data?.transactionId,
-                    timestamp: new Date().toISOString()
-                  });
-                  console.log(`📤 [PAYMENT_CONFIRM] Wallet balance update event sent to driver ${uid}`);
-                }
-              } catch (socketError) {
-                console.warn('⚠️ [PAYMENT_CONFIRM] Failed to emit wallet update event:', socketError);
-                // Don't fail payment if socket emit fails
-              }
-            } else {
-              console.error('❌ [PAYMENT_CONFIRM] Commission deduction failed:', {
-                error: commissionResult.error,
-                details: commissionResult.details,
-                code: commissionResult.code,
-                currentBalance: commissionResult.currentBalance,
-                requiredAmount: commissionResult.requiredAmount
-              });
-              // Continue - commission deduction failure shouldn't block payment
-              // Log warning but don't throw error
+              newPointsBalance = newPointsBalanceAfter;
+              console.log(`✅ [PAYMENT_CONFIRM] Commission deducted atomically: ₹${commissionAmount} (${exactDistanceKm}km)`);
             }
           } else {
             console.warn(`⚠️ [PAYMENT_CONFIRM] Cannot deduct commission - no distance data. Distance: ${exactDistanceKm}`);
             // If distance is 0, we can't calculate commission - this is acceptable
           }
-          }
-        } catch (commissionError) {
-          console.error('❌ [PAYMENT_CONFIRM] Error deducting commission:', commissionError);
-          // Continue - commission deduction failure shouldn't block payment
-          // Log error but don't throw - payment confirmation should succeed even if commission deduction fails
         }
         
-        // Update driver earnings and wallet balance
-        console.log(`💵 [PAYMENT_CONFIRM] Updating driver earnings: +₹${driverEarnings}`);
-        await driverRef.update({
+        // ✅ CRITICAL FIX: Update driver earnings and wallet balance atomically
+        console.log(`💵 [PAYMENT_CONFIRM] Updating driver earnings atomically: +₹${driverEarnings}`);
+        transaction.update(driverRef, {
           totalEarnings: currentEarnings + driverEarnings,
           'wallet.balance': currentBalance + driverEarnings,
           'wallet.lastUpdated': new Date(),
           updatedAt: new Date()
         });
-
-        // Create earnings record
-        await db.collection('driver_earnings').add({
+        
+        // ✅ CRITICAL FIX: Mark booking as commission deducted atomically
+        if (commissionDeducted && commissionTransactionId) {
+          transaction.update(bookingRef, {
+            commissionDeducted: {
+              amount: commissionAmount,
+              deductedAt: new Date(),
+              transactionId: commissionTransactionId,
+              deductedBy: uid
+            }
+          });
+        }
+        
+        // ✅ CRITICAL FIX: Create earnings record atomically
+        const earningsRef = db.collection('driver_earnings').doc();
+        transaction.set(earningsRef, {
+          id: earningsRef.id,
           bookingId: id,
           driverId: uid,
           amount: driverEarnings,
-          commission: commissionAmount, // Points deducted (₹2 per km) - 0 if commission deduction failed
+          commission: commissionAmount,
           commissionDeducted: commissionDeducted,
           totalFare: amount,
           earnedAt: new Date(),
@@ -4383,62 +4574,80 @@ router.post('/bookings/:id/confirm-payment', [
           paymentMethod: paymentMethod,
           transactionId: transactionId
         });
-
-        console.log(`💰 [PAYMENT_CONFIRM] Driver earnings updated: ₹${driverEarnings}, Commission: ₹${commissionAmount} ${commissionDeducted ? '(deducted from points)' : '(not deducted - may need manual adjustment)'}`);
         
-        // ✅ CRITICAL FIX: Emit real-time earnings update to admin dashboard
+        // ✅ CRITICAL FIX: Update admin revenue tracking atomically
+        const exactDistanceKm = bookingData.distance?.total || bookingData.exactDistance || bookingData.pricing?.distance || 0;
+        const fareBreakdown = fareCalculationService.calculateFare(exactDistanceKm);
+        const commissionPoints = fareBreakdown.commission; // ₹2 per km
+        
+        const revenueRef = db.collection('adminRevenue').doc();
+        transaction.set(revenueRef, {
+          id: revenueRef.id,
+          bookingId: id,
+          customerId: bookingData.customerId,
+          driverId: uid,
+          totalFare: parseFloat(amount),
+          driverEarnings: driverEarnings,
+          platformCommission: commissionPoints,
+          paymentMethod: paymentMethod,
+          confirmedAt: new Date(),
+          status: 'completed'
+        });
+        
+        console.log(`✅ [PAYMENT_CONFIRM] All payment operations committed atomically`);
+      });
+      
+      console.log(`💰 [PAYMENT_CONFIRM] Driver earnings updated: ₹${driverEarnings}, Commission: ₹${commissionAmount} ${commissionDeducted ? '(deducted from points)' : '(not deducted - may need manual adjustment)'}`);
+      
+      // ✅ CRITICAL FIX: Emit wallet update event after successful transaction
+      if (commissionDeducted && commissionTransactionId) {
         try {
           const io = require('../services/socket').getIO();
           if (io) {
-            io.to('type:admin').emit('driver_earnings_updated', {
+            io.to(`driver:${uid}`).emit('wallet_balance_updated', {
               driverId: uid,
-              bookingId: id,
-              action: 'added',
-              amount: driverEarnings,
-              newTotalEarnings: currentEarnings + driverEarnings,
-              commission: commissionAmount,
+              newBalance: newPointsBalance,
+              pointsDeducted: commissionAmount,
+              transactionId: commissionTransactionId,
               timestamp: new Date().toISOString()
             });
-            console.log(`📤 [PAYMENT_CONFIRM] Sent driver earnings update event to admin dashboard`);
+            console.log(`📤 [PAYMENT_CONFIRM] Wallet balance update event sent to driver ${uid}`);
           }
         } catch (socketError) {
-          console.warn('⚠️ [PAYMENT_CONFIRM] Failed to emit earnings update event:', socketError);
+          console.warn('⚠️ [PAYMENT_CONFIRM] Failed to emit wallet update event:', socketError);
           // Don't fail payment if socket emit fails
         }
-        
-        // ✅ CRITICAL FIX: Update admin revenue tracking after payment confirmation
-        try {
-          const exactDistanceKm = bookingData.distance?.total || bookingData.exactDistance || bookingData.pricing?.distance || 0;
-          const fareCalculationService = require('../services/fareCalculationService');
-          const fareBreakdown = fareCalculationService.calculateFare(exactDistanceKm);
-          const commissionPoints = fareBreakdown.commission; // ₹2 per km
-          
-          const revenueRef = db.collection('adminRevenue').doc();
-          await revenueRef.set({
-            id: revenueRef.id,
-            bookingId: id,
-            customerId: bookingData.customerId,
+      } else if (!commissionDeducted) {
+        console.error('❌ [PAYMENT_CONFIRM] Commission deduction failed or skipped:', {
+          commissionAmount,
+          reason: commissionAmount === 0 ? 'No distance data' : 'Insufficient balance'
+        });
+      }
+      
+      // ✅ CRITICAL FIX: Emit real-time earnings update to admin dashboard
+      try {
+        const io = require('../services/socket').getIO();
+        if (io) {
+          io.to('type:admin').emit('driver_earnings_updated', {
             driverId: uid,
-            totalFare: parseFloat(amount),
-            driverEarnings: driverEarnings,
-            platformCommission: commissionPoints, // Points deducted from driver wallet
-            paymentMethod: paymentMethod,
-            confirmedAt: new Date(),
-            status: 'completed'
+            bookingId: id,
+            action: 'added',
+            amount: driverEarnings,
+            newTotalEarnings: currentEarnings + driverEarnings,
+            commission: commissionAmount,
+            timestamp: new Date().toISOString()
           });
-          
-          console.log(`💰 [PAYMENT_CONFIRM] Revenue tracking updated for booking ${id}`);
-        } catch (revenueError) {
-          console.error('❌ [PAYMENT_CONFIRM] Failed to update revenue tracking:', revenueError);
-          // Don't fail payment if revenue tracking fails
+          console.log(`📤 [PAYMENT_CONFIRM] Sent driver earnings update event to admin dashboard`);
         }
-      } else {
-        console.warn(`⚠️ [PAYMENT_CONFIRM] Driver document not found: ${uid}`);
+      } catch (socketError) {
+        console.warn('⚠️ [PAYMENT_CONFIRM] Failed to emit earnings update event:', socketError);
+        // Don't fail payment if socket emit fails
       }
     } catch (earningsError) {
-      console.error('❌ [PAYMENT_CONFIRM] Failed to update driver earnings:', earningsError);
+      console.error('❌ [PAYMENT_CONFIRM] Failed to update driver earnings atomically:', earningsError);
       // Don't fail the payment confirmation if earnings update fails
       // Log error for manual investigation
+      // Note: Payment record was already created, so payment is considered successful
     }
     
     console.log(`✅ [PAYMENT_CONFIRM] Payment confirmation completed successfully`);
@@ -6003,11 +6212,12 @@ router.get('/wallet', requireDriver, async (req, res) => {
       requiresTopUp: balanceResult.wallet.requiresTopUp,
       canWork: balanceResult.wallet.canWork,
       lastUpdated: balanceResult.wallet.lastUpdated,
-      transactions: transactionsResult.success ? transactionsResult.transactions : [],
-      pagination: transactionsResult.success ? transactionsResult.pagination : {
+      transactions: transactionsResult.success ? (transactionsResult.transactions || []) : [],
+      pagination: transactionsResult.success && transactionsResult.pagination ? transactionsResult.pagination : {
         limit: parseInt(limit),
         offset: parseInt(offset),
-        total: 0
+        total: transactionsResult.success ? (transactionsResult.total || 0) : 0,
+        hasMore: false
       }
     };
     

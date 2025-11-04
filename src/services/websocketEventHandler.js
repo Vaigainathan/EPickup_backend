@@ -1699,10 +1699,56 @@ class WebSocketEventHandler {
             bookingData.pickup.coordinates.longitude
           );
 
-          // Only notify drivers within reasonable distance (e.g., 10km)
-          if (distance <= 10000) {
+          // ✅ COMPREHENSIVE FIX: Notify drivers within reasonable distance (25km to match API radius)
+          const notifyRadius = 25000; // 25km (matches API radius for consistency)
+          if (distance <= notifyRadius) {
+            // ✅ CRITICAL: Normalize coordinates to plain objects (handle Firestore GeoPoint)
+            const normalizeCoords = (coords) => {
+              if (!coords) return null;
+              // Handle Firestore GeoPoint format
+              if (coords._latitude !== undefined && coords._longitude !== undefined) {
+                return {
+                  latitude: coords._latitude,
+                  longitude: coords._longitude
+                };
+              }
+              // Handle plain object format
+              if (coords.latitude !== undefined && coords.longitude !== undefined) {
+                return {
+                  latitude: coords.latitude,
+                  longitude: coords.longitude
+                };
+              }
+              return null;
+            };
+            
+            // ✅ CRITICAL: Include full booking data in WebSocket event (so frontend doesn't need API call)
             this.io.to(`user:${doc.id}`).emit('new_booking_available', {
               ...notificationData,
+              booking: {
+                ...notificationData.booking,
+                // Include full booking data for direct UI update (no API call needed)
+                id: bookingData.id,
+                customer: bookingData.customer || bookingData.customerInfo,
+                customerId: bookingData.customerId,
+                customerInfo: bookingData.customerInfo || bookingData.customer,
+                pricing: bookingData.pricing,
+                fare: bookingData.fare,
+                package: bookingData.package,
+                timing: bookingData.timing,
+                estimatedPickupTime: bookingData.estimatedPickupTime,
+                createdAt: bookingData.createdAt,
+                status: bookingData.status || 'pending',
+                // ✅ CRITICAL FIX: Normalize coordinates to ensure frontend compatibility
+                pickup: bookingData.pickup ? {
+                  ...bookingData.pickup,
+                  coordinates: normalizeCoords(bookingData.pickup.coordinates) || bookingData.pickup.coordinates
+                } : bookingData.pickup,
+                dropoff: bookingData.dropoff ? {
+                  ...bookingData.dropoff,
+                  coordinates: normalizeCoords(bookingData.dropoff.coordinates) || bookingData.dropoff.coordinates
+                } : bookingData.dropoff
+              },
               distanceFromDriver: Math.round(distance / 1000 * 100) / 100
             });
           }

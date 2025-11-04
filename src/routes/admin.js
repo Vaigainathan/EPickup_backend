@@ -3972,8 +3972,10 @@ router.get('/analytics/drivers', async (req, res) => {
     const start = new Date(startDate);
     const end = new Date(endDate);
 
-    // Get driver data
-    const driversSnapshot = await db.collection('drivers').get();
+    // ✅ CRITICAL FIX: Get driver data from users collection for consistency
+    const driversSnapshot = await db.collection('users')
+      .where('userType', '==', 'driver')
+      .get();
     const drivers = driversSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
 
     // Get driver assignments in date range
@@ -3985,13 +3987,14 @@ router.get('/analytics/drivers', async (req, res) => {
     const assignments = assignmentsSnapshot.docs.map(doc => doc.data());
 
     // Calculate driver metrics
+    // ✅ FIX: Access driver data from correct structure (users collection with driver subfield)
     const totalDrivers = drivers.length;
-    const activeDrivers = drivers.filter(driver => driver.isOnline && driver.isAvailable).length;
-    const verifiedDrivers = drivers.filter(driver => driver.verificationStatus === 'verified').length;
-    const pendingVerification = drivers.filter(driver => driver.verificationStatus === 'pending').length;
+    const activeDrivers = drivers.filter(driver => driver.driver?.isOnline && driver.driver?.isAvailable).length;
+    const verifiedDrivers = drivers.filter(driver => driver.driver?.verificationStatus === 'verified' || driver.verificationStatus === 'verified').length;
+    const pendingVerification = drivers.filter(driver => driver.driver?.verificationStatus === 'pending' || driver.verificationStatus === 'pending').length;
     
     const averageRating = drivers.length > 0 
-      ? drivers.reduce((sum, driver) => sum + (driver.rating || 0), 0) / drivers.length 
+      ? drivers.reduce((sum, driver) => sum + (driver.driver?.rating || driver.driver?.averageRating || 0), 0) / drivers.length 
       : 0;
 
     // Top performing drivers
@@ -3999,10 +4002,10 @@ router.get('/analytics/drivers', async (req, res) => {
       const driverAssignments = assignments.filter(assignment => assignment.driverId === driver.id);
       return {
         driverId: driver.id,
-        name: driver.name,
+        name: driver.name || driver.driver?.name || 'Driver',
         totalTrips: driverAssignments.length,
-        rating: driver.rating || 0,
-        isOnline: driver.isOnline
+        rating: driver.driver?.rating || driver.driver?.averageRating || 0,
+        isOnline: driver.driver?.isOnline || false
       };
     }).sort((a, b) => b.totalTrips - a.totalTrips);
 

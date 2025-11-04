@@ -367,11 +367,11 @@ class DriverAssignmentService {
         updatedAt: new Date()
       });
 
-      // Update driver availability
-      const driverRef = this.db.collection('drivers').doc(driverId);
+      // ✅ CRITICAL FIX: Update driver availability in users collection
+      const driverRef = this.db.collection('users').doc(driverId);
       batch.update(driverRef, {
-        isAvailable: false,
-        currentBookingId: bookingId,
+        'driver.isAvailable': false,
+        'driver.currentBookingId': bookingId,
         updatedAt: new Date()
       });
 
@@ -444,11 +444,11 @@ class DriverAssignmentService {
         updatedAt: new Date()
       });
 
-      // Update driver availability
-      const driverRef = this.db.collection('drivers').doc(booking.driverId);
+      // ✅ CRITICAL FIX: Update driver availability in users collection
+      const driverRef = this.db.collection('users').doc(booking.driverId);
       batch.update(driverRef, {
-        isAvailable: true,
-        currentBookingId: null,
+        'driver.isAvailable': true,
+        'driver.currentBookingId': null,
         updatedAt: new Date()
       });
 
@@ -595,7 +595,8 @@ class DriverAssignmentService {
    */
   async getDriver(driverId) {
     try {
-      const doc = await this.db.collection('drivers').doc(driverId).get();
+      // ✅ CRITICAL FIX: Get driver from users collection, not drivers collection
+      const doc = await this.db.collection('users').doc(driverId).get();
       return doc.exists ? { id: doc.id, ...doc.data() } : null;
     } catch (error) {
       console.error('Get driver error:', error);

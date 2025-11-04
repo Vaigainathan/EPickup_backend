@@ -342,10 +342,35 @@ router.get('/bookings/:id', authenticateToken, async (req, res) => {
       });
     }
     
+    // ✅ CRITICAL FIX: Populate driver information if driverId exists
+    let driverData = null;
+    if (bookingData.driverId) {
+      try {
+        const driverDoc = await db.collection('users').doc(bookingData.driverId).get();
+        if (driverDoc.exists) {
+          const driver = driverDoc.data();
+          driverData = {
+            id: bookingData.driverId,
+            name: driver.name || driver.driver?.name || 'Driver',
+            phone: driver.phone || driver.driver?.phone || '',
+            rating: driver.driver?.rating || driver.driver?.averageRating || 4.5,
+            vehicleType: driver.driver?.vehicleType || driver.driver?.vehicleDetails?.vehicleType || '2 Wheeler',
+            vehicleNumber: driver.driver?.vehicleNumber || driver.driver?.vehicleDetails?.vehicleNumber || 'KA-XX-XX-XXXX',
+            profileImage: driver.driver?.profileImage || driver.photoURL,
+            vehicle: driver.driver?.vehicleDetails || {}
+          };
+        }
+      } catch (driverError) {
+        console.error(`❌ Error fetching driver data for driver ${bookingData.driverId}:`, driverError);
+        // Continue without driver data rather than failing
+      }
+    }
+    
     // Format the response
     const booking = {
       id: bookingDoc.id,
       ...bookingData,
+      driver: driverData, // ✅ CRITICAL: Include populated driver data
       createdAt: bookingData.createdAt?.toDate?.() || bookingData.createdAt,
       updatedAt: bookingData.updatedAt?.toDate?.() || bookingData.updatedAt
     };
@@ -2063,11 +2088,12 @@ router.get('/invoice/:bookingId', authenticateToken, async (req, res) => {
       // Continue with empty customer data rather than failing
     }
     
-    // Get driver details if available
+    // ✅ CRITICAL FIX: Get driver details from correct collection (users, not drivers)
     let driverData = null;
     if (bookingData.driverId) {
       try {
-        const driverDoc = await db.collection('drivers').doc(bookingData.driverId).get();
+        // ✅ FIX: Use 'users' collection, not 'drivers' collection
+        const driverDoc = await db.collection('users').doc(bookingData.driverId).get();
         if (driverDoc.exists) {
           driverData = driverDoc.data();
         } else {

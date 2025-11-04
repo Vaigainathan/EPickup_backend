@@ -173,7 +173,8 @@ class BookingService {
       // Use atomic transaction for driver acceptance
       const result = await this.db.runTransaction(async (transaction) => {
         const bookingRef = this.db.collection('bookings').doc(bookingId);
-        const driverRef = this.db.collection('drivers').doc(driverId);
+        // ✅ CRITICAL FIX: Use 'users' collection, not 'drivers' collection
+        const driverRef = this.db.collection('users').doc(driverId);
 
         // Get current booking and driver data
         const [bookingDoc, driverDoc] = await Promise.all([
@@ -207,8 +208,8 @@ class BookingService {
           // Same driver - allow idempotent accept
         }
 
-        // Check if driver is available
-        if (driver.status !== 'available') {
+        // ✅ CRITICAL FIX: Check driver availability from correct field (driver.driver.isAvailable, not driver.status)
+        if (!driver.driver?.isAvailable || !driver.driver?.isOnline) {
           throw new Error('Driver is not available');
         }
 
@@ -243,20 +244,25 @@ class BookingService {
           }
         };
 
-        // Update driver status
-        const updatedDriver = {
-          ...driver,
-          status: 'busy',
-          currentBookingId: bookingId,
-          lastBookingAcceptedAt: new Date(),
+        // ✅ CRITICAL FIX: Update driver status using correct field structure
+        transaction.update(driverRef, {
+          'driver.isAvailable': false,
+          'driver.currentBookingId': bookingId,
           updatedAt: new Date()
-        };
+        });
+        
+        // ✅ CRITICAL FIX: Update driverLocations collection atomically
+        const driverLocationRef = this.db.collection('driverLocations').doc(driverId);
+        transaction.set(driverLocationRef, {
+          driverId: driverId,
+          currentTripId: bookingId,
+          lastUpdated: new Date()
+        }, { merge: true });
 
-        // Apply updates in transaction
+        // Apply booking updates in transaction
         transaction.update(bookingRef, updatedBooking);
-        transaction.update(driverRef, updatedDriver);
 
-        return { booking: updatedBooking, driver: updatedDriver };
+        return { booking: updatedBooking };
       });
 
       console.log(`✅ Driver ${driverId} accepted booking ${bookingId} atomically`);

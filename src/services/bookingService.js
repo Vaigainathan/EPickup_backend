@@ -780,67 +780,95 @@ class BookingService {
       case 'delivered':
         updateData['timing.deliveredAt'] = new Date();
         
-        // Deduct commission when trip is delivered
+        // ✅ CRITICAL FIX: Deduct commission when trip is delivered (fallback - primary is payment confirmation)
         try {
           const bookingData = bookingDoc.data();
           const driverId = bookingData.driverId;
           
-          if (driverId) {
+          // ✅ CRITICAL FIX: Check if commission was already deducted (from payment confirmation)
+          const alreadyDeducted = bookingData.commissionDeducted?.amount || bookingData.commissionDeducted || false;
+          if (alreadyDeducted) {
+            console.log(`⚠️ [BOOKING_SERVICE] Commission already deducted for booking ${bookingId}. Skipping duplicate deduction.`);
+            // Use existing commission data
+            updateData.commissionDeducted = bookingData.commissionDeducted;
+          } else if (driverId) {
             // Get the actual fare amount paid by customer
-            const tripFare = bookingData.fare?.totalFare || bookingData.fare || 0;
-            const exactDistanceKm = bookingData.distance?.total || 0;
+            const tripFare = bookingData.fare?.totalFare || bookingData.fare?.total || bookingData.fare || 0;
+            const exactDistanceKm = bookingData.distance?.total || bookingData.exactDistance || bookingData.pricing?.distance || 0;
             
-            if (tripFare > 0) {
-              console.log(`💰 Deducting commission for trip ${bookingId}: Fare ₹${tripFare}`);
-              
-              // Calculate commission based on fare amount (not raw distance)
-              // Commission = (Fare ÷ ₹10/km) × ₹2/km
-              // This ensures commission matches the rounded fare calculation
-              const fareCalculationService = require('./fareCalculationService');
-              const fareBreakdown = fareCalculationService.calculateFare(exactDistanceKm);
-              const commissionAmount = fareBreakdown.commission; // ₹2 per km
-              const roundedDistanceKm = fareBreakdown.roundedDistanceKm;
-              
-              console.log(`📊 Fare breakdown: ${exactDistanceKm}km → ${roundedDistanceKm}km → ₹${tripFare} → Commission ₹${commissionAmount}`);
-              
-              // Prepare trip details for commission transaction
-              const tripDetails = {
-                pickupLocation: bookingData.pickup || {},
-                dropoffLocation: bookingData.dropoff || {},
-                tripFare: tripFare,
-                exactDistanceKm: exactDistanceKm,
-                roundedDistanceKm: roundedDistanceKm
-              };
-              
-              // Deduct commission from driver wallet
-              const commissionResult = await walletService.deductPoints(
-                driverId,
-                bookingId,
-                roundedDistanceKm, // Use rounded distance for commission calculation
-                commissionAmount,
-                tripDetails
-              );
-              
-              if (commissionResult.success) {
-                console.log(`✅ Commission deducted: ₹${commissionAmount} for ${roundedDistanceKm}km (fare: ₹${tripFare})`);
-                updateData.commissionDeducted = {
-                  amount: commissionAmount,
-                  exactDistanceKm: exactDistanceKm,
-                  roundedDistanceKm: roundedDistanceKm,
-                  tripFare: tripFare,
-                  transactionId: commissionResult.transactionId,
-                  deductedAt: new Date()
-                };
-              } else {
-                console.error('❌ Commission deduction failed:', commissionResult.error);
-                updateData.commissionError = commissionResult.error;
-              }
+            // ✅ CRITICAL FIX: Always use fareCalculationService for proper rounding (0.5km → 1km, 8.4km → 9km)
+            const fareCalculationService = require('./fareCalculationService');
+            let fareBreakdown;
+            let roundedDistanceKm;
+            let commissionAmount;
+            
+            if (exactDistanceKm > 0) {
+              fareBreakdown = fareCalculationService.calculateFare(exactDistanceKm);
+              roundedDistanceKm = fareBreakdown.roundedDistanceKm; // Rounded distance (e.g., 8.4km → 9km)
+              commissionAmount = fareBreakdown.commission; // Commission based on rounded distance (e.g., 9km × ₹2 = ₹18)
             } else {
-              console.log(`⚠️ No fare amount found for trip ${bookingId}, skipping commission deduction`);
+              // ✅ CRITICAL FIX: Even if distance is 0, use fareCalculationService for minimum commission
+              fareBreakdown = fareCalculationService.calculateFare(0.5); // 0.5km rounds to 1km
+              roundedDistanceKm = fareBreakdown.roundedDistanceKm; // Will be 1km
+              commissionAmount = fareBreakdown.commission; // Will be ₹2 (1km × ₹2/km)
+            }
+            
+            console.log(`💰 [BOOKING_SERVICE] Deducting commission for trip ${bookingId}:`, {
+              exactDistanceKm: exactDistanceKm.toFixed(2),
+              roundedDistanceKm: roundedDistanceKm,
+              commissionAmount: commissionAmount,
+              tripFare: tripFare,
+              calculation: `${roundedDistanceKm}km × ₹2/km = ₹${commissionAmount}`
+            });
+            
+            // Prepare trip details for commission transaction
+            const tripDetails = {
+              bookingId: bookingId,
+              pickupLocation: bookingData.pickup || {},
+              dropoffLocation: bookingData.dropoff || {},
+              tripFare: tripFare,
+              distance: roundedDistanceKm, // ✅ Use rounded distance
+              exactDistance: exactDistanceKm,
+              paymentMethod: 'cash'
+            };
+            
+            // Deduct commission from driver wallet
+            const commissionResult = await walletService.deductPoints(
+              driverId,
+              bookingId,
+              roundedDistanceKm, // ✅ Pass rounded distance
+              commissionAmount,
+              tripDetails
+            );
+            
+            if (commissionResult.success) {
+              console.log(`✅ [BOOKING_SERVICE] Commission deducted: ₹${commissionAmount} (${roundedDistanceKm}km × ₹2/km, fare: ₹${tripFare})`);
+              updateData.commissionDeducted = {
+                amount: commissionAmount,
+                roundedDistanceKm: roundedDistanceKm,
+                exactDistanceKm: exactDistanceKm,
+                tripFare: tripFare,
+                transactionId: commissionResult.data?.transactionId || commissionResult.transactionId,
+                deductedAt: new Date(),
+                deductedBy: driverId
+              };
+            } else {
+              console.error('❌ [BOOKING_SERVICE] Commission deduction failed:', commissionResult.error);
+              // ✅ CRITICAL FIX: Still mark booking to prevent duplicate attempts
+              updateData.commissionDeducted = {
+                amount: commissionAmount,
+                roundedDistanceKm: roundedDistanceKm,
+                exactDistanceKm: exactDistanceKm,
+                status: 'failed',
+                failureReason: commissionResult.error,
+                deductedAt: new Date(),
+                deductedBy: driverId
+              };
+              updateData.commissionError = commissionResult.error;
             }
           }
         } catch (commissionError) {
-          console.error('❌ Error processing commission:', commissionError);
+          console.error('❌ [BOOKING_SERVICE] Error processing commission:', commissionError);
           updateData.commissionError = commissionError.message;
         }
         break;

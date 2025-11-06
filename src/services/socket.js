@@ -417,6 +417,34 @@ const initializeSocketIO = async (server) => {
         eventHandler.handleTypingIndicator(socket, data, false);
       });
 
+      // ✅ CRITICAL FIX: Handle booking room join/leave for customer app
+      socket.on('join-booking', (bookingId) => {
+        if (!bookingId) {
+          socket.emit('error', {
+            code: 'INVALID_BOOKING_ID',
+            message: 'Booking ID is required'
+          });
+          return;
+        }
+        
+        // Join booking room
+        socket.join(`booking:${bookingId}`);
+        console.log(`✅ [SOCKET] User ${socket.userId} joined booking room: booking:${bookingId}`);
+        
+        socket.emit('booking-room-joined', {
+          success: true,
+          bookingId: bookingId,
+          room: `booking:${bookingId}`
+        });
+      });
+
+      socket.on('leave-booking', (bookingId) => {
+        if (bookingId) {
+          socket.leave(`booking:${bookingId}`);
+          console.log(`✅ [SOCKET] User ${socket.userId} left booking room: booking:${bookingId}`);
+        }
+      });
+
       // Handle disconnection
       socket.on('disconnect', (reason) => {
         console.log(`🔌 User disconnected: ${socket.userId} (${socket.userType}) - Reason: ${reason}`);
@@ -853,8 +881,10 @@ const updateDriverLocationInDB = async (driverId, location, bookingId) => {
 
 const sendToBooking = (bookingId, event, data) => {
   if (!io) return false;
-  const roomName = `booking_${bookingId}`;
+  // ✅ CRITICAL FIX: Use consistent room naming (booking:${bookingId})
+  const roomName = `booking:${bookingId}`;
   io.to(roomName).emit(event, data);
+  console.log(`📤 [SOCKET] Sent ${event} to booking room: ${roomName}`);
   return true;
 };
 

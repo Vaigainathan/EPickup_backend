@@ -1223,8 +1223,25 @@ class WebSocketEventHandler {
         const roomSize = room ? room.size : 0;
         console.log(`📊 [WEBSOCKET_ACCEPT] Room ${customerRoom} has ${roomSize} connected socket(s)`);
         
+        // ✅ CRITICAL FIX: Send to multiple rooms to ensure customer receives the event
+        // 1. User-specific room: user:${customerId}
+        // 2. Booking room: booking:${bookingId}
+        // 3. Customer type room: type:customer (for admin monitoring)
+        const userRoom = `user:${updatedBookingData.customerId}`;
+        const bookingRoom = `booking:${bookingId}`;
+        
+        console.log(`📤 [WEBSOCKET_ACCEPT] Emitting driver_assigned to multiple rooms:`, {
+          userRoom,
+          bookingRoom,
+          customerRoom,
+          bookingId,
+          driverId: userId
+        });
+        
         // ✅ FIXED: Notify customer with correct event name and data structure, including full booking
-        this.io.to(customerRoom).emit('driver_assigned', driverAssignedEvent);
+        this.io.to(userRoom).emit('driver_assigned', driverAssignedEvent);
+        this.io.to(bookingRoom).emit('driver_assigned', driverAssignedEvent);
+        this.io.to(customerRoom).emit('driver_assigned', driverAssignedEvent); // Keep for backward compatibility
 
         // ✅ FIXED: Also send booking status update with full booking data
         const statusUpdateEvent = {
@@ -1242,8 +1259,10 @@ class WebSocketEventHandler {
           updatedBy: userId
         };
         
-        console.log(`📤 [WEBSOCKET_ACCEPT] Emitting booking_status_update to room: ${customerRoom}`);
-        this.io.to(customerRoom).emit('booking_status_update', statusUpdateEvent);
+        console.log(`📤 [WEBSOCKET_ACCEPT] Emitting booking_status_update to multiple rooms`);
+        this.io.to(userRoom).emit('booking_status_update', statusUpdateEvent);
+        this.io.to(bookingRoom).emit('booking_status_update', statusUpdateEvent);
+        this.io.to(customerRoom).emit('booking_status_update', statusUpdateEvent); // Keep for backward compatibility
 
         // Notify admin
         this.io.to(`type:admin`).emit('booking_status_update', statusUpdate);
@@ -1817,17 +1836,32 @@ class WebSocketEventHandler {
         timestamp: new Date().toISOString()
       };
 
-      this.io.to(`user:${customerId}`).emit('driver_assigned', notificationData);
+      // ✅ CRITICAL FIX: Send to multiple rooms to ensure customer receives the event
+      const userRoom = `user:${customerId}`;
+      const bookingRoom = `booking:${assignmentData.bookingId}`;
+      
+      console.log(`📤 [WEBSOCKET] Emitting driver_assigned to multiple rooms:`, {
+        userRoom,
+        bookingRoom,
+        bookingId: assignmentData.bookingId,
+        driverId: assignmentData.driverId
+      });
+      
+      this.io.to(userRoom).emit('driver_assigned', notificationData);
+      this.io.to(bookingRoom).emit('driver_assigned', notificationData);
       
       // ✅ CRITICAL FIX: Also emit booking_status_update with full booking
       if (fullBookingData) {
-        this.io.to(`user:${customerId}`).emit('booking_status_update', {
+        const statusUpdate = {
           bookingId: assignmentData.bookingId,
           status: fullBookingData.status || 'driver_assigned',
           booking: fullBookingData,
           driverInfo: notificationData.driverInfo,
           timestamp: new Date().toISOString()
-        });
+        };
+        
+        this.io.to(userRoom).emit('booking_status_update', statusUpdate);
+        this.io.to(bookingRoom).emit('booking_status_update', statusUpdate);
       }
       
       console.log(`✅ Driver assignment notification sent to customer ${customerId}`);

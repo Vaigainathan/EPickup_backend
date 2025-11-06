@@ -1136,8 +1136,12 @@ router.get('/bookings', async (req, res) => {
         driverInfo: data.driverId ? {
           name: data.driverInfo?.name || 'Driver Assigned',
           phone: data.driverInfo?.phone || '',
-          rating: data.driverInfo?.rating || 0
+          rating: data.driverInfo?.rating || 0,
+          // ✅ CRITICAL FIX: Include isVerified status from driverInfo or booking-level field
+          isVerified: data.driverInfo?.isVerified !== undefined ? data.driverInfo.isVerified : (data.driverVerified === true)
         } : undefined,
+        // ✅ CRITICAL FIX: Also include driverVerified at booking level for backward compatibility
+        driverVerified: data.driverId ? (data.driverInfo?.isVerified !== undefined ? data.driverInfo.isVerified : (data.driverVerified === true)) : false,
         // Map pickup location
         pickupLocation: {
           address: data.pickup?.address || 'No pickup address',

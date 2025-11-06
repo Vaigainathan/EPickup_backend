@@ -261,9 +261,14 @@ class PointsService {
         lastUpdated: new Date()
       });
 
-      // Create commission transaction
+      // ✅ CRITICAL FIX: Create commission transaction with proper distance fields
       const transactionId = uuidv4();
       const transactionRef = this.db.collection('pointsTransactions').doc(transactionId);
+      
+      // ✅ Extract rounded and exact distance from tripDetails if available
+      const roundedDistanceKm = tripDetails.distance || tripDetails.roundedDistanceKm || distanceKm;
+      const exactDistanceKm = tripDetails.exactDistance || tripDetails.exactDistanceKm;
+      
       batch.set(transactionRef, {
         id: transactionId,
         driverId,
@@ -272,8 +277,13 @@ class PointsService {
         previousBalance: currentBalance,
         newBalance: newBalance,
         tripId,
-        distanceKm,
-        tripDetails,
+        distanceKm: roundedDistanceKm, // ✅ Store rounded distance (primary)
+        exactDistanceKm: exactDistanceKm || distanceKm, // ✅ Store exact distance if available
+        tripDetails: {
+          ...tripDetails,
+          distance: roundedDistanceKm, // ✅ Ensure rounded distance in tripDetails
+          exactDistance: exactDistanceKm || distanceKm
+        },
         status: 'completed',
         createdAt: new Date()
       });

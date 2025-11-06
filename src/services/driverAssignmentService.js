@@ -357,18 +357,67 @@ class DriverAssignmentService {
     try {
       const batch = this.db.batch();
 
+      // ✅ CRITICAL FIX: Get driver data to include driverInfo with isVerified
+      const driverRef = this.db.collection('users').doc(driverId);
+      const driverDoc = await driverRef.get();
+      let driverData = null;
+      let driverIsVerified = false;
+      
+      if (driverDoc.exists) {
+        driverData = driverDoc.data();
+        // ✅ CRITICAL FIX: Determine driver verification status using same logic
+        driverIsVerified = (() => {
+          // Priority 1: Check driver.verificationStatus
+          if (driverData.driver?.verificationStatus === 'approved' || driverData.driver?.verificationStatus === 'verified') {
+            return true
+          }
+          // Priority 2: Check isVerified flag
+          if (driverData.driver?.isVerified === true || driverData.isVerified === true) {
+            return true
+          }
+          // Priority 3: Check if all documents are verified
+          const driverDocs = driverData.driver?.documents || {}
+          const docKeys = Object.keys(driverDocs)
+          if (docKeys.length > 0) {
+            const allVerified = docKeys.every(key => {
+              const doc = driverDocs[key]
+              return doc && (doc.verified === true || doc.status === 'verified' || doc.verificationStatus === 'verified')
+            })
+            if (allVerified) {
+              return true
+            }
+          }
+          return false
+        })()
+      }
+
       // Update booking
       const bookingRef = this.db.collection('bookings').doc(bookingId);
-      batch.update(bookingRef, {
+      const bookingUpdate = {
         driverId,
         status: 'driver_assigned',
         assignedAt: new Date(),
         assignedBy,
         updatedAt: new Date()
-      });
+      };
+
+      // ✅ CRITICAL FIX: Include driverInfo with isVerified if driver data available
+      if (driverData) {
+        bookingUpdate.driverInfo = {
+          name: driverData.name || 'Driver',
+          phone: driverData.phone || '',
+          rating: driverData.driver?.rating || 0,
+          vehicleNumber: driverData.driver?.vehicleDetails?.vehicleNumber || '',
+          vehicleModel: driverData.driver?.vehicleDetails?.vehicleModel || '',
+          isVerified: driverIsVerified
+        };
+        bookingUpdate.driverVerified = driverIsVerified;
+      }
+
+      batch.update(bookingRef, bookingUpdate);
 
       // ✅ CRITICAL FIX: Update driver availability in users collection
-      const driverRef = this.db.collection('users').doc(driverId);
+      // Note: driverRef already declared above at line 361
       batch.update(driverRef, {
         'driver.isAvailable': false,
         'driver.currentBookingId': bookingId,

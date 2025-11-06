@@ -218,13 +218,53 @@ router.post('/location/update', [
     // Update location in database
     await socketService.updateDriverLocationInDB(driverId, location, bookingId);
 
-    // Broadcast to booking room
-    socketService.sendToBooking(bookingId, 'driver-location-update', {
-      driverId,
-      location,
-      estimatedArrival,
-      timestamp: new Date().toISOString()
-    });
+    // ✅ CRITICAL FIX: Get booking details to find customer ID
+    const db = require('../services/firebase').getFirestore();
+    const bookingDoc = await db.collection('bookings').doc(bookingId).get();
+    
+    if (bookingDoc.exists) {
+      const bookingData = bookingDoc.data();
+      const customerId = bookingData.customerId;
+      
+      // ✅ CRITICAL FIX: Send to multiple rooms to ensure customer receives the event
+      const userRoom = `user:${customerId}`;
+      const bookingRoom = `booking:${bookingId}`;
+      
+      const locationUpdateData = {
+        bookingId,
+        driverId,
+        location: {
+          latitude: location.lat,
+          longitude: location.lng,
+          timestamp: new Date().toISOString()
+        },
+        estimatedArrival,
+        timestamp: new Date().toISOString()
+      };
+      
+      // ✅ CRITICAL FIX: Emit to both user room and booking room
+      const getSocketIO = require('../services/socket').getSocketIO;
+      try {
+        const io = getSocketIO();
+        if (io) {
+          io.to(userRoom).emit('driver_location_update', locationUpdateData);
+          io.to(bookingRoom).emit('driver_location_update', locationUpdateData);
+          console.log(`📍 [REALTIME] Broadcasted location update to rooms:`, { userRoom, bookingRoom });
+        }
+      } catch (ioError) {
+        console.error('❌ [REALTIME] Error getting Socket.IO instance:', ioError);
+        // Fallback to sendToBooking
+        socketService.sendToBooking(bookingId, 'driver_location_update', locationUpdateData);
+      }
+    } else {
+      // Fallback: use sendToBooking if booking not found
+      socketService.sendToBooking(bookingId, 'driver-location-update', {
+        driverId,
+        location,
+        estimatedArrival,
+        timestamp: new Date().toISOString()
+      });
+    }
 
     res.status(200).json({
       success: true,

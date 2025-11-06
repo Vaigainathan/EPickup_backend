@@ -607,13 +607,61 @@ class DriverMatchingService {
           updatedAt: new Date()
         });
 
+        // ✅ CRITICAL FIX: Get driver data to include driverInfo with isVerified
+        const driverDoc = await this.db.collection('users').doc(driverId).get();
+        let driverData = null;
+        let driverIsVerified = false;
+        
+        if (driverDoc.exists) {
+          driverData = driverDoc.data();
+          // ✅ CRITICAL FIX: Determine driver verification status using same logic
+          driverIsVerified = (() => {
+            // Priority 1: Check driver.verificationStatus
+            if (driverData.driver?.verificationStatus === 'approved' || driverData.driver?.verificationStatus === 'verified') {
+              return true
+            }
+            // Priority 2: Check isVerified flag
+            if (driverData.driver?.isVerified === true || driverData.isVerified === true) {
+              return true
+            }
+            // Priority 3: Check if all documents are verified
+            const driverDocs = driverData.driver?.documents || {}
+            const docKeys = Object.keys(driverDocs)
+            if (docKeys.length > 0) {
+              const allVerified = docKeys.every(key => {
+                const doc = driverDocs[key]
+                return doc && (doc.verified === true || doc.status === 'verified' || doc.verificationStatus === 'verified')
+              })
+              if (allVerified) {
+                return true
+              }
+            }
+            return false
+          })()
+        }
+
         // Update booking with driver assignment
-        await this.db.collection('bookings').doc(assignment.bookingId).update({
+        const updateData = {
           driverId: driverId,
           status: 'driver_assigned',
           'timing.driverAssignedAt': new Date(),
           updatedAt: new Date()
-        });
+        };
+
+        // ✅ CRITICAL FIX: Include driverInfo with isVerified if driver data available
+        if (driverData) {
+          updateData.driverInfo = {
+            name: driverData.name || 'Driver',
+            phone: driverData.phone || '',
+            rating: driverData.driver?.rating || 0,
+            vehicleNumber: driverData.driver?.vehicleDetails?.vehicleNumber || '',
+            vehicleModel: driverData.driver?.vehicleDetails?.vehicleModel || '',
+            isVerified: driverIsVerified
+          };
+          updateData.driverVerified = driverIsVerified;
+        }
+
+        await this.db.collection('bookings').doc(assignment.bookingId).update(updateData);
 
         // Update driver location
         await this.db.collection('driverLocations').doc(driverId).update({

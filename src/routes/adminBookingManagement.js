@@ -94,12 +94,40 @@ router.get('/bookings', authMiddleware, async (req, res) => {
       if (bookingData.driverId) {
         const driverDoc = await db.collection('users').doc(bookingData.driverId).get();
         if (driverDoc.exists) {
+          const driverData = driverDoc.data();
+          // ✅ CRITICAL FIX: Determine driver verification status using same logic
+          const driverIsVerified = (() => {
+            // Priority 1: Check driver.verificationStatus
+            if (driverData.driver?.verificationStatus === 'approved' || driverData.driver?.verificationStatus === 'verified') {
+              return true
+            }
+            // Priority 2: Check isVerified flag
+            if (driverData.driver?.isVerified === true || driverData.isVerified === true) {
+              return true
+            }
+            // Priority 3: Check if all documents are verified
+            const driverDocs = driverData.driver?.documents || {}
+            const docKeys = Object.keys(driverDocs)
+            if (docKeys.length > 0) {
+              const allVerified = docKeys.every(key => {
+                const doc = driverDocs[key]
+                return doc && (doc.verified === true || doc.status === 'verified' || doc.verificationStatus === 'verified')
+              })
+              if (allVerified) {
+                return true
+              }
+            }
+            return false
+          })()
+          
           booking.driverInfo = {
-            name: driverDoc.data().name,
-            phone: driverDoc.data().phone,
-            vehicleNumber: driverDoc.data().driver?.vehicleNumber,
-            isOnline: driverDoc.data().driver?.isOnline,
-            isAvailable: driverDoc.data().driver?.isAvailable
+            name: driverData.name,
+            phone: driverData.phone,
+            vehicleNumber: driverData.driver?.vehicleNumber,
+            isOnline: driverData.driver?.isOnline,
+            isAvailable: driverData.driver?.isAvailable,
+            // ✅ CRITICAL FIX: Include isVerified status
+            isVerified: driverIsVerified
           };
         }
       }
@@ -262,6 +290,31 @@ router.post('/bookings/:bookingId/assign-driver', [
       });
     }
 
+    // ✅ CRITICAL FIX: Determine driver verification status using same logic as driver acceptance
+    const driverIsVerified = (() => {
+      // Priority 1: Check driver.verificationStatus
+      if (driverData.driver?.verificationStatus === 'approved' || driverData.driver?.verificationStatus === 'verified') {
+        return true
+      }
+      // Priority 2: Check isVerified flag
+      if (driverData.driver?.isVerified === true || driverData.isVerified === true) {
+        return true
+      }
+      // Priority 3: Check if all documents are verified
+      const driverDocs = driverData.driver?.documents || {}
+      const docKeys = Object.keys(driverDocs)
+      if (docKeys.length > 0) {
+        const allVerified = docKeys.every(key => {
+          const doc = driverDocs[key]
+          return doc && (doc.verified === true || doc.status === 'verified' || doc.verificationStatus === 'verified')
+        })
+        if (allVerified) {
+          return true
+        }
+      }
+      return false
+    })()
+
     // Update booking
     batch.update(bookingRef, {
       driverId,
@@ -269,7 +322,18 @@ router.post('/bookings/:bookingId/assign-driver', [
       assignedAt: new Date(),
       assignmentReason: reason,
       assignedBy: req.user.uid,
-      updatedAt: new Date()
+      updatedAt: new Date(),
+      // ✅ CRITICAL FIX: Include driverInfo with isVerified status
+      driverInfo: {
+        name: driverData.name || 'Driver',
+        phone: driverData.phone || '',
+        rating: driverData.driver?.rating || 0,
+        vehicleNumber: driverData.driver?.vehicleDetails?.vehicleNumber || '',
+        vehicleModel: driverData.driver?.vehicleDetails?.vehicleModel || '',
+        isVerified: driverIsVerified
+      },
+      // ✅ CRITICAL FIX: Also set booking-level driverVerified for backward compatibility
+      driverVerified: driverIsVerified
     });
 
     // Create assignment record

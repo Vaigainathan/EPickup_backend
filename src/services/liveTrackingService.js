@@ -60,20 +60,31 @@ class LiveTrackingService {
         if (bookingDoc.exists) {
           const bookingData = bookingDoc.data();
           
-          // Notify customer of driver location update
-          this.io.to(`user:${bookingData.customerId}`).emit('driver_location_update', {
+          // ✅ CRITICAL FIX: Send to multiple rooms to ensure customer receives the event
+          const userRoom = `user:${bookingData.customerId}`;
+          const bookingRoom = `booking:${bookingId}`;
+          
+          const locationUpdateData = {
             bookingId,
             driverId,
             location: {
-        latitude: location.latitude,
-        longitude: location.longitude,
+              latitude: location.latitude,
+              longitude: location.longitude,
               address: location.address,
               timestamp: new Date().toISOString()
             },
-        timestamp: new Date().toISOString()
+            timestamp: new Date().toISOString()
+          };
+          
+          // ✅ CRITICAL FIX: Emit to both user room and booking room
+          this.io.to(userRoom).emit('driver_location_update', locationUpdateData);
+          this.io.to(bookingRoom).emit('driver_location_update', locationUpdateData);
+          
+          console.log(`📍 [LiveTrackingService] Updated driver location for booking ${bookingId}`, {
+            userRoom,
+            bookingRoom,
+            location: { latitude: location.latitude, longitude: location.longitude }
           });
-
-          console.log(`📍 [LiveTrackingService] Updated driver location for booking ${bookingId}`);
         }
       }
 

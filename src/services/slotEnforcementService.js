@@ -178,23 +178,80 @@ class SlotEnforcementService {
         };
       }
 
-      // Check if current time falls within any selected slot
+      // ✅ CRITICAL FIX: Check if ALL slots have expired (not just if driver is in active slot)
+      // This is the real-time enforcement that forces drivers offline when slots expire
       const activeSlot = selectedSlots.find(slot => {
         const startTime = slot.startTime?.toDate ? slot.startTime.toDate() : new Date(slot.startTime);
         const endTime = slot.endTime?.toDate ? slot.endTime.toDate() : new Date(slot.endTime);
         return currentTime >= startTime && currentTime <= endTime;
       });
 
-      // ✅ CRITICAL FIX: Don't force offline if driver is not in active slot
-      // This prevents disruption when driver app is restored after force-kill
-      // The driver's manual online status (checked above) is already respected
-      if (!activeSlot) {
-        console.log(`⚠️ [SLOT_ENFORCEMENT] Driver ${driverId} not in active slot time but is online - skipping enforcement (respecting driver status)`);
+      // Check for upcoming slots (not yet started)
+      const upcomingSlot = selectedSlots.find(slot => {
+        const startTime = slot.startTime?.toDate ? slot.startTime.toDate() : new Date(slot.startTime);
+        return currentTime < startTime;
+      });
+
+      // ✅ CRITICAL FIX: Check if ALL slots have expired
+      const expiredSlots = selectedSlots.filter(slot => {
+        const endTime = slot.endTime?.toDate ? slot.endTime.toDate() : new Date(slot.endTime);
+        return currentTime > endTime;
+      });
+
+      // ✅ CRITICAL FIX: Force offline if ALL slots have expired (real-time enforcement)
+      if (expiredSlots.length === selectedSlots.length && selectedSlots.length > 0) {
+        console.log(`🔴 [SLOT_ENFORCEMENT] Driver ${driverId} has ALL expired slots - forcing OFFLINE`, {
+          expiredCount: expiredSlots.length,
+          totalSlots: selectedSlots.length,
+          expiredSlots: expiredSlots.map(s => s.label || s.slotId)
+        });
+        
+        await this.forceDriverOffline(driverId, `All slots expired: ${expiredSlots.map(s => s.label || s.slotId).join(', ')}`);
+        return {
+          driverId,
+          success: true,
+          action: 'forced_offline',
+          reason: 'All selected slots have expired'
+        };
+      }
+
+      // ✅ If driver is not in active slot but has upcoming slots, allow staying online (preparation mode)
+      if (!activeSlot && upcomingSlot) {
+        console.log(`⏰ [SLOT_ENFORCEMENT] Driver ${driverId} has upcoming slot - allowing online (preparation mode)`, {
+          upcomingSlot: upcomingSlot.label || upcomingSlot.slotId
+        });
         return {
           driverId,
           success: true,
           action: 'skipped',
-          reason: 'Not in active slot but driver is online - respecting driver status'
+          reason: 'Has upcoming slot - preparation mode allowed'
+        };
+      }
+
+      // ✅ If no active slot and no upcoming slots but some slots expired, check if ALL are expired (handled above)
+      // If some slots are still valid (not yet started), allow staying online
+      if (!activeSlot && expiredSlots.length < selectedSlots.length) {
+        console.log(`✅ [SLOT_ENFORCEMENT] Driver ${driverId} has valid upcoming slots - allowing online`, {
+          validSlots: selectedSlots.length - expiredSlots.length,
+          expiredSlots: expiredSlots.length
+        });
+        return {
+          driverId,
+          success: true,
+          action: 'skipped',
+          reason: 'Has valid upcoming slots'
+        };
+      }
+
+      // ✅ If no active slot and no upcoming slots and ALL slots expired (should be caught above, but safety check)
+      if (!activeSlot && !upcomingSlot) {
+        console.log(`🔴 [SLOT_ENFORCEMENT] Driver ${driverId} has no active or upcoming slots - forcing OFFLINE`);
+        await this.forceDriverOffline(driverId, 'No active or upcoming slots');
+        return {
+          driverId,
+          success: true,
+          action: 'forced_offline',
+          reason: 'No active or upcoming slots'
         };
       }
 

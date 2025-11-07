@@ -1963,8 +1963,23 @@ router.put('/status', [
             const endTime = slot.endTime?.toDate ? slot.endTime.toDate() : new Date(slot.endTime);
             const selectedAt = slot.selectedAt?.toDate ? slot.selectedAt.toDate() : (slot.selectedAt ? new Date(slot.selectedAt) : null);
             
+            // ✅ DEBUG: Log slot validation details
+            console.log('🔍 [STATUS_UPDATE] Validating slot:', {
+              slotId: slot.slotId || slot.id,
+              label: slot.label,
+              startTime: startTime.toISOString(),
+              endTime: endTime.toISOString(),
+              now: now.toISOString(),
+              nowTimestamp: now.getTime(),
+              endTimeTimestamp: endTime.getTime(),
+              isExpired: now > endTime,
+              isActive: now >= startTime && now <= endTime,
+              isUpcoming: now < startTime
+            });
+            
             // Case 1: Currently within slot time - ALWAYS allow (driver can join mid-session)
             if (now >= startTime && now <= endTime) {
+              console.log('✅ [STATUS_UPDATE] Slot is ACTIVE (within time range)');
               validSlots.push({ slot, reason: 'active' });
               return; // Slot is active, allow going online regardless of when it was selected
             }
@@ -1973,6 +1988,7 @@ router.put('/status', [
             if (now < startTime) {
               // Must have been selected (selectedAt exists) - allows preparation
               if (selectedAt || slot.isSelected) {
+                console.log('✅ [STATUS_UPDATE] Slot is UPCOMING (future slot)');
                 validSlots.push({ slot, reason: 'upcoming' });
                 return;
               }
@@ -1980,13 +1996,30 @@ router.put('/status', [
             
             // Case 3: Slot has ended - mark as expired
             if (now > endTime) {
+              console.log('❌ [STATUS_UPDATE] Slot has EXPIRED:', {
+                slotLabel: slot.label,
+                endTime: endTime.toISOString(),
+                now: now.toISOString(),
+                minutesExpired: Math.round((now.getTime() - endTime.getTime()) / (1000 * 60))
+              });
               expiredSlots.push({ slot, endTime });
             }
           });
 
           // ✅ CRITICAL FIX: Require at least one valid slot
+          console.log('🔍 [STATUS_UPDATE] Slot validation summary:', {
+            totalSelectedSlots: selectedSlots.length,
+            validSlotsCount: validSlots.length,
+            expiredSlotsCount: expiredSlots.length,
+            validSlots: validSlots.map(v => v.slot.label || v.slot.slotId),
+            expiredSlots: expiredSlots.map(e => e.slot.label || e.slot.slotId)
+          });
+          
           if (validSlots.length === 0) {
-            console.log('❌ [STATUS_UPDATE] Driver cannot go online - no valid slot found');
+            console.log('❌ [STATUS_UPDATE] Driver cannot go online - no valid slot found', {
+              expiredCount: expiredSlots.length,
+              selectedCount: selectedSlots.length
+            });
             
             // ✅ CRITICAL FIX: Provide detailed error message about expired slots
             const expiredSlotLabels = expiredSlots.map(({ slot }) => {

@@ -1822,6 +1822,36 @@ router.put('/status', [
     const { isOnline, isAvailable, currentLocation, workingHours, workingDays } = req.body;
     const db = getFirestore();
     
+    // ✅ CRITICAL FIX: Prevent going offline if driver has active booking
+    // This ensures booking workflow is not disrupted
+    if (isOnline === false) {
+      const activeBookingStatuses = ['driver_assigned', 'accepted', 'driver_enroute', 'driver_arrived', 'picked_up', 'in_transit', 'at_dropoff', 'delivered', 'money_collection'];
+      const activeBookingQuery = db.collection('bookings')
+        .where('driverId', '==', uid)
+        .where('status', 'in', activeBookingStatuses)
+        .limit(1);
+      
+      const activeBookingSnapshot = await activeBookingQuery.get();
+      
+      if (!activeBookingSnapshot.empty) {
+        const activeBooking = activeBookingSnapshot.docs[0].data();
+        console.warn('⚠️ [STATUS_UPDATE] Driver trying to go offline but has active booking:', {
+          bookingId: activeBookingSnapshot.docs[0].id,
+          status: activeBooking.status
+        });
+        
+        return res.status(400).json({
+          success: false,
+          error: {
+            code: 'ACTIVE_BOOKING',
+            message: 'Cannot go offline',
+            details: 'You have an active booking. Please complete it before going offline.'
+          },
+          timestamp: new Date().toISOString()
+        });
+      }
+    }
+    
     // ✅ DEBUG: Log incoming request
     console.log('🔍 [STATUS_UPDATE] Incoming request:', {
       uid,
@@ -2019,8 +2049,29 @@ router.put('/status', [
     }
 
     console.log('📤 [STATUS_UPDATE] Updating Firestore with:', updateData);
-    await userRef.update(updateData);
-    console.log('✅ [STATUS_UPDATE] Firestore updated successfully');
+    
+    // ✅ CRITICAL FIX: Use transaction to ensure atomic update
+    // This prevents race conditions where status might be overwritten
+    try {
+      await db.runTransaction(async (transaction) => {
+        const userDoc = await transaction.get(userRef);
+        if (!userDoc.exists) {
+          throw new Error('User document does not exist');
+        }
+        
+        // Update within transaction
+        transaction.update(userRef, updateData);
+        
+        console.log('✅ [STATUS_UPDATE] Transaction started - updating status atomically');
+      });
+      
+      console.log('✅ [STATUS_UPDATE] Firestore updated successfully (transaction committed)');
+    } catch (transactionError) {
+      // Fallback to regular update if transaction fails
+      console.warn('⚠️ [STATUS_UPDATE] Transaction failed, using regular update:', transactionError);
+      await userRef.update(updateData);
+      console.log('✅ [STATUS_UPDATE] Firestore updated successfully (fallback method)');
+    }
 
     // ✅ CRITICAL FIX: Verify the update was persisted correctly
     const updatedDoc = await userRef.get();

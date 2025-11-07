@@ -1955,46 +1955,54 @@ router.put('/status', [
           // 3. Cannot go online for slots that have ENDED (now > endTime)
           // ✅ CRITICAL FIX: Check ALL slots, not just find first valid one
           
-          const validSlots = [];
+          const activeSlots = [];
+          const upcomingSlots = [];
           const expiredSlots = [];
           
           selectedSlots.forEach(slot => {
-            const startTime = slot.startTime?.toDate ? slot.startTime.toDate() : new Date(slot.startTime);
-            const endTime = slot.endTime?.toDate ? slot.endTime.toDate() : new Date(slot.endTime);
-            const selectedAt = slot.selectedAt?.toDate ? slot.selectedAt.toDate() : (slot.selectedAt ? new Date(slot.selectedAt) : null);
+            let startTime = slot.startTime?.toDate ? slot.startTime.toDate() : new Date(slot.startTime);
+            let endTime = slot.endTime?.toDate ? slot.endTime.toDate() : new Date(slot.endTime);
+
+            if (!(startTime instanceof Date) || isNaN(startTime.getTime())) {
+              startTime = null;
+            }
+            if (!(endTime instanceof Date) || isNaN(endTime.getTime())) {
+              endTime = null;
+            }
             
             // ✅ DEBUG: Log slot validation details
             console.log('🔍 [STATUS_UPDATE] Validating slot:', {
               slotId: slot.slotId || slot.id,
               label: slot.label,
-              startTime: startTime.toISOString(),
-              endTime: endTime.toISOString(),
+              startTime: startTime ? startTime.toISOString() : 'invalid',
+              endTime: endTime ? endTime.toISOString() : 'invalid',
               now: now.toISOString(),
               nowTimestamp: now.getTime(),
-              endTimeTimestamp: endTime.getTime(),
-              isExpired: now > endTime,
-              isActive: now >= startTime && now <= endTime,
-              isUpcoming: now < startTime
+              isExpired: endTime ? now > endTime : false,
+              isActive: startTime && endTime ? now >= startTime && now <= endTime : false,
+              isUpcoming: startTime ? now < startTime : false
             });
-            
-            // Case 1: Currently within slot time - ALWAYS allow (driver can join mid-session)
+
+            if (!startTime || !endTime) {
+              console.warn('⚠️ [STATUS_UPDATE] Slot has invalid time data, treating as upcoming');
+              if (startTime) {
+                upcomingSlots.push({ slot, startTime });
+              }
+              return;
+            }
+
             if (now >= startTime && now <= endTime) {
               console.log('✅ [STATUS_UPDATE] Slot is ACTIVE (within time range)');
-              validSlots.push({ slot, reason: 'active' });
-              return; // Slot is active, allow going online regardless of when it was selected
+              activeSlots.push({ slot, startTime, endTime });
+              return;
             }
-            
-            // Case 2: Slot is upcoming (can prepare to go online)
+
             if (now < startTime) {
-              // Must have been selected (selectedAt exists) - allows preparation
-              if (selectedAt || slot.isSelected) {
-                console.log('✅ [STATUS_UPDATE] Slot is UPCOMING (future slot)');
-                validSlots.push({ slot, reason: 'upcoming' });
-                return;
-              }
+              console.log('⏳ [STATUS_UPDATE] Slot is UPCOMING (future slot)');
+              upcomingSlots.push({ slot, startTime });
+              return;
             }
-            
-            // Case 3: Slot has ended - mark as expired
+
             if (now > endTime) {
               console.log('❌ [STATUS_UPDATE] Slot has EXPIRED:', {
                 slotLabel: slot.label,
@@ -2009,16 +2017,19 @@ router.put('/status', [
           // ✅ CRITICAL FIX: Require at least one valid slot
           console.log('🔍 [STATUS_UPDATE] Slot validation summary:', {
             totalSelectedSlots: selectedSlots.length,
-            validSlotsCount: validSlots.length,
+            activeSlotsCount: activeSlots.length,
             expiredSlotsCount: expiredSlots.length,
-            validSlots: validSlots.map(v => v.slot.label || v.slot.slotId),
+            upcomingSlotsCount: upcomingSlots.length,
+            activeSlots: activeSlots.map(v => v.slot.label || v.slot.slotId),
+            upcomingSlots: upcomingSlots.map(v => v.slot.label || v.slot.slotId),
             expiredSlots: expiredSlots.map(e => e.slot.label || e.slot.slotId)
           });
           
-          if (validSlots.length === 0) {
-            console.log('❌ [STATUS_UPDATE] Driver cannot go online - no valid slot found', {
+          if (activeSlots.length === 0) {
+            console.log('❌ [STATUS_UPDATE] Driver cannot go online - no active slot found', {
               expiredCount: expiredSlots.length,
-              selectedCount: selectedSlots.length
+              selectedCount: selectedSlots.length,
+              upcomingCount: upcomingSlots.length
             });
             
             // ✅ CRITICAL FIX: Provide detailed error message about expired slots
@@ -2028,31 +2039,22 @@ router.put('/status', [
               return `${startTime.toLocaleTimeString()} - ${endTime.toLocaleTimeString()}`;
             }).join(', ');
             
-            // Find next available slot for error message
-            const nextSlot = selectedSlots
-              .filter(slot => {
-                const endTime = slot.endTime?.toDate ? slot.endTime.toDate() : new Date(slot.endTime);
-                return endTime > now; // Not yet ended
-              })
-              .sort((a, b) => {
-                const aStart = a.startTime?.toDate ? a.startTime.toDate() : new Date(a.startTime);
-                const bStart = b.startTime?.toDate ? b.startTime.toDate() : new Date(b.startTime);
-                return aStart - bStart;
-              })[0];
+            const nextSlot = upcomingSlots
+              .slice()
+              .sort((a, b) => a.startTime.getTime() - b.startTime.getTime())[0];
 
-            const nextSlotTime = nextSlot ? 
-              (nextSlot.startTime?.toDate ? nextSlot.startTime.toDate() : new Date(nextSlot.startTime)) : null;
+            const nextSlotTime = nextSlot ? nextSlot.startTime : null;
 
             return res.status(400).json({
               success: false,
               error: {
                 code: 'NOT_IN_SLOT_TIME',
                 message: 'Cannot go online',
-                details: expiredSlots.length > 0 
-                  ? `All your selected slots have ended: ${expiredSlotLabels}. Please select current or future slots to go online.${nextSlotTime ? ` Next available slot starts at ${nextSlotTime.toLocaleTimeString()}.` : ''}`
-                  : nextSlotTime 
-                    ? `You can only go online during your selected slot times. Next slot starts at ${nextSlotTime.toLocaleTimeString()}`
-                    : 'You can only go online during your selected slot times. All selected slots have ended.'
+                details: expiredSlots.length === selectedSlots.length && expiredSlots.length > 0
+                  ? `All your selected slots have ended: ${expiredSlotLabels}. Please select current or future slots to go online.`
+                  : nextSlotTime
+                    ? `You can only go online during your active slot times. Next slot (${nextSlot.slot.label || 'upcoming slot'}) starts at ${nextSlotTime.toLocaleTimeString()}.`
+                    : 'You can only go online during your active slot times.'
               },
               timestamp: new Date().toISOString()
             });
@@ -2060,9 +2062,9 @@ router.put('/status', [
           
           // ✅ CRITICAL FIX: Log warning if expired slots are selected (but allow going online with valid slots)
           if (expiredSlots.length > 0) {
-            console.warn('⚠️ [STATUS_UPDATE] Driver has expired slots selected but also has valid slots:', {
+            console.warn('⚠️ [STATUS_UPDATE] Driver has expired slots selected but also has active slots:', {
               expiredCount: expiredSlots.length,
-              validCount: validSlots.length,
+              activeCount: activeSlots.length,
               expiredSlots: expiredSlots.map(({ slot }) => {
                 const startTime = slot.startTime?.toDate ? slot.startTime.toDate() : new Date(slot.startTime);
                 const endTime = slot.endTime?.toDate ? slot.endTime.toDate() : new Date(slot.endTime);
@@ -2147,31 +2149,55 @@ router.put('/status', [
         const selectedSlots = slots.filter(slot => slot.isSelected === true);
         const now = new Date();
         
-        // Check if driver has at least one valid (not expired) slot
-        const validSlots = selectedSlots.filter(slot => {
+        const activeSlots = selectedSlots.filter(slot => {
+          const startTime = slot.startTime?.toDate ? slot.startTime.toDate() : new Date(slot.startTime);
           const endTime = slot.endTime?.toDate ? slot.endTime.toDate() : new Date(slot.endTime);
-          return endTime > now; // Slot hasn't ended yet
+          return (
+            startTime instanceof Date &&
+            endTime instanceof Date &&
+            !isNaN(startTime.getTime()) &&
+            !isNaN(endTime.getTime()) &&
+            now >= startTime &&
+            now <= endTime
+          );
         });
+
+        const upcomingSlots = selectedSlots
+          .map(slot => {
+            const startTime = slot.startTime?.toDate ? slot.startTime.toDate() : new Date(slot.startTime);
+            return {
+              slot,
+              startTime
+            };
+          })
+          .filter(({ startTime }) => startTime instanceof Date && !isNaN(startTime.getTime()) && now < startTime);
         
-        if (validSlots.length === 0 && selectedSlots.length > 0) {
+        if (activeSlots.length === 0 && selectedSlots.length > 0) {
           // Driver has selected slots but all are expired
           const expiredSlotLabels = selectedSlots.map(slot => {
             const startTime = slot.startTime?.toDate ? slot.startTime.toDate() : new Date(slot.startTime);
             const endTime = slot.endTime?.toDate ? slot.endTime.toDate() : new Date(slot.endTime);
             return `${startTime.toLocaleTimeString()} - ${endTime.toLocaleTimeString()}`;
           }).join(', ');
+
+          const nextSlot = upcomingSlots
+            .slice()
+            .sort((a, b) => a.startTime.getTime() - b.startTime.getTime())[0];
           
-          console.warn('⚠️ [STATUS_UPDATE] Cannot restore online status - all selected slots have expired:', {
+          console.warn('⚠️ [STATUS_UPDATE] Cannot restore online status - no active slots:', {
             expiredSlots: expiredSlotLabels,
-            selectedCount: selectedSlots.length
+            selectedCount: selectedSlots.length,
+            upcomingCount: upcomingSlots.length
           });
           
           return res.status(400).json({
             success: false,
             error: {
-              code: 'ALL_SLOTS_EXPIRED',
+              code: nextSlot ? 'NOT_IN_SLOT_TIME' : 'ALL_SLOTS_EXPIRED',
               message: 'Cannot restore online status',
-              details: `All your selected slots have ended: ${expiredSlotLabels}. Please select current or future slots to go online.`
+              details: nextSlot
+                ? `You can restore online status only during your active slot time. Next slot (${nextSlot.slot.label || 'upcoming slot'}) starts at ${nextSlot.startTime.toLocaleTimeString()}.`
+                : `All your selected slots have ended: ${expiredSlotLabels}. Please select current or future slots to go online.`
             },
             timestamp: new Date().toISOString()
           });
@@ -2190,7 +2216,7 @@ router.put('/status', [
         } else {
           // Driver has at least one valid slot - allow restore
           console.log('✅ [STATUS_UPDATE] Restore validation passed - driver has valid slots:', {
-            validSlotsCount: validSlots.length,
+            activeSlotsCount: activeSlots.length,
             totalSelectedSlots: selectedSlots.length
           });
           canRestore = true;

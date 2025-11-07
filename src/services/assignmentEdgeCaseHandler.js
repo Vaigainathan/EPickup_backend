@@ -193,17 +193,21 @@ class AssignmentEdgeCaseHandler {
         }
       }
 
-      // Update driver status
+      // ✅ CRITICAL FIX: Don't auto-offline driver on disconnection
+      // This function is for handling booking reassignment, not status management
+      // Driver status should only be changed via explicit API call (PUT /api/driver/status)
+      // WebSocket disconnect handler already handles lastSeen update
+      // Only update lastSeen here, preserve driver.isOnline status
       await this.db.collection('users').doc(driverId).update({
-        'driver.isOnline': false,
-        'driver.isAvailable': false,
         'driver.lastSeen': new Date(),
         updatedAt: new Date()
       });
 
+      console.log(`✅ [ASSIGNMENT_HANDLER] Driver ${driverId} disconnection handled - bookings reassigned, status preserved`);
+
       return {
         success: true,
-        action: 'driver_offline',
+        action: 'bookings_reassigned',
         reassignedBookings: activeBookings.length
       };
     } catch (error) {

@@ -2022,14 +2022,30 @@ router.put('/status', [
     await userRef.update(updateData);
     console.log('✅ [STATUS_UPDATE] Firestore updated successfully');
 
-    // Verify the update
+    // ✅ CRITICAL FIX: Verify the update was persisted correctly
     const updatedDoc = await userRef.get();
     const updatedData = updatedDoc.data();
+    const persistedIsOnline = updatedData.driver?.isOnline;
+    const persistedIsAvailable = updatedData.driver?.isAvailable;
+    
     console.log('🔍 [STATUS_UPDATE] Verified updated data:', {
-      isOnline: updatedData.driver?.isOnline,
-      isAvailable: updatedData.driver?.isAvailable,
+      isOnline: persistedIsOnline,
+      isAvailable: persistedIsAvailable,
+      matchesRequest: persistedIsOnline === isOnline,
       timestamp: new Date().toISOString()
     });
+    
+    // ✅ CRITICAL FIX: Log warning if status wasn't persisted correctly
+    if (persistedIsOnline !== isOnline) {
+      console.error('❌ [STATUS_UPDATE] CRITICAL: Status mismatch detected!', {
+        requested: isOnline,
+        persisted: persistedIsOnline,
+        driverId: uid,
+        timestamp: new Date().toISOString()
+      });
+    } else {
+      console.log('✅ [STATUS_UPDATE] Status persisted correctly - matches request');
+    }
 
     // Update driver location status
     const locationRef = db.collection('driverLocations').doc(uid);
@@ -4003,12 +4019,14 @@ router.post('/bookings/:id/validate-location', [
  * @route   POST /api/driver/bookings/:id/photo-verification
  * @desc    Upload photo verification for pickup/dropoff
  * @access  Private (Driver only)
+ * @note    This is the PRIMARY endpoint - duplicate at line 6794 should be removed
  */
 router.post('/bookings/:id/photo-verification', [
   requireDriver,
   body('photoType').isIn(['pickup', 'delivery']).withMessage('Photo type must be pickup or delivery'),
   body('photoUrl').isURL().withMessage('Photo URL must be valid'),
-  body('location').optional().isObject().withMessage('Location must be an object')
+  body('location').optional().isObject().withMessage('Location must be an object'),
+  body('notes').optional().isLength({ min: 0, max: 200 }).withMessage('Notes must be between 0 and 200 characters')
 ], async (req, res) => {
   try {
     const { id } = req.params;
@@ -4040,7 +4058,25 @@ router.post('/bookings/:id/photo-verification', [
       });
     }
     
+    // ✅ CRITICAL FIX: Validate booking status for photo upload
+    const validStatuses = {
+      pickup: ['driver_arrived', 'picked_up'],
+      delivery: ['in_transit', 'at_dropoff', 'delivered', 'arrived_dropoff']
+    };
+
+    if (!validStatuses[photoType] || !validStatuses[photoType].includes(bookingData.status)) {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'INVALID_STATUS_FOR_PHOTO',
+          message: 'Invalid booking status for photo upload',
+          details: `Cannot upload ${photoType} photo in current booking status: ${bookingData.status}`
+        }
+      });
+    }
+    
     // ✅ CRITICAL FIX: Store photo verification in both structures for compatibility
+    const { notes } = req.body; // Get notes from request body
     const photoVerification = {
       photoType,
       photoUrl,
@@ -4048,7 +4084,8 @@ router.post('/bookings/:id/photo-verification', [
       uploadedBy: uid,
       uploadedAt: new Date(),
       verifiedAt: new Date(), // Add verifiedAt for admin dashboard
-      verifiedBy: uid // Add verifiedBy for admin dashboard
+      verifiedBy: uid, // Add verifiedBy for admin dashboard
+      notes: notes || null
     };
     
     // ✅ FIX: Store in BOTH structures - old structure (photoVerification.{type}) and new structure (pickupVerification/deliveryVerification)
@@ -4070,7 +4107,7 @@ router.post('/bookings/:id/photo-verification', [
         verifiedAt: verifiedAtTimestamp, // Use Firestore Timestamp for consistency
         verifiedBy: uid,
         location: location || null,
-        notes: null // Can be added later if needed
+        notes: notes || null // ✅ FIX: Include notes if provided
       };
     } else if (photoType === 'delivery') {
       updateData['deliveryVerification'] = {
@@ -4078,7 +4115,7 @@ router.post('/bookings/:id/photo-verification', [
         verifiedAt: verifiedAtTimestamp, // Use Firestore Timestamp for consistency
         verifiedBy: uid,
         location: location || null,
-        notes: null // Can be added later if needed
+        notes: notes || null // ✅ FIX: Include notes if provided
       };
     }
     
@@ -5407,7 +5444,7 @@ router.put('/:id/status', [
 router.put('/bookings/:id/status', [
   requireDriver,
   body('status')
-    .isIn(['pending', 'accepted', 'driver_enroute', 'driver_arrived', 'picked_up', 'enroute_dropoff', 'arrived_dropoff', 'delivered', 'cancelled'])
+    .isIn(['pending', 'accepted', 'driver_enroute', 'driver_arrived', 'picked_up', 'enroute_dropoff', 'arrived_dropoff', 'delivered', 'money_collection', 'completed', 'cancelled'])
     .withMessage('Invalid status value'),
   body('location')
     .optional()
@@ -5523,6 +5560,12 @@ router.put('/bookings/:id/status', [
       case 'delivered':
         updateData['timing.deliveredAt'] = new Date();
         updateData['timing.actualDeliveryTime'] = new Date().toISOString();
+        break;
+      case 'money_collection':
+        updateData['timing.moneyCollectionAt'] = new Date();
+        break;
+      case 'completed':
+        updateData['timing.completedAt'] = new Date();
         break;
     }
 
@@ -6784,7 +6827,10 @@ module.exports = router;
  * @route   POST /api/driver/bookings/:id/photo-verification
  * @desc    Upload photo verification for pickup or delivery
  * @access  Private (Driver only)
+ * @note    ⚠️ DUPLICATE ENDPOINT - DISABLED - Use endpoint at line 4008 instead
+ * @deprecated This endpoint is a duplicate and has been disabled to prevent conflicts
  */
+/*
 router.post('/bookings/:id/photo-verification', [
   requireDriver,
   body('photoType')
@@ -6900,23 +6946,35 @@ router.post('/bookings/:id/photo-verification', [
       updatedAt: new Date()
     };
 
+    // ✅ CRITICAL FIX: Use Firestore Timestamp for verifiedAt to ensure proper date handling in admin dashboard
+    const admin = require('firebase-admin');
+    const verifiedAtTimestamp = admin.firestore.Timestamp.now();
+    
     if (photoType === 'pickup') {
       updateData['pickupVerification'] = {
         photoUrl: photoUrl,
-        verifiedAt: new Date(),
+        verifiedAt: verifiedAtTimestamp, // Use Firestore Timestamp for consistency
         verifiedBy: uid,
-        location: location,
-        notes: notes
+        location: location || null,
+        notes: notes || null
       };
     } else if (photoType === 'delivery') {
       updateData['deliveryVerification'] = {
         photoUrl: photoUrl,
-        verifiedAt: new Date(),
+        verifiedAt: verifiedAtTimestamp, // Use Firestore Timestamp for consistency
         verifiedBy: uid,
-        location: location,
-        notes: notes
+        location: location || null,
+        notes: notes || null
       };
     }
+    
+    console.log(`✅ [PHOTO_VERIFICATION] Saving ${photoType} verification to booking ${id}:`, {
+      photoUrl,
+      verifiedAt: verifiedAtTimestamp.toDate().toISOString(),
+      verifiedBy: uid,
+      hasLocation: !!location,
+      hasNotes: !!notes
+    });
 
     await bookingRef.update(updateData);
 
@@ -6944,6 +7002,7 @@ router.post('/bookings/:id/photo-verification', [
     });
   }
 });
+*/ // ✅ END OF DUPLICATE ENDPOINT - Use endpoint at line 4008 instead
 
 /**
  * @route   GET /api/driver/bookings/:id/photo-verifications

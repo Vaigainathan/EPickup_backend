@@ -141,8 +141,27 @@ class WebSocketEventHandler {
 
       console.log(`🔌 User disconnected: ${userId} (${userType})`);
 
-      // Update user online status
-      await this.updateUserOnlineStatus(userId, false);
+      // ✅ CRITICAL FIX: Don't auto-offline drivers on WebSocket disconnect
+      // Drivers should only go offline explicitly (user action) or via timeout (inactivity)
+      // WebSocket disconnect can happen due to network issues, app force close, etc.
+      // Only update lastSeen timestamp, preserve driver.isOnline status
+      if (userType === 'driver') {
+        console.log(`✅ [WEBSOCKET] Driver disconnected - preserving online status, only updating lastSeen`);
+        if (this.db) {
+          await this.db.collection('users').doc(userId).set({
+            'driver.lastSeen': new Date(),
+            updatedAt: new Date()
+          }, { merge: true });
+        }
+        // Update cache with lastSeen only
+        await this.firestoreSessionService.setCache(`user_online:${userId}`, {
+          lastSeen: new Date(),
+          updatedAt: new Date()
+        }, 300); // 5 minutes expiry
+      } else {
+        // For non-drivers (customers), update online status normally
+        await this.updateUserOnlineStatus(userId, false);
+      }
 
       // Leave all rooms
       socket.rooms.forEach(room => {
@@ -598,7 +617,34 @@ class WebSocketEventHandler {
    */
   async updateUserOnlineStatus(userId, isOnline) {
     try {
-      // Store online status in Firestore
+      // ✅ CRITICAL FIX: Don't update driver.isOnline via WebSocket
+      // Drivers should only update status via explicit API call (PUT /api/driver/status)
+      // This prevents WebSocket disconnect from incorrectly setting drivers offline
+      
+      // Check if user is a driver
+      if (this.db) {
+        const userDoc = await this.db.collection('users').doc(userId).get();
+        if (userDoc.exists) {
+          const userData = userDoc.data();
+          if (userData.userType === 'driver' || userData.driver) {
+            console.log(`✅ [WEBSOCKET] Skipping isOnline update for driver ${userId} - drivers must use explicit status API`);
+            // Only update lastSeen for drivers, don't touch driver.isOnline
+            await this.db.collection('users').doc(userId).set({
+              'driver.lastSeen': new Date(),
+              updatedAt: new Date()
+            }, { merge: true });
+            
+            // Update cache with lastSeen only
+            await this.firestoreSessionService.setCache(`user_online:${userId}`, {
+              lastSeen: new Date(),
+              updatedAt: new Date()
+            }, 300);
+            return; // Exit early - don't update isOnline for drivers
+          }
+        }
+      }
+
+      // For non-drivers (customers), update online status normally
       await this.firestoreSessionService.setCache(`user_online:${userId}`, {
         isOnline,
         updatedAt: new Date()

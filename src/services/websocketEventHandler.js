@@ -172,11 +172,20 @@ class WebSocketEventHandler {
               updatedAt: new Date()
             }, { merge: true });
           } else {
-            // No active booking - just update lastSeen, preserve current online status
+            // ✅ CRITICAL FIX: No active booking - preserve BOTH isOnline AND isAvailable status
+            // Just update lastSeen, preserve ALL current driver status (isOnline, isAvailable)
+            // This ensures driver status persists correctly after app force-kill
+            const userDoc = await this.db.collection('users').doc(userId).get();
+            const currentData = userDoc.data();
+            
+            // Only update lastSeen - preserve isOnline and isAvailable as-is
             await this.db.collection('users').doc(userId).set({
               'driver.lastSeen': new Date(),
               updatedAt: new Date()
+              // ✅ CRITICAL: Don't touch isOnline or isAvailable - preserve them exactly as they were
             }, { merge: true });
+            
+            console.log(`✅ [WEBSOCKET] Driver ${userId} disconnected - preserved status: isOnline=${currentData?.driver?.isOnline}, isAvailable=${currentData?.driver?.isAvailable}`);
           }
           
           // Update cache with lastSeen only (preserve online status in cache)

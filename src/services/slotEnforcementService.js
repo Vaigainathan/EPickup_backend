@@ -106,6 +106,50 @@ class SlotEnforcementService {
    */
   async enforceDriverSlotConstraints(driverId, driverData, currentTime = new Date()) {
     try {
+      // ✅ CRITICAL FIX: Check if driver has active booking - NEVER force offline if they have active booking
+      const activeBookingStatuses = ['driver_assigned', 'accepted', 'driver_enroute', 'driver_arrived', 'picked_up', 'in_transit', 'at_dropoff', 'delivered', 'money_collection'];
+      const activeBookingQuery = await this.db.collection('bookings')
+        .where('driverId', '==', driverId)
+        .where('status', 'in', activeBookingStatuses)
+        .limit(1)
+        .get();
+      
+      const hasActiveBooking = !activeBookingQuery.empty;
+      if (hasActiveBooking) {
+        const activeBooking = activeBookingQuery.docs[0].data();
+        console.log(`✅ [SLOT_ENFORCEMENT] Driver ${driverId} has active booking (${activeBooking.status}) - skipping enforcement (must stay online)`);
+        return {
+          driverId,
+          success: true,
+          action: 'skipped',
+          reason: 'Driver has active booking - must stay online'
+        };
+      }
+
+      // ✅ CRITICAL FIX: Check if driver manually set status recently - respect manual online status
+      // This prevents slot enforcement from overriding driver's manual online choice
+      // Grace period: 30 minutes after manual status update (enough time for app restart scenarios)
+      const lastStatusUpdate = driverData.driver?.lastStatusUpdate;
+      const isManuallyOnline = (() => {
+        if (!lastStatusUpdate || !driverData.driver?.isOnline) return false;
+        const lastUpdateTime = lastStatusUpdate?.toDate ? lastStatusUpdate.toDate() : new Date(lastStatusUpdate);
+        const timeSinceLastUpdate = currentTime - lastUpdateTime;
+        const gracePeriodMs = 30 * 60 * 1000; // 30 minutes grace period (covers app restart scenarios)
+        return timeSinceLastUpdate < gracePeriodMs;
+      })();
+
+      if (isManuallyOnline) {
+        const lastUpdateTime = lastStatusUpdate?.toDate ? lastStatusUpdate.toDate() : new Date(lastStatusUpdate);
+        const timeSinceLastUpdate = currentTime - lastUpdateTime;
+        console.log(`✅ [SLOT_ENFORCEMENT] Driver ${driverId} manually went online recently (${Math.round(timeSinceLastUpdate / 60000)}m ago) - respecting manual status (grace period: 30m)`);
+        return {
+          driverId,
+          success: true,
+          action: 'skipped',
+          reason: 'Driver manually set online recently - respecting manual status'
+        };
+      }
+
       // Get driver's work slots for today
       const workSlotsService = require('./workSlotsService');
       const slotsResult = await workSlotsService.getDriverSlots(driverId, currentTime);
@@ -122,15 +166,15 @@ class SlotEnforcementService {
       const slots = slotsResult.data || [];
       const selectedSlots = slots.filter(slot => slot.isSelected === true);
 
+      // ✅ CRITICAL FIX: Don't enforce slots if driver has no selected slots
+      // This prevents disruption when driver is testing or has admin permission
       if (selectedSlots.length === 0) {
-        // Driver has no selected slots - force offline
-        console.log(`❌ [SLOT_ENFORCEMENT] Driver ${driverId} has no selected slots - forcing offline`);
-        await this.forceDriverOffline(driverId, 'No selected work slots');
+        console.log(`⚠️ [SLOT_ENFORCEMENT] Driver ${driverId} has no selected slots but is online - skipping enforcement`);
         return {
           driverId,
           success: true,
-          action: 'forced_offline',
-          reason: 'No selected work slots'
+          action: 'skipped',
+          reason: 'No selected slots but driver is online'
         };
       }
 
@@ -141,15 +185,16 @@ class SlotEnforcementService {
         return currentTime >= startTime && currentTime <= endTime;
       });
 
+      // ✅ CRITICAL FIX: Don't force offline if driver is not in active slot
+      // This prevents disruption when driver app is restored after force-kill
+      // The driver's manual online status (checked above) is already respected
       if (!activeSlot) {
-        // Driver is not in any active slot - force offline
-        console.log(`❌ [SLOT_ENFORCEMENT] Driver ${driverId} not in active slot time - forcing offline`);
-        await this.forceDriverOffline(driverId, 'Not in active work slot time');
+        console.log(`⚠️ [SLOT_ENFORCEMENT] Driver ${driverId} not in active slot time but is online - skipping enforcement (respecting driver status)`);
         return {
           driverId,
           success: true,
-          action: 'forced_offline',
-          reason: 'Not in active work slot time'
+          action: 'skipped',
+          reason: 'Not in active slot but driver is online - respecting driver status'
         };
       }
 

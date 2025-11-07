@@ -1819,7 +1819,7 @@ router.put('/status', [
     }
 
     const { uid } = req.user;
-    const { isOnline, isAvailable, currentLocation, workingHours, workingDays } = req.body;
+    const { isOnline, isAvailable, currentLocation, workingHours, workingDays, restoreFromAppRestart } = req.body;
     const db = getFirestore();
     
     // ✅ CRITICAL FIX: Prevent going offline if driver has active booking
@@ -1886,7 +1886,8 @@ router.put('/status', [
 
     // ✅ CRITICAL FIX: Validate work slots when driver tries to go online
     // ✅ INDUSTRY STANDARD: Active booking exemption - allow staying online if driver has active order
-    if (isOnline === true) {
+    // ✅ APP RESTART FIX: Bypass slot validation if restoring from app restart (driver was online before app was killed)
+    if (isOnline === true && !restoreFromAppRestart) {
       console.log('🔍 [STATUS_UPDATE] Driver trying to go online - validating work slots');
       
       try {
@@ -2048,6 +2049,139 @@ router.put('/status', [
             code: 'SLOT_VALIDATION_ERROR',
             message: 'Failed to validate work slots',
             details: 'An error occurred while checking work slots'
+          },
+          timestamp: new Date().toISOString()
+        });
+      }
+    } else if (isOnline === true && restoreFromAppRestart) {
+      // ✅ APP RESTART FIX: Driver is restoring online status after app restart
+      // Still validate slots but with relaxed rules (allow if was online recently AND has valid slots)
+      console.log('✅ [STATUS_UPDATE] Restoring online status from app restart - validating slots with relaxed rules');
+      const userDoc = await userRef.get();
+      const existingData = userDoc.data();
+      
+      // ✅ CRITICAL: Check if driver was online recently (within last 2 hours)
+      const lastStatusUpdate = existingData.driver?.lastStatusUpdate;
+      let canRestore = false;
+      
+      if (lastStatusUpdate) {
+        const lastUpdateTime = lastStatusUpdate?.toDate ? lastStatusUpdate.toDate() : new Date(lastStatusUpdate);
+        const timeSinceLastUpdate = Date.now() - lastUpdateTime.getTime();
+        const maxRestoreWindow = 2 * 60 * 60 * 1000; // 2 hours
+        
+        if (timeSinceLastUpdate > maxRestoreWindow) {
+          console.warn('⚠️ [STATUS_UPDATE] Cannot restore online status - last update was too long ago:', {
+            timeSinceLastUpdate: Math.round(timeSinceLastUpdate / 60000) + ' minutes',
+            maxWindow: '2 hours'
+          });
+          return res.status(400).json({
+            success: false,
+            error: {
+              code: 'RESTORE_WINDOW_EXPIRED',
+              message: 'Cannot restore online status',
+              details: 'Your online status expired. Please go online again during your selected slot time.'
+            },
+            timestamp: new Date().toISOString()
+          });
+        }
+        
+        console.log('✅ [STATUS_UPDATE] Restore window valid:', {
+          timeSinceLastUpdate: Math.round(timeSinceLastUpdate / 60000) + ' minutes',
+          lastUpdateTime: lastUpdateTime.toISOString()
+        });
+      }
+      
+      // ✅ CRITICAL FIX: Still validate slots - driver must have at least one valid (not expired) slot
+      // This prevents drivers from staying online with only expired slots
+      try {
+        const workSlotsService = require('../services/workSlotsService');
+        const slotsResult = await workSlotsService.getDriverSlots(uid, new Date());
+        
+        if (!slotsResult.success) {
+          console.error('❌ [STATUS_UPDATE] Failed to fetch work slots for restore validation:', slotsResult.error);
+          return res.status(400).json({
+            success: false,
+            error: {
+              code: 'SLOT_VALIDATION_ERROR',
+              message: 'Failed to validate work slots',
+              details: 'Unable to check driver work slots for restore validation'
+            },
+            timestamp: new Date().toISOString()
+          });
+        }
+
+        const slots = slotsResult.data || [];
+        const selectedSlots = slots.filter(slot => slot.isSelected === true);
+        const now = new Date();
+        
+        // Check if driver has at least one valid (not expired) slot
+        const validSlots = selectedSlots.filter(slot => {
+          const endTime = slot.endTime?.toDate ? slot.endTime.toDate() : new Date(slot.endTime);
+          return endTime > now; // Slot hasn't ended yet
+        });
+        
+        if (validSlots.length === 0 && selectedSlots.length > 0) {
+          // Driver has selected slots but all are expired
+          const expiredSlotLabels = selectedSlots.map(slot => {
+            const startTime = slot.startTime?.toDate ? slot.startTime.toDate() : new Date(slot.startTime);
+            const endTime = slot.endTime?.toDate ? slot.endTime.toDate() : new Date(slot.endTime);
+            return `${startTime.toLocaleTimeString()} - ${endTime.toLocaleTimeString()}`;
+          }).join(', ');
+          
+          console.warn('⚠️ [STATUS_UPDATE] Cannot restore online status - all selected slots have expired:', {
+            expiredSlots: expiredSlotLabels,
+            selectedCount: selectedSlots.length
+          });
+          
+          return res.status(400).json({
+            success: false,
+            error: {
+              code: 'ALL_SLOTS_EXPIRED',
+              message: 'Cannot restore online status',
+              details: `All your selected slots have ended: ${expiredSlotLabels}. Please select current or future slots to go online.`
+            },
+            timestamp: new Date().toISOString()
+          });
+        } else if (selectedSlots.length === 0) {
+          // Driver has no selected slots
+          console.warn('⚠️ [STATUS_UPDATE] Cannot restore online status - no selected slots');
+          return res.status(400).json({
+            success: false,
+            error: {
+              code: 'NO_SELECTED_SLOTS',
+              message: 'Cannot restore online status',
+              details: 'You must select at least one work slot before going online'
+            },
+            timestamp: new Date().toISOString()
+          });
+        } else {
+          // Driver has at least one valid slot - allow restore
+          console.log('✅ [STATUS_UPDATE] Restore validation passed - driver has valid slots:', {
+            validSlotsCount: validSlots.length,
+            totalSelectedSlots: selectedSlots.length
+          });
+          canRestore = true;
+        }
+      } catch (slotError) {
+        console.error('❌ [STATUS_UPDATE] Error validating work slots for restore:', slotError);
+        return res.status(500).json({
+          success: false,
+          error: {
+            code: 'SLOT_VALIDATION_ERROR',
+            message: 'Failed to validate work slots',
+            details: 'An error occurred while checking work slots for restore validation'
+          },
+          timestamp: new Date().toISOString()
+        });
+      }
+      
+      if (!canRestore) {
+        return res.status(400).json({
+          success: false,
+          error: {
+            code: 'RESTORE_VALIDATION_FAILED',
+            message: 'Cannot restore online status',
+            details: 'Slot validation failed for restore'
           },
           timestamp: new Date().toISOString()
         });

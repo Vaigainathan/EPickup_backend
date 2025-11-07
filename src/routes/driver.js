@@ -2043,17 +2043,18 @@ router.put('/status', [
               .slice()
               .sort((a, b) => a.startTime.getTime() - b.startTime.getTime())[0];
 
-            const nextSlotTime = nextSlot ? nextSlot.startTime : null;
+            const nextSlotLabel = nextSlot ? (nextSlot.slot.label || nextSlot.slot.slotId) : null;
 
             return res.status(400).json({
               success: false,
               error: {
                 code: 'NOT_IN_SLOT_TIME',
                 message: 'Cannot go online',
-                details: expiredSlots.length === selectedSlots.length && expiredSlots.length > 0
-                  ? `All your selected slots have ended: ${expiredSlotLabels}. Please select current or future slots to go online.`
-                  : nextSlotTime
-                    ? `You can only go online during your active slot times. Next slot (${nextSlot.slot.label || 'upcoming slot'}) starts at ${nextSlotTime.toLocaleTimeString()}.`
+                details:
+                  expiredSlots.length === selectedSlots.length && expiredSlots.length > 0
+                    ? `All your selected slots have ended: ${expiredSlotLabels}. Please select current or future slots to go online.`
+                    : nextSlotLabel
+                    ? `You can only go online during your active slot times. Next slot (${nextSlotLabel}) is not active yet.`
                     : 'You can only go online during your active slot times.'
               },
               timestamp: new Date().toISOString()

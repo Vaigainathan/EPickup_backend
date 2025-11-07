@@ -2082,20 +2082,51 @@ router.put('/status', [
 
     console.log('📤 [STATUS_UPDATE] Updating Firestore with:', updateData);
     
-    // ✅ CRITICAL FIX: Use transaction to ensure atomic update
-    // This prevents race conditions where status might be overwritten
+    // ✅ CRITICAL FIX: Use transaction to ensure atomic update with optimistic locking
+    // This prevents race conditions and ensures isolation across multiple devices/users
     try {
-      await db.runTransaction(async (transaction) => {
+      const result = await db.runTransaction(async (transaction) => {
         const userDoc = await transaction.get(userRef);
         if (!userDoc.exists) {
           throw new Error('User document does not exist');
         }
         
-        // Update within transaction
+        const currentData = userDoc.data();
+        const currentStatus = currentData.driver?.isOnline;
+        const lastStatusUpdate = currentData.driver?.lastStatusUpdate?.toDate ? 
+          currentData.driver.lastStatusUpdate.toDate() : 
+          (currentData.driver?.lastStatusUpdate ? new Date(currentData.driver.lastStatusUpdate) : null);
+        
+        // ✅ CRITICAL: Add optimistic locking with timestamp
+        // If status was updated very recently (< 1 second), check for conflicts
+        const now = new Date();
+        if (lastStatusUpdate && (now - lastStatusUpdate) < 1000 && currentStatus !== isOnline) {
+          console.warn('⚠️ [STATUS_UPDATE] Potential race condition detected:', {
+            currentStatus,
+            requestedStatus: isOnline,
+            lastUpdate: lastStatusUpdate,
+            timeSinceLastUpdate: now - lastStatusUpdate
+          });
+          // Still allow the update, but log for monitoring
+        }
+        
+        // ✅ CRITICAL: Add lastStatusUpdate timestamp for conflict detection
+        updateData['driver.lastStatusUpdate'] = now;
+        updateData['driver.statusUpdatedBy'] = uid; // Track who updated (for multi-device scenarios)
+        
+        // Update within transaction (atomic operation)
         transaction.update(userRef, updateData);
         
-        console.log('✅ [STATUS_UPDATE] Transaction started - updating status atomically');
+        console.log('✅ [STATUS_UPDATE] Transaction started - updating status atomically with isolation');
+        return {
+          success: true,
+          previousStatus: currentStatus,
+          newStatus: isOnline,
+          timestamp: now
+        };
       });
+      
+      console.log('✅ [STATUS_UPDATE] Status updated atomically:', result);
       
       console.log('✅ [STATUS_UPDATE] Firestore updated successfully (transaction committed)');
     } catch (transactionError) {

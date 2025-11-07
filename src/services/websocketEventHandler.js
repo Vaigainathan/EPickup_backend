@@ -147,17 +147,45 @@ class WebSocketEventHandler {
       // Only update lastSeen timestamp, preserve driver.isOnline status
       if (userType === 'driver') {
         console.log(`✅ [WEBSOCKET] Driver disconnected - preserving online status, only updating lastSeen`);
+        
         if (this.db) {
-          await this.db.collection('users').doc(userId).set({
-            'driver.lastSeen': new Date(),
-            updatedAt: new Date()
-          }, { merge: true });
+          // ✅ CRITICAL FIX: Check if driver has active bookings before any status changes
+          // If driver has active booking, they MUST stay online (cannot go offline)
+          const activeBookingStatuses = ['driver_assigned', 'accepted', 'driver_enroute', 'driver_arrived', 'picked_up', 'in_transit', 'at_dropoff', 'delivered', 'money_collection'];
+          const activeBookingQuery = this.db.collection('bookings')
+            .where('driverId', '==', userId)
+            .where('status', 'in', activeBookingStatuses)
+            .limit(1);
+          
+          const activeBookingSnapshot = await activeBookingQuery.get();
+          const hasActiveBooking = !activeBookingSnapshot.empty;
+          
+          if (hasActiveBooking) {
+            const activeBooking = activeBookingSnapshot.docs[0].data();
+            console.log(`✅ [WEBSOCKET] Driver ${userId} has active booking - preserving online status (booking: ${activeBookingSnapshot.docs[0].id}, status: ${activeBooking.status})`);
+            
+            // ✅ CRITICAL: Force driver to stay online if they have active booking
+            await this.db.collection('users').doc(userId).set({
+              'driver.isOnline': true, // Force online
+              'driver.isAvailable': false, // Not available for new bookings while delivering
+              'driver.lastSeen': new Date(),
+              updatedAt: new Date()
+            }, { merge: true });
+          } else {
+            // No active booking - just update lastSeen, preserve current online status
+            await this.db.collection('users').doc(userId).set({
+              'driver.lastSeen': new Date(),
+              updatedAt: new Date()
+            }, { merge: true });
+          }
+          
+          // Update cache with lastSeen only (preserve online status in cache)
+          await this.firestoreSessionService.setCache(`user_online:${userId}`, {
+            lastSeen: new Date(),
+            updatedAt: new Date(),
+            hasActiveBooking
+          }, 300); // 5 minutes expiry
         }
-        // Update cache with lastSeen only
-        await this.firestoreSessionService.setCache(`user_online:${userId}`, {
-          lastSeen: new Date(),
-          updatedAt: new Date()
-        }, 300); // 5 minutes expiry
       } else {
         // For non-drivers (customers), update online status normally
         await this.updateUserOnlineStatus(userId, false);
@@ -1898,13 +1926,30 @@ class WebSocketEventHandler {
       
       // ✅ CRITICAL FIX: Also emit booking_status_update with full booking
       if (fullBookingData) {
+        // ✅ CRITICAL FIX: Ensure booking has driver data populated
+        const bookingWithDriver = {
+          ...fullBookingData,
+          driver: notificationData.driver || notificationData.driverInfo || fullBookingData.driver || null,
+          driverId: assignmentData.driverId || fullBookingData.driverId
+        };
+        
         const statusUpdate = {
           bookingId: assignmentData.bookingId,
           status: fullBookingData.status || 'driver_assigned',
-          booking: fullBookingData,
-          driverInfo: notificationData.driverInfo,
+          booking: bookingWithDriver, // ✅ Include booking with driver data
+          driver: notificationData.driver || notificationData.driverInfo, // ✅ Include driver for compatibility
+          driverInfo: notificationData.driverInfo, // ✅ Keep driverInfo for backward compatibility
+          driverId: assignmentData.driverId,
           timestamp: new Date().toISOString()
         };
+        
+        console.log(`📤 [WEBSOCKET] Emitting booking_status_update with driver data:`, {
+          bookingId: assignmentData.bookingId,
+          hasDriver: !!statusUpdate.driver,
+          hasDriverInfo: !!statusUpdate.driverInfo,
+          hasBookingDriver: !!statusUpdate.booking.driver,
+          driverId: statusUpdate.driverId
+        });
         
         this.io.to(userRoom).emit('booking_status_update', statusUpdate);
         this.io.to(bookingRoom).emit('booking_status_update', statusUpdate);

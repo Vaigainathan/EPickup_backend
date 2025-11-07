@@ -349,20 +349,63 @@ router.get('/bookings/:id', authenticateToken, async (req, res) => {
         const driverDoc = await db.collection('users').doc(bookingData.driverId).get();
         if (driverDoc.exists) {
           const driver = driverDoc.data();
+          const vehicleDetails = driver.driver?.vehicleDetails || {};
+          
           driverData = {
             id: bookingData.driverId,
-            name: driver.name || driver.driver?.name || 'Driver',
-            phone: driver.phone || driver.driver?.phone || '',
-            rating: driver.driver?.rating || driver.driver?.averageRating || 4.5,
-            vehicleType: driver.driver?.vehicleType || driver.driver?.vehicleDetails?.vehicleType || '2 Wheeler',
-            vehicleNumber: driver.driver?.vehicleNumber || driver.driver?.vehicleDetails?.vehicleNumber || 'KA-XX-XX-XXXX',
-            profileImage: driver.driver?.profileImage || driver.photoURL,
-            vehicle: driver.driver?.vehicleDetails || {}
+            name: driver.name || driver.driver?.name || bookingData.driverInfo?.name || 'Driver',
+            phone: driver.phone || driver.driver?.phone || bookingData.driverInfo?.phone || '',
+            rating: driver.driver?.rating || driver.driver?.averageRating || bookingData.driverInfo?.rating || 4.5,
+            vehicleType: driver.driver?.vehicleType || vehicleDetails.vehicleType || bookingData.driverInfo?.vehicleType || '2 Wheeler',
+            vehicleNumber: driver.driver?.vehicleNumber || vehicleDetails.vehicleNumber || bookingData.driverInfo?.vehicleNumber || 'KA-XX-XX-XXXX',
+            profileImage: driver.driver?.profileImage || driver.photoURL || bookingData.driverInfo?.profileImage,
+            vehicle: vehicleDetails,
+            vehicleDetails: vehicleDetails,
+            // ✅ CRITICAL FIX: Include current location if available
+            currentLocation: driver.driver?.currentLocation || driver.currentLocation,
+            isOnline: driver.driver?.isOnline || false,
+            isAvailable: driver.driver?.isAvailable || false
           };
+          
+          console.log(`✅ [CUSTOMER_API] Populated driver data for booking ${bookingId}:`, {
+            driverId: bookingData.driverId,
+            driverName: driverData.name,
+            hasVehicleNumber: !!driverData.vehicleNumber,
+            hasPhone: !!driverData.phone
+          });
+        } else {
+          console.warn(`⚠️ [CUSTOMER_API] Driver document not found for driverId: ${bookingData.driverId}`);
+          // ✅ CRITICAL FIX: Use driverInfo from booking if driver document not found
+          if (bookingData.driverInfo) {
+            driverData = {
+              id: bookingData.driverId,
+              name: bookingData.driverInfo.name || 'Driver',
+              phone: bookingData.driverInfo.phone || '',
+              rating: bookingData.driverInfo.rating || 4.5,
+              vehicleType: bookingData.driverInfo.vehicleType || '2 Wheeler',
+              vehicleNumber: bookingData.driverInfo.vehicleNumber || 'KA-XX-XX-XXXX',
+              profileImage: bookingData.driverInfo.profileImage,
+              vehicle: bookingData.driverInfo.vehicleDetails || {},
+              vehicleDetails: bookingData.driverInfo.vehicleDetails || {}
+            };
+          }
         }
       } catch (driverError) {
-        console.error(`❌ Error fetching driver data for driver ${bookingData.driverId}:`, driverError);
-        // Continue without driver data rather than failing
+        console.error(`❌ [CUSTOMER_API] Error fetching driver data for driver ${bookingData.driverId}:`, driverError);
+        // ✅ CRITICAL FIX: Use driverInfo from booking as fallback
+        if (bookingData.driverInfo) {
+          driverData = {
+            id: bookingData.driverId,
+            name: bookingData.driverInfo.name || 'Driver',
+            phone: bookingData.driverInfo.phone || '',
+            rating: bookingData.driverInfo.rating || 4.5,
+            vehicleType: bookingData.driverInfo.vehicleType || '2 Wheeler',
+            vehicleNumber: bookingData.driverInfo.vehicleNumber || 'KA-XX-XX-XXXX',
+            profileImage: bookingData.driverInfo.profileImage,
+            vehicle: bookingData.driverInfo.vehicleDetails || {},
+            vehicleDetails: bookingData.driverInfo.vehicleDetails || {}
+          };
+        }
       }
     }
     
@@ -1891,8 +1934,8 @@ router.post('/bookings/:id/rate', authenticateToken, async (req, res) => {
       });
     }
     
-    // Verify booking is completed
-    if (bookingData.status !== 'delivered') {
+    // ✅ CRITICAL FIX: Allow rating for both 'delivered' and 'completed' statuses
+    if (bookingData.status !== 'delivered' && bookingData.status !== 'completed') {
       return res.status(400).json({
         success: false,
         error: 'Rating can only be submitted for completed bookings'

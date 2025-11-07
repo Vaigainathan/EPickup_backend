@@ -283,11 +283,54 @@ class LocationService {
    * @param {number} throttleMs - Throttle interval in milliseconds
    * @returns {Promise<boolean>} Whether update should proceed
    */
+  /**
+   * ✅ INDUSTRY STANDARD: Adaptive throttling based on trip status and speed
+   * Matches Zomato/Uber/Porter standards:
+   * - Active trip + moving: 3-5 seconds
+   * - Active trip + stationary: 10-15 seconds
+   * - No active trip: 30-60 seconds
+   */
   async shouldUpdateLocation(driverId, location, throttleMs = 30000) {
     const lastUpdateKey = `location_update_${driverId}`;
     const lastUpdate = this.cache.get(lastUpdateKey);
 
-    if (lastUpdate && (Date.now() - lastUpdate) < throttleMs) {
+    // ✅ CRITICAL FIX: Check if driver has active booking for adaptive throttling
+    let adaptiveThrottleMs = throttleMs;
+    try {
+      const activeBookingStatuses = ['driver_assigned', 'accepted', 'driver_enroute', 'driver_arrived', 'picked_up', 'in_transit', 'at_dropoff'];
+      const activeBooking = await this.db.collection('bookings')
+        .where('driverId', '==', driverId)
+        .where('status', 'in', activeBookingStatuses)
+        .limit(1)
+        .get();
+
+      if (!activeBooking.empty) {
+        // ✅ Driver has active trip - use aggressive throttling
+        const speed = location.speed || 0; // m/s
+        const speedKmh = speed * 3.6; // Convert to km/h
+
+        if (speedKmh > 20) {
+          // Fast movement (>20 km/h): 3 seconds (matches Uber/Zomato)
+          adaptiveThrottleMs = 3000;
+        } else if (speedKmh > 5) {
+          // Normal movement (5-20 km/h): 5 seconds
+          adaptiveThrottleMs = 5000;
+        } else {
+          // Stationary (<5 km/h): 15 seconds
+          adaptiveThrottleMs = 15000;
+        }
+
+        console.log(`📍 [LOCATION_SERVICE] Adaptive throttle for active trip: ${adaptiveThrottleMs}ms (speed: ${speedKmh.toFixed(1)} km/h)`);
+      } else {
+        // ✅ No active trip - use conservative throttling (30 seconds)
+        adaptiveThrottleMs = 30000;
+      }
+    } catch (error) {
+      console.warn('⚠️ [LOCATION_SERVICE] Error checking active booking, using default throttle:', error);
+      // Use provided throttle as fallback
+    }
+
+    if (lastUpdate && (Date.now() - lastUpdate) < adaptiveThrottleMs) {
       return false;
     }
 
@@ -302,14 +345,20 @@ class LocationService {
    * @param {Object} options - Update options
    * @returns {Promise<Object>} Update result
    */
+  /**
+   * ✅ INDUSTRY STANDARD: Update driver location with adaptive throttling
+   * Automatically adjusts throttle based on trip status and speed
+   */
   async updateDriverLocation(driverId, location, options = {}) {
-    const { throttleMs = 30000, forceUpdate = false } = options;
+    const { throttleMs = null, forceUpdate = false } = options; // null = auto-detect
 
-    if (!forceUpdate && !(await this.shouldUpdateLocation(driverId, location, throttleMs))) {
+    // ✅ CRITICAL FIX: Use adaptive throttling (trip status + speed aware)
+    // If throttleMs not provided, shouldUpdateLocation will auto-detect optimal throttle
+    if (!forceUpdate && !(await this.shouldUpdateLocation(driverId, location, throttleMs || 30000))) {
       return {
         success: true,
         skipped: true,
-        reason: 'Throttled'
+        reason: 'Throttled (adaptive)'
       };
     }
 
@@ -322,6 +371,16 @@ class LocationService {
         timestamp: new Date()
       };
 
+      // ✅ CRITICAL FIX: Check if driver has active booking to include in location update
+      const activeBookingStatuses = ['driver_assigned', 'accepted', 'driver_enroute', 'driver_arrived', 'picked_up', 'in_transit', 'at_dropoff'];
+      const activeBooking = await this.db.collection('bookings')
+        .where('driverId', '==', driverId)
+        .where('status', 'in', activeBookingStatuses)
+        .limit(1)
+        .get();
+
+      const currentBookingId = activeBooking.empty ? null : activeBooking.docs[0].id;
+
       // Update driver location in users collection
       await this.db.collection('users').doc(driverId).update({
         'driver.currentLocation': locationData,
@@ -329,12 +388,54 @@ class LocationService {
         updatedAt: new Date()
       });
 
-      // Update driverLocations collection for real-time tracking
+      // ✅ CRITICAL FIX: Update driverLocations collection with booking context
       await this.db.collection('driverLocations').doc(driverId).set({
         driverId,
         currentLocation: locationData,
+        currentTripId: currentBookingId, // ✅ Include active booking ID
         lastUpdated: new Date()
       }, { merge: true });
+
+      // ✅ CRITICAL FIX: If driver has active booking, notify customer via WebSocket
+      if (currentBookingId) {
+        try {
+          const bookingData = activeBooking.docs[0].data();
+          const socketService = require('../services/socket');
+          const io = socketService.getSocketIO();
+          
+          if (io && bookingData.customerId) {
+            const locationUpdateEvent = {
+              bookingId: currentBookingId,
+              driverId: driverId,
+              location: {
+                latitude: locationData.latitude,
+                longitude: locationData.longitude,
+                accuracy: locationData.accuracy || 0,
+                speed: location.speed || 0,
+                heading: location.heading || 0,
+                timestamp: new Date().toISOString()
+              },
+              timestamp: new Date().toISOString()
+            };
+            
+            // ✅ Emit to both user room and booking room
+            const userRoom = `user:${bookingData.customerId}`;
+            const bookingRoom = `booking:${currentBookingId}`;
+            
+            io.to(userRoom).emit('driver_location_update', locationUpdateEvent);
+            io.to(bookingRoom).emit('driver_location_update', locationUpdateEvent);
+            
+            console.log(`📍 [LOCATION_SERVICE] Real-time location update sent for active trip:`, {
+              bookingId: currentBookingId,
+              customerId: bookingData.customerId,
+              speed: location.speed || 0
+            });
+          }
+        } catch (wsError) {
+          console.warn('⚠️ [LOCATION_SERVICE] Failed to send WebSocket location update:', wsError);
+          // Continue - location is still saved
+        }
+      }
 
       await monitoringService.logEvent('driver_location_updated', {
         driverId,

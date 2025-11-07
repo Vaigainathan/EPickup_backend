@@ -837,7 +837,40 @@ router.post('/:bookingId/update-location', [
       });
     }
 
-    // Update driver location in Firestore
+    // ✅ INDUSTRY STANDARD: Use adaptive location service with intelligent throttling
+    const locationService = require('../services/locationService');
+    const locationServiceInstance = new locationService();
+    await locationServiceInstance.initialize();
+    
+    // ✅ CRITICAL FIX: Use adaptive throttling (auto-detects trip status and speed)
+    const updateResult = await locationServiceInstance.updateDriverLocation(uid, {
+      latitude: locationData.latitude,
+      longitude: locationData.longitude,
+      accuracy: locationData.accuracy || 0,
+      speed: locationData.speed || 0,
+      heading: locationData.heading || 0,
+      address: locationData.address || 'Current Location',
+      timestamp: new Date()
+    }, {
+      throttleMs: null, // Auto-detect based on trip status and speed
+      forceUpdate: false
+    });
+
+    // ✅ CRITICAL FIX: Skip if throttled (adaptive throttling is working)
+    if (updateResult.skipped) {
+      return res.status(200).json({
+        success: true,
+        message: 'Location update throttled (adaptive)',
+        data: {
+          bookingId: bookingId,
+          skipped: true,
+          reason: updateResult.reason
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    // ✅ CRITICAL FIX: Update driverLocations collection for real-time tracking
     const db = require('../services/firebase').getFirestore();
     await db.collection('driverLocations').doc(uid).set({
       latitude: locationData.latitude,
@@ -850,10 +883,37 @@ router.post('/:bookingId/update-location', [
       updatedAt: new Date()
     }, { merge: true });
 
-    // Emit real-time update via Socket.IO if available
+    // ✅ CRITICAL FIX: Emit real-time update via Socket.IO to multiple rooms
     try {
       const socketService = require('../services/socket');
-      if (socketService.sendToUser) {
+      const getSocketIO = socketService.getSocketIO;
+      const io = getSocketIO();
+      
+      if (io) {
+        // ✅ Emit to both user room and booking room for reliability
+        const userRoom = `user:${booking.customerId}`;
+        const bookingRoom = `booking:${bookingId}`;
+        
+        const locationUpdateEvent = {
+          bookingId: bookingId,
+          driverId: uid,
+          location: {
+            latitude: locationData.latitude,
+            longitude: locationData.longitude,
+            accuracy: locationData.accuracy || 0,
+            speed: locationData.speed || 0,
+            heading: locationData.heading || 0,
+            timestamp: new Date().toISOString()
+          },
+          timestamp: new Date().toISOString()
+        };
+        
+        io.to(userRoom).emit('driver_location_update', locationUpdateEvent);
+        io.to(bookingRoom).emit('driver_location_update', locationUpdateEvent);
+        
+        console.log(`📍 [TRACKING] Location update broadcasted to rooms:`, { userRoom, bookingRoom });
+      } else if (socketService.sendToUser) {
+        // Fallback to old method
         socketService.sendToUser(booking.customerId, 'driver_location_update', {
           bookingId: bookingId,
           driverId: uid,
@@ -864,8 +924,9 @@ router.post('/:bookingId/update-location', [
           }
         });
       }
-    } catch {
-      console.log('Socket.IO not available for real-time updates');
+    } catch (error) {
+      console.warn('⚠️ [TRACKING] Socket.IO not available for real-time updates:', error);
+      // Continue - location is still saved to database
     }
 
     res.status(200).json({

@@ -1952,31 +1952,47 @@ router.put('/status', [
           // 1. Can go online if currently WITHIN a selected slot (startTime <= now <= endTime) - REGARDLESS of when selected
           // 2. Can go online if slot is UPCOMING and was selected (now < startTime && selectedAt exists)
           // 3. Cannot go online for slots that have ENDED (now > endTime)
+          // ✅ CRITICAL FIX: Check ALL slots, not just find first valid one
           
-          const validSlot = selectedSlots.find(slot => {
+          const validSlots = [];
+          const expiredSlots = [];
+          
+          selectedSlots.forEach(slot => {
             const startTime = slot.startTime?.toDate ? slot.startTime.toDate() : new Date(slot.startTime);
             const endTime = slot.endTime?.toDate ? slot.endTime.toDate() : new Date(slot.endTime);
             const selectedAt = slot.selectedAt?.toDate ? slot.selectedAt.toDate() : (slot.selectedAt ? new Date(slot.selectedAt) : null);
             
             // Case 1: Currently within slot time - ALWAYS allow (driver can join mid-session)
             if (now >= startTime && now <= endTime) {
-              return true; // Slot is active, allow going online regardless of when it was selected
+              validSlots.push({ slot, reason: 'active' });
+              return; // Slot is active, allow going online regardless of when it was selected
             }
             
             // Case 2: Slot is upcoming (can prepare to go online)
             if (now < startTime) {
               // Must have been selected (selectedAt exists) - allows preparation
               if (selectedAt || slot.isSelected) {
-                return true;
+                validSlots.push({ slot, reason: 'upcoming' });
+                return;
               }
             }
             
-            // Case 3: Slot has ended - cannot go online (returns false)
-            return false;
+            // Case 3: Slot has ended - mark as expired
+            if (now > endTime) {
+              expiredSlots.push({ slot, endTime });
+            }
           });
 
-          if (!validSlot) {
+          // ✅ CRITICAL FIX: Require at least one valid slot
+          if (validSlots.length === 0) {
             console.log('❌ [STATUS_UPDATE] Driver cannot go online - no valid slot found');
+            
+            // ✅ CRITICAL FIX: Provide detailed error message about expired slots
+            const expiredSlotLabels = expiredSlots.map(({ slot }) => {
+              const startTime = slot.startTime?.toDate ? slot.startTime.toDate() : new Date(slot.startTime);
+              const endTime = slot.endTime?.toDate ? slot.endTime.toDate() : new Date(slot.endTime);
+              return `${startTime.toLocaleTimeString()} - ${endTime.toLocaleTimeString()}`;
+            }).join(', ');
             
             // Find next available slot for error message
             const nextSlot = selectedSlots
@@ -1998,12 +2014,28 @@ router.put('/status', [
               error: {
                 code: 'NOT_IN_SLOT_TIME',
                 message: 'Cannot go online',
-                details: nextSlotTime ? 
-                  `You can only go online during your selected slot times. Next slot starts at ${nextSlotTime.toLocaleTimeString()}` :
-                  'You can only go online during your selected slot times. All selected slots have ended.'
+                details: expiredSlots.length > 0 
+                  ? `All your selected slots have ended: ${expiredSlotLabels}. Please select current or future slots to go online.${nextSlotTime ? ` Next available slot starts at ${nextSlotTime.toLocaleTimeString()}.` : ''}`
+                  : nextSlotTime 
+                    ? `You can only go online during your selected slot times. Next slot starts at ${nextSlotTime.toLocaleTimeString()}`
+                    : 'You can only go online during your selected slot times. All selected slots have ended.'
               },
               timestamp: new Date().toISOString()
             });
+          }
+          
+          // ✅ CRITICAL FIX: Log warning if expired slots are selected (but allow going online with valid slots)
+          if (expiredSlots.length > 0) {
+            console.warn('⚠️ [STATUS_UPDATE] Driver has expired slots selected but also has valid slots:', {
+              expiredCount: expiredSlots.length,
+              validCount: validSlots.length,
+              expiredSlots: expiredSlots.map(({ slot }) => {
+                const startTime = slot.startTime?.toDate ? slot.startTime.toDate() : new Date(slot.startTime);
+                const endTime = slot.endTime?.toDate ? slot.endTime.toDate() : new Date(slot.endTime);
+                return `${startTime.toLocaleTimeString()} - ${endTime.toLocaleTimeString()}`;
+              })
+            });
+            // Note: We allow going online because there are valid slots, but expired slots should be deselected by frontend
           }
 
           console.log('✅ [STATUS_UPDATE] Driver is in active slot, allowing online status');

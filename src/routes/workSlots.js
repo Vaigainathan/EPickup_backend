@@ -4,6 +4,7 @@ const rateLimit = require('express-rate-limit');
 const router = express.Router();
 const workSlotsService = require('../services/workSlotsService');
 const { authMiddleware, requireDriver, requireAdmin } = require('../middleware/auth');
+const { resolveLocalDateInput, DATE_KEY_REGEX } = require('../utils/timezone');
 
 // CRITICAL: Rate limiter for slot generation to prevent infinite loops and server crashes
 const slotGenerationLimiter = rateLimit({
@@ -110,7 +111,15 @@ router.get('/driver', [
   slotFetchLimiter, // CRITICAL: Rate limit to prevent polling spam
   authMiddleware,
   requireDriver,
-  query('date').optional().isISO8601().withMessage('Date must be in ISO format')
+  query('date').optional().isISO8601().withMessage('Date must be in ISO format'),
+  query('dateKey')
+    .optional()
+    .matches(DATE_KEY_REGEX)
+    .withMessage('dateKey must be a valid YYYY-MM-DD string'),
+  query('timezoneOffset')
+    .optional()
+    .isInt({ min: -720, max: 840 })
+    .withMessage('timezoneOffset must be between -720 and 840 minutes')
 ], async (req, res) => {
   try {
     const errors = validationResult(req);
@@ -127,10 +136,38 @@ router.get('/driver', [
     }
 
     const { uid } = req.user;
-    const { date } = req.query;
-    const targetDate = date ? new Date(date) : new Date();
-    
-    const result = await workSlotsService.getDriverSlots(uid, targetDate);
+    const { date, dateKey, timezoneOffset } = req.query;
+
+    let resolvedDate;
+    try {
+      resolvedDate = resolveLocalDateInput({
+        date,
+        dateKey,
+        timezoneOffsetMinutes: timezoneOffset
+      });
+    } catch (parseError) {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'INVALID_DATE_INPUT',
+          message: 'Invalid date supplied',
+          details: parseError.message
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    const result = await workSlotsService.getDriverSlots(
+      uid,
+      resolvedDate.referenceDate,
+      {
+        startOfDay: resolvedDate.startOfDay,
+        endOfDay: resolvedDate.endOfDay,
+        timezoneOffsetMinutes: resolvedDate.timezoneOffsetMinutes,
+        dateKey: resolvedDate.dateKey,
+        localDateParts: resolvedDate.localDateParts
+      }
+    );
 
     if (result.success) {
       res.status(200).json({
@@ -170,7 +207,15 @@ router.post('/generate', [
   slotGenerationLimiter, // CRITICAL: Rate limit to prevent infinite generation loops
   authMiddleware,
   requireDriver,
-  body('date').optional().isISO8601().withMessage('Date must be in ISO format')
+  body('date').optional().isISO8601().withMessage('Date must be in ISO format'),
+  body('dateKey')
+    .optional()
+    .matches(DATE_KEY_REGEX)
+    .withMessage('dateKey must be a valid YYYY-MM-DD string'),
+  body('timezoneOffset')
+    .optional()
+    .isInt({ min: -720, max: 840 })
+    .withMessage('timezoneOffset must be between -720 and 840 minutes')
 ], async (req, res) => {
   try {
     const errors = validationResult(req);
@@ -187,10 +232,38 @@ router.post('/generate', [
     }
 
     const { uid } = req.user;
-    const { date } = req.body;
-    const targetDate = date ? new Date(date) : new Date();
+    const { date, dateKey, timezoneOffset } = req.body;
+
+    let resolvedDate;
+    try {
+      resolvedDate = resolveLocalDateInput({
+        date,
+        dateKey,
+        timezoneOffsetMinutes: timezoneOffset
+      });
+    } catch (parseError) {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'INVALID_DATE_INPUT',
+          message: 'Invalid date supplied',
+          details: parseError.message
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
     
-    const result = await workSlotsService.generateDailySlots(uid, targetDate);
+    const result = await workSlotsService.generateDailySlots(
+      uid,
+      resolvedDate.referenceDate,
+      {
+        startOfDay: resolvedDate.startOfDay,
+        endOfDay: resolvedDate.endOfDay,
+        timezoneOffsetMinutes: resolvedDate.timezoneOffsetMinutes,
+        dateKey: resolvedDate.dateKey,
+        localDateParts: resolvedDate.localDateParts
+      }
+    );
 
     if (result.success) {
       res.status(201).json({

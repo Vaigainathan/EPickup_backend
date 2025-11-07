@@ -31,9 +31,40 @@ class WorkSlotsService {
    * Generate daily work slots for a driver
    * Creates 8 slots: 7-9 AM, 9-11 AM, 11-1 PM, 1-3 PM, 3-5 PM, 5-7 PM, 7-9 PM, 9-11 PM
    */
-  async generateDailySlots(driverId, date = new Date()) {
+  async generateDailySlots(driverId, date = new Date(), options = {}) {
     try {
-      console.log(`🔄 [WORK_SLOTS] Generating daily slots for driver: ${driverId}, date: ${date.toISOString().split('T')[0]}`);
+      const {
+        startOfDay,
+        endOfDay,
+        timezoneOffsetMinutes = 0,
+        dateKey,
+        localDateParts
+      } = options;
+
+      const offsetMinutes = Number.isFinite(Number(timezoneOffsetMinutes))
+        ? Number(timezoneOffsetMinutes)
+        : 0;
+
+      const baseReferenceDate = startOfDay ? new Date(startOfDay) : new Date(date);
+      if (Number.isNaN(baseReferenceDate.getTime())) {
+        throw new Error('Invalid date supplied for slot generation');
+      }
+
+      const generationStart = startOfDay ? new Date(startOfDay) : new Date(baseReferenceDate);
+      if (!startOfDay) {
+        generationStart.setHours(0, 0, 0, 0);
+      }
+
+      const generationEnd = endOfDay ? new Date(endOfDay) : new Date(baseReferenceDate);
+      if (!endOfDay) {
+        generationEnd.setHours(23, 59, 59, 999);
+      }
+
+      const slotDateKey = dateKey || baseReferenceDate.toISOString().split('T')[0];
+
+      console.log(
+        `🔄 [WORK_SLOTS] Generating daily slots for driver: ${driverId}, dateKey: ${slotDateKey}, tzOffset: ${offsetMinutes}`
+      );
       
       // CRITICAL: Initialize database connection first
       const db = this.getDb();
@@ -68,16 +99,10 @@ class WorkSlotsService {
       
       // ✅ CRITICAL FIX: Atomic slot generation with state preservation
       // ✅ INDUSTRY STANDARD: Preserve selections during slot regeneration
-      const startOfDay = new Date(date);
-      startOfDay.setHours(0, 0, 0, 0);
-      
-      const endOfDay = new Date(date);
-      endOfDay.setHours(23, 59, 59, 999);
-
       const existingQuery = db.collection('workSlots')
         .where('driverId', '==', driverId)
-        .where('startTime', '>=', Timestamp.fromDate(startOfDay))
-        .where('startTime', '<=', Timestamp.fromDate(endOfDay));
+        .where('startTime', '>=', Timestamp.fromDate(generationStart))
+        .where('startTime', '<=', Timestamp.fromDate(generationEnd));
 
       const existingSnapshot = await existingQuery.get();
       
@@ -167,13 +192,29 @@ class WorkSlotsService {
       ];
 
       for (const config of slotConfigs) {
-        const startTime = new Date(date);
-        startTime.setHours(config.start, 0, 0, 0);
-        
-        const endTime = new Date(date);
-        endTime.setHours(config.end, 0, 0, 0);
+        let startTime;
+        let endTime;
 
-        const slotId = `${driverId}_${date.toISOString().split('T')[0]}_${config.start}-${config.end}`;
+        if (localDateParts) {
+          const { year, month, day } = localDateParts;
+          const startUtc =
+            Date.UTC(year, month - 1, day, config.start, 0, 0, 0) +
+            offsetMinutes * 60 * 1000;
+          const endUtc =
+            Date.UTC(year, month - 1, day, config.end, 0, 0, 0) +
+            offsetMinutes * 60 * 1000;
+
+          startTime = new Date(startUtc);
+          endTime = new Date(endUtc);
+        } else {
+          startTime = new Date(baseReferenceDate);
+          startTime.setHours(config.start, 0, 0, 0);
+
+          endTime = new Date(baseReferenceDate);
+          endTime.setHours(config.end, 0, 0, 0);
+        }
+
+        const slotId = `${driverId}_${slotDateKey}_${config.start}-${config.end}`;
         
         console.log(`🔍 [WORK_SLOTS] Creating slot: ${config.label} (${config.start}-${config.end})`);
         
@@ -244,7 +285,7 @@ class WorkSlotsService {
   /**
    * Get slots for a specific driver and date
    */
-  async getDriverSlots(driverId, date = new Date()) {
+  async getDriverSlots(driverId, date = new Date(), options = {}) {
     try {
       // Initialize database connection
       const db = this.getDb();
@@ -252,18 +293,36 @@ class WorkSlotsService {
         throw new Error('Failed to initialize Firestore database connection');
       }
 
-      const startOfDay = new Date(date);
-      startOfDay.setHours(0, 0, 0, 0);
-      
-      const endOfDay = new Date(date);
-      endOfDay.setHours(23, 59, 59, 999);
+      const {
+        startOfDay,
+        endOfDay,
+        dateKey,
+        timezoneOffsetMinutes = 0,
+        localDateParts
+      } = options;
 
-      console.log(`🔍 [GET_DRIVER_SLOTS] Fetching slots for driver: ${driverId}, date: ${date.toISOString().split('T')[0]}`);
+      const queryStart = startOfDay ? new Date(startOfDay) : new Date(date);
+      if (!startOfDay) {
+        queryStart.setHours(0, 0, 0, 0);
+      }
+
+      const queryEnd = endOfDay ? new Date(endOfDay) : new Date(date);
+      if (!endOfDay) {
+        queryEnd.setHours(23, 59, 59, 999);
+      }
+
+      const logDateKey = dateKey || queryStart.toISOString().split('T')[0];
+
+      console.log(
+        `🔍 [GET_DRIVER_SLOTS] Fetching slots for driver: ${driverId}, dateKey: ${logDateKey}, tzOffset: ${timezoneOffsetMinutes}, localParts: ${
+          localDateParts ? JSON.stringify(localDateParts) : 'n/a'
+        }`
+      );
 
       const query = db.collection('workSlots')
         .where('driverId', '==', driverId)
-        .where('startTime', '>=', Timestamp.fromDate(startOfDay))
-        .where('startTime', '<=', Timestamp.fromDate(endOfDay))
+        .where('startTime', '>=', Timestamp.fromDate(queryStart))
+        .where('startTime', '<=', Timestamp.fromDate(queryEnd))
         .orderBy('startTime', 'asc');
 
       const snapshot = await query.get();

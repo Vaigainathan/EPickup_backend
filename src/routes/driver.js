@@ -1996,13 +1996,13 @@ router.put('/status', [
               activeSlots.push({ slot, startTime, endTime });
               return;
             }
-
+            
             if (now < startTime) {
               console.log('⏳ [STATUS_UPDATE] Slot is UPCOMING (future slot)');
               upcomingSlots.push({ slot, startTime });
-              return;
+                return;
             }
-
+            
             if (now > endTime) {
               console.log('❌ [STATUS_UPDATE] Slot has EXPIRED:', {
                 slotLabel: slot.label,

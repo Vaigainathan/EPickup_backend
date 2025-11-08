@@ -14,6 +14,79 @@ router.use(sanitizeInput);
 // This middleware validates backend JWT tokens and sets req.user with user data
 // Admin routes are protected by standard JWT authentication
 
+const normalizeTimestamp = (value) => {
+  if (!value) return null;
+  if (typeof value.toDate === 'function') {
+    try {
+      return value.toDate().toISOString();
+    } catch (error) {
+      console.warn('⚠️ Failed to convert Firestore timestamp:', error);
+    }
+  }
+  if (value instanceof Date) {
+    return value.toISOString();
+  }
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? value : parsed.toISOString();
+};
+
+const normalizeVerification = (primary, fallback) => {
+  const candidate = primary && typeof primary === 'object'
+    ? primary
+    : (fallback && typeof fallback === 'object' ? fallback : null);
+
+  if (!candidate) {
+    return undefined;
+  }
+
+  const photoUrl =
+    (typeof candidate.photoUrl === 'string' && candidate.photoUrl.trim()) ||
+    (typeof candidate.photoURL === 'string' && candidate.photoURL.trim()) ||
+    (typeof candidate.url === 'string' && candidate.url.trim());
+
+  if (!photoUrl) {
+    return undefined;
+  }
+
+  const rawLocation = candidate.location ||
+    candidate.coordinates ||
+    (candidate.metadata && candidate.metadata.location) ||
+    null;
+
+  let location = null;
+  if (rawLocation && typeof rawLocation === 'object') {
+    const latitude = rawLocation.latitude ??
+      rawLocation.lat ??
+      rawLocation._latitude ??
+      rawLocation.coords?.latitude ??
+      null;
+    const longitude = rawLocation.longitude ??
+      rawLocation.lng ??
+      rawLocation._longitude ??
+      rawLocation.coords?.longitude ??
+      null;
+    if (latitude !== null && longitude !== null) {
+      location = { latitude, longitude };
+    }
+  }
+
+  return {
+    photoUrl: photoUrl.trim(),
+    verifiedAt: normalizeTimestamp(
+      candidate.verifiedAt ||
+      candidate.uploadedAt ||
+      (candidate.metadata && candidate.metadata.verifiedAt)
+    ),
+    verifiedBy: candidate.verifiedBy || candidate.uploadedBy || candidate.reviewedBy || null,
+    location,
+    notes: candidate.notes ||
+      candidate.note ||
+      candidate.description ||
+      (candidate.metadata && (candidate.metadata.notes || candidate.metadata.note)) ||
+      null
+  };
+};
+
 /**
  * @route   GET /api/admin/profile
  * @desc    Get current admin user profile
@@ -1119,7 +1192,16 @@ router.get('/bookings', async (req, res) => {
 
     snapshot.forEach(doc => {
       const data = doc.data();
-      
+
+      const pickupVerification = normalizeVerification(
+        data.pickupVerification,
+        data.photoVerification?.pickup
+      );
+      const deliveryVerification = normalizeVerification(
+        data.deliveryVerification,
+        data.photoVerification?.delivery
+      );
+
       // Map the actual booking data structure to admin-friendly format
       const mappedBooking = {
         id: doc.id,
@@ -1131,6 +1213,14 @@ router.get('/bookings', async (req, res) => {
           name: data.pickup?.name || data.customerInfo?.name || 'Unknown Customer',
           phone: data.customerInfo?.phone || data.customer?.phone || '', // Get from customer data, not pickup
           email: data.customerInfo?.email || data.customer?.email || ''
+        },
+        senderInfo: {
+          name: data.senderInfo?.name || data.pickup?.name || 'Sender',
+          phone: data.senderInfo?.phone || data.pickup?.phone || ''
+        },
+        recipientInfo: {
+          name: data.recipientInfo?.name || data.dropoff?.name || 'Recipient',
+          phone: data.recipientInfo?.phone || data.dropoff?.phone || ''
         },
         // Map driver info if available
         driverInfo: data.driverId ? {
@@ -1145,14 +1235,14 @@ router.get('/bookings', async (req, res) => {
         // Map pickup location
         pickupLocation: {
           address: data.pickup?.address || 'No pickup address',
-          latitude: data.pickup?.coordinates?.latitude || 0,
-          longitude: data.pickup?.coordinates?.longitude || 0
+          latitude: data.pickup?.coordinates?.latitude || data.pickupLocation?.latitude || data.pickupLocation?.coordinates?.lat || 0,
+          longitude: data.pickup?.coordinates?.longitude || data.pickupLocation?.longitude || data.pickupLocation?.coordinates?.lng || 0
         },
         // Map dropoff location
         dropoffLocation: {
           address: data.dropoff?.address || 'No dropoff address',
-          latitude: data.dropoff?.coordinates?.latitude || 0,
-          longitude: data.dropoff?.coordinates?.longitude || 0
+          latitude: data.dropoff?.coordinates?.latitude || data.dropoffLocation?.latitude || data.dropoffLocation?.coordinates?.lat || 0,
+          longitude: data.dropoff?.coordinates?.longitude || data.dropoffLocation?.longitude || data.dropoffLocation?.coordinates?.lng || 0
         },
         // Map package details
         packageDetails: {
@@ -1172,12 +1262,14 @@ router.get('/bookings', async (req, res) => {
         estimatedDuration: data.estimatedDuration,
         actualDuration: data.actualDuration,
         distance: data.distance,
-        createdAt: data.createdAt?.toDate?.() || data.createdAt,
-        updatedAt: data.updatedAt?.toDate?.() || data.updatedAt,
+        createdAt: normalizeTimestamp(data.createdAt) || data.createdAt,
+        updatedAt: normalizeTimestamp(data.updatedAt) || data.updatedAt,
+        pickupVerification,
+        deliveryVerification,
         // Include original data for debugging
         originalData: data
       };
-      
+
       bookings.push(mappedBooking);
     });
 
@@ -1298,6 +1390,15 @@ router.get('/bookings/:id', async (req, res) => {
     }
 
     const data = bookingDoc.data();
+    const pickupVerification = normalizeVerification(
+      data.pickupVerification,
+      data.photoVerification?.pickup
+    );
+    const deliveryVerification = normalizeVerification(
+      data.deliveryVerification,
+      data.photoVerification?.delivery
+    );
+
     const booking = {
       id: bookingDoc.id,
       customerId: data.customerId,
@@ -1308,16 +1409,22 @@ router.get('/bookings/:id', async (req, res) => {
       fare: data.fare || data.pricing?.totalAmount || 0,
       distance: data.distance,
       estimatedTime: data.estimatedTime,
-      createdAt: data.createdAt?.toDate?.() || data.createdAt,
-      updatedAt: data.updatedAt?.toDate?.() || data.updatedAt,
+      createdAt: normalizeTimestamp(data.createdAt) || data.createdAt,
+      updatedAt: normalizeTimestamp(data.updatedAt) || data.updatedAt,
       customerName: data.customerName || 'Unknown Customer',
       driverName: data.driverName || 'No Driver Assigned',
       paymentStatus: data.paymentStatus || 'pending',
       packageDetails: data.packageDetails,
-      senderInfo: data.senderInfo,
-      recipientInfo: data.recipientInfo,
-      pickupVerification: data.pickupVerification,
-      deliveryVerification: data.deliveryVerification
+      senderInfo: data.senderInfo || {
+        name: data.pickup?.name || 'Sender',
+        phone: data.pickup?.phone || ''
+      },
+      recipientInfo: data.recipientInfo || {
+        name: data.dropoff?.name || 'Recipient',
+        phone: data.dropoff?.phone || ''
+      },
+      pickupVerification,
+      deliveryVerification
     };
 
     res.json({

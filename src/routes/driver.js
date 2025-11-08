@@ -4526,6 +4526,12 @@ router.post('/bookings/:id/confirm-payment', [
     }
     
     const bookingData = bookingDoc.data();
+    const bookingStateMachine = require('../services/bookingStateMachine');
+    const paymentAmount = parseFloat(amount);
+    const statusBeforePayment = bookingData.status || 'unknown';
+    const paymentStateBefore = bookingData.paymentStatus || 'unknown';
+    const fallbackStatuses = new Set(['payment_pending', 'payment_collection', 'collecting_payment', 'payment_in_progress']);
+    const allowedStatuses = new Set(['money_collection', 'delivered', 'completed', ...fallbackStatuses]);
     
     // ✅ CRITICAL FIX: Validate driver is assigned to this booking
     if (bookingData.driverId !== uid) {
@@ -4541,22 +4547,125 @@ router.post('/bookings/:id/confirm-payment', [
     }
     
     // ✅ CRITICAL FIX: Validate booking is in correct status for payment confirmation
-    if (bookingData.status !== 'money_collection' && bookingData.status !== 'delivered') {
-      console.error(`❌ [PAYMENT_CONFIRM] Invalid booking status: ${bookingData.status} (expected: money_collection or delivered)`);
+    if (!allowedStatuses.has(statusBeforePayment)) {
+      console.error(`❌ [PAYMENT_CONFIRM] Invalid booking status: ${statusBeforePayment} (paymentStatus: ${paymentStateBefore})`);
       return res.status(400).json({
         success: false,
         error: {
           code: 'INVALID_BOOKING_STATUS',
           message: 'Invalid booking status for payment confirmation',
-          details: `Booking must be in 'money_collection' or 'delivered' status. Current status: ${bookingData.status}`
+          details: `Booking must be in one of [money_collection, delivered, completed]. Current status: ${statusBeforePayment} (paymentStatus: ${paymentStateBefore})`
+        }
+      });
+    }
+    
+    // ✅ CRITICAL FIX: Idempotent handling when booking is already completed & payment confirmed
+    const paymentAlreadyConfirmed = statusBeforePayment === 'completed' &&
+      (bookingData.paymentConfirmed ||
+        bookingData.paymentStatus === 'confirmed' ||
+        bookingData.payment?.status === 'completed' ||
+        bookingData.payment?.confirmed);
+    
+    if (paymentAlreadyConfirmed) {
+      console.log(`ℹ️ [PAYMENT_CONFIRM] Booking ${id} already completed with confirmed payment. Returning idempotent success.`);
+      return res.status(200).json({
+        success: true,
+        data: {
+          message: 'Payment already confirmed for this booking',
+          amount: bookingData.payment?.amount || bookingData.pricing?.totalFare || bookingData.fare?.total || paymentAmount,
+          transactionId: bookingData.payment?.transactionId || transactionId,
+          paymentConfirmed: true,
+          bookingStatus: 'completed',
+          commissionDeducted: !!bookingData.commissionDeducted,
+          walletBalance: null,
+          confirmedAt: bookingData.paymentConfirmedAt?.toDate?.()
+            ? bookingData.paymentConfirmedAt.toDate().toISOString()
+            : (bookingData.payment?.confirmedAt || new Date().toISOString())
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+    
+    let bookingStatusForPayment = statusBeforePayment;
+    
+    if (fallbackStatuses.has(bookingStatusForPayment)) {
+      console.warn(`⚠️ [PAYMENT_CONFIRM] Booking ${id} in transitional status '${bookingStatusForPayment}'. Normalizing to 'money_collection' before confirmation.`);
+      try {
+        await bookingStateMachine.transitionBooking(
+          id,
+          'money_collection',
+          {
+            driverId: uid,
+            paymentStatus: 'collecting',
+            payment: {
+              ...(bookingData.payment || {}),
+              status: 'collecting',
+              initiatedBy: uid,
+              initiatedAt: new Date(),
+              amount: paymentAmount
+            }
+          },
+          {
+            userId: uid,
+            userType: 'driver',
+            driverId: uid
+          }
+        );
+        bookingStatusForPayment = 'money_collection';
+        bookingData.status = 'money_collection';
+        bookingData.paymentStatus = 'collecting';
+      } catch (statusNormalizationError) {
+        console.warn(`⚠️ [PAYMENT_CONFIRM] State machine normalization failed for booking ${id}:`, statusNormalizationError);
+        try {
+          await bookingRef.update({
+            status: 'money_collection',
+            paymentStatus: 'collecting',
+            payment: {
+              ...(bookingData.payment || {}),
+              status: 'collecting',
+              initiatedBy: uid,
+              initiatedAt: new Date(),
+              amount: paymentAmount
+            },
+            'timing.moneyCollectionAt': bookingData.timing?.moneyCollectionAt || new Date(),
+            updatedAt: new Date()
+          });
+          bookingStatusForPayment = 'money_collection';
+          bookingData.status = 'money_collection';
+          bookingData.paymentStatus = 'collecting';
+        } catch (normalizationFallbackError) {
+          console.error(`❌ [PAYMENT_CONFIRM] Failed to normalize booking ${id} to money_collection:`, normalizationFallbackError);
+        }
+      }
+    }
+    
+    if (fallbackStatuses.has(bookingStatusForPayment)) {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'INVALID_BOOKING_STATUS',
+          message: 'Unable to prepare booking for payment confirmation',
+          details: `Booking status remained '${bookingStatusForPayment}' after normalization attempt`
+        }
+      });
+    }
+    
+    if (bookingStatusForPayment !== 'money_collection' && bookingStatusForPayment !== 'delivered' && bookingStatusForPayment !== 'completed') {
+      console.error(`❌ [PAYMENT_CONFIRM] Invalid booking status after normalization: ${bookingStatusForPayment}`);
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'INVALID_BOOKING_STATUS',
+          message: 'Invalid booking status for payment confirmation',
+          details: `Booking must be in 'money_collection', 'delivered', or 'completed' status. Current status: ${bookingStatusForPayment}`
         }
       });
     }
     
     // ✅ CRITICAL FIX: Validate payment amount matches booking fare
     const bookingFare = bookingData.pricing?.totalFare || bookingData.fare?.total || 0;
-    if (bookingFare > 0 && Math.abs(bookingFare - amount) > 1) { // Allow 1 rupee difference for rounding
-      console.warn(`⚠️ [PAYMENT_CONFIRM] Payment amount mismatch: received ₹${amount}, expected ₹${bookingFare}`);
+    if (bookingFare > 0 && Math.abs(bookingFare - paymentAmount) > 1) { // Allow 1 rupee difference for rounding
+      console.warn(`⚠️ [PAYMENT_CONFIRM] Payment amount mismatch: received ₹${paymentAmount}, expected ₹${bookingFare}`);
       // Don't fail, but log the discrepancy
     }
     
@@ -4565,7 +4674,7 @@ router.post('/bookings/:id/confirm-payment', [
       bookingId: id,
       driverId: uid,
       customerId: bookingData.customerId,
-      amount: parseFloat(amount),
+      amount: paymentAmount,
       paymentMethod: paymentMethod || 'cash',
       transactionId: transactionId,
       status: 'completed',
@@ -4578,7 +4687,6 @@ router.post('/bookings/:id/confirm-payment', [
     await db.collection('payments').add(paymentRecord);
     
     // ✅ CRITICAL FIX: Use state machine to transition from money_collection to completed
-    const bookingStateMachine = require('../services/bookingStateMachine');
     
     // Check if booking is in money_collection status before transitioning
     if (bookingData.status === 'money_collection') {
@@ -4589,6 +4697,7 @@ router.post('/bookings/:id/confirm-payment', [
           id,
           'completed',
           {
+            driverId: uid,
             payment: {
               ...paymentRecord,
               confirmed: true,
@@ -4662,6 +4771,7 @@ router.post('/bookings/:id/confirm-payment', [
           id,
           'completed',
           {
+            driverId: uid,
             payment: {
               ...paymentRecord,
               confirmed: true,
@@ -4761,7 +4871,7 @@ router.post('/bookings/:id/confirm-payment', [
         // Also send payment completion event
         io.to(`user:${bookingData.customerId}`).emit('payment_completed', {
           bookingId: id,
-          amount: amount,
+          amount: paymentAmount,
           paymentMethod: paymentMethod,
           transactionId: transactionId,
           confirmedAt: new Date().toISOString(),
@@ -4784,7 +4894,7 @@ router.post('/bookings/:id/confirm-payment', [
         bookingId: id,
         customerId: bookingData.customerId,
         driverId: uid,
-        amount: amount,
+        amount: paymentAmount,
         paymentMethod: paymentMethod,
         transactionId: transactionId,
         confirmedAt: new Date().toISOString()
@@ -4815,8 +4925,11 @@ router.post('/bookings/:id/confirm-payment', [
     let currentBalance = 0;
     
     // ✅ CRITICAL FIX: Initialize pointsService for wallet operations
-    const pointsService = require('../services/walletService');
-    const walletServiceInstance = new pointsService();
+    const walletService = require('../services/walletService');
+    const walletServiceInstance =
+      typeof walletService.getPointsService === 'function'
+        ? walletService.getPointsService()
+        : walletService;
     
     try {
       // ✅ INDUSTRY STANDARD: Use transaction for atomic payment operations
@@ -4833,7 +4946,7 @@ router.post('/bookings/:id/confirm-payment', [
         currentBalance = driverData.wallet?.balance || 0;
         
         // CORRECT: Driver gets full fare amount, commission deducted from points wallet
-        driverEarnings = parseFloat(amount); // Full amount
+        driverEarnings = paymentAmount; // Full amount
         
         // ✅ CRITICAL FIX: Deduct commission from points wallet (atomic within transaction)
         const fareCalculationService = require('../services/fareCalculationService');
@@ -4916,7 +5029,7 @@ router.post('/bookings/:id/confirm-payment', [
                 exactDistanceKm: exactDistanceKm, // ✅ Also store exact distance for reference
                 tripDetails: {
                   bookingId: id,
-                  fare: amount,
+                  fare: paymentAmount,
                   distance: roundedDistanceKm, // ✅ Use rounded distance
                   exactDistance: exactDistanceKm,
                   paymentMethod: paymentMethod
@@ -4955,7 +5068,7 @@ router.post('/bookings/:id/confirm-payment', [
                 exactDistanceKm: exactDistanceKm, // ✅ Also store exact distance for reference
                 tripDetails: {
                   bookingId: id,
-                  fare: amount,
+                  fare: paymentAmount,
                   distance: roundedDistanceKm, // ✅ Use rounded distance
                   exactDistance: exactDistanceKm,
                   paymentMethod: paymentMethod
@@ -5025,7 +5138,7 @@ router.post('/bookings/:id/confirm-payment', [
                 exactDistanceKm: exactDistanceKm, // ✅ Store exact distance (0 or missing)
                 tripDetails: {
                   bookingId: id,
-                  fare: amount,
+                  fare: paymentAmount,
                   distance: roundedDistanceKm, // ✅ Use rounded distance
                   exactDistance: exactDistanceKm,
                   paymentMethod: paymentMethod,
@@ -5072,7 +5185,7 @@ router.post('/bookings/:id/confirm-payment', [
           amount: driverEarnings,
           commission: commissionAmount,
           commissionDeducted: commissionDeducted,
-          totalFare: amount,
+          totalFare: paymentAmount,
           earnedAt: new Date(),
           status: 'completed',
           paymentMethod: paymentMethod,
@@ -5090,7 +5203,7 @@ router.post('/bookings/:id/confirm-payment', [
           bookingId: id,
           customerId: bookingData.customerId,
           driverId: uid,
-          totalFare: parseFloat(amount),
+          totalFare: paymentAmount,
           driverEarnings: driverEarnings,
           platformCommission: commissionPoints,
           paymentMethod: paymentMethod,
@@ -5181,7 +5294,7 @@ router.post('/bookings/:id/confirm-payment', [
       success: true,
       data: {
         message: 'Payment confirmed successfully',
-        amount: parseFloat(amount),
+        amount: paymentAmount,
         transactionId,
         paymentConfirmed: true,
         bookingStatus: 'completed',
@@ -5972,8 +6085,11 @@ router.put('/bookings/:id/status', [
           
           // Deduct commission from driver points wallet
           const walletService = require('../services/walletService');
-          const pointsService = new walletService();
-          const commissionResult = await pointsService.deductPoints(
+          const walletServiceInstance =
+            typeof walletService.getPointsService === 'function'
+              ? walletService.getPointsService()
+              : walletService;
+          const commissionResult = await walletServiceInstance.deductPoints(
             uid,
             id,
             roundedDistanceKm, // ✅ Pass rounded distance
@@ -9823,6 +9939,220 @@ router.post('/photo/verify', requireDriver, async (req, res) => {
 // ==================== WORK SLOTS API ENDPOINTS ====================
 
 /**
+ * Normalize and validate date query parameters for work slot operations.
+ * Ensures consistent handling of timezone offsets and defaults to driver's local day.
+ */
+function buildWorkSlotDateContext(rawDateInput, rawTimezoneOffset) {
+  const DEFAULT_OFFSET = 0;
+  const offsetNumber = Number(rawTimezoneOffset);
+  const timezoneOffsetMinutes = Number.isFinite(offsetNumber) ? offsetNumber : DEFAULT_OFFSET;
+
+  const ensureDateParts = (dateValue) => {
+    if (typeof dateValue === 'string') {
+      const trimmed = dateValue.trim();
+      const dateOnlyMatch = /^(\d{4})-(\d{2})-(\d{2})$/.exec(trimmed);
+      if (dateOnlyMatch) {
+        return {
+          year: Number(dateOnlyMatch[1]),
+          month: Number(dateOnlyMatch[2]),
+          day: Number(dateOnlyMatch[3])
+        };
+      }
+      const parsed = new Date(trimmed);
+      if (!Number.isNaN(parsed.getTime())) {
+        return {
+          year: parsed.getUTCFullYear(),
+          month: parsed.getUTCMonth() + 1,
+          day: parsed.getUTCDate()
+        };
+      }
+      throw new Error('INVALID_DATE');
+    }
+
+    if (dateValue instanceof Date && !Number.isNaN(dateValue.getTime())) {
+      return {
+        year: dateValue.getUTCFullYear(),
+        month: dateValue.getUTCMonth() + 1,
+        day: dateValue.getUTCDate()
+      };
+    }
+
+    if (dateValue) {
+      const parsed = new Date(dateValue);
+      if (!Number.isNaN(parsed.getTime())) {
+        return {
+          year: parsed.getUTCFullYear(),
+          month: parsed.getUTCMonth() + 1,
+          day: parsed.getUTCDate()
+        };
+      }
+      throw new Error('INVALID_DATE');
+    }
+
+    // Default to driver's current local day using provided timezone offset
+    const now = new Date();
+    const utcMs = now.getTime() + now.getTimezoneOffset() * 60 * 1000;
+    const driverLocalMs = utcMs + timezoneOffsetMinutes * 60 * 1000;
+    const driverLocalDate = new Date(driverLocalMs);
+    return {
+      year: driverLocalDate.getUTCFullYear(),
+      month: driverLocalDate.getUTCMonth() + 1,
+      day: driverLocalDate.getUTCDate()
+    };
+  };
+
+  const localDateParts = ensureDateParts(rawDateInput);
+  const { year, month, day } = localDateParts;
+
+  if (
+    !Number.isInteger(year) ||
+    !Number.isInteger(month) ||
+    !Number.isInteger(day) ||
+    month < 1 ||
+    month > 12 ||
+    day < 1 ||
+    day > 31
+  ) {
+    throw new Error('INVALID_DATE');
+  }
+
+  const dateKey = `${year.toString().padStart(4, '0')}-${month
+    .toString()
+    .padStart(2, '0')}-${day.toString().padStart(2, '0')}`;
+
+  // Convert local midnight to UTC by subtracting timezone offset
+  const startUtc =
+    Date.UTC(year, month - 1, day, 0, 0, 0, 0) - timezoneOffsetMinutes * 60 * 1000;
+  const endUtc =
+    Date.UTC(year, month - 1, day, 23, 59, 59, 999) - timezoneOffsetMinutes * 60 * 1000;
+
+  const startOfDay = new Date(startUtc);
+  const endOfDay = new Date(endUtc);
+  const referenceDate = new Date(startUtc + 12 * 60 * 60 * 1000); // mid-day for stability
+
+  return {
+    referenceDate,
+    startOfDay,
+    endOfDay,
+    dateKey,
+    localDateParts,
+    timezoneOffsetMinutes
+  };
+}
+
+const toIsoString = (value) => {
+  if (!value) return null;
+  if (value instanceof Date && !Number.isNaN(value.getTime())) {
+    return value.toISOString();
+  }
+  if (typeof value === 'string') {
+    const parsed = new Date(value);
+    return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString();
+  }
+  if (typeof value === 'number') {
+    const parsed = new Date(value);
+    return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString();
+  }
+  if (typeof value === 'object') {
+    if (typeof value.toDate === 'function') {
+      try {
+        const converted = value.toDate();
+        return converted instanceof Date && !Number.isNaN(converted.getTime())
+          ? converted.toISOString()
+          : null;
+      } catch (error) {
+        console.warn('⚠️ [WORK_SLOTS_API] Failed to convert timestamp using toDate:', error);
+        return null;
+      }
+    }
+    const seconds =
+      typeof value._seconds === 'number'
+        ? value._seconds
+        : typeof value.seconds === 'number'
+        ? value.seconds
+        : undefined;
+    if (typeof seconds === 'number') {
+      const nanoseconds =
+        typeof value._nanoseconds === 'number'
+          ? value._nanoseconds
+          : typeof value.nanoseconds === 'number'
+          ? value.nanoseconds
+          : 0;
+      const millis = seconds * 1000 + Math.floor(nanoseconds / 1e6);
+      const parsed = new Date(millis);
+      return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString();
+    }
+  }
+  return null;
+};
+
+const normalizeSlotState = (startTimeIso, endTimeIso, now) => {
+  if (!startTimeIso || !endTimeIso) {
+    return {
+      runtimeState: 'unknown',
+      isActive: false,
+      isUpcoming: false,
+      isExpired: false
+    };
+  }
+
+  const start = new Date(startTimeIso);
+  const end = new Date(endTimeIso);
+  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) {
+    return {
+      runtimeState: 'unknown',
+      isActive: false,
+      isUpcoming: false,
+      isExpired: false
+    };
+  }
+
+  if (now >= start && now <= end) {
+    return {
+      runtimeState: 'active',
+      isActive: true,
+      isUpcoming: false,
+      isExpired: false
+    };
+  }
+
+  if (now < start) {
+    return {
+      runtimeState: 'upcoming',
+      isActive: false,
+      isUpcoming: true,
+      isExpired: false
+    };
+  }
+
+  return {
+    runtimeState: 'expired',
+    isActive: false,
+    isUpcoming: false,
+    isExpired: true
+  };
+};
+
+const summarizeSlotStates = (normalizedSlots = []) => {
+  return normalizedSlots.reduce(
+    (summary, slot) => {
+      if (slot.isSelected) {
+        summary.selected += 1;
+      }
+      if (slot.isActive) {
+        summary.active += 1;
+      } else if (slot.isUpcoming) {
+        summary.upcoming += 1;
+      } else if (slot.isExpired) {
+        summary.expired += 1;
+      }
+      return summary;
+    },
+    { total: normalizedSlots.length, selected: 0, active: 0, upcoming: 0, expired: 0 }
+  );
+};
+
+/**
  * @route   GET /api/driver/work-slots
  * @desc    Get driver work slots
  * @access  Private (Driver only)
@@ -9830,40 +10160,149 @@ router.post('/photo/verify', requireDriver, async (req, res) => {
 router.get('/work-slots', requireDriver, async (req, res) => {
   try {
     const { uid } = req.user;
-    const { date } = req.query;
-    const db = getFirestore();
-    
-    console.log('🔍 [WORK_SLOTS_API] Fetching work slots for driver:', uid, 'date:', date);
-    
-    let query = db.collection('workSlots').where('driverId', '==', uid);
-    
-    if (date) {
-      query = query.where('date', '==', date);
-    }
-    
-    query = query.orderBy('startTime');
-    
-    const snapshot = await query.get();
-    const slots = [];
-    
-    snapshot.forEach((doc) => {
-      slots.push({
-        id: doc.id,
-        ...doc.data(),
-        createdAt: doc.data().createdAt?.toDate?.()?.toISOString() || null,
-        updatedAt: doc.data().updatedAt?.toDate?.()?.toISOString() || null
+    const { date, timezoneOffsetMinutes } = req.query;
+    const workSlotsService = require('../services/workSlotsService');
+
+    let dateContext;
+    try {
+      dateContext = buildWorkSlotDateContext(date, timezoneOffsetMinutes);
+    } catch (parseError) {
+      console.warn('❌ [WORK_SLOTS_API] Invalid date query parameter:', {
+        date,
+        timezoneOffsetMinutes,
+        error: parseError?.message || parseError
       });
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'INVALID_DATE',
+          message: 'Invalid date supplied',
+          details: 'Please provide a valid date (YYYY-MM-DD or ISO string)'
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    const {
+      referenceDate,
+      startOfDay,
+      endOfDay,
+      dateKey,
+      localDateParts,
+      timezoneOffsetMinutes: normalizedOffset
+    } = dateContext;
+
+    console.log('🔍 [WORK_SLOTS_API] Fetching work slots for driver:', {
+      uid,
+      dateKey,
+      timezoneOffsetMinutes: normalizedOffset
     });
-    
-    console.log('✅ [WORK_SLOTS_API] Retrieved work slots:', slots.length);
-    
+
+    const retrievalOptions = {
+      startOfDay,
+      endOfDay,
+      dateKey,
+      timezoneOffsetMinutes: normalizedOffset,
+      localDateParts
+    };
+
+    const slotsResult = await workSlotsService.getDriverSlots(uid, referenceDate, retrievalOptions);
+
+    if (!slotsResult.success) {
+      console.error('❌ [WORK_SLOTS_API] Failed to fetch slots:', slotsResult.error);
+      return res.status(500).json({
+        success: false,
+        error: {
+          code: slotsResult.error?.code || 'WORK_SLOTS_ERROR',
+          message: slotsResult.error?.message || 'Failed to retrieve work slots',
+          details: slotsResult.error?.details || 'Unable to query work slots at this time'
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    let slots = Array.isArray(slotsResult.data) ? slotsResult.data : [];
+
+    if (slots.length === 0) {
+      console.log('ℹ️ [WORK_SLOTS_API] No slots found for date - generating daily slots');
+      const generationResult = await workSlotsService.generateDailySlots(
+        uid,
+        referenceDate,
+        retrievalOptions
+      );
+
+      if (!generationResult.success) {
+        console.error('❌ [WORK_SLOTS_API] Failed to generate slots:', generationResult.error);
+        return res.status(500).json({
+          success: false,
+          error: {
+            code: generationResult.error?.code || 'SLOT_GENERATION_ERROR',
+            message: generationResult.error?.message || 'Failed to generate daily slots',
+            details: generationResult.error?.details || 'Unable to create work slots'
+          },
+          timestamp: new Date().toISOString()
+        });
+      }
+
+      slots = Array.isArray(generationResult.data) ? generationResult.data : [];
+      console.log('✅ [WORK_SLOTS_API] Generated daily slots:', slots.length);
+    }
+
+    const now = new Date();
+    const normalizedSlots = slots.map((slot) => {
+      const startTimeIso = toIsoString(slot.startTime);
+      const endTimeIso = toIsoString(slot.endTime);
+      const createdAtIso = toIsoString(slot.createdAt);
+      const updatedAtIso = toIsoString(slot.updatedAt);
+      const selectedAtIso = toIsoString(slot.selectedAt);
+
+      const slotId = slot.slotId || slot.id;
+      const runtimeState = normalizeSlotState(startTimeIso, endTimeIso, now);
+
+      return {
+        id: slot.id || slotId,
+        slotId,
+        label: slot.label || '',
+        startTime: startTimeIso,
+        endTime: endTimeIso,
+        status: slot.status || 'available',
+        isSelected: slot.isSelected === true,
+        selectedAt: selectedAtIso,
+        driverId: slot.driverId || uid,
+        customerId: slot.customerId || null,
+        bookedAt: toIsoString(slot.bookedAt),
+        createdAt: createdAtIso,
+        updatedAt: updatedAtIso,
+        date: slot.date || slot.dateKey || dateKey,
+        dateKey: slot.dateKey || slot.date || dateKey,
+        timezoneOffsetMinutes:
+          typeof slot.timezoneOffsetMinutes === 'number'
+            ? slot.timezoneOffsetMinutes
+            : normalizedOffset,
+        runtimeState: runtimeState.runtimeState,
+        computedStatus: runtimeState.runtimeState,
+        isActive: runtimeState.isActive,
+        isUpcoming: runtimeState.isUpcoming,
+        isExpired: runtimeState.isExpired
+      };
+    });
+
+    const summary = summarizeSlotStates(normalizedSlots);
+    const responseTimestamp = now.toISOString();
+
     res.status(200).json({
       success: true,
       message: 'Work slots retrieved successfully',
-      data: slots,
-      timestamp: new Date().toISOString()
+      data: normalizedSlots,
+      summary,
+      meta: {
+        dateKey,
+        timezoneOffsetMinutes: normalizedOffset,
+        serverTime: responseTimestamp
+      },
+      timestamp: responseTimestamp
     });
-    
+
   } catch (error) {
     console.error('❌ [WORK_SLOTS_API] Error fetching work slots:', error);
     res.status(500).json({
@@ -9905,12 +10344,43 @@ router.post('/work-slots', requireDriver, async (req, res) => {
     
     const batch = db.batch();
     const createdSlots = [];
-    
+ 
+    const parseDateKeyFromSlot = (slot) => {
+      try {
+        if (slot.date) return slot.date;
+        if (slot.dateKey) return slot.dateKey;
+        if (slot.startTime) {
+          const start = new Date(slot.startTime);
+          if (!Number.isNaN(start.getTime())) {
+            return `${start.getUTCFullYear().toString().padStart(4, '0')}-${(start.getUTCMonth() + 1)
+              .toString()
+              .padStart(2, '0')}-${start.getUTCDate().toString().padStart(2, '0')}`;
+          }
+        }
+      } catch (parseError) {
+        console.warn('⚠️ [WORK_SLOTS_API] Unable to derive dateKey for slot', parseError);
+      }
+      return null;
+    };
+
+    const normalizeOffset = (value) => {
+      const numeric = Number(value);
+      return Number.isFinite(numeric) ? numeric : 0;
+    };
+
     for (const slot of slots) {
       const slotRef = db.collection('workSlots').doc();
+      const derivedDateKey =
+        parseDateKeyFromSlot(slot) || new Date().toISOString().split('T')[0];
+      const timezoneOffsetValue =
+        normalizeOffset(slot.timezoneOffsetMinutes ?? req.body.timezoneOffsetMinutes);
+
       const slotData = {
         ...slot,
         driverId: uid,
+        date: derivedDateKey,
+        dateKey: derivedDateKey,
+        timezoneOffsetMinutes: timezoneOffsetValue,
         createdAt: new Date(),
         updatedAt: new Date()
       };

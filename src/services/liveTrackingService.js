@@ -43,8 +43,10 @@ class LiveTrackingService {
         return;
       }
 
+      const db = this.getDb();
+
       // Update driver location in Firestore
-      await this.db.collection('driverLocations').doc(driverId).set({
+      await db.collection('driverLocations').doc(driverId).set({
         latitude: location.latitude,
         longitude: location.longitude,
         address: location.address || 'Current Location',
@@ -56,7 +58,7 @@ class LiveTrackingService {
       // If driver is on a trip, notify customer
       if (bookingId) {
         // Get booking details
-        const bookingDoc = await this.db.collection('bookings').doc(bookingId).get();
+        const bookingDoc = await db.collection('bookings').doc(bookingId).get();
         if (bookingDoc.exists) {
           const bookingData = bookingDoc.data();
           
@@ -103,8 +105,10 @@ class LiveTrackingService {
             return;
           }
 
+      const db = this.getDb();
+
       // Get booking details
-      const bookingDoc = await this.db.collection('bookings').doc(bookingId).get();
+      const bookingDoc = await db.collection('bookings').doc(bookingId).get();
       if (!bookingDoc.exists) {
         console.error(`❌ [LiveTrackingService] Booking ${bookingId} not found`);
             return;
@@ -113,14 +117,14 @@ class LiveTrackingService {
       const bookingData = bookingDoc.data();
       
       // Update booking status
-      await this.db.collection('bookings').doc(bookingId).update({
+      await db.collection('bookings').doc(bookingId).update({
         status,
         updatedAt: new Date(),
         ...additionalData
       });
 
       // Create status update record
-      await this.db.collection('booking_status_updates').add({
+      await db.collection('booking_status_updates').add({
         bookingId,
         status,
         driverId,
@@ -228,7 +232,9 @@ class LiveTrackingService {
    */
   async getDriverLocation(bookingId) {
     try {
-      const bookingDoc = await this.db.collection('bookings').doc(bookingId).get();
+      const db = this.getDb();
+
+      const bookingDoc = await db.collection('bookings').doc(bookingId).get();
       if (!bookingDoc.exists) {
         return null;
       }
@@ -240,7 +246,7 @@ class LiveTrackingService {
         return null;
       }
 
-      const driverLocationDoc = await this.db.collection('driverLocations').doc(driverId).get();
+      const driverLocationDoc = await db.collection('driverLocations').doc(driverId).get();
       if (!driverLocationDoc.exists) {
         return null;
       }

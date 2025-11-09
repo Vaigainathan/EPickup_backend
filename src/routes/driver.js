@@ -48,19 +48,33 @@ router.get('/', requireDriver, async (req, res) => {
     }
 
     const userData = userDoc.data();
-    
+    const driverId = userData.id || uid;
+    const driverName = userData.name || userData.fullName || userData.displayName || 'Driver';
+    const driverEmail = userData.email || userData.contactEmail || (userData.contact && userData.contact.email) || '';
+    const driverPhone = userData.phone || userData.contactNumber || (userData.contact && userData.contact.phone) || '';
+
+    if (!userData.id) {
+      try {
+        await db.collection('users').doc(uid).set({
+          id: driverId,
+          updatedAt: new Date()
+        }, { merge: true });
+        console.log('✅ [PROFILE] Backfilled missing driver id into Firestore document');
+      } catch (idPersistError) {
+        console.warn('⚠️ [PROFILE] Failed to backfill missing driver id:', idPersistError.message);
+      }
+    }
+
     res.status(200).json({
       success: true,
       message: 'Driver data retrieved successfully',
       data: {
-        driver: {
-          id: userData.id,
-          name: userData.name,
-          email: userData.email,
-          phone: userData.phone,
-          profilePicture: userData.profilePicture,
-          driver: userData.driver
-        }
+        id: driverId,
+        name: driverName,
+        email: driverEmail,
+        phone: driverPhone,
+        profilePicture: userData.profilePicture || null,
+        driver: userData.driver || {}
       },
       timestamp: new Date().toISOString()
     });
@@ -198,6 +212,22 @@ router.get('/profile', requireDriver, async (req, res) => {
     }
 
     const userData = userDoc.data();
+    const driverId = userData.id || uid;
+    const driverName = userData.name || userData.fullName || userData.displayName || 'Driver';
+    const driverEmail = userData.email || userData.contactEmail || (userData.contact && userData.contact.email) || '';
+    const driverPhone = userData.phone || userData.contactNumber || (userData.contact && userData.contact.phone) || '';
+
+    if (!userData.id) {
+      try {
+        await db.collection('users').doc(uid).set({
+          id: driverId,
+          updatedAt: new Date()
+        }, { merge: true });
+        console.log('✅ [PROFILE] Backfilled missing driver id into Firestore document');
+      } catch (idPersistError) {
+        console.warn('⚠️ [PROFILE] Failed to backfill missing driver id:', idPersistError.message);
+      }
+    }
     
     // ✅ CRITICAL FIX: Get profile photo from Firebase Storage if not in Firestore
     let profilePicture = userData.profilePicture;
@@ -318,6 +348,14 @@ router.get('/profile', requireDriver, async (req, res) => {
     // Normalize driver data with points wallet and updated verification status
     const normalizedDriver = {
       ...driverData,
+      id: driverData.id || driverId,
+      name: driverData.name || driverName,
+      email: driverData.email || driverEmail,
+      phone: driverPhone,
+      wallet: driverData.wallet || userData.wallet || {
+        balance: 0,
+        currency: 'INR'
+      },
       pointsWallet: pointsWalletData,
       verificationStatus: finalVerificationStatus,
       isVerified: finalIsVerified,
@@ -329,17 +367,28 @@ router.get('/profile', requireDriver, async (req, res) => {
       success: true,
       message: 'Driver profile retrieved successfully',
       data: {
-        id: userData.id,
-        name: userData.name,
-        email: userData.email,
-        phone: userData.phone,
+        id: driverId,
+        name: driverName,
+        email: driverEmail,
+        phone: driverPhone,
         profilePicture: profilePicture,
         verificationStatus: finalVerificationStatus,
         isVerified: finalIsVerified,
+        wallet: normalizedDriver.wallet || {
+          balance: (normalizedDriver.wallet && normalizedDriver.wallet.balance) || 0,
+          currency: (normalizedDriver.wallet && normalizedDriver.wallet.currency) || 'INR'
+        },
+        welcomeBonusGiven: normalizedDriver.welcomeBonusGiven || false,
+        welcomeBonusAmount: normalizedDriver.welcomeBonusAmount || 0,
+        welcomeBonusGivenAt: normalizedDriver.welcomeBonusGivenAt || null,
         pointsWallet: pointsWalletData,
         requiresTopUp: pointsWalletData?.requiresTopUp ?? true,
         canWork: pointsWalletData?.canWork ?? false,
         driver: {
+          id: normalizedDriver.id || driverId,
+          name: normalizedDriver.name || driverName,
+          email: normalizedDriver.email || driverEmail,
+          phone: normalizedDriver.phone || driverPhone,
           vehicleDetails: (() => {
             // ✅ CRITICAL FIX: Normalize vehicleDetails from different possible formats
             const vd = normalizedDriver.vehicleDetails;

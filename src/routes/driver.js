@@ -3353,8 +3353,48 @@ router.get('/bookings/available', requireDriver, async (req, res) => {
     });
     
     // ✅ CRITICAL FIX: Check driver verification status
-    if (driverData.driver?.verificationStatus !== 'verified') {
-      console.log(`⚠️ [AVAILABLE] Driver ${uid} not verified: ${driverData.driver?.verificationStatus}`);
+    const verificationSources = {
+      driverVerificationStatus: driverData.driver?.verificationStatus,
+      driverIsVerifiedFlag: driverData.driver?.isVerified,
+      rootVerificationStatus: driverData.verificationStatus,
+      rootIsVerifiedFlag: driverData.isVerified
+    };
+
+    const normalizedVerificationStatus = (() => {
+      const statusCandidates = [
+        verificationSources.driverVerificationStatus,
+        verificationSources.rootVerificationStatus
+      ].filter(value => typeof value === 'string' && value.trim().length > 0);
+
+      if (statusCandidates.length > 0) {
+        return statusCandidates[0].toLowerCase();
+      }
+
+      if (verificationSources.driverIsVerifiedFlag === true || verificationSources.rootIsVerifiedFlag === true) {
+        return 'verified';
+      }
+
+      return null;
+    })();
+
+    const verifiedStatusValues = new Set([
+      'verified',
+      'approved',
+      'approved_manual',
+      'approved_by_admin',
+      'approved_manual_review',
+      'completed',
+      'complete',
+      'active'
+    ]);
+
+    const isDriverVerified =
+      verificationSources.driverIsVerifiedFlag === true ||
+      verificationSources.rootIsVerifiedFlag === true ||
+      (normalizedVerificationStatus && verifiedStatusValues.has(normalizedVerificationStatus));
+
+    if (!isDriverVerified) {
+      console.log(`⚠️ [AVAILABLE] Driver ${uid} not verified. Status snapshot:`, verificationSources);
       return res.status(400).json({
         success: false,
         error: {

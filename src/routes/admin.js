@@ -30,7 +30,128 @@ const normalizeTimestamp = (value) => {
   return Number.isNaN(parsed.getTime()) ? value : parsed.toISOString();
 };
 
-const normalizeVerification = (primary, fallback) => {
+const SIGNED_URL_TTL_MS = 1000 * 60 * 60 * 6; // 6 hours
+let cachedStorageInstance;
+
+const verificationPhotoUrlCache = new Map();
+
+const getStorageSafe = () => {
+  if (cachedStorageInstance !== undefined) {
+    return cachedStorageInstance;
+  }
+  try {
+    cachedStorageInstance = getStorage();
+    return cachedStorageInstance;
+  } catch (error) {
+    console.warn('⚠️ Firebase Storage unavailable for verification photo normalization:', error.message);
+    cachedStorageInstance = null;
+    return null;
+  }
+};
+
+const parseStorageReference = (value) => {
+  if (!value || typeof value !== 'string') {
+    return null;
+  }
+
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  if (/^https?:\/\//i.test(trimmed)) {
+    return { publicUrl: trimmed };
+  }
+
+  if (trimmed.startsWith('gs://')) {
+    const withoutScheme = trimmed.slice(5);
+    const firstSlash = withoutScheme.indexOf('/');
+    if (firstSlash === -1) {
+      return null;
+    }
+    const bucket = withoutScheme.slice(0, firstSlash);
+    const pathWithQuery = withoutScheme.slice(firstSlash + 1);
+    const [path] = pathWithQuery.split('?');
+    return {
+      bucket,
+      path
+    };
+  }
+
+  const sanitized = trimmed.replace(/^\/+/, '');
+  if (!sanitized) {
+    return null;
+  }
+
+  const [path] = sanitized.split('?');
+  return {
+    bucket: null,
+    path
+  };
+};
+
+const buildSignedUrl = async ({ bucket, path }) => {
+  const storage = getStorageSafe();
+  if (!storage || !path) {
+    return {
+      url: null,
+      bucket: bucket || null,
+      path: path || null,
+      origin: storage ? 'storage_path' : 'storage_unavailable'
+    };
+  }
+
+  const bucketInstance = bucket ? storage.bucket(bucket) : storage.bucket();
+  const file = bucketInstance.file(path);
+  const cacheKey = `${bucketInstance.name}/${path}`;
+
+  const cached = verificationPhotoUrlCache.get(cacheKey);
+  if (cached && cached.expiresAt && cached.expiresAt > Date.now() + 60000) {
+    return {
+      url: cached.url,
+      bucket: bucketInstance.name,
+      path,
+      origin: 'cache',
+      expiresAt: new Date(cached.expiresAt).toISOString()
+    };
+  }
+
+  try {
+    const expiresAtMs = Date.now() + SIGNED_URL_TTL_MS;
+    const [signedUrl] = await file.getSignedUrl({
+      action: 'read',
+      expires: new Date(expiresAtMs)
+    });
+
+    verificationPhotoUrlCache.set(cacheKey, {
+      url: signedUrl,
+      expiresAt: expiresAtMs
+    });
+
+    return {
+      url: signedUrl,
+      bucket: bucketInstance.name,
+      path,
+      origin: 'signed',
+      expiresAt: new Date(expiresAtMs).toISOString()
+    };
+  } catch (error) {
+    console.warn('⚠️ Failed to generate signed URL for verification photo:', {
+      bucket: bucketInstance.name,
+      path,
+      error: error.message
+    });
+    return {
+      url: null,
+      bucket: bucketInstance.name,
+      path,
+      origin: 'error',
+      error: error.message
+    };
+  }
+};
+
+const normalizeVerification = async (primary, fallback) => {
   const candidate = primary && typeof primary === 'object'
     ? primary
     : (fallback && typeof fallback === 'object' ? fallback : null);
@@ -39,13 +160,42 @@ const normalizeVerification = (primary, fallback) => {
     return undefined;
   }
 
-  const photoUrl =
+  const rawPhotoUrl =
     (typeof candidate.photoUrl === 'string' && candidate.photoUrl.trim()) ||
     (typeof candidate.photoURL === 'string' && candidate.photoURL.trim()) ||
     (typeof candidate.url === 'string' && candidate.url.trim());
 
-  if (!photoUrl) {
+  if (!rawPhotoUrl) {
     return undefined;
+  }
+
+  const reference = parseStorageReference(rawPhotoUrl);
+  if (!reference) {
+    return undefined;
+  }
+
+  let finalPhotoUrl = null;
+  let verificationMeta = {
+    source: 'storage_path',
+    storageBucket: null,
+    storagePath: null,
+    signedUrlExpiresAt: null,
+    signedUrlError: null
+  };
+
+  if (reference.publicUrl) {
+    finalPhotoUrl = reference.publicUrl;
+    verificationMeta.source = 'public';
+  } else if (reference.path) {
+    const signedResult = await buildSignedUrl(reference);
+    finalPhotoUrl = signedResult.url;
+    verificationMeta = {
+      source: signedResult.origin,
+      storageBucket: signedResult.bucket || reference.bucket,
+      storagePath: signedResult.path || reference.path,
+      signedUrlExpiresAt: signedResult.expiresAt || null,
+      signedUrlError: signedResult.error || null
+    };
   }
 
   const rawLocation = candidate.location ||
@@ -70,8 +220,18 @@ const normalizeVerification = (primary, fallback) => {
     }
   }
 
-  return {
-    photoUrl: photoUrl.trim(),
+  if (!finalPhotoUrl && !reference.publicUrl) {
+    verificationMeta.source = verificationMeta.source || (reference.bucket || reference.path ? 'storage_path' : 'unknown');
+  }
+
+  const verification = {
+    photoUrl: finalPhotoUrl || (reference.publicUrl || null),
+    rawPhotoUrl,
+    storagePath: verificationMeta.storagePath || reference.path || null,
+    storageBucket: verificationMeta.storageBucket || reference.bucket || null,
+    source: verificationMeta.source,
+    signedUrlExpiresAt: verificationMeta.signedUrlExpiresAt,
+    signedUrlError: verificationMeta.signedUrlError,
     verifiedAt: normalizeTimestamp(
       candidate.verifiedAt ||
       candidate.uploadedAt ||
@@ -85,6 +245,12 @@ const normalizeVerification = (primary, fallback) => {
       (candidate.metadata && (candidate.metadata.notes || candidate.metadata.note)) ||
       null
   };
+
+  if (!verification.photoUrl && !verification.rawPhotoUrl) {
+    return undefined;
+  }
+
+  return verification;
 };
 
 /**
@@ -1190,14 +1356,14 @@ router.get('/bookings', async (req, res) => {
     const snapshot = await query.get();
     const bookings = [];
 
-    snapshot.forEach(doc => {
+    for (const doc of snapshot.docs) {
       const data = doc.data();
 
-      const pickupVerification = normalizeVerification(
+      const pickupVerification = await normalizeVerification(
         data.pickupVerification,
         data.photoVerification?.pickup
       );
-      const deliveryVerification = normalizeVerification(
+      const deliveryVerification = await normalizeVerification(
         data.deliveryVerification,
         data.photoVerification?.delivery
       );
@@ -1271,7 +1437,7 @@ router.get('/bookings', async (req, res) => {
       };
 
       bookings.push(mappedBooking);
-    });
+    }
 
     res.json({
       success: true,
@@ -1390,11 +1556,11 @@ router.get('/bookings/:id', async (req, res) => {
     }
 
     const data = bookingDoc.data();
-    const pickupVerification = normalizeVerification(
+    const pickupVerification = await normalizeVerification(
       data.pickupVerification,
       data.photoVerification?.pickup
     );
-    const deliveryVerification = normalizeVerification(
+    const deliveryVerification = await normalizeVerification(
       data.deliveryVerification,
       data.photoVerification?.delivery
     );

@@ -9239,6 +9239,20 @@ router.post('/tracking/update', [
       updatedAt: currentTime
     });
 
+    // ✅ CRITICAL FIX: Broadcast real-time driver location to customer and booking rooms
+    try {
+      const liveTrackingService = require('../services/liveTrackingService');
+      await liveTrackingService.updateDriverLocation(uid, {
+        latitude: location.latitude,
+        longitude: location.longitude,
+        accuracy: location.accuracy,
+        speed: speed || null,
+        heading: heading || null
+      }, bookingId);
+    } catch (broadcastError) {
+      console.error('⚠️ [TRACKING_UPDATE] Failed to broadcast driver location (non-critical):', broadcastError);
+    }
+
     res.status(200).json({
       success: true,
       message: 'Location updated successfully',

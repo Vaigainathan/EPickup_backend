@@ -2,7 +2,7 @@ const express = require('express');
 const { body, validationResult, query } = require('express-validator');
 const bookingService = require('../services/bookingService');
 // const driverAssignmentService = require('../services/driverAssignmentService'); // Commented out - only used in commented code
-const WebSocketEventHandler = require('../services/websocketEventHandler');
+const { getSocketIO, getEventHandler } = require('../services/socket');
 const { requireRole, requireCustomer, requireDriver } = require('../middleware/auth');
 const { userRateLimit } = require('../middleware/auth');
 const { getFirestore } = require('../services/firebase');
@@ -125,16 +125,14 @@ router.post('/', [
           console.log(`📢 Broadcasting new booking ${result.data.booking.id} to available drivers`);
           
           // Notify available drivers of new booking (they will manually accept)
-          const wsEventHandler = new WebSocketEventHandler();
-          await wsEventHandler.initialize();
+          const wsEventHandler = getEventHandler();
           await wsEventHandler.notifyDriversOfNewBooking(result.data.booking);
           
           console.log(`✅ Booking ${result.data.booking.id} broadcasted to nearby drivers for manual acceptance`);
           
           // ✅ CRITICAL FIX: Notify admin dashboard of new booking for real-time customer count updates
           try {
-            const socketService = require('../services/socket');
-            const io = socketService.getSocketIO();
+            const io = getSocketIO();
             if (io) {
               io.to('type:admin').emit('booking_created', {
                 bookingId: result.data.booking.id,
@@ -897,42 +895,86 @@ router.post('/:id/accept', [
       await bookingLockService.releaseBookingLock(id, uid);
 
       if (result.success) {
-        // ✅ FIXED: Notify customer of driver acceptance with proper WebSocket events
-        const wsEventHandler = new WebSocketEventHandler();
-        await wsEventHandler.initialize();
-        
-        // Send driver_assigned event to customer
-        await wsEventHandler.io.to(`user:${result.data.booking.customerId}`).emit('driver_assigned', {
-          bookingId: id,
-          driverId: uid,
-          driver: {
-            id: uid,
-            name: result.data.driver.name,
-            phone: result.data.driver.phone,
-            vehicleNumber: result.data.driver.vehicleInfo?.vehicleNumber || '',
-            rating: result.data.driver.rating || 4.5
-          },
-          timestamp: new Date().toISOString()
-        });
+        let io = null;
+        try {
+          io = getSocketIO();
+        } catch (socketError) {
+          console.warn('⚠️ [BOOKING_ACCEPT] Unable to retrieve Socket.IO instance:', socketError.message);
+        }
+        const customerId = result.data.booking.customerId;
+        const vehicleDetails = result.data.driver?.vehicleDetails || result.data.driver?.vehicleInfo || {};
+        const driverInfo = {
+          id: uid,
+          name: result.data.driver?.name || 'Driver',
+          phone: result.data.driver?.phone || '',
+          rating: result.data.driver?.rating || 4.5,
+          vehicleNumber: result.data.driver?.vehicleNumber || vehicleDetails.vehicleNumber || '',
+          vehicleModel: result.data.driver?.vehicleModel || vehicleDetails.vehicleModel || '',
+          vehicleColor: result.data.driver?.vehicleColor || vehicleDetails.vehicleColor || '',
+          vehicleType: result.data.driver?.vehicleType || vehicleDetails.vehicleType || '',
+          vehicleDetails: vehicleDetails,
+          profileImage: result.data.driver?.profileImage || null
+        };
 
-        // Send booking status update
-        await wsEventHandler.io.to(`user:${result.data.booking.customerId}`).emit('booking_status_update', {
-          bookingId: id,
-          status: 'driver_assigned',
+        const bookingPayload = {
+          ...result.data.booking,
+          id,
+          driverId: uid,
           driverInfo: {
-            id: uid,
-            name: result.data.driver.name,
-            phone: result.data.driver.phone,
-            vehicleNumber: result.data.driver.vehicleInfo?.vehicleNumber || ''
+            ...(result.data.booking.driverInfo || {}),
+            ...driverInfo
           },
-          timestamp: new Date().toISOString(),
-          updatedBy: uid
-        });
+          driver: {
+            ...(result.data.booking.driver || {}),
+            ...driverInfo
+          }
+        };
+
+        if (io) {
+          const userRoom = `user:${customerId}`;
+          const bookingRoom = `booking:${id}`;
+          const customerRoom = 'type:customer';
+          const timestamp = new Date().toISOString();
+
+          const driverAssignedEvent = {
+            bookingId: id,
+            driverId: uid,
+            driver: driverInfo,
+            driverInfo,
+            booking: bookingPayload,
+            timestamp
+          };
+
+          const statusUpdateEvent = {
+            bookingId: id,
+            status: 'driver_assigned',
+            driverInfo,
+            booking: bookingPayload,
+            timestamp,
+            updatedBy: uid
+          };
+
+          io.to(userRoom).emit('driver_assigned', driverAssignedEvent);
+          io.to(bookingRoom).emit('driver_assigned', driverAssignedEvent);
+          io.to(customerRoom).emit('driver_assigned', driverAssignedEvent);
+
+          io.to(userRoom).emit('booking_status_update', statusUpdateEvent);
+          io.to(bookingRoom).emit('booking_status_update', statusUpdateEvent);
+          io.to(customerRoom).emit('booking_status_update', statusUpdateEvent);
+
+          io.to('type:admin').emit('booking_status_update', statusUpdateEvent);
+        } else {
+          console.warn('⚠️ [BOOKING_ACCEPT] Socket.IO instance not available while emitting driver assignment');
+        }
 
         res.status(200).json({
           success: true,
           message: 'Booking accepted successfully',
-          data: result.data,
+          data: {
+            ...result.data,
+            booking: bookingPayload,
+            driver: driverInfo
+          },
           timestamp: new Date().toISOString()
         });
       } else {

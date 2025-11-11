@@ -229,6 +229,47 @@ class BookingService {
         }
 
         // Update booking with driver acceptance
+        const driverVehicleDetails = driver.driver?.vehicleDetails || {};
+        const vehicleModel =
+          driver.driver?.vehicleModel ||
+          driverVehicleDetails.vehicleModel ||
+          booking.driverInfo?.vehicleModel ||
+          '';
+        const vehicleNumber =
+          driver.driver?.vehicleNumber ||
+          driverVehicleDetails.vehicleNumber ||
+          booking.driverInfo?.vehicleNumber ||
+          '';
+        const vehicleColor =
+          driver.driver?.vehicleColor ||
+          driverVehicleDetails.vehicleColor ||
+          booking.driverInfo?.vehicleColor ||
+          '';
+        const vehicleType =
+          driver.driver?.vehicleType ||
+          driverVehicleDetails.vehicleType ||
+          booking.driverInfo?.vehicleType ||
+          '';
+        const driverInfo = {
+          id: driverId,
+          name: driver.name || driver.driver?.name || booking.driverInfo?.name || 'Driver',
+          phone: driver.phone || driver.driver?.phone || booking.driverInfo?.phone || '',
+          rating: driver.driver?.rating || driver.driver?.averageRating || booking.driverInfo?.rating || 4.5,
+          vehicleType,
+          vehicleNumber,
+          vehicleModel,
+          vehicleColor,
+          vehicleDetails: {
+            ...driverVehicleDetails
+          },
+          vehicleInfo: {
+            ...driverVehicleDetails
+          },
+          estimatedArrival: estimatedArrival || booking.driverInfo?.estimatedArrival || null,
+          profileImage: driver.driver?.profileImage || driver.photoURL || booking.driverInfo?.profileImage || null,
+          currentLocation: driver.driver?.currentLocation || booking.driverInfo?.currentLocation || null
+        };
+
         const updatedBooking = {
           ...booking,
           driverId: driverId,
@@ -236,6 +277,14 @@ class BookingService {
           assignedAt: new Date(),
           acceptedAt: new Date(),
           updatedAt: new Date(),
+          driverInfo: {
+            ...(booking.driverInfo || {}),
+            ...driverInfo
+          },
+          driver: {
+            ...(booking.driver || {}),
+            ...driverInfo
+          },
           timing: {
             ...booking.timing,
             assignedAt: new Date(),
@@ -262,7 +311,7 @@ class BookingService {
         // Apply booking updates in transaction
         transaction.update(bookingRef, updatedBooking);
 
-        return { booking: updatedBooking };
+        return { booking: updatedBooking, driver: driverInfo };
       });
 
       console.log(`✅ Driver ${driverId} accepted booking ${bookingId} atomically`);

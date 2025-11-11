@@ -19,6 +19,7 @@ const ACTIVE_BOOKING_STATUSES = [
   'driver_arrived',
   'picked_up',
   'in_transit',
+  'at_dropoff',
   'delivered',
   'money_collection'
 ];
@@ -33,6 +34,7 @@ const ACTIVE_BOOKING_WITH_DRIVER_STATUSES = [
   'driver_arrived',
   'picked_up',
   'in_transit',
+  'at_dropoff',
   'delivered',
   'money_collection'
 ];
@@ -66,6 +68,7 @@ const VALID_BOOKING_STATUSES = [
   'driver_arrived',
   'picked_up',
   'in_transit',
+  'at_dropoff',
   'delivered',
   'money_collection',
   'completed',

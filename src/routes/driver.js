@@ -7,8 +7,12 @@ const { speedLimiter } = require('../middleware/rateLimit');
 const { documentStatusCache, invalidateUserCache } = require('../middleware/cache');
 const BookingLockService = require('../services/bookingLockService');
 const bookingLockService = new BookingLockService();
+const { driverStatusWorkflowService, DriverStatusError } = require('../services/driverStatusWorkflowService');
 
 const router = express.Router();
+
+const fareCalculationService = require('../services/fareCalculationService');
+const COMMISSION_RATE_PER_KM = 2;
 
 // Helper function to calculate distance between two coordinates
 function calculateDistance(lat1, lon1, lat2, lon2) {
@@ -21,6 +25,205 @@ function calculateDistance(lat1, lon1, lat2, lon2) {
   const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
   const distance = R * c; // Distance in kilometers
   return distance;
+}
+
+function toIsoString(value) {
+  if (!value) {
+    return null;
+  }
+
+  if (value instanceof Date) {
+    return Number.isNaN(value.getTime()) ? null : value.toISOString();
+  }
+
+  if (typeof value === 'string') {
+    const parsed = new Date(value);
+    return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString();
+  }
+
+  if (typeof value === 'object') {
+    if (typeof value.toDate === 'function') {
+      try {
+        const parsed = value.toDate();
+        return parsed instanceof Date && !Number.isNaN(parsed.getTime()) ? parsed.toISOString() : null;
+      } catch {
+        return null;
+      }
+    }
+
+    if (typeof value.seconds === 'number') {
+      const millis = value.seconds * 1000 + (value.nanoseconds || 0) / 1_000_000;
+      const parsed = new Date(millis);
+      return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString();
+    }
+  }
+
+  return null;
+}
+
+function toNumber(value, defaultValue = 0) {
+  if (value === null || value === undefined) {
+    return defaultValue;
+  }
+
+  if (typeof value === 'number') {
+    return Number.isFinite(value) ? value : defaultValue;
+  }
+
+  if (typeof value === 'string') {
+    const cleaned = value.replace(/[^0-9.-]/g, '');
+    const result = parseFloat(cleaned);
+    return Number.isFinite(result) ? result : defaultValue;
+  }
+
+  if (typeof value === 'object' && value !== null) {
+    if (typeof value.value === 'number') {
+      return toNumber(value.value, defaultValue);
+    }
+    if (typeof value.amount === 'number') {
+      return toNumber(value.amount, defaultValue);
+    }
+  }
+
+  return defaultValue;
+}
+
+function roundCurrency(value) {
+  const numeric = toNumber(value, 0);
+  return Math.round((numeric + Number.EPSILON) * 100) / 100;
+}
+
+function roundDistance(value) {
+  const numeric = toNumber(value, 0);
+  return Math.round((numeric + Number.EPSILON) * 100) / 100;
+}
+
+function resolveExactDistance(bookingData = {}) {
+  const candidates = [
+    bookingData.distance?.total,
+    bookingData.distance?.actual,
+    bookingData.distance?.exact,
+    bookingData.distance?.distanceKm,
+    bookingData.distance?.value,
+    bookingData.metrics?.distanceKm,
+    bookingData.pricing?.distance,
+    bookingData.route?.distanceKm,
+    bookingData.exactDistance,
+    bookingData.timing?.distance,
+  ];
+
+  for (const candidate of candidates) {
+    const numeric = toNumber(candidate, 0);
+    if (numeric > 0) {
+      return numeric;
+    }
+  }
+
+  return 0;
+}
+
+function resolveRoundedDistance(bookingData = {}, commissionRecord, exactDistanceKm) {
+  const candidates = [
+    bookingData.distance?.rounded,
+    bookingData.distance?.roundedDistance,
+    bookingData.distance?.roundedDistanceKm,
+    bookingData.pricing?.roundedDistance,
+    bookingData.pricing?.roundedDistanceKm,
+    commissionRecord?.roundedDistanceKm,
+  ];
+
+  for (const candidate of candidates) {
+    const numeric = toNumber(candidate, 0);
+    if (numeric > 0) {
+      return numeric;
+    }
+  }
+
+  if (exactDistanceKm > 0) {
+    return Math.ceil(exactDistanceKm);
+  }
+
+  return 0;
+}
+
+function computeBookingEarnings(bookingData = {}) {
+  const grossFare = toNumber(
+    bookingData.earnings?.grossFare ??
+    bookingData.pricing?.totalFare ??
+    bookingData.pricing?.total ??
+    bookingData.fare?.totalFare ??
+    bookingData.fare?.total ??
+    bookingData.totalFare ??
+    bookingData.totalAmount ??
+    bookingData.paymentAmount ??
+    0,
+    0
+  );
+
+  const commissionRecord = bookingData.commissionDeducted || bookingData.earnings?.commissionRecord || null;
+  let commissionAmount = toNumber(
+    commissionRecord?.amount ??
+    bookingData.earnings?.commission ??
+    bookingData.pricing?.commission ??
+    bookingData.payment?.commission ??
+    0,
+    0
+  );
+
+  const exactDistanceKm = resolveExactDistance(bookingData);
+  let roundedDistanceKm = resolveRoundedDistance(bookingData, commissionRecord, exactDistanceKm);
+
+  const shouldCalculateFare =
+    (exactDistanceKm > 0 && (commissionAmount === 0 || roundedDistanceKm === 0)) ||
+    (exactDistanceKm === 0 && commissionAmount === 0 && roundedDistanceKm === 0);
+
+  if (shouldCalculateFare) {
+    try {
+      const fareBreakdown = fareCalculationService.calculateFare(exactDistanceKm > 0 ? exactDistanceKm : 0.5);
+      if (!roundedDistanceKm && fareBreakdown?.roundedDistanceKm) {
+        roundedDistanceKm = toNumber(fareBreakdown.roundedDistanceKm, roundedDistanceKm);
+      }
+      if (commissionAmount === 0 && fareBreakdown?.commission) {
+        commissionAmount = toNumber(fareBreakdown.commission, commissionAmount);
+      }
+    } catch (fareError) {
+      console.warn('⚠️ [EARNINGS_UTIL] Failed to calculate fare breakdown for booking earnings:', fareError?.message || fareError);
+    }
+  }
+
+  if (commissionAmount === 0 && roundedDistanceKm > 0) {
+    commissionAmount = roundedDistanceKm * COMMISSION_RATE_PER_KM;
+  }
+
+  if (roundedDistanceKm === 0 && commissionAmount > 0) {
+    roundedDistanceKm = Math.max(Math.round(commissionAmount / COMMISSION_RATE_PER_KM), 0);
+  }
+
+  let commissionStatus = 'not_applicable';
+  if (commissionRecord?.status) {
+    commissionStatus = commissionRecord.status;
+  } else if (commissionRecord) {
+    commissionStatus = 'deducted';
+  } else if (commissionAmount > 0) {
+    commissionStatus = 'pending';
+  }
+
+  const netRaw = grossFare - commissionAmount;
+  const netEarnings = roundCurrency(netRaw < 0 ? 0 : netRaw);
+
+  return {
+    grossFare: roundCurrency(grossFare),
+    commissionAmount: roundCurrency(Math.max(commissionAmount, 0)),
+    netEarnings,
+    commissionRatePerKm: COMMISSION_RATE_PER_KM,
+    commissionRecorded: Boolean(commissionRecord),
+    commissionStatus,
+    commissionTransactionId: commissionRecord?.transactionId || null,
+    commissionDeductedAt: toIsoString(commissionRecord?.deductedAt),
+    exactDistanceKm: exactDistanceKm > 0 ? roundDistance(exactDistanceKm) : null,
+    roundedDistanceKm: roundedDistanceKm > 0 ? roundedDistanceKm : (exactDistanceKm > 0 ? Math.ceil(exactDistanceKm) : null),
+    commissionOutstanding: commissionStatus !== 'deducted' ? roundCurrency(Math.max(commissionAmount, 0)) : 0
+  };
 }
 
 /**
@@ -1289,19 +1492,31 @@ router.get('/earnings/today', requireDriver, async (req, res) => {
       .where('completedAt', '<', endOfDay)
       .get();
     
-    let todayEarnings = 0;
+    let todayGrossEarnings = 0;
+    let todayNetEarnings = 0;
+    let todayCommissionTotal = 0;
     let todayTrips = 0;
     const tripDetails = [];
     
     tripsSnapshot.forEach((doc) => {
       const trip = doc.data();
-      const fare = trip.fare?.total || 0;
-      todayEarnings += fare;
+      const earnings = computeBookingEarnings(trip);
+
+      todayGrossEarnings += earnings.grossFare;
+      todayNetEarnings += earnings.netEarnings;
+      todayCommissionTotal += earnings.commissionAmount;
       todayTrips += 1;
       
       tripDetails.push({
         id: doc.id,
-        fare: fare,
+        fare: earnings.grossFare,
+        fareGross: earnings.grossFare,
+        netEarnings: earnings.netEarnings,
+        commission: earnings.commissionAmount,
+        commissionStatus: earnings.commissionStatus,
+        commissionOutstanding: earnings.commissionOutstanding,
+        roundedDistanceKm: earnings.roundedDistanceKm,
+        exactDistanceKm: earnings.exactDistanceKm,
         completedAt: trip.completedAt?.toDate?.()?.toISOString() || null,
         pickupLocation: trip.pickup?.address || 'Unknown',
         dropoffLocation: trip.dropoff?.address || 'Unknown'
@@ -1323,10 +1538,14 @@ router.get('/earnings/today', requireDriver, async (req, res) => {
     });
     
     const result = {
-      todayEarnings: todayEarnings,
+      todayEarnings: roundCurrency(todayNetEarnings),
+      todayNetEarnings: roundCurrency(todayNetEarnings),
+      todayGrossEarnings: roundCurrency(todayGrossEarnings),
+      todayCommission: roundCurrency(todayCommissionTotal),
       todayTrips: todayTrips,
       todayPayments: todayPayments,
-      averageEarningsPerTrip: todayTrips > 0 ? Math.round(todayEarnings / todayTrips) : 0,
+      averageNetEarningsPerTrip: todayTrips > 0 ? roundCurrency(todayNetEarnings / todayTrips) : 0,
+      averageEarningsPerTrip: todayTrips > 0 ? roundCurrency(todayGrossEarnings / todayTrips) : 0,
       tripDetails: tripDetails,
       date: today.toISOString().split('T')[0], // YYYY-MM-DD format
       lastUpdated: new Date().toISOString()
@@ -1379,12 +1598,22 @@ router.get('/bookings/history', requireDriver, async (req, res) => {
 
     const snapshot = await query.get();
     const bookings = [];
+    let grossTotal = 0;
+    let netTotal = 0;
+    let commissionTotal = 0;
 
     snapshot.forEach(doc => {
       const data = doc.data();
+      const earnings = computeBookingEarnings(data);
+
+      grossTotal += earnings.grossFare;
+      netTotal += earnings.netEarnings;
+      commissionTotal += earnings.commissionAmount;
+
       bookings.push({
         id: doc.id,
         ...data,
+        earnings,
         createdAt: data.createdAt?.toDate?.()?.toISOString() || new Date().toISOString(),
         updatedAt: data.updatedAt?.toDate?.()?.toISOString() || new Date().toISOString()
       });
@@ -1393,7 +1622,13 @@ router.get('/bookings/history', requireDriver, async (req, res) => {
     res.status(200).json({
       success: true,
       data: bookings,
-      total: bookings.length
+      total: bookings.length,
+      summary: {
+        grossTotal: roundCurrency(grossTotal),
+        netTotal: roundCurrency(netTotal),
+        commissionTotal: roundCurrency(commissionTotal)
+      },
+      timestamp: new Date().toISOString()
     });
 
   } catch (error) {
@@ -1450,17 +1685,28 @@ router.get('/earnings/breakdown', requireDriver, async (req, res) => {
       }
       
       const fare = booking.fare || {};
+      const earnings = computeBookingEarnings(booking);
       const breakdown = {
         bookingId: bookingId,
-        totalEarnings: fare.total || 0,
-        baseFare: fare.base || 0,
-        distanceFare: fare.distance || 0,
+        totalCollected: earnings.grossFare,
+        totalEarnings: earnings.netEarnings,
+        netEarnings: earnings.netEarnings,
+        baseFare: fare.base || earnings.grossFare || 0,
+        distanceFare: fare.distance || earnings.grossFare || 0,
         timeFare: fare.time || 0,
         surgeMultiplier: fare.surgeMultiplier || 1,
         platformFee: fare.platformFee || 0,
-        driverEarnings: fare.driverEarnings || fare.total || 0,
+        driverEarnings: earnings.netEarnings,
+        commissionAmount: earnings.commissionAmount,
+        commissionStatus: earnings.commissionStatus,
+        commissionOutstanding: earnings.commissionOutstanding,
+        commissionRatePerKm: earnings.commissionRatePerKm,
+        commissionTransactionId: earnings.commissionTransactionId,
+        commissionDeductedAt: earnings.commissionDeductedAt,
+        roundedDistanceKm: earnings.roundedDistanceKm,
+        exactDistanceKm: earnings.exactDistanceKm,
         tripDetails: {
-          distance: booking.distance || 0,
+          distance: booking.distance || earnings.roundedDistanceKm || 0,
           duration: booking.duration || 0,
           pickupLocation: booking.pickup?.address || 'Unknown',
           dropoffLocation: booking.dropoff?.address || 'Unknown',
@@ -1508,7 +1754,9 @@ router.get('/earnings/breakdown', requireDriver, async (req, res) => {
         .where('completedAt', '<', endDate)
         .get();
       
-      let totalEarnings = 0;
+      let totalGross = 0;
+      let totalNet = 0;
+      let totalCommission = 0;
       let totalBaseFare = 0;
       let totalDistanceFare = 0;
       let totalTimeFare = 0;
@@ -1519,8 +1767,11 @@ router.get('/earnings/breakdown', requireDriver, async (req, res) => {
       tripsSnapshot.forEach((doc) => {
         const trip = doc.data();
         const fare = trip.fare || {};
-        
-        totalEarnings += fare.total || 0;
+        const earnings = computeBookingEarnings(trip);
+
+        totalGross += earnings.grossFare;
+        totalNet += earnings.netEarnings;
+        totalCommission += earnings.commissionAmount;
         totalBaseFare += fare.base || 0;
         totalDistanceFare += fare.distance || 0;
         totalTimeFare += fare.time || 0;
@@ -1529,7 +1780,11 @@ router.get('/earnings/breakdown', requireDriver, async (req, res) => {
         
         tripBreakdowns.push({
           bookingId: doc.id,
-          totalEarnings: fare.total || 0,
+          totalCollected: earnings.grossFare,
+          totalEarnings: earnings.netEarnings,
+          netEarnings: earnings.netEarnings,
+          commissionAmount: earnings.commissionAmount,
+          commissionStatus: earnings.commissionStatus,
           baseFare: fare.base || 0,
           distanceFare: fare.distance || 0,
           timeFare: fare.time || 0,
@@ -1544,13 +1799,17 @@ router.get('/earnings/breakdown', requireDriver, async (req, res) => {
           end: endDate.toISOString()
         },
         summary: {
-          totalEarnings: totalEarnings,
+          totalCollected: roundCurrency(totalGross),
+          totalEarnings: roundCurrency(totalNet),
+          netEarnings: roundCurrency(totalNet),
+          commissionTotal: roundCurrency(totalCommission),
           totalBaseFare: totalBaseFare,
           totalDistanceFare: totalDistanceFare,
           totalTimeFare: totalTimeFare,
           totalPlatformFee: totalPlatformFee,
           tripCount: tripCount,
-          averageEarningsPerTrip: tripCount > 0 ? Math.round(totalEarnings / tripCount) : 0
+          averageGrossPerTrip: tripCount > 0 ? roundCurrency(totalGross / tripCount) : 0,
+          averageNetPerTrip: tripCount > 0 ? roundCurrency(totalNet / tripCount) : 0
         },
         tripBreakdowns: tripBreakdowns
       };
@@ -5488,21 +5747,37 @@ router.get('/bookings/history', requireDriver, async (req, res) => {
     
     const snapshot = await query.get();
     const bookings = [];
-    
+    let grossTotal = 0;
+    let netTotal = 0;
+    let commissionTotal = 0;
+
     snapshot.forEach(doc => {
       const data = doc.data();
+      const earnings = computeBookingEarnings(data);
+
+      grossTotal += earnings.grossFare;
+      netTotal += earnings.netEarnings;
+      commissionTotal += earnings.commissionAmount;
+
       bookings.push({
         id: doc.id,
         ...data,
+        earnings,
         createdAt: data.createdAt?.toDate?.()?.toISOString() || new Date().toISOString(),
         updatedAt: data.updatedAt?.toDate?.()?.toISOString() || new Date().toISOString()
       });
     });
-    
+
     res.status(200).json({
       success: true,
       data: bookings,
-      total: bookings.length
+      total: bookings.length,
+      summary: {
+        grossTotal: roundCurrency(grossTotal),
+        netTotal: roundCurrency(netTotal),
+        commissionTotal: roundCurrency(commissionTotal)
+      },
+      timestamp: new Date().toISOString()
     });
     
   } catch (error) {
@@ -5954,7 +6229,21 @@ router.put('/:id/status', [
 router.put('/bookings/:id/status', [
   requireDriver,
   body('status')
-    .isIn(['pending', 'accepted', 'driver_enroute', 'driver_arrived', 'picked_up', 'enroute_dropoff', 'arrived_dropoff', 'delivered', 'money_collection', 'completed', 'cancelled'])
+    .isIn([
+      'pending',
+      'accepted',
+      'driver_enroute',
+      'driver_arrived',
+      'picked_up',
+      'in_transit',
+      'enroute_dropoff',
+      'arrived_dropoff',
+      'at_dropoff',
+      'delivered',
+      'money_collection',
+      'completed',
+      'cancelled'
+    ])
     .withMessage('Invalid status value'),
   body('location')
     .optional()
@@ -5981,296 +6270,93 @@ router.put('/bookings/:id/status', [
 
     const { uid } = req.user;
     const { id } = req.params;
-    const { status, location, notes } = req.body;
-    const db = getFirestore();
-    
-    const bookingRef = db.collection('bookings').doc(id);
-    const bookingDoc = await bookingRef.get();
-    
-    if (!bookingDoc.exists) {
-      return res.status(404).json({
-        success: false,
-        error: {
-          code: 'BOOKING_NOT_FOUND',
-          message: 'Booking not found',
-          details: 'Booking with this ID does not exist'
-        },
-        timestamp: new Date().toISOString()
-      });
-    }
+    const { status, location, notes, eventId, timestamp } = req.body;
 
-    const bookingData = bookingDoc.data();
-    
-    // Check if driver is assigned to this booking
-    if (bookingData.driverId !== uid) {
-      return res.status(403).json({
-        success: false,
-        error: {
-          code: 'ACCESS_DENIED',
-          message: 'Access denied',
-          details: 'You can only update bookings assigned to you'
-        },
-        timestamp: new Date().toISOString()
-      });
-    }
-
-    // Validate radius for pickup and dropoff confirmations
-    if (location && (status === 'picked_up' || status === 'delivered')) {
-      const targetLocation = status === 'picked_up' ? bookingData.pickup?.coordinates : bookingData.dropoff?.coordinates;
-      
-      if (targetLocation) {
-        const distance = calculateDistance(
-          location.latitude,
-          location.longitude,
-          targetLocation.latitude,
-          targetLocation.longitude
-        );
-        
-        // Check if within 100 meters (0.1 km)
-        if (distance > 0.1) {
-          return res.status(400).json({
-            success: false,
-            error: {
-              code: 'OUTSIDE_RADIUS',
-              message: 'Outside confirmation radius',
-              details: `You must be within 100m of the ${status === 'picked_up' ? 'pickup' : 'dropoff'} location to confirm. You are currently ${(distance * 1000).toFixed(0)}m away.`
-            },
-            timestamp: new Date().toISOString()
-          });
-        }
-      }
-    }
-
-    // Update booking status
-    const updateData = {
-      status,
-      updatedAt: new Date()
-    };
-
-    // Add timing information based on status
-    switch (status) {
-      case 'accepted':
-        updateData['timing.acceptedAt'] = new Date();
-        break;
-      case 'driver_enroute':
-        updateData['timing.driverEnrouteAt'] = new Date();
-        break;
-      case 'driver_arrived':
-        updateData['timing.driverArrivedAt'] = new Date();
-        break;
-      case 'picked_up':
-        updateData['timing.pickedUpAt'] = new Date();
-        break;
-      case 'enroute_dropoff':
-        updateData['timing.enrouteDropoffAt'] = new Date();
-        break;
-      case 'arrived_dropoff':
-        updateData['timing.arrivedDropoffAt'] = new Date();
-        break;
-      case 'delivered':
-        updateData['timing.deliveredAt'] = new Date();
-        updateData['timing.actualDeliveryTime'] = new Date().toISOString();
-        break;
-      case 'money_collection':
-        updateData['timing.moneyCollectionAt'] = new Date();
-        break;
-      case 'completed':
-        updateData['timing.completedAt'] = new Date();
-        break;
-    }
-
-    // Add location if provided
-    if (location) {
-      updateData['driver.currentLocation'] = {
-        ...location,
-        timestamp: new Date()
-      };
-    }
-
-    // Add notes if provided
-    if (notes) {
-      updateData['driver.notes'] = notes;
-    }
-
-    await bookingRef.update(updateData);
-
-    // ✅ CRITICAL FIX: Notify customer about status update via WebSocket
-    const liveTrackingService = require('../services/liveTrackingService');
-    const io = require('../services/socket').getIO();
-    
-    if (io && bookingData.customerId) {
-      try {
-        // Update booking status and notify customer
-        await liveTrackingService.updateBookingStatus(id, status, uid, {
-          location: location,
-          notes: notes
-        });
-        
-        // Also send general booking_status_update event
-        const updatedBookingDoc = await bookingRef.get();
-        const updatedBookingData = updatedBookingDoc.data();
-        
-        io.to(`user:${bookingData.customerId}`).emit('booking_status_update', {
-          bookingId: id,
-          status: status,
-          booking: updatedBookingData,
-          timestamp: new Date().toISOString(),
-          updatedBy: uid
-        });
-        
-        console.log(`📤 [STATUS_UPDATE] Notified customer ${bookingData.customerId} about status change to ${status}`);
-      } catch (notifyError) {
-        console.error('❌ [STATUS_UPDATE] Error notifying customer:', notifyError);
-        // Don't fail the status update if notification fails
-      }
-    }
-
-    // ✅ CRITICAL FIX: Release driver availability and deduct commission when booking is delivered
-    // ⚠️ NOTE: Commission should be deducted during payment confirmation, not status update
-    // This is a fallback only if payment confirmation hasn't happened yet
-    if (status === 'delivered' || status === 'completed') {
-      console.log('🔄 [STATUS_UPDATE] Processing delivery completion');
-      
-      // ✅ CRITICAL FIX: Check if commission was already deducted (from payment confirmation)
-      const alreadyDeducted = bookingData.commissionDeducted?.amount || bookingData.commissionDeducted || false;
-      if (alreadyDeducted) {
-        console.log(`⚠️ [STATUS_UPDATE] Commission already deducted for booking ${id}. Skipping duplicate deduction.`);
-      } else {
-        // ✅ CRITICAL FIX: Deduct commission from driver's points wallet (fallback for early delivery status updates)
-        // This is a fallback - primary deduction happens during payment confirmation
-        try {
-          const fareCalculationService = require('../services/fareCalculationService');
-          const exactDistanceKm = bookingData.distance?.total || bookingData.exactDistance || bookingData.pricing?.distance || 0;
-          const tripFare = bookingData.fare?.totalFare || bookingData.fare?.total || bookingData.fare || 0;
-          
-          // ✅ CRITICAL FIX: Always use fareCalculationService for proper rounding (0.5km → 1km, 8.4km → 9km)
-          let fareBreakdown;
-          let roundedDistanceKm;
-          let commissionAmount;
-          
-          if (exactDistanceKm > 0) {
-            fareBreakdown = fareCalculationService.calculateFare(exactDistanceKm);
-            roundedDistanceKm = fareBreakdown.roundedDistanceKm; // Rounded distance (e.g., 8.4km → 9km)
-            commissionAmount = fareBreakdown.commission; // Commission based on rounded distance (e.g., 9km × ₹2 = ₹18)
-          } else {
-            // ✅ CRITICAL FIX: Even if distance is 0, use fareCalculationService for minimum commission
-            fareBreakdown = fareCalculationService.calculateFare(0.5); // 0.5km rounds to 1km
-            roundedDistanceKm = fareBreakdown.roundedDistanceKm; // Will be 1km
-            commissionAmount = fareBreakdown.commission; // Will be ₹2 (1km × ₹2/km)
-          }
-          
-          console.log(`💰 [STATUS_UPDATE] Deducting commission: ₹${commissionAmount} (${roundedDistanceKm}km × ₹2/km, exact: ${exactDistanceKm.toFixed(2)}km, fare: ₹${tripFare})`);
-          
-          // Prepare trip details for commission transaction
-          const tripDetails = {
-            bookingId: id,
-            pickupLocation: bookingData.pickup || {},
-            dropoffLocation: bookingData.dropoff || {},
-            tripFare: tripFare,
-            distance: roundedDistanceKm, // ✅ Use rounded distance
-            exactDistance: exactDistanceKm,
-            paymentMethod: 'cash'
-          };
-          
-          // Deduct commission from driver points wallet
-          const walletService = require('../services/walletService');
-          const walletServiceInstance =
-            typeof walletService.getPointsService === 'function'
-              ? walletService.getPointsService()
-              : walletService;
-          const commissionResult = await walletServiceInstance.deductPoints(
-            uid,
-            id,
-            roundedDistanceKm, // ✅ Pass rounded distance
-            commissionAmount,
-            tripDetails
-          );
-          
-          if (commissionResult.success) {
-            console.log(`✅ [STATUS_UPDATE] Commission deducted from points: ₹${commissionAmount} (${roundedDistanceKm}km × ₹2/km)`);
-            // Mark booking as commission deducted
-            await bookingRef.update({
-              commissionDeducted: {
-                amount: commissionAmount,
-                roundedDistanceKm: roundedDistanceKm,
-                exactDistanceKm: exactDistanceKm,
-                deductedAt: new Date(),
-                transactionId: commissionResult.data?.transactionId,
-                deductedBy: uid
-              }
-            });
-          } else {
-            console.error('❌ [STATUS_UPDATE] Commission deduction failed:', commissionResult.error);
-            // ✅ CRITICAL FIX: Still mark booking to prevent duplicate attempts
-            await bookingRef.update({
-              commissionDeducted: {
-                amount: commissionAmount,
-                roundedDistanceKm: roundedDistanceKm,
-                exactDistanceKm: exactDistanceKm,
-                status: 'failed',
-                failureReason: commissionResult.error,
-                deductedAt: new Date(),
-                deductedBy: uid
-              }
-            });
-          }
-        } catch (commissionError) {
-          console.error('❌ [STATUS_UPDATE] Error deducting commission:', commissionError);
-          // Don't fail status update if commission deduction fails
-        }
-      }
-      
-      // Release driver availability
-      const driverRef = db.collection('users').doc(uid);
-      await driverRef.update({
-        'driver.isAvailable': true,
-        'driver.currentBookingId': null,
-        'driver.status': 'available',
-        updatedAt: new Date()
-      });
-      
-      // Update driverLocations collection
-      const driverLocationRef = db.collection('driverLocations').doc(uid);
-      await driverLocationRef.update({
-        isAvailable: true,
-        currentTripId: null,
-        lastUpdated: new Date()
-      });
-      
-      console.log('✅ [STATUS_UPDATE] Driver availability released');
-    }
-
-    // Update trip tracking
-    const tripTrackingRef = db.collection('tripTracking').doc(id);
-    await tripTrackingRef.set({
-      tripId: id,
+    const statusResult = await driverStatusWorkflowService.updateStatus({
       bookingId: id,
       driverId: uid,
-      customerId: bookingData.customerId,
-      currentStatus: status,
-      lastUpdated: new Date()
-    }, { merge: true });
+      requestedStatus: status,
+      location,
+      notes,
+      eventId,
+      eventTimestamp: timestamp,
+      source: 'driver_app'
+    });
+
+    const liveTrackingService = require('../services/liveTrackingService');
+
+    if (statusResult.shouldBroadcast) {
+      try {
+        await liveTrackingService.updateBookingStatus(
+          id,
+          statusResult.status,
+          uid,
+          {
+            location: statusResult.broadcastPayload?.location || location || null,
+            notes: statusResult.broadcastPayload?.notes || notes || null,
+            eventTimestamp: statusResult.eventTimestamp.toISOString()
+          },
+          {
+            persist: false,
+            bookingDataOverride: statusResult.booking
+          }
+        );
+      } catch (broadcastError) {
+        console.error('❌ [STATUS_UPDATE] Error broadcasting status update:', broadcastError);
+      }
+    }
+
+    try {
+      const db = getFirestore();
+      const tripTrackingRef = db.collection('tripTracking').doc(id);
+      await tripTrackingRef.set({
+        tripId: id,
+        bookingId: id,
+        driverId: uid,
+        customerId: statusResult.booking.customerId,
+        currentStatus: statusResult.status,
+        lastUpdated: new Date()
+      }, { merge: true });
+    } catch (trackingError) {
+      console.warn('⚠️ [STATUS_UPDATE] Failed to update trip tracking:', trackingError);
+    }
 
     res.status(200).json({
       success: true,
-      message: 'Booking status updated successfully',
+      message: statusResult.idempotent
+        ? 'Status already up to date'
+        : 'Booking status updated successfully',
       data: {
         bookingId: id,
-        status,
-        location,
-        notes
+        status: statusResult.status,
+        previousStatus: statusResult.previousStatus,
+        idempotent: statusResult.idempotent,
+        sequence: statusResult.sequence || null,
+        occurredAt: statusResult.eventTimestamp.toISOString()
       },
       timestamp: new Date().toISOString()
     });
 
   } catch (error) {
+    if (error instanceof DriverStatusError) {
+      return res.status(error.statusCode).json({
+        success: false,
+        error: {
+          code: error.code,
+          message: error.message,
+          details: error.details || null
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
     console.error('Error updating booking status:', error);
     res.status(500).json({
       success: false,
       error: {
         code: 'STATUS_UPDATE_ERROR',
         message: 'Failed to update booking status',
-        details: 'An error occurred while updating booking status'
+        details: error.message || 'An error occurred while updating booking status'
       },
       timestamp: new Date().toISOString()
     });
@@ -6321,122 +6407,55 @@ router.post('/confirm-pickup', [
     }
 
     const { uid } = req.user;
-    const { bookingId, location, photoUrl, notes } = req.body;
+    const { bookingId, location, photoUrl, notes, eventId, timestamp: eventTimestamp } = req.body;
     const db = getFirestore();
     
     console.log('📦 [CONFIRM_PICKUP] Confirming pickup for booking:', bookingId, 'driver:', uid);
-    
-    const bookingRef = db.collection('bookings').doc(bookingId);
-    const bookingDoc = await bookingRef.get();
-    
-    if (!bookingDoc.exists) {
-      return res.status(404).json({
-        success: false,
-        error: {
-          code: 'BOOKING_NOT_FOUND',
-          message: 'Booking not found',
-          details: 'Booking with this ID does not exist'
-        },
-        timestamp: new Date().toISOString()
-      });
-    }
 
-    const bookingData = bookingDoc.data();
-    
-    // Check if driver is assigned to this booking
-    if (bookingData.driverId !== uid) {
-      return res.status(403).json({
-        success: false,
-        error: {
-          code: 'ACCESS_DENIED',
-          message: 'Access denied',
-          details: 'You can only confirm pickup for bookings assigned to you'
-        },
-        timestamp: new Date().toISOString()
-      });
-    }
-
-    // Validate radius for pickup confirmation
-    const pickupLocation = bookingData.pickup?.coordinates;
-    if (pickupLocation) {
-      const distance = calculateDistance(
-        location.latitude,
-        location.longitude,
-        pickupLocation.latitude,
-        pickupLocation.longitude
-      );
-      
-      // Check if within 100 meters (0.1 km)
-      if (distance > 0.1) {
-        return res.status(400).json({
-          success: false,
-          error: {
-            code: 'OUTSIDE_RADIUS',
-            message: 'Outside pickup radius',
-            details: `You must be within 100m of the pickup location to confirm. You are currently ${(distance * 1000).toFixed(0)}m away.`
-          },
-          timestamp: new Date().toISOString()
-        });
-      }
-    }
-
-    // Update booking status to picked_up
-    const updateData = {
-      status: 'picked_up',
-      'timing.pickedUpAt': new Date(),
-      'driver.currentLocation': {
-        ...location,
-        timestamp: new Date()
-      },
-      updatedAt: new Date()
-    };
-
-    // Add photo verification if provided
-    if (photoUrl) {
-      updateData['pickupVerification'] = {
-        photoUrl: photoUrl,
-        verifiedAt: new Date(),
-        verifiedBy: uid,
-        location: location
-      };
-    }
-
-    // Add notes if provided
-    if (notes) {
-      updateData['driver.pickupNotes'] = notes;
-    }
-
-    await bookingRef.update(updateData);
+    const statusResult = await driverStatusWorkflowService.updateStatus({
+      bookingId,
+      driverId: uid,
+      requestedStatus: 'picked_up',
+      location,
+      notes,
+      eventId,
+      eventTimestamp,
+      source: 'driver_app'
+    });
 
     // ✅ CRITICAL FIX: Notify customer about pickup via WebSocket
     const liveTrackingService = require('../services/liveTrackingService');
     const io = require('../services/socket').getIO();
     
-    if (io && bookingData.customerId) {
+    if (io && statusResult.booking.customerId) {
       try {
-        // Use liveTrackingService to send proper notifications
-        await liveTrackingService.updateBookingStatus(bookingId, 'picked_up', uid, {
-          location: location,
-          notes: notes,
-          photoUrl: photoUrl
-        });
+        await liveTrackingService.updateBookingStatus(
+          bookingId,
+          statusResult.status,
+          uid,
+          {
+            location: statusResult.broadcastPayload?.location || location || null,
+            notes: statusResult.broadcastPayload?.notes || notes || null,
+            photoUrl: photoUrl || null,
+            eventTimestamp: statusResult.eventTimestamp.toISOString()
+          },
+          {
+            persist: false,
+            bookingDataOverride: statusResult.booking
+          }
+        );
         
-        // Also send general booking_status_update event with full booking data
-        const updatedBookingDoc = await bookingRef.get();
-        const updatedBookingData = updatedBookingDoc.data();
-        
-        io.to(`user:${bookingData.customerId}`).emit('booking_status_update', {
+        io.to(`user:${statusResult.booking.customerId}`).emit('booking_status_update', {
           bookingId: bookingId,
-          status: 'picked_up',
-          booking: updatedBookingData,
+          status: statusResult.status,
+          booking: statusResult.booking,
           timestamp: new Date().toISOString(),
           updatedBy: uid
         });
         
-        console.log(`📤 [CONFIRM_PICKUP] Notified customer ${bookingData.customerId} about pickup confirmation`);
+        console.log(`📤 [CONFIRM_PICKUP] Notified customer ${statusResult.booking.customerId} about pickup confirmation`);
       } catch (notifyError) {
         console.error('❌ [CONFIRM_PICKUP] Error notifying customer:', notifyError);
-        // Don't fail pickup confirmation if notification fails
       }
     }
 
@@ -6446,11 +6465,11 @@ router.post('/confirm-pickup', [
       id: verificationRef.id,
       bookingId: bookingId,
       driverId: uid,
-      customerId: bookingData.customerId,
+      customerId: statusResult.booking.customerId,
       location: location,
       photoUrl: photoUrl || null,
       notes: notes || null,
-      verifiedAt: new Date(),
+      verifiedAt: statusResult.eventTimestamp,
       status: 'verified'
     });
 
@@ -6460,9 +6479,9 @@ router.post('/confirm-pickup', [
       tripId: bookingId,
       bookingId: bookingId,
       driverId: uid,
-      customerId: bookingData.customerId,
-      currentStatus: 'picked_up',
-      pickupConfirmedAt: new Date(),
+      customerId: statusResult.booking.customerId,
+      currentStatus: statusResult.status,
+      pickupConfirmedAt: statusResult.eventTimestamp,
       lastUpdated: new Date()
     }, { merge: true });
 
@@ -6473,16 +6492,29 @@ router.post('/confirm-pickup', [
       message: 'Pickup confirmed successfully',
       data: {
         bookingId: bookingId,
-        status: 'picked_up',
+        status: statusResult.status,
         location: location,
         photoUrl: photoUrl,
         notes: notes,
-        verifiedAt: new Date().toISOString()
+        verifiedAt: statusResult.eventTimestamp.toISOString(),
+        sequence: statusResult.sequence || null
       },
       timestamp: new Date().toISOString()
     });
 
   } catch (error) {
+    if (error instanceof DriverStatusError) {
+      return res.status(error.statusCode).json({
+        success: false,
+        error: {
+          code: error.code,
+          message: error.message,
+          details: error.details || null
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
     console.error('❌ [CONFIRM_PICKUP] Error confirming pickup:', error);
     res.status(500).json({
       success: false,
@@ -6548,139 +6580,58 @@ router.post('/complete-delivery', [
     }
 
     const { uid } = req.user;
-    const { bookingId, location, photoUrl, notes, recipientName, recipientPhone } = req.body;
+    const { bookingId, location, photoUrl, notes, recipientName, recipientPhone, eventId, timestamp: eventTimestamp } = req.body;
     const db = getFirestore();
     
     console.log('📦 [COMPLETE_DELIVERY] Completing delivery for booking:', bookingId, 'driver:', uid);
     
-    const bookingRef = db.collection('bookings').doc(bookingId);
-    const bookingDoc = await bookingRef.get();
-    
-    if (!bookingDoc.exists) {
-      return res.status(404).json({
-        success: false,
-        error: {
-          code: 'BOOKING_NOT_FOUND',
-          message: 'Booking not found',
-          details: 'Booking with this ID does not exist'
-        },
-        timestamp: new Date().toISOString()
-      });
-    }
-
-    const bookingData = bookingDoc.data();
-    
-    // Check if driver is assigned to this booking
-    if (bookingData.driverId !== uid) {
-      return res.status(403).json({
-        success: false,
-        error: {
-          code: 'ACCESS_DENIED',
-          message: 'Access denied',
-          details: 'You can only complete delivery for bookings assigned to you'
-        },
-        timestamp: new Date().toISOString()
-      });
-    }
-
-    // Validate radius for delivery confirmation
-    const dropoffLocation = bookingData.dropoff?.coordinates;
-    if (dropoffLocation) {
-      const distance = calculateDistance(
-        location.latitude,
-        location.longitude,
-        dropoffLocation.latitude,
-        dropoffLocation.longitude
-      );
-      
-      // Check if within 100 meters (0.1 km)
-      if (distance > 0.1) {
-        return res.status(400).json({
-          success: false,
-          error: {
-            code: 'OUTSIDE_RADIUS',
-            message: 'Outside delivery radius',
-            details: `You must be within 100m of the dropoff location to complete delivery. You are currently ${(distance * 1000).toFixed(0)}m away.`
-          },
-          timestamp: new Date().toISOString()
-        });
-      }
-    }
-
-    // Calculate final trip metrics
-    const startTime = bookingData.timing?.pickedUpAt?.toDate?.() || new Date();
-    const endTime = new Date();
-    const duration = Math.round((endTime - startTime) / 1000 / 60); // minutes
-
-    // Update booking status to delivered
-    const updateData = {
-      status: 'delivered',
-      'timing.deliveredAt': new Date(),
-      'timing.actualDeliveryTime': endTime.toISOString(),
-      'timing.actualDuration': duration,
-      'driver.currentLocation': {
-        ...location,
-        timestamp: new Date()
-      },
-      updatedAt: new Date()
-    };
-
-    // Add delivery verification if provided
-    if (photoUrl) {
-      updateData['deliveryVerification'] = {
-        photoUrl: photoUrl,
-        verifiedAt: new Date(),
-        verifiedBy: uid,
-        location: location
-      };
-    }
-
-    // Add recipient information
-    if (recipientName || recipientPhone) {
-      updateData['recipient'] = {
-        name: recipientName || bookingData.recipient?.name || 'Unknown',
-        phone: recipientPhone || bookingData.recipient?.phone || null,
-        confirmedAt: new Date(),
-        confirmedBy: uid
-      };
-    }
-
-    // Add notes if provided
-    if (notes) {
-      updateData['driver.deliveryNotes'] = notes;
-    }
-
-    await bookingRef.update(updateData);
+    const statusResult = await driverStatusWorkflowService.completeDelivery({
+      bookingId,
+      driverId: uid,
+      location,
+      notes,
+      photoUrl,
+      recipientName,
+      recipientPhone,
+      eventId,
+      eventTimestamp,
+      source: 'driver_app'
+    });
+    const actualDuration = statusResult.booking?.timing?.actualDuration || null;
 
     // ✅ CRITICAL FIX: Notify customer about delivery via WebSocket
     const liveTrackingService = require('../services/liveTrackingService');
     const io = require('../services/socket').getIO();
     
-    if (io && bookingData.customerId) {
+    if (io && statusResult.booking.customerId) {
       try {
-        // Use liveTrackingService to send proper notifications
-        await liveTrackingService.updateBookingStatus(bookingId, 'delivered', uid, {
-          location: location,
-          notes: notes,
-          photoUrl: photoUrl,
-          recipientName: recipientName,
-          recipientPhone: recipientPhone,
-          duration: duration
-        });
+        await liveTrackingService.updateBookingStatus(
+          bookingId,
+          statusResult.status,
+          uid,
+          {
+            location: statusResult.broadcastPayload?.location || location || null,
+            notes: statusResult.broadcastPayload?.notes || notes || null,
+            photoUrl: statusResult.broadcastPayload?.photoUrl || photoUrl || null,
+            recipientName: statusResult.broadcastPayload?.recipientName || recipientName || null,
+            recipientPhone: statusResult.broadcastPayload?.recipientPhone || recipientPhone || null,
+            eventTimestamp: statusResult.eventTimestamp.toISOString()
+          },
+          {
+            persist: false,
+            bookingDataOverride: statusResult.booking
+          }
+        );
         
-        // Also send general booking_status_update event with full booking data
-        const updatedBookingDoc = await bookingRef.get();
-        const updatedBookingData = updatedBookingDoc.data();
-        
-        io.to(`user:${bookingData.customerId}`).emit('booking_status_update', {
+        io.to(`user:${statusResult.booking.customerId}`).emit('booking_status_update', {
           bookingId: bookingId,
-          status: 'delivered',
-          booking: updatedBookingData,
+          status: statusResult.status,
+          booking: statusResult.booking,
           timestamp: new Date().toISOString(),
           updatedBy: uid
         });
         
-        console.log(`📤 [COMPLETE_DELIVERY] Notified customer ${bookingData.customerId} about delivery completion`);
+        console.log(`📤 [COMPLETE_DELIVERY] Notified customer ${statusResult.booking.customerId} about delivery completion`);
       } catch (notifyError) {
         console.error('❌ [COMPLETE_DELIVERY] Error notifying customer:', notifyError);
         // Don't fail delivery if notification fails
@@ -6693,28 +6644,31 @@ router.post('/complete-delivery', [
       id: verificationRef.id,
       bookingId: bookingId,
       driverId: uid,
-      customerId: bookingData.customerId,
+      customerId: statusResult.booking.customerId,
       location: location,
       photoUrl: photoUrl || null,
       notes: notes || null,
       recipientName: recipientName || null,
       recipientPhone: recipientPhone || null,
-      deliveredAt: new Date(),
+      deliveredAt: statusResult.eventTimestamp,
       status: 'verified'
     });
 
-    // Update trip tracking
-    const tripTrackingRef = db.collection('tripTracking').doc(bookingId);
-    await tripTrackingRef.set({
-      tripId: bookingId,
-      bookingId: bookingId,
-      driverId: uid,
-      customerId: bookingData.customerId,
-      currentStatus: 'delivered',
-      deliveredAt: new Date(),
-      actualDuration: duration,
-      lastUpdated: new Date()
-    }, { merge: true });
+    try {
+      const tripTrackingRef = db.collection('tripTracking').doc(bookingId);
+      await tripTrackingRef.set({
+        tripId: bookingId,
+        bookingId: bookingId,
+        driverId: uid,
+        customerId: statusResult.booking.customerId,
+        currentStatus: statusResult.status,
+        deliveredAt: statusResult.eventTimestamp,
+        actualDuration: actualDuration,
+        lastUpdated: new Date()
+      }, { merge: true });
+    } catch (trackingError) {
+      console.warn('⚠️ [COMPLETE_DELIVERY] Failed to update trip tracking:', trackingError);
+    }
 
     // ✅ CRITICAL FIX: Commission deduction and earnings updates are handled during payment confirmation
     // NOT during delivery completion - this ensures proper workflow:
@@ -6730,16 +6684,15 @@ router.post('/complete-delivery', [
       const socketService = require('../services/socket');
       const io = socketService.getSocketIO();
       
-      // Notify admin dashboard about delivery completion
       if (io) {
         io.to('type:admin').emit('delivery_completed', {
           bookingId: bookingId,
-          customerId: bookingData.customerId,
+          customerId: statusResult.booking.customerId,
           driverId: uid,
-          status: 'delivered',
-          deliveredAt: new Date().toISOString(),
-          duration: duration,
-          paymentRequired: true // ✅ CRITICAL FIX: Indicate payment is required
+          status: statusResult.status,
+          deliveredAt: statusResult.eventTimestamp.toISOString(),
+          duration: actualDuration,
+          paymentRequired: true
         });
         
         console.log(`📡 [COMPLETE_DELIVERY] Admin notification sent for delivery ${bookingId}`);
@@ -6760,27 +6713,40 @@ router.post('/complete-delivery', [
       message: 'Delivery completed successfully',
       data: {
         bookingId: bookingId,
-        status: 'delivered',
+        status: statusResult.status,
         location: location,
         photoUrl: photoUrl,
         notes: notes,
         recipientName: recipientName,
         recipientPhone: recipientPhone,
-        deliveredAt: new Date().toISOString(),
-        duration: duration,
-        paymentRequired: !bookingData.paymentConfirmed // ✅ CRITICAL FIX: Indicate if payment is still needed
+        deliveredAt: statusResult.eventTimestamp.toISOString(),
+        duration: actualDuration,
+        sequence: statusResult.sequence || null,
+        paymentRequired: !statusResult.booking?.paymentConfirmed
       },
       timestamp: new Date().toISOString()
     });
 
   } catch (error) {
+    if (error instanceof DriverStatusError) {
+      return res.status(error.statusCode).json({
+        success: false,
+        error: {
+          code: error.code,
+          message: error.message,
+          details: error.details || null
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
     console.error('❌ [COMPLETE_DELIVERY] Error completing delivery:', error);
     res.status(500).json({
       success: false,
       error: {
         code: 'DELIVERY_COMPLETION_ERROR',
         message: 'Failed to complete delivery',
-        details: 'An error occurred while completing delivery'
+        details: error.message || 'An error occurred while completing delivery'
       },
       timestamp: new Date().toISOString()
     });
@@ -10142,52 +10108,6 @@ function buildWorkSlotDateContext(rawDateInput, rawTimezoneOffset) {
     timezoneOffsetMinutes
   };
 }
-
-const toIsoString = (value) => {
-  if (!value) return null;
-  if (value instanceof Date && !Number.isNaN(value.getTime())) {
-    return value.toISOString();
-  }
-  if (typeof value === 'string') {
-    const parsed = new Date(value);
-    return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString();
-  }
-  if (typeof value === 'number') {
-    const parsed = new Date(value);
-    return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString();
-  }
-  if (typeof value === 'object') {
-    if (typeof value.toDate === 'function') {
-      try {
-        const converted = value.toDate();
-        return converted instanceof Date && !Number.isNaN(converted.getTime())
-          ? converted.toISOString()
-          : null;
-      } catch (error) {
-        console.warn('⚠️ [WORK_SLOTS_API] Failed to convert timestamp using toDate:', error);
-        return null;
-      }
-    }
-    const seconds =
-      typeof value._seconds === 'number'
-        ? value._seconds
-        : typeof value.seconds === 'number'
-        ? value.seconds
-        : undefined;
-    if (typeof seconds === 'number') {
-      const nanoseconds =
-        typeof value._nanoseconds === 'number'
-          ? value._nanoseconds
-          : typeof value.nanoseconds === 'number'
-          ? value.nanoseconds
-          : 0;
-      const millis = seconds * 1000 + Math.floor(nanoseconds / 1e6);
-      const parsed = new Date(millis);
-      return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString();
-    }
-  }
-  return null;
-};
 
 const normalizeSlotState = (startTimeIso, endTimeIso, now) => {
   if (!startTimeIso || !endTimeIso) {

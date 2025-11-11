@@ -98,7 +98,7 @@ class LiveTrackingService {
   /**
    * Update booking status and notify customer
    */
-  async updateBookingStatus(bookingId, status, driverId, additionalData = {}) {
+  async updateBookingStatus(bookingId, status, driverId, additionalData = {}, options = {}) {
     try {
       if (!this.io) {
         console.error('❌ [LiveTrackingService] Socket.IO not initialized');
@@ -106,32 +106,53 @@ class LiveTrackingService {
           }
 
       const db = this.getDb();
+      const { persist = true, bookingDataOverride = null } = options;
+      let bookingData = bookingDataOverride;
 
-      // Get booking details
-      const bookingDoc = await db.collection('bookings').doc(bookingId).get();
-      if (!bookingDoc.exists) {
-        console.error(`❌ [LiveTrackingService] Booking ${bookingId} not found`);
+      if (persist) {
+        const bookingRef = db.collection('bookings').doc(bookingId);
+        const bookingDoc = await bookingRef.get();
+        if (!bookingDoc.exists) {
+          console.error(`❌ [LiveTrackingService] Booking ${bookingId} not found`);
+          return;
+        }
+
+        bookingData = bookingDoc.data();
+
+        await bookingRef.update({
+          status,
+          updatedAt: new Date(),
+          ...additionalData
+        });
+
+        await db.collection('booking_status_updates').add({
+          bookingId,
+          status,
+          driverId,
+          timestamp: new Date().toISOString(),
+          updatedBy: driverId,
+          additionalData
+        });
+
+        const updatedDoc = await bookingRef.get();
+        if (updatedDoc.exists) {
+          bookingData = updatedDoc.data();
+        }
+      } else {
+        if (!bookingData) {
+          const bookingDoc = await db.collection('bookings').doc(bookingId).get();
+          if (!bookingDoc.exists) {
+            console.error(`❌ [LiveTrackingService] Booking ${bookingId} not found`);
             return;
           }
+          bookingData = bookingDoc.data();
+        }
+      }
 
-      const bookingData = bookingDoc.data();
-      
-      // Update booking status
-      await db.collection('bookings').doc(bookingId).update({
-        status,
-        updatedAt: new Date(),
-        ...additionalData
-      });
-
-      // Create status update record
-      await db.collection('booking_status_updates').add({
-        bookingId,
-        status,
-        driverId,
-        timestamp: new Date().toISOString(),
-        updatedBy: driverId,
-        additionalData
-      });
+      if (!bookingData) {
+        console.warn(`⚠️ [LiveTrackingService] No booking data available to broadcast for ${bookingId}`);
+        return;
+      }
 
       // Notify customer based on status
       let eventName = 'booking_status_update';

@@ -13,11 +13,12 @@ class BookingStateMachine {
     this.stateTransitions = {
       'pending': ['driver_assigned', 'cancelled', 'rejected'],
       'driver_assigned': ['driver_enroute', 'rejected', 'cancelled'], // ✅ FIX: Remove 'accepted' intermediate state, allow direct transition to driver_enroute
-      'accepted': ['driver_enroute', 'cancelled'], // ✅ KEEP: For backward compatibility with existing bookings
-      'driver_enroute': ['driver_arrived', 'cancelled'],
+      'accepted': ['driver_enroute', 'driver_arrived', 'picked_up', 'cancelled'], // ✅ KEEP: Allow direct pickup confirmation when driver skips enroute status
+      'driver_enroute': ['driver_arrived', 'picked_up', 'cancelled'],
       'driver_arrived': ['picked_up', 'cancelled'],
       'picked_up': ['in_transit', 'cancelled'],
-      'in_transit': ['delivered', 'cancelled'],
+      'in_transit': ['at_dropoff', 'delivered', 'cancelled'],
+      'at_dropoff': ['delivered', 'cancelled'],
       'delivered': ['money_collection', 'completed'], // ✅ FIX: Allow direct transition to completed for payment confirmation
       'money_collection': ['completed'], // ✅ FIX: Money collection state
       'completed': [], // Terminal state
@@ -33,6 +34,7 @@ class BookingStateMachine {
       'driver_arrived': ['arrivedAt', 'driverId'],
       'picked_up': ['pickedUpAt', 'driverId'],
       'in_transit': ['inTransitAt', 'driverId'],
+      'at_dropoff': ['arrivedDropoffAt', 'driverId'],
       'delivered': ['deliveredAt', 'driverId'],
       'money_collection': ['moneyCollectionAt', 'driverId'], // ✅ FIX: Add money collection requirements
       'completed': ['completedAt', 'driverId'],
@@ -132,6 +134,7 @@ class BookingStateMachine {
         updatedBy: context.userId || 'system',
         userType: context.userType || 'system',
         timestamp: new Date(),
+        eventTimestamp: context.eventTimestamp ? new Date(context.eventTimestamp) : new Date(),
         updateData: stateUpdateData,
         context
       };
@@ -178,6 +181,12 @@ class BookingStateMachine {
     const now = new Date();
     const stateData = { ...updateData };
 
+    let eventTimestamp = updateData.eventTimestamp ? new Date(updateData.eventTimestamp) : null;
+    if (!eventTimestamp || isNaN(eventTimestamp.getTime())) {
+      eventTimestamp = now;
+    }
+    delete stateData.eventTimestamp;
+
     // Add timestamp fields based on state
     switch (state) {
       case 'driver_assigned':
@@ -191,27 +200,34 @@ class BookingStateMachine {
         stateData.enrouteAt = now;
         break;
       case 'driver_arrived':
-        stateData.arrivedAt = now;
+        stateData.arrivedAt = eventTimestamp;
         break;
       case 'picked_up':
-        stateData.pickedUpAt = now;
+        stateData.pickedUpAt = eventTimestamp;
         break;
       case 'in_transit':
-        stateData.inTransitAt = now;
+        stateData.inTransitAt = eventTimestamp;
+        break;
+      case 'at_dropoff':
+        stateData.arrivedDropoffAt = eventTimestamp;
         break;
       case 'delivered':
-        stateData.deliveredAt = now;
+        stateData.deliveredAt = eventTimestamp;
         break;
       case 'money_collection':
-        stateData.moneyCollectionAt = now;
+        stateData.moneyCollectionAt = eventTimestamp;
         break;
       case 'completed':
-        stateData.completedAt = now;
+        stateData.completedAt = eventTimestamp;
         break;
       case 'cancelled':
         stateData.cancelledAt = now;
         stateData.cancellationReason = updateData.cancellationReason || 'No reason provided';
         break;
+    }
+
+    if (!stateData.driverId && context.driverId) {
+      stateData.driverId = context.driverId;
     }
 
     return stateData;

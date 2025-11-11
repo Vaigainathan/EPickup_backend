@@ -1271,6 +1271,28 @@ class WebSocketEventHandler {
         
         // ✅ CRITICAL FIX: Enhanced logging for customer notification
         const customerRoom = `user:${updatedBookingData.customerId}`;
+        const vehicleDetails = driverData?.driver?.vehicleDetails || {};
+        const vehicleModel =
+          driverData?.driver?.vehicleModel ||
+          vehicleDetails.vehicleModel ||
+          updatedBookingData.driverInfo?.vehicleModel ||
+          '';
+        const vehicleNumber =
+          driverData?.driver?.vehicleNumber ||
+          vehicleDetails.vehicleNumber ||
+          updatedBookingData.driverInfo?.vehicleNumber ||
+          '';
+        const vehicleColor =
+          driverData?.driver?.vehicleColor ||
+          vehicleDetails.vehicleColor ||
+          updatedBookingData.driverInfo?.vehicleColor ||
+          '';
+        const vehicleType =
+          driverData?.driver?.vehicleType ||
+          vehicleDetails.vehicleType ||
+          updatedBookingData.driverInfo?.vehicleType ||
+          '';
+
         const driverAssignedEvent = {
           bookingId,
           driverId: userId,
@@ -1278,7 +1300,10 @@ class WebSocketEventHandler {
             id: userId,
             name: driverData?.name || 'Driver',
             phone: driverData?.phone || '',
-            vehicleNumber: driverData?.driver?.vehicleDetails?.vehicleNumber || '',
+            vehicleNumber,
+            vehicleModel,
+            vehicleColor,
+            vehicleType,
             rating: driverData?.driver?.rating || 4.5
           },
           booking: fullBookingData, // ✅ CRITICAL: Include full booking data
@@ -1286,8 +1311,11 @@ class WebSocketEventHandler {
             id: userId,
             name: driverData?.name || 'Driver',
             phone: driverData?.phone || '',
-            vehicleNumber: driverData?.driver?.vehicleDetails?.vehicleNumber || '',
-            vehicleDetails: driverData?.driver?.vehicleDetails || {}
+            vehicleNumber,
+            vehicleModel,
+            vehicleColor,
+            vehicleType,
+            vehicleDetails
           },
           timestamp: new Date().toISOString()
         };
@@ -1335,8 +1363,11 @@ class WebSocketEventHandler {
             id: userId,
             name: driverData?.name || 'Driver',
             phone: driverData?.phone || '',
-            vehicleNumber: driverData?.driver?.vehicleDetails?.vehicleNumber || '',
-            vehicleDetails: driverData?.driver?.vehicleDetails || {}
+            vehicleNumber,
+            vehicleModel,
+            vehicleColor,
+            vehicleType,
+            vehicleDetails
           },
           timestamp: new Date().toISOString(),
           updatedBy: userId

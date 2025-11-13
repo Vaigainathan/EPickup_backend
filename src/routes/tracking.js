@@ -696,43 +696,66 @@ router.get('/:bookingId', [
       });
     }
 
-    // Get driver location if driver is assigned
+    // ✅ ROOT CAUSE FIX: Get driver location if driver is assigned
     let driverLocation = null;
     if (booking.driverId) {
       const db = require('../services/firebase').getFirestore();
       const locationDoc = await db.collection('driverLocations').doc(booking.driverId).get();
       if (locationDoc.exists) {
         const locationData = locationDoc.data();
+        // ✅ ROOT CAUSE FIX: Handle both location formats (currentLocation object or direct lat/lng)
+        const currentLocation = locationData.currentLocation || locationData;
         driverLocation = {
-          latitude: locationData.latitude,
-          longitude: locationData.longitude,
-          timestamp: locationData.lastUpdated?.toMillis() || Date.now()
+          latitude: currentLocation.latitude || locationData.latitude,
+          longitude: currentLocation.longitude || locationData.longitude,
+          accuracy: currentLocation.accuracy || locationData.accuracy || 0,
+          speed: currentLocation.speed || locationData.speed || 0,
+          heading: currentLocation.heading || locationData.heading || 0,
+          timestamp: currentLocation.timestamp || locationData.lastUpdated?.toMillis() || locationData.timestamp || Date.now()
         };
       }
     }
 
-    // Format response to match frontend expectations
+    // ✅ ROOT CAUSE FIX: Format response to match frontend LiveTrackingData interface
     const trackingData = {
-      bookingId: booking.id,
+      tripId: booking.id, // ✅ Frontend expects tripId
+      bookingId: booking.id, // ✅ Also include bookingId for compatibility
+      driverId: booking.driverId || null,
       status: booking.status,
       driver: booking.driverId ? {
         id: booking.driverId,
-        name: driver?.name || 'Driver',
-        phone: driver?.phone || '',
-        vehicleNumber: driver?.vehicleDetails?.number || '',
-        rating: driver?.rating || 0,
-        profileImage: driver?.profilePicture || null,
+        name: driver?.name || driver?.driver?.name || 'Driver',
+        phone: driver?.phone || driver?.driver?.phone || '',
+        vehicleNumber: driver?.driver?.vehicleNumber || driver?.vehicleDetails?.vehicleNumber || driver?.vehicleDetails?.number || '',
+        rating: driver?.driver?.rating || driver?.rating || 0,
+        profileImage: driver?.driver?.profileImage || driver?.profilePicture || null,
         currentLocation: driverLocation,
         estimatedArrival: driverLocation ? 15 : null // Mock ETA calculation
       } : null,
-      currentLocation: driverLocation,
+      currentLocation: driverLocation ? {
+        latitude: driverLocation.latitude,
+        longitude: driverLocation.longitude,
+        accuracy: driverLocation.accuracy || 0,
+        speed: driverLocation.speed || 0,
+        bearing: driverLocation.heading || 0,
+        timestamp: new Date(driverLocation.timestamp).toISOString()
+      } : null,
+      progress: {
+        distanceToPickup: 0, // Would be calculated from current location
+        distanceToDropoff: booking.distance?.total || 0,
+        etaToPickup: driverLocation ? 15 : null,
+        etaToDropoff: booking.timing?.estimatedDeliveryTime ? new Date(booking.timing.estimatedDeliveryTime).getTime() : null,
+        isAtPickup: booking.status === 'driver_arrived' || booking.status === 'picked_up',
+        isAtDropoff: booking.status === 'at_dropoff' || booking.status === 'delivered',
+        currentStage: booking.status
+      },
       route: {
         distance: `${booking.distance?.total || 0} km`,
         duration: bookingService.calculateEstimatedTime(booking.distance?.total || 0),
         polyline: '', // Would be calculated from Google Maps API
         coordinates: [
-          booking.pickup.coordinates,
-          booking.dropoff.coordinates
+          booking.pickup?.coordinates || booking.pickup,
+          booking.dropoff?.coordinates || booking.dropoff
         ]
       },
       estimatedPickupTime: booking.timing?.estimatedPickupTime,

@@ -61,11 +61,28 @@ class PointsService {
 
   /**
    * Get points wallet balance and details
+   * ✅ CRITICAL FIX: Optimized to avoid redundant DB queries
    * @param {string} driverId - Driver ID
+   * @param {boolean} useCache - Whether to use cache (default: true)
    * @returns {Promise<Object>} Result object
    */
-  async getPointsBalance(driverId) {
+  async getPointsBalance(driverId, useCache = true) {
     try {
+      // ✅ CRITICAL FIX: Check cache first to reduce DB load
+      if (useCache) {
+        try {
+          const cachingService = require('./cachingService');
+          const cacheKey = `wallet:balance:${driverId}`;
+          const cached = await cachingService.get(cacheKey, 'memory');
+          if (cached) {
+            console.log(`✅ [WALLET_SERVICE] Cache hit for wallet balance: ${driverId}`);
+            return cached;
+          }
+        } catch (cacheError) {
+          console.warn('⚠️ [WALLET_SERVICE] Cache check failed, proceeding with DB query:', cacheError.message);
+        }
+      }
+
       const walletDoc = await this.db.collection('driverPointsWallets').doc(driverId).get();
       
       if (!walletDoc.exists) {
@@ -77,11 +94,11 @@ class PointsService {
 
       const walletData = walletDoc.data();
       
-      // Get work eligibility status
-      const canWorkResult = await this.canDriverWork(driverId);
-      const canWork = canWorkResult.success ? canWorkResult.canWork : false;
+      // ✅ CRITICAL FIX: Calculate canWork directly from walletData (no extra DB query)
+      // This eliminates the redundant canDriverWork() call that was doing another DB read
+      const canWork = walletData.pointsBalance >= 250; // Minimum 250 points required (₹250)
       
-      return {
+      const result = {
         success: true,
         wallet: {
           driverId: walletData.driverId,
@@ -96,6 +113,19 @@ class PointsService {
           lastUpdated: walletData.lastUpdated
         }
       };
+
+      // ✅ CRITICAL FIX: Cache the result for 30 seconds (short TTL for balance accuracy)
+      if (useCache) {
+        try {
+          const cachingService = require('./cachingService');
+          const cacheKey = `wallet:balance:${driverId}`;
+          await cachingService.set(cacheKey, result, 30, 'memory'); // 30 second cache
+        } catch (cacheError) {
+          console.warn('⚠️ [WALLET_SERVICE] Cache set failed:', cacheError.message);
+        }
+      }
+
+      return result;
     } catch (error) {
       console.error('Error getting points balance:', error);
       return {
@@ -181,6 +211,18 @@ class PointsService {
 
       // Commit all operations atomically
       await batch.commit();
+
+      // ✅ CRITICAL FIX: Invalidate wallet balance cache after update
+      try {
+        const cachingService = require('./cachingService');
+        await cachingService.delete(`wallet:balance:${driverId}`, 'memory');
+        // Invalidate all wallet:full cache entries for this driver using pattern
+        await cachingService.invalidatePattern(`wallet:full:${driverId}:`, 'memory');
+        // Also invalidate transaction count cache
+        await cachingService.delete(`wallet:transactions:count:${driverId}`, 'memory');
+      } catch (cacheError) {
+        console.warn('⚠️ [WALLET_SERVICE] Failed to invalidate cache after points add:', cacheError.message);
+      }
 
       console.info(`[WALLET_SERVICE] Points added successfully: ${pointsToAdd} points for ₹${realMoneyAmount}`);
       
@@ -291,6 +333,18 @@ class PointsService {
       // Commit all operations atomically
       await batch.commit();
 
+      // ✅ CRITICAL FIX: Invalidate wallet balance cache after deduction
+      try {
+        const cachingService = require('./cachingService');
+        await cachingService.delete(`wallet:balance:${driverId}`, 'memory');
+        // Invalidate all wallet:full cache entries for this driver using pattern
+        await cachingService.invalidatePattern(`wallet:full:${driverId}:`, 'memory');
+        // Also invalidate transaction count cache
+        await cachingService.delete(`wallet:transactions:count:${driverId}`, 'memory');
+      } catch (cacheError) {
+        console.warn('⚠️ [WALLET_SERVICE] Failed to invalidate cache after points deduction:', cacheError.message);
+      }
+
       console.info(`[WALLET_SERVICE] Points deducted successfully: ${pointsAmount} points`);
       
       return {
@@ -322,34 +376,90 @@ class PointsService {
 
   /**
    * Get transaction history
+   * ✅ CRITICAL FIX: Optimized pagination to reduce DB load
    * @param {string} driverId - Driver ID
    * @param {Object} filters - Filter options
    * @returns {Promise<Object>} Result object
    */
   async getTransactionHistory(driverId, filters = {}) {
     try {
-      // ✅ CRITICAL FIX: Firestore doesn't support offset with orderBy, use cursor-based pagination
-      // For now, we'll use limit and fetch all, then slice (not ideal for large datasets but works)
+      const limit = Math.min(filters.limit || 20, 100);
+      const offset = filters.offset || 0;
+
+      // ✅ CRITICAL FIX: Use cursor-based pagination for better performance
+      // Instead of fetching all transactions and slicing, use startAfter for offset
       let query = this.db.collection('pointsTransactions')
         .where('driverId', '==', driverId)
-        .orderBy('createdAt', 'desc');
+        .orderBy('createdAt', 'desc')
+        .limit(limit);
 
-      // Get total count first (for pagination info)
+      // ✅ CRITICAL FIX: For offset > 0, we need to fetch offset documents first to get cursor
+      // This is still better than fetching ALL transactions
+      if (offset > 0) {
+        // Fetch offset documents to get the cursor position
+        const offsetQuery = this.db.collection('pointsTransactions')
+          .where('driverId', '==', driverId)
+          .orderBy('createdAt', 'desc')
+          .limit(offset);
+        
+        const offsetSnapshot = await offsetQuery.get();
+        
+        if (offsetSnapshot.empty || offsetSnapshot.docs.length < offset) {
+          // Not enough documents for offset, return empty
+          return {
+            success: true,
+            transactions: [],
+            total: 0,
+            pagination: {
+              limit: limit,
+              offset: offset,
+              total: 0,
+              hasMore: false
+            }
+          };
+        }
+        
+        // Get the last document from offset query as cursor
+        const lastDoc = offsetSnapshot.docs[offsetSnapshot.docs.length - 1];
+        query = query.startAfter(lastDoc);
+      }
+
+      // ✅ CRITICAL FIX: Get total count efficiently (only if needed and not cached)
+      // For large datasets, consider using a separate counter collection
+      let totalCount = 0;
+      if (filters.includeTotal !== false) {
+        // ✅ OPTIMIZATION: Cache total count for 5 minutes to avoid expensive count queries
+        try {
+          const cachingService = require('./cachingService');
+          const countCacheKey = `wallet:transactions:count:${driverId}`;
+          const cachedCount = await cachingService.get(countCacheKey, 'memory');
+          
+          if (cachedCount !== null) {
+            totalCount = cachedCount;
+            console.log(`✅ [WALLET_SERVICE] Using cached transaction count: ${totalCount}`);
+          } else {
+            // Only fetch count if not cached (expensive operation)
       const totalSnapshot = await this.db.collection('pointsTransactions')
         .where('driverId', '==', driverId)
         .get();
-      const totalCount = totalSnapshot.size;
+            totalCount = totalSnapshot.size;
 
-      // Apply limit (default 20, max 100)
-      const limit = Math.min(filters.limit || 20, 100);
-      query = query.limit(limit + (filters.offset || 0));
+            // Cache the count for 5 minutes
+            await cachingService.set(countCacheKey, totalCount, 300, 'memory');
+          }
+        } catch (cacheError) {
+          // Fallback: fetch count if cache fails
+          console.warn('⚠️ [WALLET_SERVICE] Cache check failed, fetching count:', cacheError.message);
+          const totalSnapshot = await this.db.collection('pointsTransactions')
+            .where('driverId', '==', driverId)
+            .get();
+          totalCount = totalSnapshot.size;
+        }
+      }
 
-      // Fetch all and then slice for offset (for small datasets this is acceptable)
-      // For production with large datasets, implement cursor-based pagination
+      // Execute the paginated query
       const snapshot = await query.get();
-      const allTransactions = snapshot.docs;
-      const offset = filters.offset || 0;
-      const paginatedDocs = allTransactions.slice(offset, offset + limit);
+      const paginatedDocs = snapshot.docs;
 
       const transactions = paginatedDocs.map(doc => {
         const data = doc.data();

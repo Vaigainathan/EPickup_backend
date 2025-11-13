@@ -282,13 +282,19 @@ class BookingStateMachine {
         break;
 
       case 'completed':
-        // ✅ FIX: Release driver availability when booking is completed
+        // ✅ COMPREHENSIVE FIX: Release driver availability when booking is completed
+        // Driver can now go offline if outside slot time, or stay online if in slot time
         if (context.driverId) {
           const driverRef = this.db.collection('users').doc(context.driverId);
+          
+          // ✅ CRITICAL: Keep driver online status as-is (don't force offline)
+          // Slot automation will handle offline if needed, but driver might want to stay online
+          // Only update availability and clear booking reference
           transaction.update(driverRef, {
-            'driver.isAvailable': true,
-            'driver.currentBookingId': null,
-            'driver.status': 'available',
+            'driver.isAvailable': true, // ✅ Driver is now available for new bookings
+            'driver.currentBookingId': null, // ✅ Clear active booking reference
+            'driver.status': 'available', // ✅ Set status to available
+            // ✅ NOTE: Don't change isOnline - let slot automation handle it
             updatedAt: new Date()
           });
           
@@ -298,7 +304,10 @@ class BookingStateMachine {
             isAvailable: true,
             currentTripId: null,
             lastUpdated: new Date()
+            // ✅ NOTE: Don't change isOnline here either
           });
+          
+          console.log(`✅ [BOOKING_STATE] Driver ${context.driverId} released from booking ${bookingId} - available for new bookings`);
         }
         break;
 

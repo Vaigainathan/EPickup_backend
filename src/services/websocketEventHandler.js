@@ -1574,6 +1574,35 @@ class WebSocketEventHandler {
         return;
       }
 
+      // ✅ CRITICAL FIX: Check for active booking before allowing offline via WebSocket
+      // This prevents WebSocket from bypassing active booking protection
+      if (isOnline === false) {
+        const activeBookingStatuses = ['driver_assigned', 'accepted', 'driver_enroute', 'driver_arrived', 'picked_up', 'in_transit', 'at_dropoff', 'delivered', 'money_collection'];
+        const activeBookingQuery = this.db.collection('bookings')
+          .where('driverId', '==', userId)
+          .where('status', 'in', activeBookingStatuses)
+          .limit(1);
+        
+        const activeBookingSnapshot = await activeBookingQuery.get();
+        
+        if (!activeBookingSnapshot.empty) {
+          const activeBooking = activeBookingSnapshot.docs[0].data();
+          console.warn(`⚠️ [WEBSOCKET_STATUS] Driver ${userId} trying to go offline via WebSocket but has active booking:`, {
+            bookingId: activeBookingSnapshot.docs[0].id,
+            status: activeBooking.status
+          });
+          
+          socket.emit('error', {
+            code: 'ACTIVE_BOOKING',
+            message: 'Cannot go offline',
+            details: 'You have an active booking. Please complete it before going offline.',
+            bookingId: activeBookingSnapshot.docs[0].id,
+            bookingStatus: activeBooking.status
+          });
+          return; // Block the status update
+        }
+      }
+
       const statusData = {
         driverId: userId,
         isOnline: Boolean(isOnline),
@@ -1585,7 +1614,16 @@ class WebSocketEventHandler {
 
       console.log(`👤 Driver status update from ${userId}:`, statusData);
 
-      // Update driver status in Firestore
+      // ✅ CRITICAL FIX: Update main users collection, not just driver_status collection
+      // This ensures consistency with REST API endpoint
+      await this.db.collection('users').doc(userId).update({
+        'driver.isOnline': Boolean(isOnline),
+        'driver.isAvailable': Boolean(isAvailable),
+        'driver.lastSeen': new Date(),
+        updatedAt: new Date()
+      });
+
+      // Also update driver_status collection for backward compatibility
       await this.db.collection('driver_status').doc(userId).set(statusData, { merge: true });
 
       // Update driver location if provided

@@ -799,20 +799,28 @@ class WebSocketEventHandler {
         this.db = getFirestore();
       }
 
-      // Get all active booking room memberships for this user (last hour)
-      const roomMemberships = await this.db.collection('websocket_rooms')
+      // ✅ CRITICAL FIX: Query only by userId to avoid composite index requirement
+      // Filter by lastSeen in memory instead
+      const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000);
+      const roomMembershipsSnapshot = await this.db.collection('websocket_rooms')
         .where('userId', '==', userId)
-        .where('lastSeen', '>', new Date(Date.now() - 60 * 60 * 1000)) // Last hour
         .get();
 
-      if (roomMemberships.empty) {
+      // Filter by lastSeen in memory (avoids composite index requirement)
+      const roomMemberships = roomMembershipsSnapshot.docs.filter(doc => {
+        const data = doc.data();
+        const lastSeen = data.lastSeen?.toDate ? data.lastSeen.toDate() : new Date(data.lastSeen);
+        return lastSeen > oneHourAgo;
+      });
+
+      if (roomMemberships.length === 0) {
         console.log(`📊 [SOCKET] No active booking rooms to rejoin for user ${userId}`);
         return;
       }
 
-      console.log(`🔄 [SOCKET] Re-joining ${roomMemberships.size} booking room(s) for user ${userId}`);
+      console.log(`🔄 [SOCKET] Re-joining ${roomMemberships.length} booking room(s) for user ${userId}`);
 
-      for (const membership of roomMemberships.docs) {
+      for (const membership of roomMemberships) {
         try {
           const data = membership.data();
           const bookingId = data.bookingId;

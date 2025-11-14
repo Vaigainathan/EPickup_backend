@@ -894,15 +894,42 @@ gracefulShutdown(server, {
   signals: ['SIGTERM', 'SIGINT', 'SIGUSR2']
 });
 
-// Handle uncaught exceptions
+// ✅ CRITICAL FIX: Handle uncaught exceptions gracefully
 process.on('uncaughtException', (error) => {
-  console.error('Uncaught Exception:', error);
+  console.error('❌ [SERVER] Uncaught Exception:', error);
+  // Log to Sentry if available
+  if (typeof Sentry !== 'undefined' && Sentry.captureException) {
+    Sentry.captureException(error);
+  }
+  // Exit on critical errors
+  console.error('❌ [SERVER] Critical error, shutting down...');
   process.exit(1);
 });
 
+// ✅ CRITICAL FIX: Handle unhandled promise rejections gracefully
 process.on('unhandledRejection', (reason, promise) => {
-  console.error('Unhandled Rejection at:', promise, 'reason:', reason);
-  process.exit(1);
+  const errorMessage = reason?.message || String(reason);
+  const errorStack = reason?.stack || '';
+  
+  // ✅ REMOVED: Redis-specific error handling (Redis is no longer used)
+  
+  // For other unhandled rejections, log and potentially exit
+  console.error('❌ [SERVER] Unhandled Rejection at:', promise);
+  console.error('❌ [SERVER] Reason:', reason);
+  console.error('❌ [SERVER] Stack:', errorStack);
+  
+  // Log to Sentry if available
+  if (typeof Sentry !== 'undefined' && Sentry.captureException) {
+    Sentry.captureException(reason);
+  }
+  
+  // Only exit for critical errors
+  if (errorMessage.includes('FATAL') || errorMessage.includes('CRITICAL')) {
+    console.error('❌ [SERVER] Critical unhandled rejection, shutting down...');
+    process.exit(1);
+  } else {
+    console.warn('⚠️ [SERVER] Non-critical unhandled rejection, continuing...');
+  }
 });
 
 module.exports = app;

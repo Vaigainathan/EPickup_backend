@@ -3,43 +3,18 @@
  * 
  * Prevents API abuse by limiting requests per user/IP
  * with configurable windows and limits.
+ * 
+ * Uses in-memory store (no Redis dependency)
  */
 
 const rateLimit = require('express-rate-limit');
 
-// Optional Redis support - only use if available
-let RedisStore = null;
-let Redis = null;
-
-try {
-  RedisStore = require('rate-limit-redis');
-  Redis = require('redis');
-} catch {
-  console.log('Redis packages not available, using memory store only');
-}
-
-// Create Redis client for rate limiting (optional)
-let redisClient = null;
-if (Redis) {
-  try {
-    redisClient = Redis.createClient({
-      host: process.env.REDIS_HOST || 'localhost',
-      port: process.env.REDIS_PORT || 6379,
-      password: process.env.REDIS_PASSWORD || undefined,
-      retry_strategy: () => 1000
-    });
-    
-    redisClient.on('error', (err) => {
-      console.warn('Redis connection failed, using memory store for rate limiting:', err.message);
-      redisClient = null;
-    });
-  } catch {
-    console.warn('Redis not available, using memory store for rate limiting');
-  }
-}
+// ✅ REMOVED: Redis support - using in-memory store only
+// This is simpler, faster for single-instance deployments, and has no external dependencies
+console.log('✅ [RATE_LIMITER] Using in-memory store for rate limiting');
 
 /**
- * Create rate limiter with Redis store if available, memory store otherwise
+ * Create rate limiter with in-memory store
  */
 function createRateLimiter(options = {}) {
   const defaultOptions = {
@@ -70,11 +45,9 @@ function createRateLimiter(options = {}) {
     ...options
   };
 
-  if (redisClient && RedisStore) {
-    defaultOptions.store = new RedisStore({
-      sendCommand: (...args) => redisClient.sendCommand(args),
-    });
-  }
+  // ✅ REMOVED: Redis store - using in-memory store (default)
+  // In-memory store is perfect for single-instance deployments
+  // No external dependencies, faster, and simpler
 
   return rateLimit(defaultOptions);
 }

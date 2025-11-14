@@ -42,51 +42,12 @@ let eventHandler = null;
  */
 const initializeSocketIO = async (server) => {
   try {
-    // ✅ CRITICAL FIX: Configure Redis adapter for multi-instance support
-    let adapter = null;
-    try {
-      const { createAdapter } = require('@socket.io/redis-adapter');
-      const { createClient } = require('redis');
-      
-      // ✅ CRITICAL FIX: Create Redis clients for pub/sub
-      const pubClient = createClient({
-        url: process.env.REDIS_URL || `redis://${process.env.REDIS_HOST || 'localhost'}:${process.env.REDIS_PORT || 6379}`,
-        password: process.env.REDIS_PASSWORD || undefined,
-        socket: {
-          reconnectStrategy: (retries) => {
-            if (retries > 10) {
-              console.error('❌ [SOCKET] Redis reconnection failed after 10 attempts');
-              return new Error('Redis connection failed');
-            }
-            return Math.min(retries * 100, 3000);
-          }
-        }
-      });
-      
-      const subClient = pubClient.duplicate();
-      
-      pubClient.on('error', (err) => {
-        console.error('❌ [SOCKET] Redis pub client error:', err);
-      });
-      
-      subClient.on('error', (err) => {
-        console.error('❌ [SOCKET] Redis sub client error:', err);
-      });
-      
-      // Connect both clients
-      await Promise.all([pubClient.connect(), subClient.connect()]);
-      
-      adapter = createAdapter(pubClient, subClient);
-      console.log('✅ [SOCKET] Redis adapter configured for multi-instance support');
-    } catch (redisError) {
-      console.warn('⚠️ [SOCKET] Redis adapter not available, using in-memory adapter (single instance only):', redisError.message);
-      console.warn('⚠️ [SOCKET] For production multi-instance deployment, configure Redis adapter');
-      console.log('✅ [SOCKET] Single instance mode active - rooms work perfectly for multiple concurrent bookings');
-      console.log('✅ [SOCKET] Each booking gets isolated room (booking:${bookingId}) - no capacity limits');
-      // Continue without adapter - single instance mode
-      // ✅ NOTE: This works perfectly for single server deployment
-      // ✅ Multiple concurrent bookings are fully supported - each booking has its own isolated room
-    }
+    // ✅ REMOVED: Redis adapter - using in-memory adapter (single instance)
+    // In-memory adapter is perfect for single-instance deployments
+    // No external dependencies, faster, and simpler
+    // Multiple concurrent bookings are fully supported - each booking has its own isolated room
+    console.log('✅ [SOCKET] Using in-memory adapter (single instance mode)');
+    console.log('✅ [SOCKET] Each booking gets isolated room (booking:${bookingId}) - no capacity limits');
     
     const serverOptions = {
       cors: {
@@ -125,10 +86,8 @@ const initializeSocketIO = async (server) => {
       }
     };
     
-    // ✅ CRITICAL FIX: Attach Redis adapter if available
-    if (adapter) {
-      serverOptions.adapter = adapter;
-    }
+    // ✅ REMOVED: Redis adapter - using default in-memory adapter
+    // No adapter needed for single-instance deployments
     
     io = new Server(server, serverOptions);
 

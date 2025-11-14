@@ -67,23 +67,56 @@ service firebase.storage {
     }
     
     // Verification photos (for bookings)
-    // ✅ FIX: Only allow participants of the booking to access verification photos
+    // ✅ CRITICAL FIX: Handle both Firebase UID and role-based UID for driver matching
+    // ✅ SECURITY: Enforce booking lifecycle and user isolation
     match /verifications/{bookingId}/{document=**} {
-      // Only allow participants of the booking to read
+      // Helper function to get booking data
+      function getBooking() {
+        return firestore.get(/databases/(default)/documents/bookings/$(bookingId));
+      }
+      
+      // Helper function to check if booking exists
+      function bookingExists() {
+        return firestore.exists(/databases/(default)/documents/bookings/$(bookingId));
+      }
+      
+      // ✅ CRITICAL FIX: Check if booking is active (not completed/cancelled)
+      // ✅ SECURITY: Prevents uploads after booking lifecycle has ended
+      function isBookingActive() {
+        return bookingExists() && 
+               getBooking().data.status != 'completed' &&
+               getBooking().data.status != 'cancelled';
+      }
+      
+      // Helper function to check if user is driver of booking (handles both UID types)
+      // ✅ ISOLATION: Ensures driver can only access their assigned booking
+      function isDriverOfBooking() {
+        return bookingExists() &&
+               (getBooking().data.driverId == request.auth.uid ||
+                getBooking().data.driverId == request.auth.token.roleBasedUID);
+      }
+      
+      // Helper function to check if user is customer of booking
+      // ✅ ISOLATION: Ensures customer can only access their own booking
+      function isCustomerOfBooking() {
+        return bookingExists() &&
+               (getBooking().data.customerId == request.auth.uid ||
+                getBooking().data.customerId == request.auth.token.roleBasedUID);
+      }
+      
+      // ✅ ISOLATION: Only allow participants of the booking to read
+      // ✅ LIFECYCLE: Allow read even if booking is completed (for viewing history)
       allow read: if isAuthenticated() && (
         isAdmin() ||
-        // Check if user is customer or driver of this booking
-        (firestore.exists(/databases/(default)/documents/bookings/$(bookingId)) &&
-         (firestore.get(/databases/(default)/documents/bookings/$(bookingId)).data.customerId == request.auth.uid ||
-          firestore.get(/databases/(default)/documents/bookings/$(bookingId)).data.driverId == request.auth.uid))
+        (bookingExists() && (isDriverOfBooking() || isCustomerOfBooking()))
       );
       
-      // Only allow driver assigned to booking to write
+      // ✅ CRITICAL FIX: Only allow driver assigned to booking to write
+      // ✅ SECURITY: Must be active booking (not completed/cancelled)
+      // ✅ ISOLATION: Driver can only upload to their assigned booking
       allow write: if isAuthenticated() && (
         isAdmin() ||
-        (isDriver() &&
-         firestore.exists(/databases/(default)/documents/bookings/$(bookingId)) &&
-         firestore.get(/databases/(default)/documents/bookings/$(bookingId)).data.driverId == request.auth.uid)
+        (isDriver() && isDriverOfBooking() && isBookingActive())
       );
     }
     

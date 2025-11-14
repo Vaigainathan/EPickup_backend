@@ -117,6 +117,9 @@ class WebSocketEventHandler {
       // Update user online status
       await this.updateUserOnlineStatus(userId, true);
 
+      // ✅ CRITICAL FIX: Re-join rooms from database persistence
+      await this.rejoinBookingRooms(socket, userId, userType);
+
       // Send user's active trips if any
       await this.sendActiveTrips(socket, userId);
 
@@ -785,6 +788,91 @@ class WebSocketEventHandler {
   }
 
   /**
+   * ✅ CRITICAL FIX: Re-join booking rooms from database persistence
+   * @param {Socket} socket - Socket instance
+   * @param {string} userId - User ID
+   * @param {string} userType - User type (customer/driver)
+   */
+  async rejoinBookingRooms(socket, userId, userType) {
+    try {
+      if (!this.db) {
+        this.db = getFirestore();
+      }
+
+      // Get all active booking room memberships for this user (last hour)
+      const roomMemberships = await this.db.collection('websocket_rooms')
+        .where('userId', '==', userId)
+        .where('lastSeen', '>', new Date(Date.now() - 60 * 60 * 1000)) // Last hour
+        .get();
+
+      if (roomMemberships.empty) {
+        console.log(`📊 [SOCKET] No active booking rooms to rejoin for user ${userId}`);
+        return;
+      }
+
+      console.log(`🔄 [SOCKET] Re-joining ${roomMemberships.size} booking room(s) for user ${userId}`);
+
+      for (const membership of roomMemberships.docs) {
+        try {
+          const data = membership.data();
+          const bookingId = data.bookingId;
+
+          // Verify booking is still active and user still has permission
+          const bookingRef = this.db.collection('bookings').doc(bookingId);
+          const bookingDoc = await bookingRef.get();
+
+          if (!bookingDoc.exists) {
+            // Booking doesn't exist - cleanup
+            await membership.ref.delete();
+            console.log(`🧹 [SOCKET] Cleaned up room membership for non-existent booking: ${bookingId}`);
+            continue;
+          }
+
+          const booking = bookingDoc.data();
+          const activeStatuses = ['pending', 'driver_assigned', 'accepted', 'driver_enroute', 
+                                 'driver_arrived', 'picked_up', 'in_transit', 'at_dropoff'];
+
+          // Check if booking is still active
+          if (!activeStatuses.includes(booking.status)) {
+            // Booking completed - cleanup
+            await membership.ref.delete();
+            console.log(`🧹 [SOCKET] Cleaned up room membership for completed booking: ${bookingId} (status: ${booking.status})`);
+            continue;
+          }
+
+          // Verify user still has permission
+          const hasPermission = (userType === 'customer' && booking.customerId === userId) ||
+                               (userType === 'driver' && booking.driverId === userId);
+
+          if (!hasPermission) {
+            // User no longer has permission - cleanup
+            await membership.ref.delete();
+            console.log(`🧹 [SOCKET] Cleaned up room membership - permission revoked: ${bookingId}`);
+            continue;
+          }
+
+          // Re-join room
+          socket.join(data.room);
+          
+          // Update last seen
+          await membership.ref.update({
+            lastSeen: new Date(),
+            socketId: socket.id
+          });
+
+          console.log(`✅ [SOCKET] Re-joined booking room from persistence: ${data.room}`);
+        } catch (roomError) {
+          console.error(`❌ [SOCKET] Error re-joining room ${membership.id}:`, roomError);
+          // Continue with other rooms
+        }
+      }
+    } catch (error) {
+      console.error('❌ [SOCKET] Error in rejoinBookingRooms:', error);
+      // Don't throw - connection should still succeed
+    }
+  }
+
+  /**
    * Verify user has access to trip
    * @param {string} userId - User ID
    * @param {string} tripId - Trip ID
@@ -946,12 +1034,14 @@ class WebSocketEventHandler {
 
     // Customer can join customer-specific rooms
     if (userType === 'customer') {
-      return room.startsWith('customer_') || room.startsWith('user_') || room.startsWith('booking_');
+      // ✅ CRITICAL FIX: Use correct room naming format (booking: not booking_)
+      return room.startsWith('customer_') || room.startsWith('user:') || room.startsWith('booking:');
     }
 
     // Driver can join driver-specific rooms
     if (userType === 'driver') {
-      return room.startsWith('driver_') || room.startsWith('user_') || room.startsWith('booking_') || room.startsWith('location_');
+      // ✅ CRITICAL FIX: Use correct room naming format (booking: not booking_)
+      return room.startsWith('driver_') || room.startsWith('user:') || room.startsWith('booking:') || room.startsWith('location_');
     }
 
     return false;
@@ -2066,23 +2156,82 @@ class WebSocketEventHandler {
         timestamp: new Date().toISOString()
       };
 
-      // Notify customer
-      if (bookingData.customerId) {
-        this.io.to(`user:${bookingData.customerId}`).emit('booking_status_update', notificationData);
+      // ✅ CRITICAL FIX: Emit to both user room AND booking room to ensure customer receives event
+      const userRoom = bookingData.customerId ? `user:${bookingData.customerId}` : null;
+      const bookingRoom = `booking:${bookingId}`;
+      const driverRoom = bookingData.driverId ? `user:${bookingData.driverId}` : null;
+
+      // Notify customer via both user room and booking room
+      if (userRoom) {
+        this.io.to(userRoom).emit('booking_status_update', notificationData);
       }
+      this.io.to(bookingRoom).emit('booking_status_update', notificationData);
 
       // Notify driver
-      if (bookingData.driverId) {
-        this.io.to(`user:${bookingData.driverId}`).emit('booking_status_update', notificationData);
+      if (driverRoom) {
+        this.io.to(driverRoom).emit('booking_status_update', notificationData);
       }
 
       // Notify admin
       this.io.to(`type:admin`).emit('booking_status_update', notificationData);
 
+      // ✅ CRITICAL FIX: Auto-cleanup rooms when booking completes
+      const terminalStatuses = ['delivered', 'cancelled', 'completed'];
+      if (terminalStatuses.includes(status)) {
+        await this.cleanupBookingRooms(bookingId);
+      }
+
       console.log(`✅ Booking status update notification sent`);
 
     } catch (error) {
       console.error('Error notifying booking status update:', error);
+    }
+  }
+
+  /**
+   * ✅ CRITICAL FIX: Cleanup booking room memberships when booking completes
+   * @param {string} bookingId - Booking ID
+   */
+  async cleanupBookingRooms(bookingId) {
+    try {
+      if (!this.db) {
+        this.db = getFirestore();
+      }
+
+      // Get all room memberships for this booking
+      const roomMemberships = await this.db.collection('websocket_rooms')
+        .where('bookingId', '==', bookingId)
+        .get();
+
+      if (roomMemberships.empty) {
+        return;
+      }
+
+      console.log(`🧹 [SOCKET] Cleaning up ${roomMemberships.size} room membership(s) for booking ${bookingId}`);
+
+      // Delete all room memberships
+      const batch = this.db.batch();
+      roomMemberships.docs.forEach(doc => {
+        batch.delete(doc.ref);
+      });
+      await batch.commit();
+
+      // Leave all sockets from room
+      if (this.io) {
+        const room = this.io.sockets.adapter.rooms.get(`booking:${bookingId}`);
+        if (room) {
+          room.forEach(socketId => {
+            const socket = this.io.sockets.sockets.get(socketId);
+            if (socket) {
+              socket.leave(`booking:${bookingId}`);
+            }
+          });
+        }
+      }
+
+      console.log(`✅ [SOCKET] Cleaned up room memberships for completed booking: ${bookingId}`);
+    } catch (error) {
+      console.error(`❌ [SOCKET] Error cleaning up booking rooms for ${bookingId}:`, error);
     }
   }
 

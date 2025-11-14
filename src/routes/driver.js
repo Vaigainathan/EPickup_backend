@@ -1602,6 +1602,42 @@ router.get('/bookings/history', requireDriver, async (req, res) => {
     let netTotal = 0;
     let commissionTotal = 0;
 
+    // ✅ CRITICAL FIX: Fetch customer details for each booking
+    const customerIds = new Set();
+    snapshot.forEach(doc => {
+      const data = doc.data();
+      if (data.customerId) {
+        customerIds.add(data.customerId);
+      }
+    });
+
+    // Fetch all customer data in parallel
+    const customerDataMap = new Map();
+    if (customerIds.size > 0) {
+      const customerPromises = Array.from(customerIds).map(async (customerId) => {
+        try {
+          const customerDoc = await db.collection('users').doc(customerId).get();
+          if (customerDoc.exists) {
+            const customerData = customerDoc.data();
+            return {
+              id: customerId,
+              name: customerData.name || customerData.customer?.name || 'Customer',
+              phone: customerData.phone || customerData.customer?.phone || ''
+            };
+          }
+          return { id: customerId, name: 'Customer', phone: '' };
+        } catch (error) {
+          console.error(`❌ [BOOKINGS_HISTORY] Error fetching customer ${customerId}:`, error);
+          return { id: customerId, name: 'Customer', phone: '' };
+        }
+      });
+      
+      const customerResults = await Promise.all(customerPromises);
+      customerResults.forEach(customer => {
+        customerDataMap.set(customer.id, customer);
+      });
+    }
+
     snapshot.forEach(doc => {
       const data = doc.data();
       const earnings = computeBookingEarnings(data);
@@ -1610,12 +1646,35 @@ router.get('/bookings/history', requireDriver, async (req, res) => {
       netTotal += earnings.netEarnings;
       commissionTotal += earnings.commissionAmount;
 
+      // ✅ CRITICAL FIX: Include customer information
+      const customerInfo = data.customerId ? customerDataMap.get(data.customerId) : null;
+      
       bookings.push({
         id: doc.id,
         ...data,
+        // ✅ CRITICAL FIX: Add customer object with name and details
+        customer: customerInfo || {
+          id: data.customerId || null,
+          name: data.pickup?.name || 'Customer',
+          phone: data.pickup?.phone || ''
+        },
+        // ✅ CRITICAL FIX: Ensure pickup and dropoff addresses are included
+        pickup: {
+          name: data.pickup?.name || 'Pickup',
+          phone: data.pickup?.phone || '',
+          address: data.pickup?.address || 'Address not available',
+          coordinates: data.pickup?.coordinates || null
+        },
+        dropoff: {
+          name: data.dropoff?.name || 'Dropoff',
+          phone: data.dropoff?.phone || '',
+          address: data.dropoff?.address || 'Address not available',
+          coordinates: data.dropoff?.coordinates || null
+        },
         earnings,
         createdAt: data.createdAt?.toDate?.()?.toISOString() || new Date().toISOString(),
-        updatedAt: data.updatedAt?.toDate?.()?.toISOString() || new Date().toISOString()
+        updatedAt: data.updatedAt?.toDate?.()?.toISOString() || new Date().toISOString(),
+        completedAt: data.completedAt?.toDate?.()?.toISOString() || data.timing?.completedAt?.toDate?.()?.toISOString() || null
       });
     });
 
@@ -4834,11 +4893,27 @@ router.post('/bookings/:id/photo-verification', [
     
     // ✅ CRITICAL FIX: Validate booking status for photo upload
     // ✅ WORKFLOW INTEGRITY: Only allow photos when driver is actually at the location
+    // ✅ SECURITY: Block terminal statuses - booking lifecycle has ended
     // Pickup photos: Only when driver has arrived at pickup location or already picked up
-    // Delivery photos: When package is in transit, at dropoff, or delivered
+    // Delivery photos: When package is in transit, at dropoff, or delivered (before payment)
+    
+    // ✅ CRITICAL FIX: Block terminal statuses - booking is ended
+    // ✅ SECURITY: Prevents uploads after booking lifecycle has ended
+    const terminalStatuses = ['completed', 'cancelled'];
+    if (terminalStatuses.includes(bookingData.status)) {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'BOOKING_ENDED',
+          message: 'Booking has ended',
+          details: `Cannot upload photos for a booking that is ${bookingData.status}. Booking lifecycle has ended.`
+        }
+      });
+    }
+    
     const validStatuses = {
       pickup: ['driver_arrived', 'picked_up'], // Only when actually at pickup location
-      delivery: ['in_transit', 'at_dropoff', 'delivered', 'arrived_dropoff', 'picked_up'] // Allow delivery photos if already picked up
+      delivery: ['in_transit', 'at_dropoff', 'delivered', 'arrived_dropoff', 'picked_up'] // Allow delivery photos if already picked up (delivered = payment pending)
     };
 
     if (!validStatuses[photoType] || !validStatuses[photoType].includes(bookingData.status)) {
@@ -4899,17 +4974,61 @@ router.post('/bookings/:id/photo-verification', [
       };
     }
     
-    await bookingRef.update(updateData);
+    // ✅ CRITICAL FIX: Use transaction to ensure atomic updates (prevents partial failures)
+    try {
+      await db.runTransaction(async (transaction) => {
+        // Update booking document
+        transaction.update(bookingRef, updateData);
+        
+        // Create photo verification record in both collections for consistency
+        // Old collection (photo_verifications - lowercase)
+        const photoVerificationsOldRef = db.collection('photo_verifications').doc();
+        transaction.set(photoVerificationsOldRef, {
+          bookingId: id,
+          driverId: uid,
+          customerId: (bookingData && bookingData.customerId) || null,
+          ...photoVerification
+        });
+        
+        // ✅ NEW collection (photoVerifications - camelCase) for newer code
+        const photoVerificationsRef = db.collection('photoVerifications').doc();
+        transaction.set(photoVerificationsRef, {
+          id: photoVerificationsRef.id,
+          bookingId: id,
+          driverId: uid,
+          customerId: (bookingData && bookingData.customerId) || null,
+          photoType: photoType,
+          photoUrl: photoUrl,
+          photoMetadata: {
+            location: location || null,
+            notes: notes || null
+          },
+          location: location || null,
+          notes: notes || null, // ✅ FIX: Include notes from request, not hardcoded null
+          status: 'verified',
+          uploadedAt: verifiedAtTimestamp, // ✅ CRITICAL FIX: Use Firestore Timestamp for consistency
+          verifiedAt: verifiedAtTimestamp, // ✅ CRITICAL FIX: Use Firestore Timestamp for consistency
+          verifiedBy: uid,
+          createdAt: verifiedAtTimestamp, // ✅ CRITICAL FIX: Use Firestore Timestamp for consistency
+          updatedAt: verifiedAtTimestamp // ✅ CRITICAL FIX: Use Firestore Timestamp for consistency
+        });
+      });
     
-    console.log(`✅ [PHOTO_VERIFICATION] Photo ${photoType} saved to booking ${id}:`, {
+      console.log(`✅ [PHOTO_VERIFICATION] Photo ${photoType} saved to booking ${id} (atomic transaction):`, {
       photoUrl,
       verifiedAt: verifiedAtTimestamp.toDate().toISOString(),
       verifiedBy: uid,
       location: location || 'none'
     });
     
-    // ✅ CRITICAL FIX: Create photo verification record in both collections for consistency
-    // Old collection (photo_verifications - lowercase)
+      console.log(`✅ [PHOTO_VERIFICATION] Photo ${photoType} stored successfully for booking ${id} in both structures (atomic)`);
+    } catch (transactionError) {
+      console.error('❌ [PHOTO_VERIFICATION] Transaction failed, falling back to non-atomic updates:', transactionError);
+      
+      // ✅ FALLBACK: If transaction fails, try non-atomic updates (better than complete failure)
+      await bookingRef.update(updateData);
+      
+      // Create photo verification records (non-atomic)
     await db.collection('photo_verifications').add({
       bookingId: id,
       driverId: uid,
@@ -4917,7 +5036,6 @@ router.post('/bookings/:id/photo-verification', [
       ...photoVerification
     });
     
-    // ✅ NEW collection (photoVerifications - camelCase) for newer code
     const photoVerificationsRef = db.collection('photoVerifications').doc();
     await photoVerificationsRef.set({
       id: photoVerificationsRef.id,
@@ -4931,16 +5049,17 @@ router.post('/bookings/:id/photo-verification', [
         notes: notes || null
       },
       location: location || null,
-      notes: notes || null, // ✅ FIX: Include notes from request, not hardcoded null
+        notes: notes || null,
       status: 'verified',
-      uploadedAt: verifiedAtTimestamp, // ✅ CRITICAL FIX: Use Firestore Timestamp for consistency
-      verifiedAt: verifiedAtTimestamp, // ✅ CRITICAL FIX: Use Firestore Timestamp for consistency
+        uploadedAt: verifiedAtTimestamp,
+        verifiedAt: verifiedAtTimestamp,
       verifiedBy: uid,
-      createdAt: verifiedAtTimestamp, // ✅ CRITICAL FIX: Use Firestore Timestamp for consistency
-      updatedAt: verifiedAtTimestamp // ✅ CRITICAL FIX: Use Firestore Timestamp for consistency
+        createdAt: verifiedAtTimestamp,
+        updatedAt: verifiedAtTimestamp
     });
     
-    console.log(`✅ [PHOTO_VERIFICATION] Photo ${photoType} stored successfully for booking ${id} in both structures`);
+      console.log(`⚠️ [PHOTO_VERIFICATION] Photo ${photoType} stored using fallback (non-atomic) method`);
+    }
     
     res.status(200).json({
       success: true,

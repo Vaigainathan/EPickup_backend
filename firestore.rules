@@ -464,16 +464,49 @@ service cloud.firestore {
     }
     
     // Photo verifications - allow drivers to create/read their own verifications, admins full access
+    // ✅ CRITICAL FIX: Handle both Firebase UID and role-based UID for driver matching
+    // ✅ SECURITY: Enforce booking lifecycle and user isolation
     match /photoVerifications/{verificationId} {
+      // Helper function to check if user is driver of verification (handles both UID types)
+      // ✅ ISOLATION: Ensures driver can only access their own verifications
+      function isDriverOfVerification() {
+        return resource.data.driverId == request.auth.uid ||
+               resource.data.driverId == request.auth.token.roleBasedUID;
+      }
+      
+      // Helper function to check if user is driver creating verification (handles both UID types)
+      // ✅ ISOLATION: Ensures driver can only create verifications for their bookings
+      function isDriverCreatingVerification() {
+        return request.resource.data.driverId == request.auth.uid ||
+               request.resource.data.driverId == request.auth.token.roleBasedUID;
+      }
+      
+      // ✅ CRITICAL FIX: Check if booking is active (not completed/cancelled)
+      // ✅ SECURITY: Prevents uploads after booking lifecycle has ended
+      function isBookingActive(bookingId) {
+        return exists(/databases/$(database)/documents/bookings/$(bookingId)) &&
+               get(/databases/$(database)/documents/bookings/$(bookingId)).data.status != 'completed' &&
+               get(/databases/$(database)/documents/bookings/$(bookingId)).data.status != 'cancelled';
+      }
+      
+      // ✅ ISOLATION: Only allow participants of the booking to read
+      // ✅ LIFECYCLE: Allow read even if booking is completed (for viewing history)
       allow read: if request.auth != null && 
-        (resource.data.driverId == request.auth.uid || 
-         resource.data.customerId == request.auth.uid ||
+        (isDriverOfVerification() ||
+         (resource.data.customerId == request.auth.uid || 
+          resource.data.customerId == request.auth.token.roleBasedUID) ||
          request.auth.token.role == 'admin' || 
          request.auth.token.userType == 'admin');
+      
+      // ✅ CRITICAL FIX: Only allow creating photo verification if booking is active
+      // ✅ SECURITY: Prevents uploads after booking is completed/cancelled
+      // ✅ ISOLATION: Driver can only create verifications for their assigned booking
       allow create: if request.auth != null && 
-        request.resource.data.driverId == request.auth.uid &&
+        isDriverCreatingVerification() &&
         request.resource.data.keys().hasAll(['bookingId', 'driverId', 'customerId', 'photoType', 'photoUrl', 'status']) &&
-        request.auth.token.userType == 'driver';
+        request.auth.token.userType == 'driver' &&
+        isBookingActive(request.resource.data.bookingId);
+      
       allow update: if request.auth != null && 
         (request.auth.token.role == 'admin' || request.auth.token.userType == 'admin') &&
         request.writeFields.hasOnly(['status', 'verifiedAt', 'verifiedBy', 'updatedAt']);
@@ -792,18 +825,49 @@ service cloud.firestore {
     }
 
     // Photo verifications collection
+    // ✅ CRITICAL FIX: Handle both Firebase UID and role-based UID for driver matching
+    // ✅ SECURITY: Enforce booking lifecycle and user isolation
     match /photo_verifications/{verificationId} {
+      // Helper function to check if user is driver of verification (handles both UID types)
+      // ✅ ISOLATION: Ensures driver can only access their own verifications
+      function isDriverOfVerification() {
+        return resource.data.driverId == request.auth.uid ||
+               resource.data.driverId == request.auth.token.roleBasedUID;
+      }
+      
+      // Helper function to check if user is driver creating verification (handles both UID types)
+      // ✅ ISOLATION: Ensures driver can only create verifications for their bookings
+      function isDriverCreatingVerification() {
+        return request.resource.data.driverId == request.auth.uid ||
+               request.resource.data.driverId == request.auth.token.roleBasedUID;
+      }
+      
+      // ✅ CRITICAL FIX: Check if booking is active (not completed/cancelled)
+      // ✅ SECURITY: Prevents uploads after booking lifecycle has ended
+      function isBookingActive(bookingId) {
+        return exists(/databases/$(database)/documents/bookings/$(bookingId)) &&
+               get(/databases/$(database)/documents/bookings/$(bookingId)).data.status != 'completed' &&
+               get(/databases/$(database)/documents/bookings/$(bookingId)).data.status != 'cancelled';
+      }
+      
+      // ✅ ISOLATION: Only allow participants of the booking to read
+      // ✅ LIFECYCLE: Allow read even if booking is completed (for viewing history)
       allow read: if isAuthenticated() && (
         isAdmin() ||
-        (isDriver() && resource.data.driverId == request.auth.uid) ||
+        (isDriver() && isDriverOfVerification()) ||
         (isCustomer() && exists(/databases/$(database)/documents/bookings/$(resource.data.bookingId)) &&
-         get(/databases/$(database)/documents/bookings/$(resource.data.bookingId)).data.customerId == request.auth.uid)
+         (get(/databases/$(database)/documents/bookings/$(resource.data.bookingId)).data.customerId == request.auth.uid ||
+          get(/databases/$(database)/documents/bookings/$(resource.data.bookingId)).data.customerId == request.auth.token.roleBasedUID))
       );
       
+      // ✅ CRITICAL FIX: Only allow creating photo verification if booking is active
+      // ✅ SECURITY: Prevents uploads after booking is completed/cancelled
+      // ✅ ISOLATION: Driver can only create verifications for their assigned booking
       allow create: if isAuthenticated() && (
         isAdmin() ||
-        (isDriver() && request.resource.data.driverId == request.auth.uid &&
-         request.resource.data.keys().hasAll(['bookingId', 'driverId', 'photoType', 'photoUrl', 'uploadedBy', 'uploadedAt']))
+        (isDriver() && isDriverCreatingVerification() &&
+         request.resource.data.keys().hasAll(['bookingId', 'driverId', 'photoType', 'photoUrl', 'uploadedBy', 'uploadedAt']) &&
+         isBookingActive(request.resource.data.bookingId))
       );
     }
 

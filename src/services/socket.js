@@ -42,7 +42,53 @@ let eventHandler = null;
  */
 const initializeSocketIO = async (server) => {
   try {
-    io = new Server(server, {
+    // ✅ CRITICAL FIX: Configure Redis adapter for multi-instance support
+    let adapter = null;
+    try {
+      const { createAdapter } = require('@socket.io/redis-adapter');
+      const { createClient } = require('redis');
+      
+      // ✅ CRITICAL FIX: Create Redis clients for pub/sub
+      const pubClient = createClient({
+        url: process.env.REDIS_URL || `redis://${process.env.REDIS_HOST || 'localhost'}:${process.env.REDIS_PORT || 6379}`,
+        password: process.env.REDIS_PASSWORD || undefined,
+        socket: {
+          reconnectStrategy: (retries) => {
+            if (retries > 10) {
+              console.error('❌ [SOCKET] Redis reconnection failed after 10 attempts');
+              return new Error('Redis connection failed');
+            }
+            return Math.min(retries * 100, 3000);
+          }
+        }
+      });
+      
+      const subClient = pubClient.duplicate();
+      
+      pubClient.on('error', (err) => {
+        console.error('❌ [SOCKET] Redis pub client error:', err);
+      });
+      
+      subClient.on('error', (err) => {
+        console.error('❌ [SOCKET] Redis sub client error:', err);
+      });
+      
+      // Connect both clients
+      await Promise.all([pubClient.connect(), subClient.connect()]);
+      
+      adapter = createAdapter(pubClient, subClient);
+      console.log('✅ [SOCKET] Redis adapter configured for multi-instance support');
+    } catch (redisError) {
+      console.warn('⚠️ [SOCKET] Redis adapter not available, using in-memory adapter (single instance only):', redisError.message);
+      console.warn('⚠️ [SOCKET] For production multi-instance deployment, configure Redis adapter');
+      console.log('✅ [SOCKET] Single instance mode active - rooms work perfectly for multiple concurrent bookings');
+      console.log('✅ [SOCKET] Each booking gets isolated room (booking:${bookingId}) - no capacity limits');
+      // Continue without adapter - single instance mode
+      // ✅ NOTE: This works perfectly for single server deployment
+      // ✅ Multiple concurrent bookings are fully supported - each booking has its own isolated room
+    }
+    
+    const serverOptions = {
       cors: {
         origin: process.env.ALLOWED_ORIGINS?.split(',') || [
           'http://localhost:3000',  // Admin dashboard
@@ -77,7 +123,14 @@ const initializeSocketIO = async (server) => {
         maxDisconnectionDuration: 60 * 1000, // 1 minute (Railway specific)
         skipMiddlewares: true
       }
-    });
+    };
+    
+    // ✅ CRITICAL FIX: Attach Redis adapter if available
+    if (adapter) {
+      serverOptions.adapter = adapter;
+    }
+    
+    io = new Server(server, serverOptions);
 
     // Initialize event handler
     eventHandler = new WebSocketEventHandler();
@@ -417,8 +470,9 @@ const initializeSocketIO = async (server) => {
         eventHandler.handleTypingIndicator(socket, data, false);
       });
 
-      // ✅ CRITICAL FIX: Handle booking room join/leave for customer app
-      socket.on('join-booking', (bookingId) => {
+      // ✅ CRITICAL FIX: Handle booking room join/leave with permission validation
+      socket.on('join-booking', async (bookingId) => {
+        try {
         if (!bookingId) {
           socket.emit('error', {
             code: 'INVALID_BOOKING_ID',
@@ -426,22 +480,115 @@ const initializeSocketIO = async (server) => {
           });
           return;
         }
+
+          const userId = socket.userId;
+          const userType = socket.userType;
+
+          if (!userId || !userType) {
+            socket.emit('error', {
+              code: 'AUTHENTICATION_ERROR',
+              message: 'User authentication required'
+            });
+            return;
+          }
+
+          // ✅ CRITICAL FIX: Validate user has permission to join this booking room
+          const { getFirestore } = require('../config/firebase');
+          const db = getFirestore();
+          const bookingRef = db.collection('bookings').doc(bookingId);
+          const bookingDoc = await bookingRef.get();
+
+          if (!bookingDoc.exists) {
+            socket.emit('error', {
+              code: 'BOOKING_NOT_FOUND',
+              message: 'Booking not found'
+            });
+            return;
+          }
+
+          const booking = bookingDoc.data();
+
+          // ✅ CRITICAL FIX: Check if user is customer or driver of this booking
+          if (userType === 'customer' && booking.customerId !== userId) {
+            socket.emit('error', {
+              code: 'PERMISSION_DENIED',
+              message: 'You do not have permission to join this booking room'
+            });
+            console.warn(`⚠️ [SOCKET] Permission denied: Customer ${userId} tried to join booking ${bookingId} (owner: ${booking.customerId})`);
+            return;
+          }
+
+          if (userType === 'driver' && booking.driverId !== userId) {
+            socket.emit('error', {
+              code: 'PERMISSION_DENIED',
+              message: 'You do not have permission to join this booking room'
+            });
+            console.warn(`⚠️ [SOCKET] Permission denied: Driver ${userId} tried to join booking ${bookingId} (assigned driver: ${booking.driverId})`);
+            return;
+          }
+
+          // ✅ CRITICAL FIX: Only allow join if booking is active
+          const activeStatuses = ['pending', 'driver_assigned', 'accepted', 'driver_enroute', 
+                                 'driver_arrived', 'picked_up', 'in_transit', 'at_dropoff'];
+          if (!activeStatuses.includes(booking.status)) {
+            socket.emit('error', {
+              code: 'BOOKING_NOT_ACTIVE',
+              message: 'Booking is not active'
+            });
+            console.warn(`⚠️ [SOCKET] Booking ${bookingId} is not active (status: ${booking.status})`);
+            return;
+          }
+
+          // ✅ CRITICAL FIX: Persist room membership in database for recovery
+          const roomMembershipRef = db.collection('websocket_rooms').doc(`${bookingId}:${userId}`);
+          await roomMembershipRef.set({
+            bookingId,
+            userId,
+            userType,
+            room: `booking:${bookingId}`,
+            joinedAt: new Date(),
+            lastSeen: new Date(),
+            socketId: socket.id
+          }, { merge: true });
         
         // Join booking room
         socket.join(`booking:${bookingId}`);
-        console.log(`✅ [SOCKET] User ${socket.userId} joined booking room: booking:${bookingId}`);
+          console.log(`✅ [SOCKET] User ${userId} (${userType}) joined booking room: booking:${bookingId}`);
         
         socket.emit('booking-room-joined', {
           success: true,
           bookingId: bookingId,
           room: `booking:${bookingId}`
         });
+        } catch (error) {
+          console.error('❌ [SOCKET] Error joining booking room:', error);
+          socket.emit('error', {
+            code: 'ROOM_JOIN_ERROR',
+            message: 'Failed to join booking room',
+            details: error.message
+          });
+        }
       });
 
-      socket.on('leave-booking', (bookingId) => {
+      socket.on('leave-booking', async (bookingId) => {
+        try {
         if (bookingId) {
+            const userId = socket.userId;
+            
+            // ✅ CRITICAL FIX: Remove room membership from database
+            if (userId) {
+              const { getFirestore } = require('../config/firebase');
+              const db = getFirestore();
+              const roomMembershipRef = db.collection('websocket_rooms').doc(`${bookingId}:${userId}`);
+              await roomMembershipRef.delete();
+            }
+            
           socket.leave(`booking:${bookingId}`);
           console.log(`✅ [SOCKET] User ${socket.userId} left booking room: booking:${bookingId}`);
+          }
+        } catch (error) {
+          console.error('❌ [SOCKET] Error leaving booking room:', error);
+          // Don't emit error - leaving room is best-effort
         }
       });
 
@@ -861,11 +1008,78 @@ const getActiveBookingRoomsCount = () => {
   const rooms = io.sockets.adapter.rooms;
   let bookingRooms = 0;
   for (const [roomName] of rooms) {
-    if (roomName.startsWith('booking_')) {
+    // ✅ CRITICAL FIX: Use correct room naming format (booking: not booking_)
+    if (roomName.startsWith('booking:')) {
       bookingRooms++;
     }
   }
   return bookingRooms;
+};
+
+/**
+ * ✅ UTILITY: Get comprehensive room statistics for monitoring multiple concurrent bookings
+ * @returns {Object} Detailed room statistics
+ */
+const getRoomStatistics = () => {
+  try {
+    if (!io) {
+      return { error: 'Socket.IO not initialized' };
+    }
+    
+    const rooms = io.sockets.adapter.rooms;
+    const bookingRooms = new Map();
+    const userRooms = new Map();
+    let totalSockets = 0;
+    let totalBookingRooms = 0;
+    let totalUserRooms = 0;
+    
+    // Count booking rooms and user rooms
+    rooms.forEach((sockets, roomName) => {
+      // ✅ CRITICAL FIX: Use correct room naming format (booking: not booking_)
+      if (roomName.startsWith('booking:')) {
+        const bookingId = roomName.replace('booking:', '');
+        bookingRooms.set(bookingId, sockets.size);
+        totalBookingRooms++;
+        totalSockets += sockets.size;
+      } else if (roomName.startsWith('user:')) {
+        const userId = roomName.replace('user:', '');
+        userRooms.set(userId, sockets.size);
+        totalUserRooms++;
+        totalSockets += sockets.size;
+      }
+    });
+    
+    return {
+      success: true,
+      totalRooms: totalBookingRooms + totalUserRooms,
+      totalSockets,
+      bookingRooms: {
+        count: totalBookingRooms,
+        details: Array.from(bookingRooms.entries()).map(([bookingId, socketCount]) => ({
+          bookingId,
+          socketCount,
+          room: `booking:${bookingId}`
+        }))
+      },
+      userRooms: {
+        count: totalUserRooms,
+        details: Array.from(userRooms.entries()).slice(0, 10).map(([userId, socketCount]) => ({
+          userId,
+          socketCount,
+          room: `user:${userId}`
+        }))
+      },
+      capacity: {
+        estimatedMaxBookings: 10000, // No hard limit
+        currentUsage: totalBookingRooms,
+        usagePercent: ((totalBookingRooms / 10000) * 100).toFixed(2) + '%'
+      },
+      timestamp: new Date().toISOString()
+    };
+  } catch (error) {
+    console.error('❌ Error getting room statistics:', error);
+    return { error: error.message };
+  }
 };
 
 const getDriverLocations = () => {
@@ -924,6 +1138,7 @@ module.exports = {
   // Additional methods for realtime.js
   getConnectedUsersCount,
   getActiveBookingRoomsCount,
+  getRoomStatistics, // ✅ UTILITY: Get comprehensive room statistics for monitoring
   getDriverLocations,
   updateDriverLocationInDB,
   sendToBooking,

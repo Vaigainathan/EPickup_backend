@@ -258,7 +258,8 @@ router.post('/location/update', [
       }
     } else {
       // Fallback: use sendToBooking if booking not found
-      socketService.sendToBooking(bookingId, 'driver-location-update', {
+      // ✅ CRITICAL FIX: Use consistent event name (driver_location_update with underscore)
+      socketService.sendToBooking(bookingId, 'driver_location_update', {
         driverId,
         location,
         estimatedArrival,
@@ -366,7 +367,8 @@ router.post('/test/simulate', [
   requireRole(['admin']),
   body('bookingId').notEmpty().withMessage('Booking ID is required'),
   body('driverId').optional().isString(),
-  body('event').isIn(['booking_status_update', 'driver-location-update']).withMessage('Valid event is required'),
+  // ✅ CRITICAL FIX: Use consistent event name (driver_location_update with underscore)
+  body('event').isIn(['booking_status_update', 'driver_location_update']).withMessage('Valid event is required'),
   body('payload').optional().isObject()
 ], async (req, res) => {
   try {
@@ -396,9 +398,10 @@ router.post('/test/simulate', [
       });
     }
 
-    if (event === 'driver-location-update') {
+    // ✅ CRITICAL FIX: Use consistent event name (driver_location_update with underscore)
+    if (event === 'driver_location_update') {
       const loc = payload.location || { lat: 12.973, lng: 77.595 };
-      socketService.sendToBooking(bookingId, 'driver-location-update', {
+      socketService.sendToBooking(bookingId, 'driver_location_update', {
         driverId: driverId || 'test-driver',
         location: { lat: loc.lat, lng: loc.lng },
         estimatedArrival: payload.estimatedArrival || 8,

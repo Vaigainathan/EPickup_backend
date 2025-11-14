@@ -173,11 +173,25 @@ class LocationTrackingService {
       // Send WebSocket update to customer
       const io = require('./socket').getIO();
       if (io) {
-        io.to(`customer_${tracking.customerId}`).emit('driverLocationUpdate', {
+        // ✅ CRITICAL FIX: Use consistent event name and room format
+        const userRoom = `user:${tracking.customerId}`;
+        const bookingRoom = `booking:${bookingId}`;
+        
+        const locationUpdateData = {
           bookingId,
-          location: locationData,
-          timestamp: new Date()
-        });
+          driverId: tracking.driverId,
+          location: {
+            latitude: locationData.latitude,
+            longitude: locationData.longitude,
+            address: locationData.address || 'Current Location',
+            timestamp: new Date().toISOString()
+          },
+          timestamp: new Date().toISOString()
+        };
+        
+        // ✅ CRITICAL FIX: Emit to both user room and booking room with consistent event name
+        io.to(userRoom).emit('driver_location_update', locationUpdateData);
+        io.to(bookingRoom).emit('driver_location_update', locationUpdateData);
       }
 
     } catch (error) {

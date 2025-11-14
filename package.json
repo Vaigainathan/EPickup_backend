@@ -83,6 +83,8 @@
     "rate-limit-redis": "^3.0.0",
     "sanitize-html": "^2.17.0",
     "sharp": "^0.33.5",
+    "@socket.io/redis-adapter": "^8.2.1",
+    "redis": "^4.6.13",
     "socket.io": "^4.7.4",
     "socket.io-client": "^4.8.1",
     "uuid": "^9.0.1",

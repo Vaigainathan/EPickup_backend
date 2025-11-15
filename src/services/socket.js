@@ -452,7 +452,7 @@ const initializeSocketIO = async (server) => {
           }
 
           // ✅ CRITICAL FIX: Validate user has permission to join this booking room
-          const { getFirestore } = require('../config/firebase');
+          const { getFirestore } = require('../services/firebase');
           const db = getFirestore();
           const bookingRef = db.collection('bookings').doc(bookingId);
           const bookingDoc = await bookingRef.get();
@@ -536,7 +536,7 @@ const initializeSocketIO = async (server) => {
             
             // ✅ CRITICAL FIX: Remove room membership from database
             if (userId) {
-              const { getFirestore } = require('../config/firebase');
+              const { getFirestore } = require('../services/firebase');
               const db = getFirestore();
               const roomMembershipRef = db.collection('websocket_rooms').doc(`${bookingId}:${userId}`);
               await roomMembershipRef.delete();

@@ -1,6 +1,7 @@
 const express = require('express');
 const { body, validationResult } = require('express-validator');
 const { getFirestore, getStorage } = require('../services/firebase');
+const multer = require('multer');
 const { requireDriver } = require('../middleware/auth');
 const { documentStatusRateLimit } = require('../middleware/rateLimiter');
 const { speedLimiter } = require('../middleware/rateLimit');
@@ -10,6 +11,14 @@ const bookingLockService = new BookingLockService();
 const { driverStatusWorkflowService, DriverStatusError } = require('../services/driverStatusWorkflowService');
 
 const router = express.Router();
+
+// Multer (memory) for direct-to-backend uploads
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: {
+    fileSize: 5 * 1024 * 1024 // 5MB limit for proof photos
+  }
+});
 
 const fareCalculationService = require('../services/fareCalculationService');
 const COMMISSION_RATE_PER_KM = 2;
@@ -4849,6 +4858,195 @@ router.post('/bookings/:id/validate-location', [
 });
 
 /**
+ * @route   POST /api/driver/bookings/:id/photo-verification/upload
+ * @desc    Upload pickup/dropoff proof photo via backend (multipart) and link atomically
+ * @access  Private (Driver only)
+ */
+router.post('/bookings/:id/photo-verification/upload', [
+  requireDriver,
+  upload.single('photo'),
+  body('photoType').isIn(['pickup', 'delivery']).withMessage('Photo type must be pickup or delivery'),
+  body('location').optional().isObject().withMessage('Location must be an object'),
+  body('notes').optional().isLength({ min: 0, max: 200 }).withMessage('Notes must be between 0 and 200 characters')
+], async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'VALIDATION_ERROR',
+          message: 'Validation failed',
+          details: errors.array()
+        }
+      });
+    }
+
+    const { id } = req.params;
+    const { uid } = req.user;
+    const { photoType, location, notes } = req.body;
+    const file = req.file;
+
+    if (!file) {
+      return res.status(400).json({
+        success: false,
+        error: { code: 'FILE_MISSING', message: 'Photo file is required' }
+      });
+    }
+
+    const db = getFirestore();
+    const bookingRef = db.collection('bookings').doc(id);
+    const bookingDoc = await bookingRef.get();
+    if (!bookingDoc.exists) {
+      return res.status(404).json({
+        success: false,
+        error: { code: 'BOOKING_NOT_FOUND', message: 'Booking not found' }
+      });
+    }
+
+    const bookingData = bookingDoc.data();
+    if (bookingData.driverId !== uid) {
+      return res.status(403).json({
+        success: false,
+        error: { code: 'ACCESS_DENIED', message: 'You can only upload photos for your assigned bookings' }
+      });
+    }
+
+    const terminalStatuses = ['completed', 'cancelled'];
+    if (terminalStatuses.includes(bookingData.status)) {
+      return res.status(400).json({
+        success: false,
+        error: { code: 'BOOKING_ENDED', message: `Cannot upload photos for a booking that is ${bookingData.status}` }
+      });
+    }
+
+    const validStatuses = {
+      pickup: ['driver_arrived', 'picked_up'],
+      delivery: ['in_transit', 'at_dropoff', 'delivered', 'arrived_dropoff', 'picked_up']
+    };
+    if (!validStatuses[photoType] || !validStatuses[photoType].includes(bookingData.status)) {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'INVALID_STATUS_FOR_PHOTO',
+          message: `Cannot upload ${photoType} photo in current booking status: ${bookingData.status}`
+        }
+      });
+    }
+
+    // Upload to Firebase Storage using admin privileges
+    const bucket = getStorage().bucket();
+    const timestamp = Date.now();
+    const random = Math.random().toString(36).slice(2, 8);
+    const safeType = photoType === 'pickup' ? 'pickup' : 'delivery';
+    const filePath = `bookings/${id}/drivers/${uid}/${safeType}/${timestamp}-${random}.jpg`;
+    const fileRef = bucket.file(filePath);
+
+    await fileRef.save(file.buffer, {
+      metadata: {
+        contentType: file.mimetype || 'image/jpeg',
+        metadata: {
+          bookingId: id,
+          driverId: uid,
+          photoType: safeType,
+          uploadedAt: new Date().toISOString()
+        }
+      }
+    });
+
+    const [downloadURL] = await fileRef.getSignedUrl({
+      action: 'read',
+      expires: '03-01-2500'
+    });
+
+    // Build common verification object
+    const admin = require('firebase-admin');
+    const verifiedAtTimestamp = admin.firestore.Timestamp.now();
+
+    const photoVerification = {
+      photoType: safeType,
+      photoUrl: downloadURL,
+      location: location || null,
+      uploadedBy: uid,
+      uploadedAt: verifiedAtTimestamp,
+      verifiedAt: verifiedAtTimestamp,
+      verifiedBy: uid,
+      notes: notes || null
+    };
+
+    const updateData = { updatedAt: new Date() };
+    updateData[`photoVerification.${safeType}`] = photoVerification;
+    if (safeType === 'pickup') {
+      updateData['pickupVerification'] = {
+        photoUrl: downloadURL,
+        verifiedAt: verifiedAtTimestamp,
+        verifiedBy: uid,
+        location: location || null,
+        notes: notes || null
+      };
+    } else {
+      updateData['deliveryVerification'] = {
+        photoUrl: downloadURL,
+        verifiedAt: verifiedAtTimestamp,
+        verifiedBy: uid,
+        location: location || null,
+        notes: notes || null
+      };
+    }
+
+    // Atomic transaction to link
+    await db.runTransaction(async (transaction) => {
+      transaction.update(bookingRef, updateData);
+      const oldRef = db.collection('photo_verifications').doc();
+      transaction.set(oldRef, {
+        bookingId: id,
+        driverId: uid,
+        customerId: (bookingData && bookingData.customerId) || null,
+        ...photoVerification
+      });
+      const newRef = db.collection('photoVerifications').doc();
+      transaction.set(newRef, {
+        id: newRef.id,
+        bookingId: id,
+        driverId: uid,
+        customerId: (bookingData && bookingData.customerId) || null,
+        photoType: safeType,
+        photoUrl: downloadURL,
+        photoMetadata: { location: location || null, notes: notes || null },
+        location: location || null,
+        notes: notes || null,
+        status: 'verified',
+        uploadedAt: verifiedAtTimestamp,
+        verifiedAt: verifiedAtTimestamp,
+        verifiedBy: uid,
+        createdAt: verifiedAtTimestamp,
+        updatedAt: verifiedAtTimestamp
+      });
+    });
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        message: 'Photo verification uploaded successfully',
+        photoType: safeType,
+        photoUrl: downloadURL,
+        storagePath: filePath
+      }
+    });
+  } catch (error) {
+    console.error('❌ [PHOTO_VERIFICATION_UPLOAD] Failed:', error);
+    return res.status(500).json({
+      success: false,
+      error: {
+        code: 'PHOTO_UPLOAD_ERROR',
+        message: 'Failed to upload photo verification',
+        details: error.message
+      }
+    });
+  }
+});
+
+/**
  * @route   POST /api/driver/bookings/:id/photo-verification
  * @desc    Upload photo verification for pickup/dropoff
  * @access  Private (Driver only)
@@ -7605,187 +7803,6 @@ router.post('/wallet/ensure-welcome-bonus', requireDriver, async (req, res) => {
 
 module.exports = router;
   
-
-/**
- * @route   POST /api/driver/bookings/:id/photo-verification
- * @desc    Upload photo verification for pickup or delivery
- * @access  Private (Driver only)
- * @note    ⚠️ DUPLICATE ENDPOINT - DISABLED - Use endpoint at line 4008 instead
- * @deprecated This endpoint is a duplicate and has been disabled to prevent conflicts
- */
-/*
-router.post('/bookings/:id/photo-verification', [
-  requireDriver,
-  body('photoType')
-    .isIn(['pickup', 'delivery'])
-    .withMessage('Photo type must be either pickup or delivery'),
-  body('photoUrl')
-    .isURL()
-    .withMessage('Photo URL must be a valid URL'),
-  body('photoMetadata')
-    .optional()
-    .isObject()
-    .withMessage('Photo metadata must be an object'),
-  body('location')
-    .optional()
-    .isObject()
-    .withMessage('Location must be an object'),
-  body('notes')
-    .optional()
-    .isLength({ min: 5, max: 200 })
-    .withMessage('Notes must be between 5 and 200 characters')
-], async (req, res) => {
-  try {
-    const errors = validationResult(req);
-    if (!errors.isEmpty()) {
-      return res.status(400).json({
-        success: false,
-        error: {
-          code: 'VALIDATION_ERROR',
-          message: 'Validation failed',
-          details: errors.array()
-        },
-        timestamp: new Date().toISOString()
-      });
-    }
-
-    const { uid } = req.user;
-    const { id } = req.params;
-    const { photoType, photoUrl, photoMetadata, location, notes } = req.body;
-    const db = getFirestore();
-    
-    const bookingRef = db.collection('bookings').doc(id);
-    const bookingDoc = await bookingRef.get();
-    
-    if (!bookingDoc.exists) {
-      return res.status(404).json({
-        success: false,
-        error: {
-          code: 'BOOKING_NOT_FOUND',
-          message: 'Booking not found',
-          details: 'Booking with this ID does not exist'
-        },
-        timestamp: new Date().toISOString()
-      });
-    }
-
-    const bookingData = bookingDoc.data();
-    
-    // Check if driver is assigned to this booking
-    if (bookingData.driverId !== uid) {
-      return res.status(403).json({
-        success: false,
-        error: {
-          code: 'ACCESS_DENIED',
-          message: 'Access denied',
-          details: 'You can only upload photos for bookings assigned to you'
-        },
-        timestamp: new Date().toISOString()
-      });
-    }
-
-    // Validate booking status for photo upload
-    const validStatuses = {
-      pickup: ['driver_arrived', 'picked_up'],
-      delivery: ['in_transit', 'at_dropoff', 'delivered']
-    };
-
-    if (!validStatuses[photoType].includes(bookingData.status)) {
-      return res.status(400).json({
-        success: false,
-        error: {
-          code: 'INVALID_STATUS_FOR_PHOTO',
-          message: 'Invalid booking status for photo upload',
-          details: `Cannot upload ${photoType} photo in current booking status: ${bookingData.status}`
-        },
-        timestamp: new Date().toISOString()
-      });
-    }
-
-    // Create photo verification record
-    const photoVerificationRef = db.collection('photoVerifications').doc();
-    const photoData = {
-      id: photoVerificationRef.id,
-      bookingId: id,
-      driverId: uid,
-      customerId: bookingData.customerId,
-      photoType: photoType,
-      photoUrl: photoUrl,
-      photoMetadata: photoMetadata || {},
-      location: location || null,
-      notes: notes || null,
-      status: 'pending_verification',
-      uploadedAt: new Date(),
-      verifiedAt: null,
-      verifiedBy: null,
-      createdAt: new Date(),
-      updatedAt: new Date()
-    };
-
-    await photoVerificationRef.set(photoData);
-
-    // Update booking with photo information
-    const updateData = {
-      updatedAt: new Date()
-    };
-
-    // ✅ CRITICAL FIX: Use Firestore Timestamp for verifiedAt to ensure proper date handling in admin dashboard
-    const admin = require('firebase-admin');
-    const verifiedAtTimestamp = admin.firestore.Timestamp.now();
-    
-    if (photoType === 'pickup') {
-      updateData['pickupVerification'] = {
-        photoUrl: photoUrl,
-        verifiedAt: verifiedAtTimestamp, // Use Firestore Timestamp for consistency
-        verifiedBy: uid,
-        location: location || null,
-        notes: notes || null
-      };
-    } else if (photoType === 'delivery') {
-      updateData['deliveryVerification'] = {
-        photoUrl: photoUrl,
-        verifiedAt: verifiedAtTimestamp, // Use Firestore Timestamp for consistency
-        verifiedBy: uid,
-        location: location || null,
-        notes: notes || null
-      };
-    }
-    
-    console.log(`✅ [PHOTO_VERIFICATION] Saving ${photoType} verification to booking ${id}:`, {
-      photoUrl,
-      verifiedAt: verifiedAtTimestamp.toDate().toISOString(),
-      verifiedBy: uid,
-      hasLocation: !!location,
-      hasNotes: !!notes
-    });
-
-    await bookingRef.update(updateData);
-
-    res.status(200).json({
-      success: true,
-      message: 'Photo verification uploaded successfully',
-      data: {
-        photoVerification: photoData,
-        bookingId: id,
-        photoType: photoType
-      },
-      timestamp: new Date().toISOString()
-    });
-
-  } catch (error) {
-    console.error('Error uploading photo verification:', error);
-    res.status(500).json({
-      success: false,
-      error: {
-        code: 'PHOTO_VERIFICATION_UPLOAD_ERROR',
-        message: 'Failed to upload photo verification',
-        details: 'An error occurred while uploading photo verification'
-      },
-      timestamp: new Date().toISOString()
-    });
-  }
-});
-*/ // ✅ END OF DUPLICATE ENDPOINT - Use endpoint at line 4008 instead
 
 /**
  * @route   GET /api/driver/bookings/:id/photo-verifications

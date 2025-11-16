@@ -78,9 +78,13 @@ router.post('/tracking/update', [
         location: {
           latitude: Number(location.latitude ?? location.lat),
           longitude: Number(location.longitude ?? location.lng),
+          accuracy: Number(location.accuracy || 0),
+          speed: Number(location.speed || 0),
+          heading: Number(location.heading || 0),
           timestamp: new Date().toISOString()
         },
         estimatedArrival,
+        // Top-level timestamp for consumers that expect it outside the location object
         timestamp: new Date().toISOString()
       };
       try {

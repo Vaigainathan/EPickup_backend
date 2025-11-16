@@ -767,9 +767,36 @@ router.get('/:bookingId', [
           booking.dropoff?.coordinates || booking.dropoff
         ]
       },
-      estimatedPickupTime: booking.timing?.estimatedPickupTime,
-      estimatedDeliveryTime: booking.timing?.estimatedDeliveryTime,
-      lastUpdate: booking.updatedAt ? (booking.updatedAt instanceof Date ? booking.updatedAt.toISOString() : new Date(booking.updatedAt).toISOString()) : new Date().toISOString()
+      estimatedPickupTime: (() => {
+        const t = booking.timing?.estimatedPickupTime;
+        try {
+          if (!t) return null;
+          const d = t?.toDate ? t.toDate() : new Date(t);
+          return isNaN(d.getTime()) ? null : d.toISOString();
+        } catch {
+          return null;
+        }
+      })(),
+      estimatedDeliveryTime: (() => {
+        const t = booking.timing?.estimatedDeliveryTime;
+        try {
+          if (!t) return null;
+          const d = t?.toDate ? t.toDate() : new Date(t);
+          return isNaN(d.getTime()) ? null : d.toISOString();
+        } catch {
+          return null;
+        }
+      })(),
+      lastUpdate: (() => {
+        const t = booking.updatedAt;
+        try {
+          if (!t) return new Date().toISOString();
+          const d = t instanceof Date ? t : (t?.toDate ? t.toDate() : new Date(t));
+          return isNaN(d.getTime()) ? new Date().toISOString() : d.toISOString();
+        } catch {
+          return new Date().toISOString();
+        }
+      })()
     };
 
     res.status(200).json({

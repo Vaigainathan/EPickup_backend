@@ -544,7 +544,7 @@ const initializeSocketIO = async (server) => {
             
           socket.leave(`booking:${bookingId}`);
           if (socket.userId) {
-            console.log(`✅ [SOCKET] User ${socket.userId} left booking room: booking:${bookingId}`);
+          console.log(`✅ [SOCKET] User ${socket.userId} left booking room: booking:${bookingId}`);
           }
           }
         } catch (error) {

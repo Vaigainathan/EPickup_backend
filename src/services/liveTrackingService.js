@@ -73,6 +73,10 @@ class LiveTrackingService {
               latitude: location.latitude,
               longitude: location.longitude,
               address: location.address,
+              // Enrich with full telemetry for clients that render accuracy/speed/heading
+              accuracy: typeof location.accuracy === 'number' ? location.accuracy : 0,
+              speed: typeof location.speed === 'number' ? location.speed : 0,
+              heading: typeof location.heading === 'number' ? location.heading : 0,
               timestamp: new Date().toISOString()
             },
             timestamp: new Date().toISOString()

@@ -4953,7 +4953,8 @@ router.post('/bookings/:id/photo-verification/upload', [
   requireDriver,
   upload.single('photo'),
   body('photoType').isIn(['pickup', 'delivery']).withMessage('Photo type must be pickup or delivery'),
-  body('location').optional().isObject().withMessage('Location must be an object'),
+  // Accept location as JSON string or object in multipart form
+  body('location').optional(),
   body('notes').optional().isLength({ min: 0, max: 200 }).withMessage('Notes must be between 0 and 200 characters')
 ], async (req, res) => {
   try {
@@ -4971,7 +4972,16 @@ router.post('/bookings/:id/photo-verification/upload', [
 
     const { id } = req.params;
     const { uid } = req.user;
-    const { photoType, location, notes } = req.body;
+    const { photoType, notes } = req.body;
+    let { location } = req.body;
+    // If location is a JSON string (common with multipart), parse it safely
+    if (typeof location === 'string') {
+      try {
+        location = JSON.parse(location);
+      } catch {
+        location = null;
+      }
+    }
     const file = req.file;
 
     if (!file) {

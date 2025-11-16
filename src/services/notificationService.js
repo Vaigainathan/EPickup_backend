@@ -33,19 +33,29 @@ class NotificationService {
       }
 
       const userData = userDoc.data();
-      if (!userData.fcmToken) {
+      const token = userData.fcmToken;
+
+      // Basic validation before hitting FCM to avoid noisy errors
+      if (!token || typeof token !== 'string' || token.trim().length < 80) {
+        // Mark token invalid so we stop trying until client refreshes it
+        try {
+          await this.db.collection('users').doc(userId).update({
+            fcmTokenValid: false,
+            fcmTokenLastCheckedAt: new Date()
+          });
+        } catch {}
         return {
           success: false,
           error: {
-            code: 'NO_FCM_TOKEN',
-            message: 'User has no FCM token'
+            code: 'INVALID_FCM_TOKEN',
+            message: 'User has no valid FCM token'
           }
         };
       }
 
       // Send notification
       const message = {
-        token: userData.fcmToken,
+        token,
         notification: {
           title: notification.title,
           body: notification.body
@@ -88,6 +98,13 @@ class NotificationService {
 
       // Save notification to database
       await this.saveNotification(userId, notification, 'sent');
+      // Mark token as valid on successful send
+      try {
+        await this.db.collection('users').doc(userId).update({
+          fcmTokenValid: true,
+          fcmTokenLastCheckedAt: new Date()
+        });
+      } catch {}
 
       return {
         success: true,
@@ -99,7 +116,23 @@ class NotificationService {
         }
       };
     } catch (error) {
-      console.error('Send notification error:', error);
+      // Handle invalid token errors gracefully and quarantine the token
+      const errCode = error?.errorInfo?.code || error?.code || '';
+      const isInvalidToken =
+        errCode === 'messaging/invalid-argument' ||
+        (typeof error?.message === 'string' && error.message.includes('registration token is not a valid'));
+
+      if (isInvalidToken) {
+        try {
+          await this.db.collection('users').doc(userId).update({
+            fcmTokenValid: false,
+            fcmTokenLastCheckedAt: new Date()
+          });
+        } catch {}
+        console.warn('⚠️ [NotificationService] Invalid FCM token quarantined for user:', userId);
+      } else {
+        console.error('Send notification error:', error);
+      }
       
       // Save failed notification to database
       await this.saveNotification(userId, notification, 'failed', error.message);
@@ -107,8 +140,8 @@ class NotificationService {
       return {
         success: false,
         error: {
-          code: 'NOTIFICATION_SEND_ERROR',
-          message: 'Failed to send notification',
+          code: isInvalidToken ? 'INVALID_FCM_TOKEN' : 'NOTIFICATION_SEND_ERROR',
+          message: isInvalidToken ? 'Invalid FCM token' : 'Failed to send notification',
           details: error.message
         }
       };

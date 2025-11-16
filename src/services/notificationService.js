@@ -74,6 +74,16 @@ class NotificationService {
         }
       };
 
+      // FCM requires string-only data payloads
+      if (message.data) {
+        const strData = {};
+        for (const [k, v] of Object.entries(message.data)) {
+          if (v === undefined || v === null) continue;
+          strData[k] = String(v);
+        }
+        message.data = strData;
+      }
+
       const response = await this.messaging.send(message);
 
       // Save notification to database
@@ -346,11 +356,12 @@ class NotificationService {
    */
   async saveNotification(userId, notification, status, errorMessage = null) {
     try {
-      await this.db.collection('notifications').add({
+      // Filter undefined fields before persisting
+      const doc = {
         userId,
-        title: notification.title,
-        body: notification.body,
-        type: notification.type,
+        title: notification.title || '',
+        body: notification.body || '',
+        type: notification.type || 'generic',
         bookingId: notification.bookingId || null,
         driverId: notification.driverId || null,
         paymentId: notification.paymentId || null,
@@ -358,7 +369,8 @@ class NotificationService {
         errorMessage,
         createdAt: new Date(),
         updatedAt: new Date()
-      });
+      };
+      await this.db.collection('notifications').add(doc);
     } catch (error) {
       console.error('Save notification error:', error);
     }

@@ -220,17 +220,17 @@ router.get('/:bookingId/instructions', [
     }
 
     // Get customer messages (instructions) only
+    // Remove orderBy to avoid composite index requirement; sort in memory
     const messagesSnapshot = await db.collection('chat_messages')
       .where('bookingId', '==', bookingId)
       .where('senderType', '==', 'customer')
-      .orderBy('timestamp', 'asc')
       .get();
 
     const instructions = [];
     messagesSnapshot.forEach(doc => {
       const messageData = doc.data();
       instructions.push({
-        id: messageData.id,
+        id: doc.id, // use document id for updates
         message: messageData.message,
         timestamp: messageData.timestamp,
         createdAt: messageData.createdAt,
@@ -238,12 +238,19 @@ router.get('/:bookingId/instructions', [
       });
     });
 
+    // Sort by timestamp ascending in memory
+    instructions.sort((a, b) => {
+      const at = a.timestamp?.toMillis?.() || new Date(a.timestamp || 0).getTime() || 0;
+      const bt = b.timestamp?.toMillis?.() || new Date(b.timestamp || 0).getTime() || 0;
+      return at - bt;
+    });
+
     // Mark instructions as read
     if (instructions.length > 0) {
       const batch = db.batch();
       instructions.forEach(instruction => {
         const messageRef = db.collection('chat_messages').doc(instruction.id);
-        batch.update(messageRef, { read: true, readAt: new Date() });
+        batch.set(messageRef, { read: true, readAt: new Date() }, { merge: true });
       });
       await batch.commit();
     }

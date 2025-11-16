@@ -543,7 +543,9 @@ const initializeSocketIO = async (server) => {
             }
             
           socket.leave(`booking:${bookingId}`);
-          console.log(`✅ [SOCKET] User ${socket.userId} left booking room: booking:${bookingId}`);
+          if (socket.userId) {
+            console.log(`✅ [SOCKET] User ${socket.userId} left booking room: booking:${bookingId}`);
+          }
           }
         } catch (error) {
           console.error('❌ [SOCKET] Error leaving booking room:', error);
@@ -553,6 +555,10 @@ const initializeSocketIO = async (server) => {
 
       // Handle disconnection
       socket.on('disconnect', (reason) => {
+        if (!socket.userId) {
+          // Avoid noisy logs and invalid Firestore writes
+          return;
+        }
         console.log(`🔌 User disconnected: ${socket.userId} (${socket.userType}) - Reason: ${reason}`);
         
         // Handle disconnection with event handler
@@ -578,6 +584,9 @@ const initializeSocketIO = async (server) => {
 
       // Handle disconnection
       socket.on('disconnect', (reason) => {
+        if (!socket.userId) {
+          return;
+        }
         console.log(`🔌 User disconnected: ${socket.userId} (${socket.userType}) - Reason: ${reason}`);
         
         // Handle disconnection with event handler

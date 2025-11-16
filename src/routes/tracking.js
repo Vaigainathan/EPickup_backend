@@ -738,7 +738,16 @@ router.get('/:bookingId', [
         accuracy: driverLocation.accuracy || 0,
         speed: driverLocation.speed || 0,
         bearing: driverLocation.heading || 0,
-        timestamp: new Date(driverLocation.timestamp).toISOString()
+        timestamp: (() => {
+          try {
+            const t = driverLocation.timestamp;
+            const ms = typeof t === 'number' ? t : (typeof t === 'string' ? Date.parse(t) : (t?.toMillis?.() || Date.now()));
+            const d = new Date(ms);
+            return isNaN(d.getTime()) ? new Date().toISOString() : d.toISOString();
+          } catch {
+            return new Date().toISOString();
+          }
+        })()
       } : null,
       progress: {
         distanceToPickup: 0, // Would be calculated from current location

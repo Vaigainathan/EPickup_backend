@@ -141,6 +141,9 @@ class WebSocketEventHandler {
   async handleDisconnection(socket) {
     try {
       const { userId, userType } = socket;
+      if (!userId) {
+        return;
+      }
 
       console.log(`🔌 User disconnected: ${userId} (${userType})`);
 
@@ -657,6 +660,9 @@ class WebSocketEventHandler {
    */
   async updateUserOnlineStatus(userId, isOnline) {
     try {
+      if (!userId) {
+        return;
+      }
       // ✅ CRITICAL FIX: Don't update driver.isOnline via WebSocket
       // Drivers should only update status via explicit API call (PUT /api/driver/status)
       // This prevents WebSocket disconnect from incorrectly setting drivers offline
@@ -862,11 +868,11 @@ class WebSocketEventHandler {
           // Re-join room
           socket.join(data.room);
           
-          // Update last seen
-          await membership.ref.update({
+          // Update last seen (use set with merge to avoid NOT_FOUND on stale docs)
+          await membership.ref.set({
             lastSeen: new Date(),
             socketId: socket.id
-          });
+          }, { merge: true });
 
           console.log(`✅ [SOCKET] Re-joined booking room from persistence: ${data.room}`);
         } catch (roomError) {

@@ -23,6 +23,89 @@ const upload = multer({
 const fareCalculationService = require('../services/fareCalculationService');
 const COMMISSION_RATE_PER_KM = 2;
 
+/**
+ * Alias endpoint for driver location updates to avoid 404 on legacy clients
+ * @route   POST /api/driver/tracking/update
+ * @access  Private (Driver)
+ */
+router.post('/tracking/update', [
+  requireDriver,
+  body('bookingId').notEmpty().withMessage('Booking ID is required'),
+  body('location').custom((v) => typeof v === 'object' && v !== null).withMessage('location object is required')
+], async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'VALIDATION_ERROR',
+          message: 'Validation failed',
+          details: errors.array()
+        }
+      });
+    }
+    const { bookingId, location, estimatedArrival } = req.body;
+    const driverId = req.user.uid;
+
+    const { getFirestore } = require('../services/firebase');
+    const db = getFirestore();
+
+    // Persist latest location for driver (compatible with existing shape)
+    await db.collection('driverLocations').doc(driverId).set({
+      currentLocation: {
+        latitude: Number(location.latitude ?? location.lat),
+        longitude: Number(location.longitude ?? location.lng),
+        accuracy: Number(location.accuracy || 0),
+        speed: Number(location.speed || 0),
+        heading: Number(location.heading || 0),
+        timestamp: new Date()
+      },
+      lastUpdated: new Date(),
+      bookingId
+    }, { merge: true });
+
+    // Emit to customer and booking rooms
+    const bookingDoc = await db.collection('bookings').doc(bookingId).get();
+    if (bookingDoc.exists) {
+      const bookingData = bookingDoc.data();
+      const customerId = bookingData.customerId;
+      const userRoom = `user:${customerId}`;
+      const bookingRoom = `booking:${bookingId}`;
+      const payload = {
+        bookingId,
+        driverId,
+        location: {
+          latitude: Number(location.latitude ?? location.lat),
+          longitude: Number(location.longitude ?? location.lng),
+          timestamp: new Date().toISOString()
+        },
+        estimatedArrival,
+        timestamp: new Date().toISOString()
+      };
+      try {
+        const { getSocketIO } = require('../services/socket');
+        const io = getSocketIO();
+        io.to(userRoom).emit('driver_location_update', payload);
+        io.to(bookingRoom).emit('driver_location_update', payload);
+      } catch (ioErr) {
+        console.error('❌ [DRIVER] Emit location failed:', ioErr);
+      }
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: 'Location updated',
+      data: { bookingId, timestamp: new Date().toISOString() }
+    });
+  } catch (error) {
+    console.error('❌ [DRIVER] tracking/update error:', error);
+    return res.status(500).json({
+      success: false,
+      error: { code: 'LOCATION_UPDATE_ERROR', message: 'Failed to update location' }
+    });
+  }
+});
 // Helper function to calculate distance between two coordinates
 function calculateDistance(lat1, lon1, lat2, lon2) {
   const R = 6371; // Radius of the Earth in kilometers
@@ -11071,6 +11154,46 @@ router.get('/documents/download-all', requireDriver, async (req, res) => {
         details: 'An error occurred while retrieving document download URLs'
       },
       timestamp: new Date().toISOString()
+    });
+  }
+});
+
+/**
+ * @route   POST /api/driver/tracking/update
+ * @desc    Update driver location for a booking and emit to customer (compatibility alias)
+ * @access  Private (Driver only)
+ */
+router.post('/tracking/update', requireDriver, async (req, res) => {
+  try {
+    const { uid } = req.user;
+    const { bookingId, location, speed, heading } = req.body || {};
+    
+    if (!bookingId || !location || typeof location.latitude !== 'number' || typeof location.longitude !== 'number') {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'VALIDATION_ERROR',
+          message: 'bookingId and location {latitude, longitude} are required'
+        }
+      });
+    }
+    
+    const liveTrackingService = require('../services/liveTrackingService');
+    await liveTrackingService.updateDriverLocation(uid, {
+      latitude: location.latitude,
+      longitude: location.longitude,
+      accuracy: location.accuracy || null,
+      speed: speed || location.speed || null,
+      heading: heading || location.heading || null,
+      timestamp: new Date().toISOString()
+    }, bookingId);
+    
+    return res.status(200).json({ success: true });
+  } catch (error) {
+    console.error('❌ [TRACKING_UPDATE] Failed to update driver location:', error);
+    return res.status(500).json({
+      success: false,
+      error: { code: 'TRACKING_UPDATE_ERROR', message: 'Failed to update driver location' }
     });
   }
 });

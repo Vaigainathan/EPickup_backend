@@ -43,7 +43,9 @@ class NotificationService {
             fcmTokenValid: false,
             fcmTokenLastCheckedAt: new Date()
           });
-        } catch {}
+        } catch (updateError) {
+          console.warn('⚠️ [NotificationService] Failed to mark FCM token as invalid:', updateError.message);
+        }
         return {
           success: false,
           error: {
@@ -104,7 +106,9 @@ class NotificationService {
           fcmTokenValid: true,
           fcmTokenLastCheckedAt: new Date()
         });
-      } catch {}
+      } catch (updateError) {
+        console.warn('⚠️ [NotificationService] Failed to update FCM token validity:', updateError.message);
+      }
 
       return {
         success: true,
@@ -128,7 +132,9 @@ class NotificationService {
             fcmTokenValid: false,
             fcmTokenLastCheckedAt: new Date()
           });
-        } catch {}
+        } catch (updateError) {
+          console.warn('⚠️ [NotificationService] Failed to quarantine invalid FCM token:', updateError.message);
+        }
         console.warn('⚠️ [NotificationService] Invalid FCM token quarantined for user:', userId);
       } else {
         console.error('Send notification error:', error);

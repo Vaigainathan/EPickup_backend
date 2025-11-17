@@ -36,7 +36,9 @@ const STATUS_RULES = {
   driver_assigned: { allowedFrom: ['pending'], requireLocation: null },
   accepted: { allowedFrom: ['pending', 'driver_assigned'], requireLocation: null },
   driver_enroute: { allowedFrom: ['driver_assigned', 'accepted'], requireLocation: null },
-  driver_arrived: { allowedFrom: ['driver_enroute', 'accepted'], requireLocation: 'pickup' },
+  // ✅ CRITICAL FIX: Allow driver_arrived from driver_assigned, driver_enroute, or accepted
+  // This allows drivers who accept and immediately go to pickup location to mark as arrived
+  driver_arrived: { allowedFrom: ['driver_assigned', 'driver_enroute', 'accepted'], requireLocation: 'pickup' },
   picked_up: { allowedFrom: ['driver_arrived', 'driver_enroute', 'accepted'], requireLocation: 'pickup' },
   in_transit: { allowedFrom: ['picked_up'], requireLocation: null },
   at_dropoff: { allowedFrom: ['in_transit'], requireLocation: 'dropoff' },

@@ -209,6 +209,37 @@ class LiveTrackingService {
               phone: bookingData.driver?.phone || '',
               vehicleNumber: bookingData.driver?.vehicleNumber || ''
             },
+            booking: bookingData, // ✅ CRITICAL: Include full booking data
+            timestamp: new Date().toISOString()
+          };
+          break;
+          
+        case 'in_transit':
+          eventName = 'package_in_transit_notification';
+          eventData = {
+            bookingId,
+            driverInfo: {
+              id: driverId,
+              name: bookingData.driver?.name || 'Driver',
+              phone: bookingData.driver?.phone || '',
+              vehicleNumber: bookingData.driver?.vehicleNumber || ''
+            },
+            booking: bookingData, // ✅ CRITICAL: Include full booking data
+            timestamp: new Date().toISOString()
+          };
+          break;
+          
+        case 'at_dropoff':
+          eventName = 'driver_arrived_dropoff_notification';
+          eventData = {
+            bookingId,
+            driverInfo: {
+              id: driverId,
+              name: bookingData.driver?.name || 'Driver',
+              phone: bookingData.driver?.phone || '',
+              vehicleNumber: bookingData.driver?.vehicleNumber || ''
+            },
+            booking: bookingData, // ✅ CRITICAL: Include full booking data
             timestamp: new Date().toISOString()
           };
           break;

@@ -4951,11 +4951,14 @@ router.post('/bookings/:id/validate-location', [
  */
 router.post('/bookings/:id/photo-verification/upload', [
   requireDriver,
+  // ✅ CRITICAL FIX: No rate limiting on photo upload endpoint - it's a critical workflow step
+  // Rate limiting is handled at the global level, but we don't want strict limits here
   upload.single('photo'),
   body('photoType').isIn(['pickup', 'delivery']).withMessage('Photo type must be pickup or delivery'),
   // Accept location as JSON string or object in multipart form
   body('location').optional(),
-  body('notes').optional().isLength({ min: 0, max: 200 }).withMessage('Notes must be between 0 and 200 characters')
+  body('notes').optional().isLength({ min: 0, max: 200 }).withMessage('Notes must be between 0 and 200 characters'),
+  body('traceId').optional().isString().withMessage('TraceId must be a string')
 ], async (req, res) => {
   try {
     const errors = validationResult(req);
@@ -4972,8 +4975,16 @@ router.post('/bookings/:id/photo-verification/upload', [
 
     const { id } = req.params;
     const { uid } = req.user;
-    const { photoType, notes } = req.body;
+    const { photoType, notes, traceId } = req.body;
     let { location } = req.body;
+    
+    // ✅ CRITICAL FIX: Log traceId for request correlation
+    console.log(`📸 [PHOTO_UPLOAD] Photo upload request received (traceId: ${traceId || 'none'}):`, {
+      bookingId: id,
+      driverId: uid,
+      photoType,
+      traceId: traceId || 'none'
+    });
     // If location is a JSON string (common with multipart), parse it safely
     if (typeof location === 'string') {
       try {
@@ -5022,12 +5033,21 @@ router.post('/bookings/:id/photo-verification/upload', [
       delivery: ['in_transit', 'at_dropoff', 'delivered', 'arrived_dropoff', 'picked_up']
     };
     if (!validStatuses[photoType] || !validStatuses[photoType].includes(bookingData.status)) {
+      console.error(`❌ [PHOTO_UPLOAD] Invalid status for photo upload (traceId: ${traceId || 'none'}):`, {
+        bookingId: id,
+        currentStatus: bookingData.status,
+        photoType,
+        validStatuses: validStatuses[photoType],
+        traceId: traceId || 'none'
+      });
       return res.status(400).json({
         success: false,
         error: {
           code: 'INVALID_STATUS_FOR_PHOTO',
-          message: `Cannot upload ${photoType} photo in current booking status: ${bookingData.status}`
-        }
+          message: `Cannot upload ${photoType} photo in current booking status: ${bookingData.status}. Valid statuses: ${validStatuses[photoType]?.join(', ') || 'none'}`,
+          details: `Current status: ${bookingData.status}. Expected one of: ${validStatuses[photoType]?.join(', ') || 'none'}`
+        },
+        traceId: traceId || null // ✅ CRITICAL FIX: Include traceId in error response
       });
     }
 
@@ -5121,24 +5141,95 @@ router.post('/bookings/:id/photo-verification/upload', [
       });
     });
 
+    // ✅ CRITICAL FIX: Emit WebSocket event to notify customer about photo upload
+    try {
+      const socketService = require('../services/socket');
+      const io = socketService.getSocketIO();
+      
+      if (io && bookingData.customerId) {
+        const bookingRoom = `booking:${id}`;
+        const customerRoom = `user:${bookingData.customerId}`;
+        
+        // Emit photo verification event
+        const photoEvent = {
+          bookingId: id,
+          photoType: safeType,
+          photoUrl: downloadURL,
+          uploadedAt: verifiedAtTimestamp.toDate().toISOString(),
+          timestamp: new Date().toISOString()
+        };
+        
+        io.to(bookingRoom).emit('photo_verification_uploaded', photoEvent);
+        io.to(customerRoom).emit('photo_verification_uploaded', photoEvent);
+        
+        // Also emit booking status update with updated booking data
+        const updatedBookingDoc = await bookingRef.get();
+        if (updatedBookingDoc.exists) {
+          const updatedBookingData = updatedBookingDoc.data();
+          io.to(bookingRoom).emit('booking_status_update', {
+            bookingId: id,
+            status: updatedBookingData.status,
+            booking: updatedBookingData,
+            timestamp: new Date().toISOString()
+          });
+          io.to(customerRoom).emit('booking_status_update', {
+            bookingId: id,
+            status: updatedBookingData.status,
+            booking: updatedBookingData,
+            timestamp: new Date().toISOString()
+          });
+        }
+        
+        console.log(`✅ [PHOTO_UPLOAD] Photo verification event emitted to rooms: ${bookingRoom}, ${customerRoom} (traceId: ${traceId || 'none'})`);
+      }
+    } catch (wsError) {
+      console.error('❌ [PHOTO_UPLOAD] Error emitting WebSocket event:', wsError);
+      // Continue - photo is saved even if WebSocket fails
+    }
+
+    console.log(`✅ [PHOTO_UPLOAD] Photo verification uploaded successfully (traceId: ${traceId || 'none'}):`, {
+      bookingId: id,
+      photoType: safeType,
+      photoUrl: downloadURL
+    });
+
     return res.status(200).json({
       success: true,
       data: {
         message: 'Photo verification uploaded successfully',
         photoType: safeType,
         photoUrl: downloadURL,
-        storagePath: filePath
-      }
+        storagePath: filePath,
+        traceId: traceId || null // ✅ CRITICAL FIX: Echo traceId in response
+      },
+      traceId: traceId || null // ✅ CRITICAL FIX: Also include in top-level response
     });
   } catch (error) {
-    console.error('❌ [PHOTO_VERIFICATION_UPLOAD] Failed:', error);
+    const traceId = req.body?.traceId || 'none';
+    console.error(`❌ [PHOTO_VERIFICATION_UPLOAD] Failed (traceId: ${traceId}):`, error);
+    
+    // ✅ CRITICAL FIX: Handle rate limit errors specifically
+    if (error.status === 429 || error.message?.includes('rate limit') || error.message?.includes('429')) {
+      return res.status(429).json({
+        success: false,
+        error: {
+          code: 'RATE_LIMIT_EXCEEDED',
+          message: 'Too many requests. Please wait a moment and try again.',
+          details: 'Rate limit exceeded for photo upload. Please wait before retrying.'
+        },
+        traceId: traceId !== 'none' ? traceId : null,
+        retryAfter: 5 // Suggest retry after 5 seconds
+      });
+    }
+    
     return res.status(500).json({
       success: false,
       error: {
         code: 'PHOTO_UPLOAD_ERROR',
         message: 'Failed to upload photo verification',
-        details: error.message
-      }
+        details: error.message || 'An unexpected error occurred'
+      },
+      traceId: traceId !== 'none' ? traceId : null
     });
   }
 });
@@ -6829,6 +6920,14 @@ router.put('/bookings/:id/status', [
     .isLength({ min: 5, max: 200 })
     .withMessage('Notes must be between 5 and 200 characters')
 ], async (req, res) => {
+  // ✅ CRITICAL FIX: Extract variables before try block so they're accessible in catch block
+  const { uid } = req.user;
+  const { id } = req.params;
+  const bookingId = id;
+  const driverId = uid;
+  // ✅ CRITICAL FIX: Extract status from body before try block (may be undefined if validation fails)
+  const requestedStatus = req.body?.status || 'unknown';
+  
   try {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
@@ -6843,19 +6942,38 @@ router.put('/bookings/:id/status', [
       });
     }
 
-    const { uid } = req.user;
-    const { id } = req.params;
     const { status, location, notes, eventId, timestamp } = req.body;
+    // ✅ CRITICAL FIX: Use status from body (may differ from requestedStatus if validation changed it)
+    const actualStatus = status || requestedStatus;
+
+    // ✅ CRITICAL FIX: Log status update attempt for debugging
+    console.log(`🔄 [STATUS_UPDATE] Attempting status update:`, {
+      bookingId: bookingId,
+      driverId: driverId,
+      requestedStatus: actualStatus,
+      hasLocation: !!location,
+      location: location ? { lat: location.latitude, lng: location.longitude } : null,
+      eventId,
+      eventTimestamp: timestamp
+    });
 
     const statusResult = await driverStatusWorkflowService.updateStatus({
-      bookingId: id,
-      driverId: uid,
-      requestedStatus: status,
+      bookingId: bookingId,
+      driverId: driverId,
+      requestedStatus: actualStatus,
       location,
       notes,
       eventId,
       eventTimestamp: timestamp,
       source: 'driver_app'
+    });
+
+    // ✅ CRITICAL FIX: Log successful status update
+    console.log(`✅ [STATUS_UPDATE] Status updated successfully:`, {
+      bookingId: bookingId,
+      previousStatus: statusResult.previousStatus,
+      newStatus: statusResult.status,
+      idempotent: statusResult.idempotent
     });
 
     const liveTrackingService = require('../services/liveTrackingService');
@@ -6913,6 +7031,8 @@ router.put('/bookings/:id/status', [
     });
 
   } catch (error) {
+    // ✅ CRITICAL FIX: Variables are already defined in outer scope (bookingId, driverId, requestedStatus)
+
     if (error instanceof DriverStatusError) {
       return res.status(error.statusCode).json({
         success: false,
@@ -6924,6 +7044,18 @@ router.put('/bookings/:id/status', [
         timestamp: new Date().toISOString()
       });
     }
+
+    // ✅ CRITICAL FIX: Log detailed error information for debugging
+    console.error(`❌ [STATUS_UPDATE] Status update failed:`, {
+      bookingId: bookingId,
+      driverId: driverId,
+      requestedStatus: requestedStatus,
+      errorType: error.constructor.name,
+      errorCode: error.code,
+      errorMessage: error.message,
+      errorDetails: error.details,
+      stack: error.stack?.substring(0, 500) // Limit stack trace length
+    });
 
     console.error('Error updating booking status:', error);
     res.status(500).json({

@@ -760,6 +760,53 @@ router.put('/bookings/:bookingId/cancel', authenticateToken, async (req, res) =>
       updatedAt: new Date()
     });
     
+    // ✅ CRITICAL FIX: Emit booking cancelled event via WebSocket
+    try {
+      const socketService = require('../services/socket');
+      const io = socketService.getSocketIO();
+      
+      if (io) {
+        const bookingRoom = `booking:${bookingId}`;
+        const userRoom = `user:${userId}`;
+        const driverRoom = bookingData.driverId ? `user:${bookingData.driverId}` : null;
+        
+        // ✅ CRITICAL FIX: Emit booking_status_update with cancelled status
+        const statusUpdateEvent = {
+          bookingId: bookingId,
+          status: 'cancelled',
+          cancellationReason: reason,
+          cancelledAt: new Date().toISOString(),
+          timestamp: new Date().toISOString(),
+          updatedBy: userId
+        };
+        
+        io.to(bookingRoom).emit('booking_status_update', statusUpdateEvent);
+        io.to(userRoom).emit('booking_status_update', statusUpdateEvent);
+        if (driverRoom) {
+          io.to(driverRoom).emit('booking_status_update', statusUpdateEvent);
+        }
+        
+        // ✅ CRITICAL FIX: Also emit booking_cancelled event for backward compatibility
+        const cancelledEvent = {
+          bookingId: bookingId,
+          reason: reason,
+          cancelledBy: userId,
+          timestamp: new Date().toISOString()
+        };
+        
+        io.to(bookingRoom).emit('booking_cancelled', cancelledEvent);
+        io.to(userRoom).emit('booking_cancelled', cancelledEvent);
+        if (driverRoom) {
+          io.to(driverRoom).emit('booking_cancelled', cancelledEvent);
+        }
+        
+        console.log(`✅ [CANCEL] Booking cancelled event emitted to rooms: ${bookingRoom}, ${userRoom}${driverRoom ? `, ${driverRoom}` : ''}`);
+      }
+    } catch (wsError) {
+      console.error('❌ [CANCEL] Error emitting cancellation event via WebSocket:', wsError);
+      // Continue - booking is cancelled in DB even if WebSocket fails
+    }
+    
     console.log(`✅ Cancelled booking ${bookingId} for customer: ${userId}`);
     
     res.json({

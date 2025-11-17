@@ -12,7 +12,8 @@ class BookingStateMachine {
     // Define valid state transitions
     this.stateTransitions = {
       'pending': ['driver_assigned', 'cancelled', 'rejected'],
-      'driver_assigned': ['driver_enroute', 'rejected', 'cancelled'], // ✅ FIX: Remove 'accepted' intermediate state, allow direct transition to driver_enroute
+      // ✅ CRITICAL FIX: Allow driver_assigned -> driver_arrived for drivers who go directly to pickup
+      'driver_assigned': ['driver_enroute', 'driver_arrived', 'rejected', 'cancelled'], // ✅ FIX: Allow direct transition to driver_arrived
       'accepted': ['driver_enroute', 'driver_arrived', 'picked_up', 'cancelled'], // ✅ KEEP: Allow direct pickup confirmation when driver skips enroute status
       'driver_enroute': ['driver_arrived', 'picked_up', 'cancelled'],
       'driver_arrived': ['picked_up', 'cancelled'],

@@ -98,6 +98,41 @@ router.post('/send', [
       updatedAt: new Date()
     });
 
+    // ✅ CRITICAL FIX: Emit chat message via WebSocket to booking room
+    try {
+      const socketService = require('../services/socket');
+      const io = socketService.getSocketIO();
+      
+      if (io) {
+        const bookingRoom = `booking:${bookingId}`;
+        const userRoom = `user:${bookingData.customerId}`;
+        const driverRoom = bookingData.driverId ? `user:${bookingData.driverId}` : null;
+        
+        // ✅ CRITICAL FIX: Emit to booking room and user rooms
+        const chatMessageEvent = {
+          id: messageData.id,
+          bookingId: bookingId,
+          tripId: bookingId, // For backward compatibility
+          senderId: userId,
+          senderType: senderType || userType,
+          message: message.trim(),
+          timestamp: messageData.timestamp.toISOString(),
+          messageType: 'text'
+        };
+        
+        io.to(bookingRoom).emit('chat_message', chatMessageEvent);
+        io.to(userRoom).emit('chat_message', chatMessageEvent);
+        if (driverRoom) {
+          io.to(driverRoom).emit('chat_message', chatMessageEvent);
+        }
+        
+        console.log(`✅ [CHAT] Chat message emitted to rooms: ${bookingRoom}, ${userRoom}${driverRoom ? `, ${driverRoom}` : ''}`);
+      }
+    } catch (wsError) {
+      console.error('❌ [CHAT] Error emitting chat message via WebSocket:', wsError);
+      // Continue - message is saved to DB even if WebSocket fails
+    }
+
     console.log(`✅ Chat message sent: ${messageData.id}`);
 
     res.json({

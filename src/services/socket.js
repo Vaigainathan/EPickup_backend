@@ -138,10 +138,9 @@ const initializeSocketIO = async (server) => {
         
         if (!token || token.length < 10) {
           console.log('🔐 Socket authentication failed: No token provided or token too short');
-          // Allow connection but mark as unauthenticated
-          socket.isAuthenticated = false;
-          socket.userType = 'guest';
-          return next();
+          // ✅ CRITICAL FIX: Reject unauthenticated connections for security
+          // The app should always provide a valid token for WebSocket connections
+          return next(new Error('Authentication required: No valid token provided'));
         }
 
         // Validate token format
@@ -211,9 +210,14 @@ const initializeSocketIO = async (server) => {
                 socket.userRole = decodedToken.role || decodedToken.userType; // Use userType as fallback for role
                 socket.userRooms = new Set();
                 return next();
+              } else {
+                // ✅ CRITICAL FIX: If we can't decode userId from expired token, reject connection
+                console.error('❌ [SOCKET] Failed to extract userId from expired token');
+                return next(new Error('Invalid expired token: Cannot extract user information'));
               }
             } catch (decodeError) {
-              console.error('Failed to decode expired token:', decodeError.message);
+              console.error('❌ [SOCKET] Failed to decode expired token:', decodeError.message);
+              return next(new Error('Invalid expired token: Decode failed'));
             }
           } else if (jwtError.message === 'Invalid token' || jwtError.message.includes('malformed')) {
             // Malformed or invalid token - reject connection
@@ -232,7 +236,12 @@ const initializeSocketIO = async (server) => {
 
     // Connection handler
     io.on('connection', (socket) => {
+      // ✅ CRITICAL FIX: Only log connection if user is authenticated
+      if (socket.userId && socket.userType) {
       console.log(`🔌 User connected: ${socket.userId} (${socket.userType})`);
+      } else {
+        console.log(`🔌 Unauthenticated connection attempt from socket: ${socket.id}`);
+      }
       
       // Message validation middleware
       socket.use((packet, next) => {
@@ -258,6 +267,18 @@ const initializeSocketIO = async (server) => {
         next();
       });
       
+      // ✅ CRITICAL FIX: Only handle connection if user is authenticated
+      if (!socket.userId || !socket.userType) {
+        console.error('❌ [SOCKET] Connection rejected: Missing userId or userType');
+        socket.emit('error', {
+          code: 'AUTHENTICATION_REQUIRED',
+          message: 'Authentication required. Please reconnect with a valid token.',
+          timestamp: new Date().toISOString()
+        });
+        socket.disconnect(true);
+        return;
+      }
+      
       // Check if token needs refresh
       if (socket.needsTokenRefresh) {
         socket.emit('token_refresh_required', {
@@ -266,7 +287,7 @@ const initializeSocketIO = async (server) => {
         });
       }
       
-      // Handle connection with event handler
+      // Handle connection with event handler (only for authenticated users)
       eventHandler.handleConnection(socket);
 
       // Handle tracking subscription

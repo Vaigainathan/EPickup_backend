@@ -5150,19 +5150,12 @@ router.post('/bookings/:id/photo-verification/upload', [
         const bookingRoom = `booking:${id}`;
         const customerRoom = `user:${bookingData.customerId}`;
         
-        // Emit photo verification event
-        const photoEvent = {
-          bookingId: id,
-          photoType: safeType,
-          photoUrl: downloadURL,
-          uploadedAt: verifiedAtTimestamp.toDate().toISOString(),
-          timestamp: new Date().toISOString()
-        };
+        // ✅ CRITICAL FIX: Photo verification is for company/admin use only, NOT for customers
+        // Photo data is stored in database for admin/company use only
+        // Do NOT emit photo_verification_uploaded to customer rooms
+        // Customers only receive booking_status_update events (without photo details)
         
-        io.to(bookingRoom).emit('photo_verification_uploaded', photoEvent);
-        io.to(customerRoom).emit('photo_verification_uploaded', photoEvent);
-        
-        // Also emit booking status update with updated booking data
+        // ✅ CRITICAL FIX: Only emit booking status update to customers (they don't need photo details)
         const updatedBookingDoc = await bookingRef.get();
         if (updatedBookingDoc.exists) {
           const updatedBookingData = updatedBookingDoc.data();

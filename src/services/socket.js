@@ -507,16 +507,26 @@ const initializeSocketIO = async (server) => {
             return;
           }
 
-          // ✅ CRITICAL FIX: Only allow join if booking is active
+          // ✅ CRITICAL FIX: Allow join for active bookings and delivered bookings (for payment workflow)
+          // Drivers need to stay connected even after delivery to receive payment confirmation updates
           const activeStatuses = ['pending', 'driver_assigned', 'accepted', 'driver_enroute', 
-                                 'driver_arrived', 'picked_up', 'in_transit', 'at_dropoff'];
-          if (!activeStatuses.includes(booking.status)) {
+                                 'driver_arrived', 'picked_up', 'in_transit', 'at_dropoff', 
+                                 'delivered', 'money_collection']; // ✅ FIX: Include delivered and money_collection
+          const terminalStatuses = ['completed', 'cancelled', 'rejected'];
+          
+          if (terminalStatuses.includes(booking.status)) {
+            // Only block terminal states (completed, cancelled, rejected)
             socket.emit('error', {
               code: 'BOOKING_NOT_ACTIVE',
-              message: 'Booking is not active'
+              message: `Booking is in terminal state: ${booking.status}`
             });
-            console.warn(`⚠️ [SOCKET] Booking ${bookingId} is not active (status: ${booking.status})`);
+            console.warn(`⚠️ [SOCKET] Booking ${bookingId} is in terminal state (status: ${booking.status})`);
             return;
+          }
+          
+          // ✅ FIX: Allow join for all non-terminal states (including delivered for payment workflow)
+          if (!activeStatuses.includes(booking.status) && !terminalStatuses.includes(booking.status)) {
+            console.warn(`⚠️ [SOCKET] Booking ${bookingId} has unknown status: ${booking.status}, allowing join anyway`);
           }
 
           // ✅ CRITICAL FIX: Persist room membership in database for recovery

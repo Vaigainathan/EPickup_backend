@@ -1580,13 +1580,23 @@ router.get('/earnings/today', requireDriver, async (req, res) => {
     console.log('📊 [EARNINGS_TODAY] Fetching today\'s earnings for driver:', uid);
     console.log('📊 [EARNINGS_TODAY] Date range:', { startOfDay, endOfDay });
     
-    // Get today's completed trips
-    const tripsSnapshot = await db.collection('bookings')
-      .where('driverId', '==', uid)
-      .where('status', '==', 'completed')
-      .where('completedAt', '>=', startOfDay)
-      .where('completedAt', '<', endOfDay)
-      .get();
+    let tripsSnapshot;
+    try {
+      // Try query with completedAt first (if index exists)
+      tripsSnapshot = await db.collection('bookings')
+        .where('driverId', '==', uid)
+        .where('status', '==', 'completed')
+        .where('completedAt', '>=', startOfDay)
+        .where('completedAt', '<', endOfDay)
+        .get();
+    } catch (indexError) {
+      // ✅ FIX: If index doesn't exist, query without date filter and filter in memory
+      console.warn('⚠️ [EARNINGS_TODAY] Index error, querying without date filter:', indexError.message);
+      tripsSnapshot = await db.collection('bookings')
+        .where('driverId', '==', uid)
+        .where('status', '==', 'completed')
+        .get();
+    }
     
     let todayGrossEarnings = 0;
     let todayNetEarnings = 0;
@@ -1594,8 +1604,42 @@ router.get('/earnings/today', requireDriver, async (req, res) => {
     let todayTrips = 0;
     const tripDetails = [];
     
+    // ✅ CRITICAL FIX: Helper function to parse date from various formats
+    const parseDate = (dateValue) => {
+      if (!dateValue) return null;
+      if (dateValue instanceof Date) return dateValue;
+      if (typeof dateValue?.toDate === 'function') return dateValue.toDate();
+      if (typeof dateValue === 'object' && dateValue.seconds) {
+        return new Date(dateValue.seconds * 1000 + (dateValue.nanoseconds || 0) / 1000000);
+      }
+      if (typeof dateValue === 'string') {
+        const parsed = new Date(dateValue);
+        return isNaN(parsed.getTime()) ? null : parsed;
+      }
+      return null;
+    };
+    
     tripsSnapshot.forEach((doc) => {
       const trip = doc.data();
+      
+      // ✅ CRITICAL FIX: Check if booking was completed today using multiple date fields
+      const completedAt = parseDate(trip.completedAt) || 
+                         parseDate(trip.timing?.completedAt) || 
+                         parseDate(trip.updatedAt);
+      
+      // Filter by date if query didn't include date filter (fallback case)
+      if (completedAt) {
+        if (completedAt < startOfDay || completedAt >= endOfDay) {
+          return; // Skip bookings not completed today
+        }
+      } else {
+        // ✅ FIX: If no completedAt date, check if status is completed and updatedAt is today
+        const updatedAt = parseDate(trip.updatedAt);
+        if (!updatedAt || updatedAt < startOfDay || updatedAt >= endOfDay) {
+          return; // Skip if not updated today
+        }
+      }
+      
       const earnings = computeBookingEarnings(trip);
 
       todayGrossEarnings += earnings.grossFare;

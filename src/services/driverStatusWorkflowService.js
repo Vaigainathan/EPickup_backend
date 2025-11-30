@@ -322,12 +322,23 @@ class DriverStatusWorkflowService {
     const lastEventAtRaw =
       bookingData.statusMeta?.lastEventAt || bookingData.updatedAt;
     const lastEventAt = this.toDate(lastEventAtRaw);
-    if (lastEventAt && eventTs < lastEventAt) {
+    
+    // ✅ CRITICAL FIX: Allow events within 5 seconds of last update to handle clock skew and network delays
+    const timeDiff = lastEventAt ? (eventTs.getTime() - lastEventAt.getTime()) : 0;
+    const CLOCK_SKEW_TOLERANCE_MS = 5000; // 5 seconds tolerance
+    
+    if (lastEventAt && eventTs < lastEventAt && timeDiff < -CLOCK_SKEW_TOLERANCE_MS) {
       throw new DriverStatusError(
         409,
         'STALE_EVENT',
         `Event timestamp ${eventTs.toISOString()} is older than the last recorded update ${lastEventAt.toISOString()}`
       );
+    }
+    
+    // ✅ FIX: If timestamp is slightly stale but within tolerance, use current time instead
+    if (lastEventAt && eventTs < lastEventAt) {
+      console.log(`⚠️ [UPDATE_STATUS] Event timestamp is ${Math.abs(timeDiff)}ms older than last update, using current time instead`);
+      eventTs = new Date();
     }
 
     if (canonicalStatus === currentStatus) {
@@ -469,20 +480,51 @@ class DriverStatusWorkflowService {
       eventTs = new Date();
     }
 
+    const currentStatus = this.normalizeStatus(bookingData.status || 'pending');
+    
+    // ✅ CRITICAL FIX: Allow idempotent delivery completion if already delivered
+    // This prevents errors when frontend retries or state is already delivered
+    if (currentStatus === 'delivered' || currentStatus === 'money_collection' || currentStatus === 'completed') {
+      console.log(`ℹ️ [COMPLETE_DELIVERY] Booking ${bookingId} already in '${currentStatus}' status - returning idempotent success`);
+      const updatedDoc = await bookingRef.get();
+      const updatedBooking = updatedDoc.data();
+      
+      return {
+        booking: updatedBooking,
+        status: currentStatus,
+        previousStatus: currentStatus,
+        eventTimestamp: eventTs,
+        idempotent: true,
+        sequence: updatedBooking?.statusMeta?.sequence || this.buildSequenceFallback(updatedBooking),
+        shouldBroadcast: false,
+        broadcastPayload: { location, notes }
+      };
+    }
+
     const lastEventAtRaw =
       bookingData.statusMeta?.lastEventAt || bookingData.updatedAt;
     const lastEventAt = this.toDate(lastEventAtRaw);
-    if (lastEventAt && eventTs < lastEventAt) {
+    
+    // ✅ CRITICAL FIX: Allow events within 5 seconds of last update to handle clock skew and network delays
+    const timeDiff = lastEventAt ? (eventTs.getTime() - lastEventAt.getTime()) : 0;
+    const CLOCK_SKEW_TOLERANCE_MS = 5000; // 5 seconds tolerance
+    
+    if (lastEventAt && eventTs < lastEventAt && timeDiff < -CLOCK_SKEW_TOLERANCE_MS) {
       throw new DriverStatusError(
         409,
         'STALE_EVENT',
         `Event timestamp ${eventTs.toISOString()} is older than the last recorded update ${lastEventAt.toISOString()}`
       );
     }
+    
+    // ✅ FIX: If timestamp is slightly stale but within tolerance, use current time instead
+    if (lastEventAt && eventTs < lastEventAt) {
+      console.log(`⚠️ [COMPLETE_DELIVERY] Event timestamp is ${Math.abs(timeDiff)}ms older than last update, using current time instead`);
+      eventTs = new Date();
+    }
 
     this.ensureLocationRequirement('at_dropoff', bookingData, location);
-
-    const currentStatus = this.normalizeStatus(bookingData.status || 'pending');
+    
     if (!['at_dropoff', 'in_transit'].includes(currentStatus)) {
       throw new DriverStatusError(
         409,

@@ -57,6 +57,52 @@ class ErrorHandlingService {
   }
 
   /**
+   * Execute Firestore transaction with retry logic
+   * @param {Function} transactionFn - Transaction function that receives a Firestore transaction object
+   * @param {Object} options - Retry options and context
+   * @returns {Promise} Result of transaction execution
+   */
+  async executeTransactionWithRetry(transactionFn, options = {}) {
+    const config = { ...this.retryConfig, ...options };
+    const db = this.db;
+    
+    for (let attempt = 0; attempt <= config.maxRetries; attempt++) {
+      try {
+        const result = await db.runTransaction(async (transaction) => {
+          return await transactionFn(transaction);
+        });
+        
+        if (attempt > 0) {
+          console.log(`✅ [ERROR_HANDLING] Transaction succeeded on attempt ${attempt + 1}`);
+        }
+        return result;
+      } catch (error) {
+        // Firestore transactions can fail due to contention - retry these
+        const isRetryableError = 
+          error.code === 10 || // ABORTED - transaction conflict
+          error.code === 8 || // RESOURCE_EXHAUSTED - rate limit
+          error.message?.includes('transaction') ||
+          error.message?.includes('concurrent');
+        
+        if (attempt === config.maxRetries || !isRetryableError) {
+          console.error(`❌ [ERROR_HANDLING] Transaction failed after ${attempt + 1} attempts:`, error);
+          await this.logError(error, { 
+            attempts: attempt + 1, 
+            operation: 'executeTransactionWithRetry',
+            context: options.context || 'Unknown'
+          });
+          throw error;
+        }
+        
+        const delay = this.calculateDelay(attempt, config);
+        console.warn(`⚠️ [ERROR_HANDLING] Transaction attempt ${attempt + 1} failed, retrying in ${delay}ms:`, error.message);
+        
+        await this.sleep(delay);
+      }
+    }
+  }
+
+  /**
    * Calculate delay for retry attempts
    * @param {number} attempt - Current attempt number
    * @param {Object} config - Retry configuration

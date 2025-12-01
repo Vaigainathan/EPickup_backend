@@ -254,14 +254,32 @@ router.get('/:bookingId/instructions', [
       });
     }
 
-    // Get customer messages (instructions) only
+    // ✅ CRITICAL FIX: Get customer instructions from two sources:
+    // 1. Special instructions from booking creation (package.specialInstructions)
+    // 2. Chat messages sent by customer during the booking
+    
+    const instructions = [];
+    
+    // ✅ SOURCE 1: Get specialInstructions from booking document (if exists)
+    if (bookingData.package && bookingData.package.specialInstructions && bookingData.package.specialInstructions.trim()) {
+      instructions.push({
+        id: `booking_${bookingId}_special_instructions`, // Unique ID for booking-level instructions
+        message: bookingData.package.specialInstructions.trim(),
+        timestamp: bookingData.createdAt || new Date(), // Use booking creation time
+        createdAt: bookingData.createdAt || new Date(),
+        read: false, // Mark as unread so driver sees it
+        source: 'booking_creation' // Indicate this came from booking creation
+      });
+      console.log(`📋 Found special instructions in booking document: ${bookingData.package.specialInstructions.substring(0, 50)}...`);
+    }
+    
+    // ✅ SOURCE 2: Get customer messages (instructions) from chat_messages collection
     // Remove orderBy to avoid composite index requirement; sort in memory
     const messagesSnapshot = await db.collection('chat_messages')
       .where('bookingId', '==', bookingId)
       .where('senderType', '==', 'customer')
       .get();
 
-    const instructions = [];
     messagesSnapshot.forEach(doc => {
       const messageData = doc.data();
       instructions.push({
@@ -269,7 +287,8 @@ router.get('/:bookingId/instructions', [
         message: messageData.message,
         timestamp: messageData.timestamp,
         createdAt: messageData.createdAt,
-        read: messageData.read
+        read: messageData.read || false,
+        source: 'chat_message' // Indicate this came from chat
       });
     });
 
@@ -280,14 +299,20 @@ router.get('/:bookingId/instructions', [
       return at - bt;
     });
 
-    // Mark instructions as read
+    // ✅ CRITICAL FIX: Mark chat message instructions as read (skip booking-level instructions)
+    // Only mark chat messages as read, not booking-level specialInstructions
     if (instructions.length > 0) {
       const batch = db.batch();
       instructions.forEach(instruction => {
-        const messageRef = db.collection('chat_messages').doc(instruction.id);
-        batch.set(messageRef, { read: true, readAt: new Date() }, { merge: true });
+        // Only mark chat messages as read, not booking-level instructions
+        if (instruction.source === 'chat_message' && instruction.id && !instruction.id.startsWith('booking_')) {
+          const messageRef = db.collection('chat_messages').doc(instruction.id);
+          batch.set(messageRef, { read: true, readAt: new Date() }, { merge: true });
+        }
       });
-      await batch.commit();
+      if (batch._writes.length > 0) {
+        await batch.commit();
+      }
     }
 
     console.log(`✅ Retrieved ${instructions.length} instructions for driver ${userId}`);

@@ -243,6 +243,29 @@ function resolveRoundedDistance(bookingData = {}, commissionRecord, exactDistanc
 }
 
 function computeBookingEarnings(bookingData = {}) {
+  // ✅ CRITICAL FIX: Only calculate earnings for completed bookings, not cancelled ones
+  const bookingStatus = bookingData.status || '';
+  const isCancelled = bookingStatus === 'cancelled' || 
+                     bookingStatus === 'rejected' || 
+                     bookingStatus === 'customer_cancelled';
+  
+  // ✅ CRITICAL FIX: Return zero earnings for cancelled bookings
+  if (isCancelled) {
+    return {
+      grossFare: 0,
+      commissionAmount: 0,
+      netEarnings: 0,
+      commissionRatePerKm: COMMISSION_RATE_PER_KM,
+      commissionRecorded: false,
+      commissionStatus: 'not_applicable',
+      commissionTransactionId: null,
+      commissionDeductedAt: null,
+      exactDistanceKm: null,
+      roundedDistanceKm: null,
+      commissionOutstanding: 0
+    };
+  }
+  
   const grossFare = toNumber(
     bookingData.earnings?.grossFare ??
     bookingData.pricing?.totalFare ??
@@ -1725,6 +1748,21 @@ router.get('/bookings/history', requireDriver, async (req, res) => {
     const { limit = 50, offset = 0, status } = req.query;
 
     const db = getFirestore();
+    
+    // ✅ CRITICAL FIX: Exclude active bookings from history
+    // History should only show completed or cancelled bookings, not ongoing ones
+    const activeStatuses = [
+      'driver_assigned', 
+      'accepted', 
+      'driver_enroute', 
+      'driver_arrived', 
+      'picked_up', 
+      'in_transit', 
+      'at_dropoff',
+      'delivered', // Still active - payment pending
+      'money_collection' // Still active - payment pending
+    ];
+    
     let query = db.collection('bookings')
       .where('driverId', '==', uid)
       .orderBy('createdAt', 'desc')
@@ -1734,6 +1772,10 @@ router.get('/bookings/history', requireDriver, async (req, res) => {
     // Filter by status if provided
     if (status && status !== 'all') {
       query = query.where('status', '==', status);
+    } else {
+      // ✅ CRITICAL FIX: Exclude active bookings by default (unless specifically requested)
+      // Use 'not-in' to exclude active statuses
+      query = query.where('status', 'not-in', activeStatuses);
     }
 
     const snapshot = await query.get();
@@ -1780,6 +1822,25 @@ router.get('/bookings/history', requireDriver, async (req, res) => {
 
     snapshot.forEach(doc => {
       const data = doc.data();
+      
+      // ✅ CRITICAL FIX: Skip active bookings from history (they should be in active booking endpoint)
+      const activeStatuses = [
+        'driver_assigned', 
+        'accepted', 
+        'driver_enroute', 
+        'driver_arrived', 
+        'picked_up', 
+        'in_transit', 
+        'at_dropoff',
+        'delivered',
+        'money_collection'
+      ];
+      
+      if (activeStatuses.includes(data.status)) {
+        console.log(`⚠️ [BOOKINGS_HISTORY] Skipping active booking ${doc.id} with status ${data.status} from history`);
+        return; // Skip this booking
+      }
+      
       const earnings = computeBookingEarnings(data);
 
       grossTotal += earnings.grossFare;
@@ -6292,15 +6353,21 @@ router.post('/bookings/:id/confirm-payment', [
           const currentWalletResult = await walletServiceInstance.getPointsBalance(uid);
           const currentWalletBalance = currentWalletResult.success ? currentWalletResult.wallet.pointsBalance : newPointsBalance;
           
-          io.to(`driver:${uid}`).emit('wallet_balance_updated', {
+          // ✅ CRITICAL FIX: Emit to both user:${uid} and driver:${uid} to ensure driver receives the event
+          // Driver joins user:${uid} room, but we also emit to driver:${uid} for consistency
+          const walletUpdateEvent = {
             driverId: uid,
             newBalance: currentWalletBalance,
             pointsDeducted: commissionDeducted ? commissionAmount : 0,
             transactionId: commissionTransactionId,
             commissionDeducted: commissionDeducted,
             timestamp: new Date().toISOString()
-          });
-          console.log(`📤 [PAYMENT_CONFIRM] Wallet balance update event sent to driver ${uid}`, {
+          };
+          
+          io.to(`user:${uid}`).emit('wallet_balance_updated', walletUpdateEvent);
+          io.to(`driver:${uid}`).emit('wallet_balance_updated', walletUpdateEvent);
+          
+          console.log(`📤 [PAYMENT_CONFIRM] Wallet balance update event sent to driver ${uid} (user:${uid} and driver:${uid})`, {
             commissionDeducted,
             commissionAmount,
             newBalance: currentWalletBalance
@@ -6333,6 +6400,24 @@ router.post('/bookings/:id/confirm-payment', [
             timestamp: new Date().toISOString()
           });
           console.log(`📤 [PAYMENT_CONFIRM] Sent driver earnings update event to admin dashboard`);
+          
+          // ✅ CRITICAL FIX: Also emit earnings update to driver for home screen refresh
+          // Emit to both user:${uid} and driver:${uid} to ensure driver receives the event
+          const earningsUpdateEvent = {
+            driverId: uid,
+            bookingId: id,
+            action: 'added',
+            amount: driverEarnings,
+            netEarnings: driverEarnings - commissionAmount,
+            commission: commissionAmount,
+            commissionDeducted: commissionDeducted,
+            timestamp: new Date().toISOString()
+          };
+          
+          io.to(`user:${uid}`).emit('driver_earnings_updated', earningsUpdateEvent);
+          io.to(`driver:${uid}`).emit('driver_earnings_updated', earningsUpdateEvent);
+          
+          console.log(`📤 [PAYMENT_CONFIRM] Sent driver earnings update event to driver ${uid} (user:${uid} and driver:${uid}) for home screen refresh`);
         }
       } catch (socketError) {
         console.warn('⚠️ [PAYMENT_CONFIRM] Failed to emit earnings update event:', socketError);

@@ -6292,17 +6292,29 @@ router.post('/bookings/:id/confirm-payment', [
           updatedAt: new Date()
         });
         
-        // ✅ CRITICAL FIX: Mark booking as commission deducted atomically
-        if (commissionDeducted && commissionTransactionId) {
-          transaction.update(bookingRef, {
-            commissionDeducted: {
-              amount: commissionAmount,
-              deductedAt: new Date(),
-              transactionId: commissionTransactionId,
-              deductedBy: uid
-            }
-          });
-        }
+        // ✅ CRITICAL FIX: Mark booking as commission deducted atomically AND update earnings field
+        const bookingEarningsUpdate = {
+          commissionDeducted: commissionDeducted && commissionTransactionId ? {
+            amount: commissionAmount,
+            deductedAt: new Date(),
+            transactionId: commissionTransactionId,
+            deductedBy: uid,
+            status: 'deducted'
+          } : null
+        };
+        
+        // ✅ CRITICAL FIX: Also update booking.earnings field for consistency
+        // This ensures computeBookingEarnings() can read earnings directly from booking document
+        bookingEarningsUpdate.earnings = {
+          grossFare: roundCurrency(paymentAmount),
+          commissionAmount: roundCurrency(commissionAmount),
+          netEarnings: roundCurrency(driverEarnings),
+          commissionStatus: commissionDeducted ? 'deducted' : 'pending',
+          commissionTransactionId: commissionTransactionId || null,
+          calculatedAt: new Date()
+        };
+        
+        transaction.update(bookingRef, bookingEarningsUpdate);
         
         // ✅ CRITICAL FIX: Create earnings record atomically
         const earningsRef = db.collection('driver_earnings').doc();
@@ -6522,25 +6534,96 @@ router.get('/bookings/history', requireDriver, async (req, res) => {
     const { limit = 50, offset = 0, status } = req.query;
     
     const db = getFirestore();
-    let query = db.collection('bookings')
-      .where('driverId', '==', uid)
-      .orderBy('createdAt', 'desc')
-      .limit(parseInt(limit))
-      .offset(parseInt(offset));
     
-    // Filter by status if provided
+    // ✅ CRITICAL FIX: Only return completed and cancelled bookings for history
+    // Active bookings should not appear in history (they're in active bookings)
+    // ✅ FIX: Firestore requires composite index for 'in' queries with orderBy
+    // Use separate queries for each status and merge, or use a single query with proper index
+    let query;
+    
     if (status && status !== 'all') {
-      query = query.where('status', '==', status);
+      const validTerminalStates = ['completed', 'cancelled', 'rejected', 'customer_cancelled'];
+      if (validTerminalStates.includes(status)) {
+        // ✅ FIX: Single status query - simpler and uses existing index
+        query = db.collection('bookings')
+          .where('driverId', '==', uid)
+          .where('status', '==', status)
+          .orderBy('createdAt', 'desc')
+          .limit(parseInt(limit))
+          .offset(parseInt(offset));
+      } else {
+        // Invalid status - return empty
+        return res.status(200).json({
+          success: true,
+          data: [],
+          total: 0,
+          summary: { grossTotal: 0, netTotal: 0, commissionTotal: 0 },
+          timestamp: new Date().toISOString()
+        });
+      }
+    } else {
+      // ✅ FIX: For 'all', fetch completed bookings (most common) and merge with others
+      // This avoids the 'in' query complexity - fetch completed first, then cancelled if needed
+      query = db.collection('bookings')
+        .where('driverId', '==', uid)
+        .where('status', '==', 'completed')
+        .orderBy('createdAt', 'desc')
+        .limit(parseInt(limit));
     }
     
-    const snapshot = await query.get();
+    // ✅ CRITICAL FIX: For 'all' status, fetch cancelled bookings too and merge
+    let allBookings = [];
+    if (!status || status === 'all') {
+      // Fetch completed bookings
+      const completedSnapshot = await query.get();
+      completedSnapshot.forEach(doc => {
+        allBookings.push({ doc, data: doc.data() });
+      });
+      
+      // Fetch cancelled bookings (if we have space)
+      if (allBookings.length < parseInt(limit)) {
+        const cancelledStatuses = ['cancelled', 'rejected', 'customer_cancelled'];
+        for (const cancelledStatus of cancelledStatuses) {
+          if (allBookings.length >= parseInt(limit)) break;
+          try {
+            const cancelledQuery = db.collection('bookings')
+              .where('driverId', '==', uid)
+              .where('status', '==', cancelledStatus)
+              .orderBy('createdAt', 'desc')
+              .limit(parseInt(limit) - allBookings.length);
+            const cancelledSnapshot = await cancelledQuery.get();
+            cancelledSnapshot.forEach(doc => {
+              allBookings.push({ doc, data: doc.data() });
+            });
+          } catch (cancelledError) {
+            console.warn(`⚠️ [BOOKING_HISTORY] Failed to fetch ${cancelledStatus} bookings:`, cancelledError.message);
+          }
+        }
+      }
+      
+      // Sort all bookings by createdAt descending
+      allBookings.sort((a, b) => {
+        const aTime = a.data.createdAt?.toDate?.()?.getTime() || a.data.createdAt || 0;
+        const bTime = b.data.createdAt?.toDate?.()?.getTime() || b.data.createdAt || 0;
+        return bTime - aTime;
+      });
+      
+      // Apply limit and offset
+      allBookings = allBookings.slice(parseInt(offset), parseInt(offset) + parseInt(limit));
+    } else {
+      // Single status query - execute normally
+      const snapshot = await query.get();
+      snapshot.forEach(doc => {
+        allBookings.push({ doc, data: doc.data() });
+      });
+    }
+    
     const bookings = [];
     let grossTotal = 0;
     let netTotal = 0;
     let commissionTotal = 0;
 
-    snapshot.forEach(doc => {
-      const data = doc.data();
+    allBookings.forEach(({ doc, data }) => {
       const earnings = computeBookingEarnings(data);
 
       grossTotal += earnings.grossFare;

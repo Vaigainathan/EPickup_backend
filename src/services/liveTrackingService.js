@@ -261,20 +261,54 @@ class LiveTrackingService {
             ...additionalData // Include any additional data (photoUrl, notes, etc.)
           };
           break;
+          
+        case 'completed':
+          eventName = 'booking_completed_notification';
+          // ✅ CRITICAL FIX: Include full booking data in completed notification for navigation
+          eventData = {
+            bookingId,
+            status: 'completed',
+            driverInfo: {
+              id: driverId,
+              name: bookingData.driver?.name || 'Driver',
+              phone: bookingData.driver?.phone || '',
+              vehicleNumber: bookingData.driver?.vehicleNumber || ''
+            },
+            booking: bookingData, // ✅ CRITICAL: Include full booking data for navigation
+            timestamp: new Date().toISOString(),
+            ...additionalData // Include any additional data (payment info, etc.)
+          };
+          break;
       }
 
-      // Send notification to customer
-      this.io.to(`user:${bookingData.customerId}`).emit(eventName, eventData);
+      // ✅ CRITICAL FIX: Send notification to customer in multiple rooms for reliability
+      const userRoom = `user:${bookingData.customerId}`;
+      const bookingRoom = `booking:${bookingId}`;
       
-      // Also send general status update with full booking data
-      this.io.to(`user:${bookingData.customerId}`).emit('booking_status_update', {
+      // Send status-specific notification
+      this.io.to(userRoom).emit(eventName, eventData);
+      this.io.to(bookingRoom).emit(eventName, eventData);
+      
+      // ✅ CRITICAL FIX: Also send general status update with full booking data to both rooms
+      const statusUpdateEvent = {
         bookingId,
         status,
         driverId,
         booking: bookingData, // ✅ CRITICAL: Include full booking data
         timestamp: new Date().toISOString(),
         updatedBy: driverId
-      });
+      };
+      
+      this.io.to(userRoom).emit('booking_status_update', statusUpdateEvent);
+      this.io.to(bookingRoom).emit('booking_status_update', statusUpdateEvent);
+      
+      // ✅ CRITICAL FIX: For 'completed' status, also emit to driver and admin
+      if (status === 'completed') {
+        if (driverId) {
+          this.io.to(`user:${driverId}`).emit('booking_status_update', statusUpdateEvent);
+        }
+        this.io.to('type:admin').emit('booking_status_update', statusUpdateEvent);
+      }
 
       console.log(`📊 [LiveTrackingService] Updated booking ${bookingId} status to ${status}`);
 

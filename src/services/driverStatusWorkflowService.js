@@ -580,8 +580,12 @@ class DriverStatusWorkflowService {
       };
     }
 
+    // ✅ CRITICAL FIX: Declare updatedDoc outside try block so it's accessible after
+    let updatedDoc;
+    
     try {
-      await bookingStateMachine.transitionBooking(
+      // ✅ CRITICAL FIX: Wait for state transition to complete before proceeding
+      const transitionResult = await bookingStateMachine.transitionBooking(
         bookingId,
         'delivered',
         additionalUpdates,
@@ -594,6 +598,37 @@ class DriverStatusWorkflowService {
           eventTimestamp: eventTs
         }
       );
+      
+      // ✅ CRITICAL FIX: Verify transition succeeded
+      if (!transitionResult || !transitionResult.success) {
+        throw new DriverStatusError(
+          409,
+          'STATUS_TRANSITION_FAILED',
+          'State transition did not complete successfully',
+          { transitionResult }
+        );
+      }
+      
+      // ✅ CRITICAL FIX: Wait for Firestore to propagate changes (eventual consistency)
+      // Read the updated document with retry to ensure we get the latest state
+      updatedDoc = await bookingRef.get();
+      let retryCount = 0;
+      const MAX_RETRIES = 3;
+      
+      while (retryCount < MAX_RETRIES) {
+        const currentStatus = updatedDoc.data()?.status;
+        if (currentStatus === 'delivered' || currentStatus === 'money_collection' || currentStatus === 'completed') {
+          break; // Status updated correctly
+        }
+        
+        retryCount++;
+        if (retryCount < MAX_RETRIES) {
+          // Wait a bit for Firestore to propagate
+          await new Promise(resolve => setTimeout(resolve, 200)); // 200ms delay
+          updatedDoc = await bookingRef.get();
+        }
+      }
+      
     } catch (error) {
       if (error instanceof DriverStatusError) {
         throw error;
@@ -607,7 +642,11 @@ class DriverStatusWorkflowService {
       );
     }
 
-    const updatedDoc = await bookingRef.get();
+    // ✅ CRITICAL FIX: Ensure updatedDoc is defined before accessing
+    if (!updatedDoc) {
+      updatedDoc = await bookingRef.get();
+    }
+    
     const updatedBooking = updatedDoc.data();
 
     await this.logStatusUpdate({

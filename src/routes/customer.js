@@ -260,32 +260,93 @@ router.get('/bookings', authenticateToken, async (req, res) => {
     const { status, limit = 20, offset = 0 } = req.query;
     const db = getFirestore();
     
-    console.log(`📋 Getting bookings for customer: ${userId}`);
+    console.log(`📋 Getting bookings for customer: ${userId}`, { status, limit, offset });
     
     let query = db.collection('bookings').where('customerId', '==', userId);
     
-    if (status) {
+    // ✅ CRITICAL FIX: Support fetching completed orders for order history
+    // If no status specified OR status is 'completed'/'delivered', fetch all orders
+    // Then filter client-side to show only completed/delivered/cancelled orders
+    // This ensures order history shows ALL completed orders regardless of final status
+    if (status && status !== 'completed' && status !== 'delivered') {
       query = query.where('status', '==', status);
     }
+    // If status is 'completed' or 'delivered', we'll fetch all and filter below
+    
+    // ✅ CRITICAL FIX: Increase limit to account for filtering (only when fetching all orders)
+    // Fetch more records since we'll filter out active orders
+    // If no status specified, we need to fetch more to ensure we get enough completed orders after filtering
+    const fetchLimit = !status
+      ? Math.max(parseInt(limit) * 3, 30)  // Fetch 3x more (min 30) to account for filtering
+      : parseInt(limit);
     
     query = query.orderBy('createdAt', 'desc')
-                .limit(parseInt(limit))
+                .limit(fetchLimit)
                 .offset(parseInt(offset));
     
     const snapshot = await query.get();
-    const bookings = [];
+    const allBookings = [];
     
     snapshot.forEach(doc => {
       const data = doc.data();
-      bookings.push({
+      allBookings.push({
         id: doc.id,
         ...data,
         createdAt: data.createdAt?.toDate?.() || data.createdAt,
-        updatedAt: data.updatedAt?.toDate?.() || data.updatedAt
+        updatedAt: data.updatedAt?.toDate?.() || data.updatedAt,
+        // ✅ CRITICAL FIX: Include completedAt timestamp for proper sorting
+        completedAt: data.completedAt?.toDate?.() || data.completedAt || 
+                     data.deliveredAt?.toDate?.() || data.deliveredAt || 
+                     data.updatedAt?.toDate?.() || data.updatedAt
       });
     });
     
-    console.log(`✅ Retrieved ${bookings.length} bookings for customer: ${userId}`);
+    // ✅ CRITICAL FIX: Filter for completed/delivered/cancelled orders if no status specified
+    // Frontend sends status: undefined to get order history (all completed orders)
+    let bookings = allBookings;
+    let totalFiltered = allBookings.length;
+    
+    if (!status) {
+      // ✅ CRITICAL FIX: Filter for completed orders only (order history)
+      const completedStatuses = ['delivered', 'completed', 'cancelled'];
+      bookings = allBookings.filter(b => completedStatuses.includes(b.status?.toLowerCase()));
+      
+      // ✅ CRITICAL FIX: Store total BEFORE pagination for proper pagination metadata
+      totalFiltered = bookings.length;
+      
+      // ✅ CRITICAL FIX: Sort by completedAt (or updatedAt) for proper ordering
+      bookings.sort((a, b) => {
+        const dateA = a.completedAt ? new Date(a.completedAt).getTime() : new Date(a.createdAt).getTime();
+        const dateB = b.completedAt ? new Date(b.completedAt).getTime() : new Date(b.createdAt).getTime();
+        return dateB - dateA; // Most recent first
+      });
+      
+      // ✅ CRITICAL FIX: Apply pagination AFTER filtering and sorting
+      bookings = bookings.slice(parseInt(offset), parseInt(offset) + parseInt(limit));
+    } else if (status === 'completed' || status === 'delivered') {
+      // Handle specific status requests (for backward compatibility)
+      const completedStatuses = ['delivered', 'completed', 'cancelled'];
+      bookings = allBookings.filter(b => completedStatuses.includes(b.status?.toLowerCase()));
+      totalFiltered = bookings.length;
+      
+      bookings.sort((a, b) => {
+        const dateA = a.completedAt ? new Date(a.completedAt).getTime() : new Date(a.createdAt).getTime();
+        const dateB = b.completedAt ? new Date(b.completedAt).getTime() : new Date(b.createdAt).getTime();
+        return dateB - dateA;
+      });
+      
+      bookings = bookings.slice(parseInt(offset), parseInt(offset) + parseInt(limit));
+    }
+    
+    console.log(`✅ Retrieved ${bookings.length} bookings for customer: ${userId}`, {
+      statuses: [...new Set(bookings.map(b => b.status))],
+      totalFetched: allBookings.length,
+      totalFiltered: totalFiltered,
+      totalReturned: bookings.length,
+      requestedStatus: status,
+      offset: parseInt(offset),
+      limit: parseInt(limit)
+    });
     
     res.json({
       success: true,
@@ -293,7 +354,8 @@ router.get('/bookings', authenticateToken, async (req, res) => {
       pagination: {
         limit: parseInt(limit),
         offset: parseInt(offset),
-        total: bookings.length
+        total: totalFiltered, // ✅ CRITICAL FIX: Total BEFORE pagination (for proper hasMore calculation)
+        hasMore: (parseInt(offset) + bookings.length) < totalFiltered
       }
     });
     

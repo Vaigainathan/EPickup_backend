@@ -6587,11 +6587,42 @@ router.get('/bookings/history', requireDriver, async (req, res) => {
     // ✅ CRITICAL FIX: For 'all' status, fetch cancelled bookings too and merge
     let allBookings = [];
     if (!status || status === 'all') {
-      // Fetch completed bookings
-      const completedSnapshot = await query.get();
-      completedSnapshot.forEach(doc => {
-        allBookings.push({ doc, data: doc.data() });
-      });
+      // ✅ CRITICAL FIX: Wrap query execution in try-catch to handle index errors
+      try {
+        // Fetch completed bookings
+        const completedSnapshot = await query.get();
+        completedSnapshot.forEach(doc => {
+          allBookings.push({ doc, data: doc.data() });
+        });
+      } catch (queryError) {
+        // ✅ CRITICAL FIX: Handle missing index error gracefully
+        if (queryError.code === 9 || queryError.message?.includes('index') || queryError.message?.includes('The query requires an index')) {
+          console.warn('⚠️ [BOOKING_HISTORY] Composite index missing, using fallback query strategy');
+          // Fallback: Query without orderBy, then sort in memory
+          try {
+            const fallbackQuery = db.collection('bookings')
+              .where('driverId', '==', uid)
+              .where('status', '==', 'completed')
+              .limit(parseInt(limit) * 2); // Get more to account for sorting
+            const fallbackSnapshot = await fallbackQuery.get();
+            fallbackSnapshot.forEach(doc => {
+              allBookings.push({ doc, data: doc.data() });
+            });
+            // Sort in memory
+            allBookings.sort((a, b) => {
+              const aTime = a.data.createdAt?.toDate?.()?.getTime() || a.data.createdAt || 0;
+              const bTime = b.data.createdAt?.toDate?.()?.getTime() || b.data.createdAt || 0;
+              return bTime - aTime;
+            });
+            allBookings = allBookings.slice(0, parseInt(limit));
+          } catch (fallbackError) {
+            console.error('❌ [BOOKING_HISTORY] Fallback query also failed:', fallbackError);
+            throw fallbackError;
+          }
+        } else {
+          throw queryError;
+        }
+      }
       
       // Fetch cancelled bookings (if we have space)
       if (allBookings.length < parseInt(limit)) {
@@ -6609,7 +6640,24 @@ router.get('/bookings/history', requireDriver, async (req, res) => {
               allBookings.push({ doc, data: doc.data() });
             });
           } catch (cancelledError) {
-            console.warn(`⚠️ [BOOKING_HISTORY] Failed to fetch ${cancelledStatus} bookings:`, cancelledError.message);
+            // ✅ CRITICAL FIX: Handle index errors for cancelled bookings too
+            if (cancelledError.code === 9 || cancelledError.message?.includes('index')) {
+              console.warn(`⚠️ [BOOKING_HISTORY] Index missing for ${cancelledStatus}, using fallback`);
+              try {
+                const fallbackCancelledQuery = db.collection('bookings')
+                  .where('driverId', '==', uid)
+                  .where('status', '==', cancelledStatus)
+                  .limit(parseInt(limit) - allBookings.length);
+                const fallbackCancelledSnapshot = await fallbackCancelledQuery.get();
+                fallbackCancelledSnapshot.forEach(doc => {
+                  allBookings.push({ doc, data: doc.data() });
+                });
+              } catch (fallbackCancelledError) {
+                console.warn(`⚠️ [BOOKING_HISTORY] Failed to fetch ${cancelledStatus} bookings:`, fallbackCancelledError.message);
+              }
+            } else {
+              console.warn(`⚠️ [BOOKING_HISTORY] Failed to fetch ${cancelledStatus} bookings:`, cancelledError.message);
+            }
           }
         }
       }
@@ -6658,11 +6706,72 @@ router.get('/bookings/history', requireDriver, async (req, res) => {
       // Apply limit and offset
       allBookings = allBookings.slice(parseInt(offset), parseInt(offset) + parseInt(limit));
     } else {
-      // Single status query - execute normally
-      const snapshot = await query.get();
-      snapshot.forEach(doc => {
-        allBookings.push({ doc, data: doc.data() });
-      });
+      // ✅ CRITICAL FIX: Single status query - execute with error handling
+      try {
+        const snapshot = await query.get();
+        snapshot.forEach(doc => {
+          allBookings.push({ doc, data: doc.data() });
+        });
+      } catch (queryError) {
+        // ✅ CRITICAL FIX: Handle missing index error for single status query
+        if (queryError.code === 9 || queryError.message?.includes('index') || queryError.message?.includes('The query requires an index')) {
+          console.warn('⚠️ [BOOKING_HISTORY] Composite index missing for single status query, using fallback');
+          // Fallback: Query without orderBy, then sort in memory
+          try {
+            const fallbackQuery = db.collection('bookings')
+              .where('driverId', '==', uid)
+              .where('status', '==', status)
+              .limit(parseInt(limit) * 2); // Get more to account for sorting
+            const fallbackSnapshot = await fallbackQuery.get();
+            fallbackSnapshot.forEach(doc => {
+              allBookings.push({ doc, data: doc.data() });
+            });
+            // Sort in memory
+            allBookings.sort((a, b) => {
+              let aTime = 0;
+              let bTime = 0;
+              try {
+                if (a.data.createdAt) {
+                  if (a.data.createdAt.toDate && typeof a.data.createdAt.toDate === 'function') {
+                    aTime = a.data.createdAt.toDate().getTime();
+                  } else if (a.data.createdAt instanceof Date) {
+                    aTime = a.data.createdAt.getTime();
+                  } else if (typeof a.data.createdAt === 'string') {
+                    aTime = new Date(a.data.createdAt).getTime();
+                  } else if (typeof a.data.createdAt === 'number') {
+                    aTime = a.data.createdAt;
+                  }
+                }
+              } catch (e) {
+                console.warn('⚠️ [BOOKING_HISTORY] Error parsing createdAt for booking:', e);
+              }
+              try {
+                if (b.data.createdAt) {
+                  if (b.data.createdAt.toDate && typeof b.data.createdAt.toDate === 'function') {
+                    bTime = b.data.createdAt.toDate().getTime();
+                  } else if (b.data.createdAt instanceof Date) {
+                    bTime = b.data.createdAt.getTime();
+                  } else if (typeof b.data.createdAt === 'string') {
+                    bTime = new Date(b.data.createdAt).getTime();
+                  } else if (typeof b.data.createdAt === 'number') {
+                    bTime = b.data.createdAt;
+                  }
+                }
+              } catch (e) {
+                console.warn('⚠️ [BOOKING_HISTORY] Error parsing createdAt for booking:', e);
+              }
+              return bTime - aTime;
+            });
+            // Apply limit and offset after sorting
+            allBookings = allBookings.slice(parseInt(offset), parseInt(offset) + parseInt(limit));
+          } catch (fallbackError) {
+            console.error('❌ [BOOKING_HISTORY] Fallback query also failed:', fallbackError);
+            throw fallbackError;
+          }
+        } else {
+          throw queryError;
+        }
+      }
     }
     
     const bookings = [];

@@ -6530,7 +6530,20 @@ router.post('/bookings/:id/confirm-payment', [
  */
 router.get('/bookings/history', requireDriver, async (req, res) => {
   try {
+    // ✅ CRITICAL FIX: Ensure user isolation - extract driverId from authenticated user
     const { uid } = req.user;
+    
+    if (!uid) {
+      console.error('❌ [BOOKING_HISTORY] No user ID found in request');
+      return res.status(401).json({
+        success: false,
+        error: 'Unauthorized - User ID not found',
+        timestamp: new Date().toISOString()
+      });
+    }
+    
+    console.log(`📚 [BOOKING_HISTORY] Fetching history for driver: ${uid}`);
+    
     const { limit = 50, offset = 0, status } = req.query;
     
     const db = getFirestore();
@@ -6710,6 +6723,9 @@ router.get('/bookings/history', requireDriver, async (req, res) => {
       }
     });
 
+    // ✅ CRITICAL FIX: Log successful response for debugging
+    console.log(`✅ [BOOKING_HISTORY] Successfully fetched ${bookings.length} bookings for driver ${uid}`);
+
     res.status(200).json({
       success: true,
       data: bookings,
@@ -6723,10 +6739,22 @@ router.get('/bookings/history', requireDriver, async (req, res) => {
     });
     
   } catch (error) {
-    console.error('Error getting booking history:', error);
+    // ✅ CRITICAL FIX: Better error logging and handling
+    console.error('❌ [BOOKING_HISTORY] Error getting booking history:', error);
+    console.error('❌ [BOOKING_HISTORY] Error details:', {
+      message: error.message,
+      stack: error.stack,
+      name: error.name,
+      code: error.code,
+      driverId: req.user?.uid || 'unknown'
+    });
+    
+    // ✅ CRITICAL FIX: Return appropriate error response
     res.status(500).json({
       success: false,
-      error: 'Failed to get booking history'
+      error: 'Failed to get booking history',
+      message: process.env.NODE_ENV === 'development' ? error.message : 'An error occurred while fetching your trip history',
+      timestamp: new Date().toISOString()
     });
   }
 });

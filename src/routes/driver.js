@@ -6603,8 +6603,42 @@ router.get('/bookings/history', requireDriver, async (req, res) => {
       
       // Sort all bookings by createdAt descending
       allBookings.sort((a, b) => {
-        const aTime = a.data.createdAt?.toDate?.()?.getTime() || a.data.createdAt || 0;
-        const bTime = b.data.createdAt?.toDate?.()?.getTime() || b.data.createdAt || 0;
+        // ✅ CRITICAL FIX: Handle Firestore Timestamp conversion safely
+        let aTime = 0;
+        let bTime = 0;
+        
+        try {
+          if (a.data.createdAt) {
+            if (a.data.createdAt.toDate && typeof a.data.createdAt.toDate === 'function') {
+              aTime = a.data.createdAt.toDate().getTime();
+            } else if (a.data.createdAt instanceof Date) {
+              aTime = a.data.createdAt.getTime();
+            } else if (typeof a.data.createdAt === 'string') {
+              aTime = new Date(a.data.createdAt).getTime();
+            } else if (typeof a.data.createdAt === 'number') {
+              aTime = a.data.createdAt;
+            }
+          }
+        } catch (e) {
+          console.warn('⚠️ [BOOKING_HISTORY] Error parsing createdAt for booking:', e);
+        }
+        
+        try {
+          if (b.data.createdAt) {
+            if (b.data.createdAt.toDate && typeof b.data.createdAt.toDate === 'function') {
+              bTime = b.data.createdAt.toDate().getTime();
+            } else if (b.data.createdAt instanceof Date) {
+              bTime = b.data.createdAt.getTime();
+            } else if (typeof b.data.createdAt === 'string') {
+              bTime = new Date(b.data.createdAt).getTime();
+            } else if (typeof b.data.createdAt === 'number') {
+              bTime = b.data.createdAt;
+            }
+          }
+        } catch (e) {
+          console.warn('⚠️ [BOOKING_HISTORY] Error parsing createdAt for booking:', e);
+        }
+        
         return bTime - aTime;
       });
       
@@ -6624,19 +6658,56 @@ router.get('/bookings/history', requireDriver, async (req, res) => {
     let commissionTotal = 0;
 
     allBookings.forEach(({ doc, data }) => {
-      const earnings = computeBookingEarnings(data);
+      try {
+        const earnings = computeBookingEarnings(data);
 
-      grossTotal += earnings.grossFare;
-      netTotal += earnings.netEarnings;
-      commissionTotal += earnings.commissionAmount;
+        grossTotal += earnings.grossFare || 0;
+        netTotal += earnings.netEarnings || 0;
+        commissionTotal += earnings.commissionAmount || 0;
 
-      bookings.push({
-        id: doc.id,
-        ...data,
-        earnings,
-        createdAt: data.createdAt?.toDate?.()?.toISOString() || new Date().toISOString(),
-        updatedAt: data.updatedAt?.toDate?.()?.toISOString() || new Date().toISOString()
-      });
+        // ✅ CRITICAL FIX: Handle Firestore Timestamp conversion safely
+        let createdAt = new Date().toISOString();
+        let updatedAt = new Date().toISOString();
+        
+        try {
+          if (data.createdAt) {
+            if (data.createdAt.toDate && typeof data.createdAt.toDate === 'function') {
+              createdAt = data.createdAt.toDate().toISOString();
+            } else if (data.createdAt instanceof Date) {
+              createdAt = data.createdAt.toISOString();
+            } else if (typeof data.createdAt === 'string') {
+              createdAt = data.createdAt;
+            }
+          }
+        } catch (e) {
+          console.warn('⚠️ [BOOKING_HISTORY] Error parsing createdAt:', e);
+        }
+        
+        try {
+          if (data.updatedAt) {
+            if (data.updatedAt.toDate && typeof data.updatedAt.toDate === 'function') {
+              updatedAt = data.updatedAt.toDate().toISOString();
+            } else if (data.updatedAt instanceof Date) {
+              updatedAt = data.updatedAt.toISOString();
+            } else if (typeof data.updatedAt === 'string') {
+              updatedAt = data.updatedAt;
+            }
+          }
+        } catch (e) {
+          console.warn('⚠️ [BOOKING_HISTORY] Error parsing updatedAt:', e);
+        }
+
+        bookings.push({
+          id: doc.id,
+          ...data,
+          earnings,
+          createdAt,
+          updatedAt
+        });
+      } catch (bookingError) {
+        console.error(`❌ [BOOKING_HISTORY] Error processing booking ${doc.id}:`, bookingError);
+        // Skip this booking but continue processing others
+      }
     });
 
     res.status(200).json({

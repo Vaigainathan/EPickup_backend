@@ -323,7 +323,8 @@ router.get('/:bookingId/instructions', [
         read: false, // Mark as unread so driver sees it
         source: 'booking_creation' // Indicate this came from booking creation
       });
-      console.log(`📋 Found special instructions in booking document: ${bookingData.package.specialInstructions.substring(0, 50)}...`);
+      const instructionsText = bookingData.package.specialInstructions.trim();
+      console.log(`📋 Found special instructions in booking document: ${instructionsText.substring(0, Math.min(50, instructionsText.length))}...`);
     }
     
     // ✅ SOURCE 2: Get customer messages (instructions) from chat_messages collection
@@ -335,9 +336,16 @@ router.get('/:bookingId/instructions', [
 
     messagesSnapshot.forEach(doc => {
       const messageData = doc.data();
+      
+      // ✅ CRITICAL FIX: Validate message data exists and has required fields
+      if (!messageData || !messageData.message) {
+        console.warn(`⚠️ Skipping invalid chat message ${doc.id}: missing message field`);
+        return; // Skip invalid messages
+      }
+      
       instructions.push({
         id: doc.id, // use document id for updates
-        message: messageData.message,
+        message: messageData.message || '', // Ensure message is always a string
         timestamp: messageData.timestamp,
         createdAt: messageData.createdAt,
         read: messageData.read || false,
@@ -356,14 +364,19 @@ router.get('/:bookingId/instructions', [
     // Only mark chat messages as read, not booking-level specialInstructions
     if (instructions.length > 0) {
       const batch = db.batch();
+      let hasWrites = false; // Track writes manually instead of using internal _writes property
+      
       instructions.forEach(instruction => {
         // Only mark chat messages as read, not booking-level instructions
         if (instruction.source === 'chat_message' && instruction.id && !instruction.id.startsWith('booking_')) {
           const messageRef = db.collection('chat_messages').doc(instruction.id);
           batch.set(messageRef, { read: true, readAt: new Date() }, { merge: true });
+          hasWrites = true; // Mark that we have writes to commit
         }
       });
-      if (batch._writes.length > 0) {
+      
+      // ✅ CRITICAL FIX: Only commit if we actually have writes (fixes "Cannot read properties of undefined (reading 'length')" error)
+      if (hasWrites) {
         await batch.commit();
       }
     }

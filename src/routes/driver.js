@@ -4099,7 +4099,9 @@ router.get('/bookings/available', requireDriver, async (req, res) => {
     }
 
     // Get driver's current location and availability status
-    const driverDoc = await db.collection('users').doc(uid).get();
+    // ✅ RACE CONDITION FIX: Retry reading driver data if status check fails
+    // This handles Firestore eventual consistency where status update might not be immediately visible
+    let driverDoc = await db.collection('users').doc(uid).get();
     if (!driverDoc.exists) {
       return res.status(404).json({
         success: false,
@@ -4112,7 +4114,7 @@ router.get('/bookings/available', requireDriver, async (req, res) => {
       });
     }
 
-    const driverData = driverDoc.data();
+    let driverData = driverDoc.data();
     const driverLocation = driverData.driver?.currentLocation;
     
     if (!driverLocation) {
@@ -4133,6 +4135,57 @@ router.get('/bookings/available', requireDriver, async (req, res) => {
       isOnline: driverData.driver?.isOnline,
       hasDriverData: !!driverData.driver
     });
+    
+    // ✅ RACE CONDITION FIX: If driver appears unavailable but was recently updated, retry with fresh read
+    // This handles the case where status update completed but Firestore hasn't propagated yet
+    // ✅ CRITICAL FIX: Check BOTH conditions - if either is false, we need to verify
+    const isCurrentlyAvailable = driverData.driver?.isAvailable === true;
+    const isCurrentlyOnline = driverData.driver?.isOnline === true;
+    
+    if (!isCurrentlyAvailable || !isCurrentlyOnline) {
+      const lastStatusUpdate = driverData.driver?.lastStatusUpdate;
+      if (lastStatusUpdate) {
+        const lastUpdateTime = lastStatusUpdate?.toDate ? lastStatusUpdate.toDate() : new Date(lastStatusUpdate);
+        const timeSinceUpdate = Date.now() - lastUpdateTime.getTime();
+        
+        // ✅ CRITICAL FIX: If status was updated within last 5 seconds, retry reading fresh data
+        // Increased window to 5 seconds to account for Firestore eventual consistency
+        if (timeSinceUpdate < 5000 && timeSinceUpdate >= 0) {
+          console.log('🔄 [DRIVER_API] Status check failed but update was recent, retrying with fresh read...', {
+            timeSinceUpdate: `${Math.round(timeSinceUpdate)}ms`,
+            isAvailable: driverData.driver?.isAvailable,
+            isOnline: driverData.driver?.isOnline,
+            lastUpdateTime: lastUpdateTime.toISOString()
+          });
+          
+          // ✅ CRITICAL FIX: Wait progressively longer based on how recent the update was
+          // If update was very recent (< 1s), wait longer; if older (1-5s), wait less
+          const waitTime = timeSinceUpdate < 1000 ? 1000 : 500;
+          await new Promise(resolve => setTimeout(resolve, waitTime));
+          
+          // Read fresh data with source: 'server' to force fresh read
+          driverDoc = await db.collection('users').doc(uid).get({ source: 'server' });
+          if (driverDoc.exists) {
+            driverData = driverDoc.data();
+            console.log('🔍 [DRIVER_API] Fresh read after retry:', {
+              isAvailable: driverData.driver?.isAvailable,
+              isOnline: driverData.driver?.isOnline,
+              lastStatusUpdate: driverData.driver?.lastStatusUpdate
+            });
+            
+            // ✅ CRITICAL FIX: Verify the retry actually got updated data
+            // If still not available after retry, log warning but proceed with error
+            if (!driverData.driver?.isAvailable || !driverData.driver?.isOnline) {
+              console.warn('⚠️ [DRIVER_API] Status still not available after retry - Firestore propagation may be delayed', {
+                isAvailable: driverData.driver?.isAvailable,
+                isOnline: driverData.driver?.isOnline,
+                timeSinceUpdate: `${Math.round(timeSinceUpdate)}ms`
+              });
+            }
+          }
+        }
+      }
+    }
     
     // ✅ CRITICAL FIX: Check driver verification status
     const verificationSources = {

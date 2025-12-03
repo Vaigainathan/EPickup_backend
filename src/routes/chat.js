@@ -146,9 +146,32 @@ router.post('/send', [
 
   } catch (error) {
     console.error('❌ Error sending chat message:', error);
-    res.status(500).json({
+    
+    // ✅ CRITICAL FIX: Enhanced error handling with specific error codes
+    let statusCode = 500;
+    let errorMessage = 'Failed to send message';
+    let errorCode = 'MESSAGE_SEND_ERROR';
+    
+    if (error.code === 'permission-denied') {
+      statusCode = 403;
+      errorMessage = 'Access denied - you can only send messages for your own bookings';
+      errorCode = 'ACCESS_DENIED';
+    } else if (error.code === 'not-found' || error.message?.includes('not found')) {
+      statusCode = 404;
+      errorMessage = 'Booking not found';
+      errorCode = 'BOOKING_NOT_FOUND';
+    } else if (error.message?.includes('validation') || error.message?.includes('required')) {
+      statusCode = 400;
+      errorMessage = error.message || 'Invalid message data';
+      errorCode = 'VALIDATION_ERROR';
+    } else if (error.message) {
+      errorMessage = error.message;
+    }
+    
+    res.status(statusCode).json({
       success: false,
-      error: 'Failed to send message',
+      error: errorMessage,
+      code: errorCode,
       details: error.message
     });
   }
@@ -186,10 +209,10 @@ router.get('/:bookingId', [
       });
     }
 
-    // Get chat messages
+    // ✅ CRITICAL FIX: Get chat messages without orderBy to avoid composite index requirement
+    // Sort in memory instead
     const messagesSnapshot = await db.collection('chat_messages')
       .where('bookingId', '==', bookingId)
-      .orderBy('timestamp', 'asc')
       .get();
 
     const messages = [];
@@ -202,6 +225,13 @@ router.get('/:bookingId', [
       });
     });
 
+    // ✅ CRITICAL FIX: Sort messages by timestamp in memory (ascending - oldest first)
+    messages.sort((a, b) => {
+      const at = a.timestamp?.toMillis?.() || new Date(a.timestamp || 0).getTime() || 0;
+      const bt = b.timestamp?.toMillis?.() || new Date(b.timestamp || 0).getTime() || 0;
+      return at - bt;
+    });
+
     res.json({
       success: true,
       data: {
@@ -212,9 +242,32 @@ router.get('/:bookingId', [
 
   } catch (error) {
     console.error('❌ Error getting chat messages:', error);
-    res.status(500).json({
+    
+    // ✅ CRITICAL FIX: Enhanced error handling with specific error codes
+    let statusCode = 500;
+    let errorMessage = 'Failed to get messages';
+    let errorCode = 'MESSAGES_FETCH_ERROR';
+    
+    if (error.code === 'permission-denied') {
+      statusCode = 403;
+      errorMessage = 'Access denied - you can only view messages for your own bookings';
+      errorCode = 'ACCESS_DENIED';
+    } else if (error.code === 'not-found' || error.message?.includes('not found')) {
+      statusCode = 404;
+      errorMessage = 'Booking not found';
+      errorCode = 'BOOKING_NOT_FOUND';
+    } else if (error.code === 'failed-precondition') {
+      statusCode = 503;
+      errorMessage = 'Database index required. Please contact support.';
+      errorCode = 'INDEX_REQUIRED';
+    } else if (error.message) {
+      errorMessage = error.message;
+    }
+    
+    res.status(statusCode).json({
       success: false,
-      error: 'Failed to get messages',
+      error: errorMessage,
+      code: errorCode,
       details: error.message
     });
   }
@@ -328,9 +381,28 @@ router.get('/:bookingId/instructions', [
 
   } catch (error) {
     console.error('❌ Error fetching driver instructions:', error);
-    res.status(500).json({
+    
+    // ✅ CRITICAL FIX: Enhanced error handling with specific error codes
+    let statusCode = 500;
+    let errorMessage = 'Failed to fetch instructions';
+    let errorCode = 'INSTRUCTIONS_FETCH_ERROR';
+    
+    if (error.code === 'permission-denied') {
+      statusCode = 403;
+      errorMessage = 'Access denied - only the assigned driver can view instructions';
+      errorCode = 'ACCESS_DENIED';
+    } else if (error.code === 'not-found' || error.message?.includes('not found')) {
+      statusCode = 404;
+      errorMessage = 'Booking not found';
+      errorCode = 'BOOKING_NOT_FOUND';
+    } else if (error.message) {
+      errorMessage = error.message;
+    }
+    
+    res.status(statusCode).json({
       success: false,
-      error: 'Failed to fetch instructions',
+      error: errorMessage,
+      code: errorCode,
       details: error.message
     });
   }

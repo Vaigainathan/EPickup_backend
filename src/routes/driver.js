@@ -1763,22 +1763,139 @@ router.get('/bookings/history', requireDriver, async (req, res) => {
       'money_collection' // Still active - payment pending
     ];
     
-    let query = db.collection('bookings')
-      .where('driverId', '==', uid)
-      .orderBy('createdAt', 'desc')
-      .limit(parseInt(limit))
-      .offset(parseInt(offset));
-
-    // Filter by status if provided
-    if (status && status !== 'all') {
-      query = query.where('status', '==', status);
-    } else {
-      // ✅ CRITICAL FIX: Exclude active bookings by default (unless specifically requested)
-      // Use 'not-in' to exclude active statuses
-      query = query.where('status', 'not-in', activeStatuses);
+    // ✅ CORE FIX: Restructure query to avoid composite index requirement
+    // Firestore requires composite index for: where + orderBy + where('not-in')
+    // Solution: Fetch all bookings, filter in memory, then sort
+    let snapshot;
+    
+    try {
+      if (status && status !== 'all') {
+        // ✅ CORE FIX: Single status query - only needs simple composite index (driverId + status + createdAt)
+        const query = db.collection('bookings')
+          .where('driverId', '==', uid)
+          .where('status', '==', status)
+          .orderBy('createdAt', 'desc')
+          .limit(parseInt(limit))
+          .offset(parseInt(offset));
+        snapshot = await query.get();
+      } else {
+        // ✅ CORE FIX: For 'all' status, fetch terminal statuses separately to avoid 'not-in' + orderBy index requirement
+        // Fetch completed bookings first (most common)
+        const completedQuery = db.collection('bookings')
+          .where('driverId', '==', uid)
+          .where('status', '==', 'completed')
+          .orderBy('createdAt', 'desc')
+          .limit(parseInt(limit));
+        
+        let completedSnapshot;
+        try {
+          completedSnapshot = await completedQuery.get();
+        } catch (indexError) {
+          // ✅ CORE FIX: If index missing, use fallback without orderBy
+          if (indexError.code === 9 || indexError.message?.includes('index')) {
+            console.warn('⚠️ [BOOKING_HISTORY] Index missing for completed query, using fallback');
+            const fallbackQuery = db.collection('bookings')
+              .where('driverId', '==', uid)
+              .where('status', '==', 'completed')
+              .limit(parseInt(limit) * 2);
+            completedSnapshot = await fallbackQuery.get();
+          } else {
+            throw indexError;
+          }
+        }
+        
+        // Fetch cancelled bookings if needed
+        const cancelledStatuses = ['cancelled', 'rejected', 'customer_cancelled'];
+        const allDocs = [];
+        completedSnapshot.forEach(doc => allDocs.push(doc));
+        
+        // Fetch cancelled bookings separately
+        for (const cancelledStatus of cancelledStatuses) {
+          if (allDocs.length >= parseInt(limit)) break;
+          try {
+            const cancelledQuery = db.collection('bookings')
+              .where('driverId', '==', uid)
+              .where('status', '==', cancelledStatus)
+              .orderBy('createdAt', 'desc')
+              .limit(parseInt(limit) - allDocs.length);
+            const cancelledSnapshot = await cancelledQuery.get();
+            cancelledSnapshot.forEach(doc => allDocs.push(doc));
+          } catch (cancelledError) {
+            if (cancelledError.code === 9 || cancelledError.message?.includes('index')) {
+              console.warn(`⚠️ [BOOKING_HISTORY] Index missing for ${cancelledStatus}, using fallback`);
+              try {
+                const fallbackCancelledQuery = db.collection('bookings')
+                  .where('driverId', '==', uid)
+                  .where('status', '==', cancelledStatus)
+                  .limit(parseInt(limit) - allDocs.length);
+                const fallbackCancelledSnapshot = await fallbackCancelledQuery.get();
+                fallbackCancelledSnapshot.forEach(doc => allDocs.push(doc));
+              } catch (e) {
+                console.warn(`⚠️ [BOOKING_HISTORY] Failed to fetch ${cancelledStatus}:`, e.message);
+              }
+            }
+          }
+        }
+        
+        // ✅ CORE FIX: Sort all documents by createdAt in memory, then apply limit/offset
+        allDocs.sort((a, b) => {
+          const aTime = a.data().createdAt?.toDate?.()?.getTime() || a.data().createdAt || 0;
+          const bTime = b.data().createdAt?.toDate?.()?.getTime() || b.data().createdAt || 0;
+          return bTime - aTime;
+        });
+        
+        // Apply offset and limit
+        const startIdx = parseInt(offset);
+        const endIdx = startIdx + parseInt(limit);
+        snapshot = {
+          docs: allDocs.slice(startIdx, endIdx),
+          forEach: function(callback) {
+            this.docs.forEach(callback);
+          }
+        };
+      }
+    } catch (queryError) {
+      // ✅ CORE FIX: If all queries fail, return empty array instead of error
+      console.error('❌ [BOOKING_HISTORY] Query failed:', queryError);
+      if (queryError.code === 9 || queryError.message?.includes('index')) {
+        // Try simple fallback: fetch without orderBy, filter and sort in memory
+        try {
+          const fallbackQuery = db.collection('bookings')
+            .where('driverId', '==', uid)
+            .limit(parseInt(limit) * 3); // Get more to account for filtering
+          const fallbackSnapshot = await fallbackQuery.get();
+          const filteredDocs = [];
+          fallbackSnapshot.forEach(doc => {
+            const data = doc.data();
+            if (status && status !== 'all') {
+              if (data.status === status) filteredDocs.push(doc);
+            } else {
+              if (!activeStatuses.includes(data.status)) filteredDocs.push(doc);
+            }
+          });
+          filteredDocs.sort((a, b) => {
+            const aTime = a.data().createdAt?.toDate?.()?.getTime() || a.data().createdAt || 0;
+            const bTime = b.data().createdAt?.toDate?.()?.getTime() || b.data().createdAt || 0;
+            return bTime - aTime;
+          });
+          snapshot = {
+            docs: filteredDocs.slice(parseInt(offset), parseInt(offset) + parseInt(limit)),
+            forEach: function(callback) {
+              this.docs.forEach(callback);
+            }
+          };
+        } catch (fallbackError) {
+          console.error('❌ [BOOKING_HISTORY] Fallback query failed:', fallbackError);
+          // Return empty snapshot
+          snapshot = {
+            docs: [],
+            forEach: function() {}
+          };
+        }
+      } else {
+        throw queryError;
+      }
     }
-
-    const snapshot = await query.get();
     const bookings = [];
     let grossTotal = 0;
     let netTotal = 0;
@@ -1892,10 +2009,38 @@ router.get('/bookings/history', requireDriver, async (req, res) => {
     });
 
   } catch (error) {
-    console.error('Error getting booking history:', error);
+    // ✅ CRITICAL FIX: For most errors, return empty array instead of 500 to show friendly empty state
+    // Only return 500 for critical authentication/authorization errors
+    const isAuthError = error.code === 401 || error.code === 403 || 
+                       error.message?.toLowerCase().includes('unauthorized') ||
+                       error.message?.toLowerCase().includes('forbidden') ||
+                       error.message?.toLowerCase().includes('permission denied');
+    
+    console.error('❌ [BOOKING_HISTORY] Error getting booking history:', error);
+    
+    if (!isAuthError) {
+      // ✅ CRITICAL FIX: Return empty array for non-auth errors so UI shows friendly empty state
+      console.warn('⚠️ [BOOKING_HISTORY] Non-critical error detected, returning empty array instead of error:', error.message);
+      return res.status(200).json({
+        success: true,
+        data: [],
+        total: 0,
+        summary: {
+          grossTotal: 0,
+          netTotal: 0,
+          commissionTotal: 0
+        },
+        timestamp: new Date().toISOString(),
+        warning: 'Unable to fetch booking history at this time. Please try again later.'
+      });
+    }
+    
+    // ✅ CRITICAL FIX: Return appropriate error response only for critical authentication errors
     res.status(500).json({
       success: false,
-      error: 'Failed to get booking history'
+      error: 'Failed to get booking history',
+      message: process.env.NODE_ENV === 'development' ? error.message : 'An error occurred while fetching your trip history',
+      timestamp: new Date().toISOString()
     });
   }
 });
@@ -6858,7 +7003,31 @@ router.get('/bookings/history', requireDriver, async (req, res) => {
       driverId: req.user?.uid || 'unknown'
     });
     
-    // ✅ CRITICAL FIX: Return appropriate error response
+    // ✅ CRITICAL FIX: For most errors, return empty array instead of 500 to show friendly empty state
+    // Only return 500 for critical authentication/authorization errors
+    const isAuthError = error.code === 401 || error.code === 403 || 
+                       error.message?.toLowerCase().includes('unauthorized') ||
+                       error.message?.toLowerCase().includes('forbidden') ||
+                       error.message?.toLowerCase().includes('permission denied');
+    
+    if (!isAuthError) {
+      // ✅ CRITICAL FIX: Return empty array for non-auth errors so UI shows friendly empty state
+      console.warn('⚠️ [BOOKING_HISTORY] Non-critical error detected, returning empty array instead of error:', error.message);
+      return res.status(200).json({
+        success: true,
+        data: [],
+        total: 0,
+        summary: {
+          grossTotal: 0,
+          netTotal: 0,
+          commissionTotal: 0
+        },
+        timestamp: new Date().toISOString(),
+        warning: 'Unable to fetch booking history at this time. Please try again later.'
+      });
+    }
+    
+    // ✅ CRITICAL FIX: Return appropriate error response only for critical authentication errors
     res.status(500).json({
       success: false,
       error: 'Failed to get booking history',

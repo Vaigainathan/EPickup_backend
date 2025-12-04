@@ -90,8 +90,23 @@ router.post('/tracking/update', [
       try {
         const { getSocketIO } = require('../services/socket');
         const io = getSocketIO();
+        
+        // ✅ CRITICAL FIX: Emit to both rooms and log for debugging
+        const userRoomSize = io.sockets.adapter.rooms.get(userRoom)?.size || 0;
+        const bookingRoomSize = io.sockets.adapter.rooms.get(bookingRoom)?.size || 0;
+        
         io.to(userRoom).emit('driver_location_update', payload);
         io.to(bookingRoom).emit('driver_location_update', payload);
+        
+        console.log(`📍 [DRIVER_TRACKING] Location update emitted:`, {
+          bookingId,
+          driverId,
+          userRoom,
+          bookingRoom,
+          userRoomSize,
+          bookingRoomSize,
+          location: { lat: payload.location.latitude, lng: payload.location.longitude }
+        });
       } catch (ioErr) {
         console.error('❌ [DRIVER] Emit location failed:', ioErr);
       }
@@ -5046,6 +5061,40 @@ router.post('/bookings/:id/accept', requireDriver, async (req, res) => {
         driverName: driverData.name,
         assignedAt: new Date().toISOString()
       });
+
+      // ✅ CRITICAL FIX: Join driver to booking room for chat messages
+      try {
+        const { getSocketIO } = require('../services/socket');
+        const io = getSocketIO();
+        if (io) {
+          // Get all sockets for this driver
+          const driverSockets = await io.in(`user:${uid}`).fetchSockets();
+          const bookingRoom = `booking:${id}`;
+          
+          // Join all driver sockets to booking room
+          driverSockets.forEach(socket => {
+            socket.join(bookingRoom);
+            console.log(`✅ [ACCEPT_BOOKING] Driver ${uid} socket ${socket.id} joined booking room: ${bookingRoom}`);
+          });
+          
+          // Also join to trip room for backward compatibility
+          const tripRoom = `trip:${id}`;
+          driverSockets.forEach(socket => {
+            socket.join(tripRoom);
+            console.log(`✅ [ACCEPT_BOOKING] Driver ${uid} socket ${socket.id} joined trip room: ${tripRoom}`);
+          });
+          
+          // Emit confirmation to driver
+          io.to(`user:${uid}`).emit('booking-room-joined', {
+            success: true,
+            bookingId: id,
+            room: bookingRoom
+          });
+        }
+      } catch (roomJoinError) {
+        console.error('❌ [ACCEPT_BOOKING] Error joining driver to booking room:', roomJoinError);
+        // Don't fail the request if room join fails
+      }
 
     } catch (wsError) {
       console.error('Error sending WebSocket notifications:', wsError);

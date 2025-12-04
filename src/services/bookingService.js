@@ -84,6 +84,13 @@ class BookingService {
         const bookingId = this.db.collection('bookings').doc().id;
         const bookingRef = this.db.collection('bookings').doc(bookingId);
         
+        // ✅ CRITICAL FIX: Ensure specialInstructions is preserved in package object
+        const packageData = {
+          ...packageInfo,
+          // Explicitly preserve specialInstructions if provided
+          specialInstructions: packageInfo?.specialInstructions || ''
+        };
+
         // Create booking document
         const booking = {
           id: bookingId,
@@ -96,7 +103,7 @@ class BookingService {
             ...dropoff,
             coordinates: new GeoPoint(dropoff.coordinates.latitude, dropoff.coordinates.longitude)
           },
-          package: packageInfo,
+          package: packageData, // ✅ CRITICAL FIX: Use packageData that explicitly includes specialInstructions
           vehicle,
           paymentMethod,
           status: 'pending', // Initial status - waiting for driver acceptance

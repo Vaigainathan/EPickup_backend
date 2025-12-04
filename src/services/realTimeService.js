@@ -148,9 +148,11 @@ class RealTimeService {
         ...options
       };
 
-      // Send via Socket.IO to trip subscribers
+      // ✅ CRITICAL FIX: Emit to both trip:${tripId} and booking:${tripId} for backward compatibility
+      // Backend chat route uses booking:${bookingId}, so we need to support both
       if (this.io) {
         this.io.to(`trip:${tripId}`).emit('chat_message', messageData);
+        this.io.to(`booking:${tripId}`).emit('chat_message', messageData); // ✅ CRITICAL FIX: Also emit to booking room
       }
 
       // Store in Firestore for persistence
@@ -189,9 +191,10 @@ class RealTimeService {
         timestamp: new Date().toISOString()
       };
 
-      // Send via Socket.IO to trip subscribers
+      // ✅ CRITICAL FIX: Emit to both trip:${tripId} and booking:${tripId} for backward compatibility
       if (this.io) {
         this.io.to(`trip:${tripId}`).emit('typing_indicator', typingData);
+        this.io.to(`booking:${tripId}`).emit('typing_indicator', typingData); // ✅ CRITICAL FIX: Also emit to booking room
       }
 
     } catch (error) {

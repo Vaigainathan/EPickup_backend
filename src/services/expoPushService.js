@@ -62,8 +62,10 @@ class ExpoPushService {
    */
   async sendToUser(userId, notification, options = {}) {
     try {
+      // ✅ FIX: Use getDb() to ensure database is initialized
+      const db = this.getDb();
       // Get user's Expo push token
-      const userDoc = await this.db.collection('users').doc(userId).get();
+      const userDoc = await db.collection('users').doc(userId).get();
       if (!userDoc.exists) {
         return {
           success: false,
@@ -127,9 +129,11 @@ class ExpoPushService {
    */
   async sendToMultipleUsers(userIds, notification, options = {}) {
     try {
+      // ✅ FIX: Use getDb() to ensure database is initialized
+      const db = this.getDb();
       // Get all users' Expo push tokens
       const userDocs = await Promise.all(
-        userIds.map(id => this.db.collection('users').doc(id).get())
+        userIds.map(id => db.collection('users').doc(id).get())
       );
 
       const tokens = [];
@@ -275,8 +279,10 @@ class ExpoPushService {
         };
       }
 
+      // ✅ FIX: Use getDb() to ensure database is initialized
+      const db = this.getDb();
       // Update user's Expo push token (use set with merge to create document if it doesn't exist)
-      await this.db.collection('users').doc(userId).set({
+      await db.collection('users').doc(userId).set({
         expoPushToken,
         deviceInfo: {
           platform: deviceInfo.platform || 'unknown',
@@ -315,8 +321,10 @@ class ExpoPushService {
    */
   async unregisterToken(userId) {
     try {
+      // ✅ FIX: Use getDb() to ensure database is initialized
+      const db = this.getDb();
       // Remove user's Expo push token (use set with merge to avoid errors if document doesn't exist)
-      await this.db.collection('users').doc(userId).set({
+      await db.collection('users').doc(userId).set({
         expoPushToken: null,
         tokenUpdatedAt: new Date()
       }, { merge: true });
@@ -481,7 +489,9 @@ class ExpoPushService {
    */
   async saveNotification(userId, notification, status, errorMessage = null) {
     try {
-      await this.db.collection('notifications').add({
+      // ✅ FIX: Use getDb() to ensure database is initialized
+      const db = this.getDb();
+      await db.collection('notifications').add({
         userId,
         title: notification.title,
         body: notification.body,
@@ -504,7 +514,9 @@ class ExpoPushService {
    */
   async getNotificationHistory(userId, filters = {}) {
     try {
-      let query = this.db.collection('notifications').where('userId', '==', userId);
+      // ✅ FIX: Use getDb() to ensure database is initialized
+      const db = this.getDb();
+      let query = db.collection('notifications').where('userId', '==', userId);
 
       if (filters.type) {
         query = query.where('type', '==', filters.type);
@@ -537,7 +549,9 @@ class ExpoPushService {
    */
   async getNotificationStatistics(filters = {}) {
     try {
-      let query = this.db.collection('notifications');
+      // ✅ FIX: Use getDb() to ensure database is initialized
+      const db = this.getDb();
+      let query = db.collection('notifications');
 
       if (filters.userId) {
         query = query.where('userId', '==', filters.userId);

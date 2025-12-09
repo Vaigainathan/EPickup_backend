@@ -7698,6 +7698,70 @@ router.put('/bookings/:id/status', [
       console.warn('⚠️ [STATUS_UPDATE] Failed to update trip tracking:', trackingError);
     }
 
+    // ✅ Send push notifications for key status changes
+    if (statusResult.booking?.customerId && !statusResult.idempotent) {
+      try {
+        const notificationService = require('../services/notificationService');
+        const status = statusResult.status;
+        
+        // Send appropriate notification based on status with sound configuration
+        if (status === 'driver_enroute') {
+          await notificationService.sendToUser(statusResult.booking.customerId, {
+            title: 'Driver is on the way! 🚀',
+            body: 'Your driver is heading to the pickup location.',
+            type: 'driver_enroute',
+            bookingId: id,
+            driverId: uid,
+            data: { status, bookingId: id }
+          }, {
+            sound: 'default', // Status update sound
+            priority: 'high'
+          });
+        } else if (status === 'driver_arrived') {
+          await notificationService.sendToUser(statusResult.booking.customerId, {
+            title: 'Driver has arrived! 📍',
+            body: 'Your driver has arrived at the pickup location. Please meet them outside.',
+            type: 'driver_arrived',
+            bookingId: id,
+            driverId: uid,
+            data: { status, bookingId: id }
+          }, {
+            sound: 'default', // Arrival sound (important)
+            priority: 'high'
+          });
+        } else if (status === 'picked_up') {
+          await notificationService.sendToUser(statusResult.booking.customerId, {
+            title: 'Package picked up! 📦',
+            body: 'Your package has been picked up and is on its way to the destination.',
+            type: 'picked_up',
+            bookingId: id,
+            driverId: uid,
+            data: { status, bookingId: id }
+          }, {
+            sound: 'default', // Pickup confirmation sound
+            priority: 'high'
+          });
+        } else if (status === 'in_transit') {
+          await notificationService.sendToUser(statusResult.booking.customerId, {
+            title: 'Package in transit 🚚',
+            body: 'Your package is on its way to the destination. Track progress in real-time.',
+            type: 'in_transit',
+            bookingId: id,
+            driverId: uid,
+            data: { status, bookingId: id }
+          }, {
+            sound: 'default', // Status update sound
+            priority: 'normal'
+          });
+        }
+        
+        console.log(`✅ [STATUS_UPDATE] Push notification sent for status: ${status}`);
+      } catch (notifyError) {
+        console.warn('⚠️ [STATUS_UPDATE] Failed to send push notification:', notifyError);
+        // Don't fail status update if notification fails
+      }
+    }
+
     res.status(200).json({
       success: true,
       message: statusResult.idempotent
@@ -7847,6 +7911,28 @@ router.post('/confirm-pickup', [
         console.log(`📤 [CONFIRM_PICKUP] Notified customer ${statusResult.booking.customerId} about pickup confirmation`);
       } catch (notifyError) {
         console.error('❌ [CONFIRM_PICKUP] Error notifying customer:', notifyError);
+      }
+    }
+
+    // ✅ Send push notification to customer about pickup
+    if (statusResult.booking?.customerId) {
+      try {
+        const notificationService = require('../services/notificationService');
+        await notificationService.sendToUser(statusResult.booking.customerId, {
+          title: 'Package picked up! 📦',
+          body: 'Your package has been picked up and is on its way to the destination.',
+          type: 'picked_up',
+          bookingId: bookingId,
+          driverId: uid,
+          data: { status: 'picked_up', bookingId }
+        }, {
+          sound: 'default', // Pickup confirmation sound
+          priority: 'high'
+        });
+        console.log(`✅ [CONFIRM_PICKUP] Push notification sent to customer for pickup ${bookingId}`);
+      } catch (pushError) {
+        console.warn('⚠️ [CONFIRM_PICKUP] Failed to send push notification to customer:', pushError);
+        // Don't fail pickup if push notification fails
       }
     }
 
@@ -8026,6 +8112,18 @@ router.post('/complete-delivery', [
       } catch (notifyError) {
         console.error('❌ [COMPLETE_DELIVERY] Error notifying customer:', notifyError);
         // Don't fail delivery if notification fails
+      }
+    }
+
+    // ✅ Send push notification to customer about delivery completion
+    if (statusResult.booking?.customerId) {
+      try {
+        const notificationService = require('../services/notificationService');
+        await notificationService.notifyCustomerPackageDelivered(statusResult.booking);
+        console.log(`✅ [COMPLETE_DELIVERY] Push notification sent to customer for delivery ${bookingId}`);
+      } catch (pushError) {
+        console.warn('⚠️ [COMPLETE_DELIVERY] Failed to send push notification to customer:', pushError);
+        // Don't fail delivery if push notification fails
       }
     }
 

@@ -1,26 +1,30 @@
 const admin = require('firebase-admin');
 const { getFirestore } = require('./firebase');
 const { NotificationBuilder, NotificationTemplateProcessor } = require('./notificationTemplates');
+const expoPushService = require('./expoPushService');
 
 /**
- * Push Notification Service for EPickup
- * Handles Firebase Cloud Messaging for real-time notifications
+ * Unified Push Notification Service for EPickup
+ * Handles both Expo Push Notifications and Firebase Cloud Messaging
+ * Prefers Expo when available, falls back to FCM for backward compatibility
  */
 class NotificationService {
   constructor() {
     this.db = getFirestore();
     this.messaging = admin.messaging();
+    this.expoService = expoPushService;
   }
 
   /**
    * Send notification to specific user
    * @param {string} userId - User ID
    * @param {Object} notification - Notification data
+   * @param {Object} options - Additional options (sound, priority, etc.)
    * @returns {Object} Send result
    */
-  async sendToUser(userId, notification) {
+  async sendToUser(userId, notification, options = {}) {
     try {
-      // Get user's FCM token
+      // Get user's push tokens
       const userDoc = await this.db.collection('users').doc(userId).get();
       if (!userDoc.exists) {
         return {
@@ -33,7 +37,28 @@ class NotificationService {
       }
 
       const userData = userDoc.data();
-      const token = userData.fcmToken;
+      const expoToken = userData.expoPushToken;
+      const fcmToken = userData.fcmToken;
+
+      // ✅ Prefer Expo token if available (since we're using Expo in apps)
+      if (expoToken) {
+        console.log(`📱 [NotificationService] Using Expo push token for user: ${userId}`);
+        return await this.expoService.sendToUser(userId, notification, options);
+      }
+
+      // Fallback to FCM if Expo token not available (backward compatibility)
+      if (!fcmToken) {
+        return {
+          success: false,
+          error: {
+            code: 'NO_PUSH_TOKEN',
+            message: 'User has no push token (neither Expo nor FCM)'
+          }
+        };
+      }
+
+      console.log(`📱 [NotificationService] Using FCM token for user: ${userId} (fallback)`);
+      const token = fcmToken;
 
       // Basic validation before hitting FCM to avoid noisy errors
       if (!token || typeof token !== 'string' || token.trim().length < 80) {
@@ -71,15 +96,15 @@ class NotificationService {
         },
         android: {
           notification: {
-            sound: 'default',
-            priority: 'high',
+            sound: options.sound || 'default', // ✅ FIX: Use options parameter
+            priority: options.priority || 'high', // ✅ FIX: Use options parameter
             channelId: 'epickup_notifications'
           }
         },
         apns: {
           payload: {
             aps: {
-              sound: 'default',
+              sound: options.sound || 'default', // ✅ FIX: Use options parameter
               badge: 1
             }
           }
@@ -743,7 +768,11 @@ class NotificationService {
   async notifyCustomerBookingCreated(bookingData) {
     try {
       const notification = NotificationBuilder.customerBookingCreated(bookingData);
-      return await this.sendToUser(bookingData.customerId, notification);
+      // ✅ Add sound configuration
+      return await this.sendToUser(bookingData.customerId, notification, {
+        sound: 'default', // Booking confirmation sound
+        priority: 'high'
+      });
     } catch (error) {
       console.error('Error sending customer booking created notification:', error);
       return { success: false, error: error.message };
@@ -756,7 +785,11 @@ class NotificationService {
   async notifyCustomerDriverAssigned(bookingData, driverData) {
     try {
       const notification = NotificationBuilder.customerDriverAssigned(bookingData, driverData);
-      return await this.sendToUser(bookingData.customerId, notification);
+      // ✅ Add sound configuration
+      return await this.sendToUser(bookingData.customerId, notification, {
+        sound: 'default', // Driver assigned sound
+        priority: 'high'
+      });
     } catch (error) {
       console.error('Error sending driver assigned notification:', error);
       return { success: false, error: error.message };
@@ -769,7 +802,11 @@ class NotificationService {
   async notifyDriverNewBookingRequest(bookingData, driverId) {
     try {
       const notification = NotificationBuilder.driverNewBookingRequest(bookingData);
-      return await this.sendToUser(driverId, notification);
+      // ✅ Add sound configuration - URGENT for new orders (most critical)
+      return await this.sendToUser(driverId, notification, {
+        sound: 'default', // Urgent sound for new orders
+        priority: 'high'
+      });
     } catch (error) {
       console.error('Error sending new booking request notification:', error);
       return { success: false, error: error.message };
@@ -782,7 +819,11 @@ class NotificationService {
   async notifyCustomerPackageDelivered(bookingData) {
     try {
       const notification = NotificationBuilder.customerPackageDelivered(bookingData);
-      return await this.sendToUser(bookingData.customerId, notification);
+      // ✅ Add sound configuration - Success sound for delivery
+      return await this.sendToUser(bookingData.customerId, notification, {
+        sound: 'default', // Success sound for delivery
+        priority: 'high'
+      });
     } catch (error) {
       console.error('Error sending package delivered notification:', error);
       return { success: false, error: error.message };

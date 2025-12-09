@@ -33,27 +33,51 @@ router.post('/register', [
     const { token: fcmToken, deviceId, platform, userType } = req.body;
     const userId = req.user.uid; // This is the role-based UID from JWT
 
-    // ✅ FIX: Use role-based UID for FCM token storage
-    console.log(`🔔 [FCM_TOKEN] Registering FCM token for user: ${userId} (role-based UID)`);
-    console.log(`🔔 [FCM_TOKEN] Token data:`, { fcmToken: fcmToken?.substring(0, 20) + '...', deviceId, platform, userType });
+    // ✅ FIX: Detect token type and store in correct field
+    // Expo tokens start with "ExponentPushToken[" and FCM tokens are long strings without brackets
+    const isExpoToken = fcmToken && fcmToken.startsWith('ExponentPushToken[');
+    const isFCMToken = fcmToken && fcmToken.length > 100 && !fcmToken.includes('[');
+
+    console.log(`🔔 [PUSH_TOKEN] Registering push token for user: ${userId} (role-based UID)`);
+    console.log(`🔔 [PUSH_TOKEN] Token type: ${isExpoToken ? 'Expo' : isFCMToken ? 'FCM' : 'Unknown'}`);
+    console.log(`🔔 [PUSH_TOKEN] Token data:`, { token: fcmToken?.substring(0, 20) + '...', deviceId, platform, userType });
     
-    // Update user's FCM token (use set with merge to create document if it doesn't exist)
-    await db.collection('users').doc(userId).set({
-      fcmToken,
+    // Build update data
+    const updateData = {
       deviceId,
       platform,
       userType: userType || req.user.userType,
       tokenUpdatedAt: new Date(),
-      // ✅ FIX: Store additional metadata for debugging
-      registrationSource: 'customer_app',
+      registrationSource: userType || 'unknown',
       lastSeen: new Date()
-    }, { merge: true });
+    };
 
-    console.log(`✅ [FCM_TOKEN] FCM token registered successfully for user: ${userId}`);
+    // ✅ Store in correct field based on token type
+    if (isExpoToken) {
+      updateData.expoPushToken = fcmToken; // Store Expo token in expoPushToken field
+      // Keep existing fcmToken if it exists (backward compatibility)
+      console.log(`✅ [PUSH_TOKEN] Expo push token stored for user: ${userId}`);
+    } else if (isFCMToken) {
+      updateData.fcmToken = fcmToken; // Store FCM token in fcmToken field
+      console.log(`✅ [PUSH_TOKEN] FCM token stored for user: ${userId}`);
+    } else {
+      // Unknown token type - store in both fields for backward compatibility
+      updateData.expoPushToken = fcmToken;
+      updateData.fcmToken = fcmToken;
+      console.warn(`⚠️ [PUSH_TOKEN] Unknown token type, stored in both fields for user: ${userId}`);
+    }
+
+    // Update user's push token (use set with merge to create document if it doesn't exist)
+    await db.collection('users').doc(userId).set(updateData, { merge: true });
+
+    console.log(`✅ [PUSH_TOKEN] Push token registered successfully for user: ${userId}`);
 
     res.status(200).json({
       success: true,
-      message: 'FCM token registered successfully'
+      message: 'Push token registered successfully',
+      data: {
+        tokenType: isExpoToken ? 'expo' : isFCMToken ? 'fcm' : 'unknown'
+      }
     });
   } catch (error) {
     console.error('FCM token registration error:', error);
@@ -78,8 +102,9 @@ router.post('/unregister', [
   try {
     const userId = req.user.uid;
 
-    // Remove FCM token from user (use set with merge to avoid errors if document doesn't exist)
+    // Remove push tokens from user (use set with merge to avoid errors if document doesn't exist)
     await db.collection('users').doc(userId).set({
+      expoPushToken: null,
       fcmToken: null,
       deviceId: null,
       platform: null,

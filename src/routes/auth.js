@@ -4,6 +4,8 @@ const {
   firebaseTokenVerifyLimiter, 
   createProgressiveSlowDown 
 } = require('../middleware/smartRateLimit');
+const asyncHandler = require('express-async-handler');
+const { getFirestore } = require('../services/firebase');
 const router = express.Router();
 
 // ✅ CRITICAL FIX: Use smart rate limiter for Firebase token verification
@@ -177,6 +179,85 @@ router.post('/check-phone', async (req, res) => {
     });
   }
 });
+
+/**
+ * Reviewer login - create custom token without OTP (guarded by env and phone allowlist)
+ * POST /api/auth/reviewer-login
+ */
+router.post('/reviewer-login', asyncHandler(async (req, res) => {
+  const reviewerBypassEnabled = process.env.REVIEWER_BYPASS_ENABLED === 'true';
+  const { phoneNumber, userType } = req.body || {};
+
+  if (!reviewerBypassEnabled) {
+    return res.status(403).json({
+      success: false,
+      error: {
+        code: 'REVIEWER_MODE_DISABLED',
+        message: 'Reviewer mode is disabled'
+      }
+    });
+  }
+
+  const normalizedType = (userType || '').toString().trim().toLowerCase();
+  const isCustomer = normalizedType === 'customer';
+  const isDriver = normalizedType === 'driver';
+  const reviewerCustomerPhone = process.env.REVIEWER_CUSTOMER_PHONE;
+  const reviewerDriverPhone = process.env.REVIEWER_DRIVER_PHONE;
+
+  // ✅ FIX: Normalize phone numbers before comparison
+  const { comparePhoneNumbers } = require('../utils/phoneUtils');
+  const isAllowedCustomer = isCustomer && comparePhoneNumbers(phoneNumber, reviewerCustomerPhone);
+  const isAllowedDriver = isDriver && comparePhoneNumbers(phoneNumber, reviewerDriverPhone);
+
+  if (!isAllowedCustomer && !isAllowedDriver) {
+    return res.status(403).json({
+      success: false,
+      error: {
+        code: 'NOT_REVIEWER_PHONE',
+        message: 'Phone number not authorized for reviewer login'
+      }
+    });
+  }
+
+  const firebaseAuthService = require('../services/firebaseAuthService');
+  firebaseAuthService.ensureInitialized();
+
+  let userRecord = null;
+  try {
+    userRecord = await firebaseAuthService.getUserByPhoneNumber(phoneNumber);
+  } catch {
+    userRecord = null;
+  }
+
+  if (!userRecord) {
+    const safeEmail = `reviewer_${phoneNumber.replace(/[^0-9]/g, '')}@epickup.reviewer`;
+    userRecord = await firebaseAuthService.createUser({
+      phoneNumber,
+      email: safeEmail
+    });
+  }
+
+  const customToken = await firebaseAuthService.createCustomToken(userRecord.uid, {
+    reviewer: true,
+    phone: phoneNumber,
+    userType: normalizedType
+  });
+
+  console.log('🔓 [REVIEWER] Custom token issued for reviewer login', {
+    phoneNumber,
+    userType: normalizedType,
+    firebaseUID: userRecord.uid,
+    timestamp: new Date().toISOString()
+  });
+
+  return res.json({
+    success: true,
+    data: {
+      firebaseToken: customToken,
+      firebaseUID: userRecord.uid
+    }
+  });
+}));
 
 /**
  * Verify reCAPTCHA token
@@ -375,6 +456,71 @@ router.post('/firebase/verify-token', firebaseTokenVerifyLimiter, createProgress
       originalUID: decodedToken.uid
     });
 
+    // ✅ REVIEWER BYPASS: Auto-verify reviewer accounts (driver + customer)
+    const reviewerBypassEnabled = process.env.REVIEWER_BYPASS_ENABLED === 'true';
+    const reviewerDriverPhone = process.env.REVIEWER_DRIVER_PHONE;
+    const reviewerCustomerPhone = process.env.REVIEWER_CUSTOMER_PHONE;
+    
+    // ✅ FIX: Normalize phone numbers before comparison
+    const { comparePhoneNumbers } = require('../utils/phoneUtils');
+    const isReviewerDriver = reviewerBypassEnabled && finalUserType === 'driver' && comparePhoneNumbers(decodedToken.phone_number, reviewerDriverPhone);
+    const isReviewerCustomer = reviewerBypassEnabled && finalUserType === 'customer' && comparePhoneNumbers(decodedToken.phone_number, reviewerCustomerPhone);
+    
+    if (isReviewerDriver || isReviewerCustomer) {
+      try {
+        const db = getFirestore();
+        const admin = require('firebase-admin');
+        const reviewerName = `Reviewer ${finalUserType === 'driver' ? 'Driver' : 'Customer'}`;
+        
+        const reviewerUpdates = {
+          name: reviewerName,
+          reviewerAccount: true,
+          updatedAt: admin.firestore.FieldValue.serverTimestamp()
+        };
+        
+        if (isReviewerDriver) {
+          // Auto-verify driver documents and set wallet (only drivers have wallets)
+          const reviewerWalletBalance = 500; // ₹500 initial balance for driver reviewers
+          reviewerUpdates.driver = {
+            verificationStatus: 'approved',
+            reviewerAccount: true,
+            documents: {
+              driving_license: { verified: true, status: 'verified', verificationStatus: 'verified', uploadedAt: admin.firestore.FieldValue.serverTimestamp() },
+              aadhaar_card: { verified: true, status: 'verified', verificationStatus: 'verified', uploadedAt: admin.firestore.FieldValue.serverTimestamp() },
+              bike_insurance: { verified: true, status: 'verified', verificationStatus: 'verified', uploadedAt: admin.firestore.FieldValue.serverTimestamp() },
+              rc_book: { verified: true, status: 'verified', verificationStatus: 'verified', uploadedAt: admin.firestore.FieldValue.serverTimestamp() },
+              profile_photo: { verified: true, status: 'verified', verificationStatus: 'verified', uploadedAt: admin.firestore.FieldValue.serverTimestamp() }
+            },
+            wallet: {
+              balance: reviewerWalletBalance,
+              currency: 'INR',
+              lastUpdated: admin.firestore.FieldValue.serverTimestamp(),
+              transactions: []
+            }
+          };
+          reviewerUpdates.verificationStatus = 'approved';
+          
+          // Initialize driver points wallet with ₹500 (500 points = ₹500)
+          const walletService = require('../services/walletService');
+          await walletService.createOrGetPointsWallet(roleBasedUID, 500);
+          console.log('✅ [REVIEWER] Initialized driver points wallet with 500 points (₹500)');
+        } else if (isReviewerCustomer) {
+          // Customer accounts don't have wallets - only set name and reviewer flag
+          // No wallet initialization needed for customers
+        }
+        
+        await db.collection('users').doc(roleBasedUID).set(reviewerUpdates, { merge: true });
+        console.log(`✅ [REVIEWER] Auto-configured reviewer ${finalUserType} account:`, {
+          uid: roleBasedUID,
+          name: reviewerName,
+          walletBalance: isReviewerDriver ? 500 : 'N/A (customers have no wallet)',
+          verified: isReviewerDriver
+        });
+      } catch (reviewerError) {
+        console.error('⚠️ [REVIEWER] Failed to configure reviewer account:', reviewerError);
+      }
+    }
+
     // Set Firebase custom claims with role-based UID
     try {
       const appTypeMap = { customer: 'customer_app', driver: 'driver_app', admin: 'admin_dashboard' };
@@ -400,6 +546,12 @@ router.post('/firebase/verify-token', firebaseTokenVerifyLimiter, createProgress
       console.warn('⚠️ [FIREBASE_AUTH] Warning: Firebase token missing phone_number for user:', decodedToken.uid);
     }
     
+    // ✅ REVIEWER BYPASS: Set default name for reviewers
+    let displayName = name || decodedToken.name || decodedToken.email || decodedToken.phone_number;
+    if ((isReviewerDriver || isReviewerCustomer) && !name) {
+      displayName = `Reviewer ${finalUserType === 'driver' ? 'Driver' : 'Customer'}`;
+    }
+    
     const jwtService = require('../services/jwtService');
     const backendToken = jwtService.generateAccessToken({
       userId: roleBasedUID, // Use role-based UID instead of Firebase UID
@@ -407,7 +559,7 @@ router.post('/firebase/verify-token', firebaseTokenVerifyLimiter, createProgress
       phone: phoneNumber, // ✅ Can be null but never undefined
       metadata: {
         email: decodedToken.email,
-        name: name || decodedToken.name || decodedToken.email || decodedToken.phone_number,
+        name: displayName,
         originalUID: decodedToken.uid
       }
     });
@@ -434,7 +586,7 @@ router.post('/firebase/verify-token', firebaseTokenVerifyLimiter, createProgress
           originalUID: decodedToken.uid, // Include original for reference
           email: decodedToken.email,
           phone_number: decodedToken.phone_number,
-          name: name || decodedToken.name || decodedToken.email || decodedToken.phone_number,
+          name: displayName,
           userType: finalUserType
         }
       },

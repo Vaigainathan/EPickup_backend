@@ -3359,6 +3359,11 @@ router.get('/bookings', requireDriver, async (req, res) => {
 
     const driverData = driverDoc.data();
     const driverLocation = driverData.driver?.currentLocation;
+    const reviewerBypassEnabled = process.env.REVIEWER_BYPASS_ENABLED === 'true';
+    const reviewerDriverPhone = process.env.REVIEWER_DRIVER_PHONE;
+    // ✅ FIX: Normalize phone numbers before comparison
+    const { comparePhoneNumbers } = require('../utils/phoneUtils');
+    const isReviewerDriver = reviewerBypassEnabled && reviewerDriverPhone && comparePhoneNumbers(driverData?.phone, reviewerDriverPhone);
     
     if (!driverLocation) {
       return res.status(400).json({
@@ -3414,7 +3419,7 @@ router.get('/bookings', requireDriver, async (req, res) => {
                              process.env.TESTING_MODE === 'true' || 
                              process.env.BYPASS_RADIUS_CHECK === 'true';
         
-        if ((isWithinTirupatturArea && isWithinDriverRadius) || isTestingMode) {
+        if ((isWithinTirupatturArea && isWithinDriverRadius) || isTestingMode || isReviewerDriver) {
           bookings.push({
             id: doc.id,
             ...bookingData,
@@ -4132,6 +4137,12 @@ router.get('/bookings/available', requireDriver, async (req, res) => {
     let driverData = driverDoc.data();
     const driverLocation = driverData.driver?.currentLocation;
     
+    // ✅ REVIEWER BYPASS: Check if reviewer driver
+    const reviewerBypassEnabled = process.env.REVIEWER_BYPASS_ENABLED === 'true';
+    const reviewerDriverPhone = process.env.REVIEWER_DRIVER_PHONE;
+    const { comparePhoneNumbers } = require('../utils/phoneUtils');
+    const isReviewerDriver = reviewerBypassEnabled && reviewerDriverPhone && comparePhoneNumbers(driverData?.phone, reviewerDriverPhone);
+    
     if (!driverLocation) {
       return res.status(400).json({
         success: false,
@@ -4449,7 +4460,7 @@ router.get('/bookings/available', requireDriver, async (req, res) => {
           willInclude: (isWithinTirupatturArea && isWithinDriverRadius) || isTestingMode || isDeveloperMode
         });
         
-        if ((isWithinTirupatturArea && isWithinDriverRadius) || isTestingMode || isDeveloperMode) {
+        if ((isWithinTirupatturArea && isWithinDriverRadius) || isTestingMode || isDeveloperMode || isReviewerDriver) {
           // ✅ CRITICAL FIX: Normalize coordinates to plain objects for frontend
           const normalizedBooking = {
             id: doc.id,
@@ -8313,7 +8324,40 @@ router.post('/bookings/:id/validate-radius', [
       });
     }
 
+    // ✅ REVIEWER BYPASS: Check if reviewer driver
+    const reviewerBypassEnabled = process.env.REVIEWER_BYPASS_ENABLED === 'true';
+    const reviewerDriverPhone = process.env.REVIEWER_DRIVER_PHONE;
+    let isReviewerDriver = false;
+    if (reviewerBypassEnabled && reviewerDriverPhone) {
+      try {
+        const driverDoc = await db.collection('users').doc(uid).get();
+        const driverPhone = driverDoc?.data()?.phone;
+        const { comparePhoneNumbers } = require('../utils/phoneUtils');
+        isReviewerDriver = comparePhoneNumbers(driverPhone, reviewerDriverPhone);
+      } catch (reviewerCheckError) {
+        console.warn('⚠️ [REVIEWER] Failed to check reviewer driver status:', reviewerCheckError);
+      }
+    }
+
     // First check if pickup location is within Tirupattur service area
+    if (isReviewerDriver) {
+      console.log('🔓 [REVIEWER] Skipping service area validation for reviewer driver');
+      return res.status(200).json({
+        success: true,
+        data: {
+          isWithinRadius: true,
+          distance: 0,
+          distanceFormatted: '0km',
+          eta: 0,
+          etaFormatted: '0 min',
+          serviceRadiusKm,
+          pickupLocation: bookingData.pickup.coordinates,
+          driverLocation
+        },
+        reviewerBypass: true,
+        timestamp: new Date().toISOString()
+      });
+    }
     const tirupatturCenter = {
       latitude: 12.4950,
       longitude: 78.5678

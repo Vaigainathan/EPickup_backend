@@ -1399,6 +1399,14 @@ class BookingService {
    */
   async validateServiceArea(bookingData) {
     try {
+      // ✅ REVIEWER BYPASS: Skip validation when reviewer flag is set
+      if (bookingData?.reviewerBypass) {
+        return {
+          isValid: true,
+          message: 'Reviewer bypass enabled - service area validation skipped',
+          reviewerBypass: true
+        };
+      }
       return serviceAreaValidation.validateBookingLocations(bookingData);
     } catch (error) {
       console.error('Error validating service area:', error);

@@ -114,6 +114,28 @@ router.post('/', [
       idempotencyKey: idempotencyKey // Store for future duplicate checks
     };
 
+    // ✅ REVIEWER BYPASS: Allow reviewer customer to skip location restriction
+    const reviewerBypassEnabled = process.env.REVIEWER_BYPASS_ENABLED === 'true';
+    const reviewerCustomerPhone = process.env.REVIEWER_CUSTOMER_PHONE;
+    let isReviewerCustomer = false;
+
+    if (reviewerBypassEnabled && reviewerCustomerPhone) {
+      try {
+        const userDoc = await db.collection('users').doc(req.user.uid).get();
+        const userPhone = userDoc?.data()?.phone;
+        // ✅ FIX: Normalize phone numbers before comparison
+        const { comparePhoneNumbers } = require('../utils/phoneUtils');
+        isReviewerCustomer = comparePhoneNumbers(userPhone, reviewerCustomerPhone);
+      } catch (reviewerCheckError) {
+        console.warn('⚠️ [REVIEWER] Failed to check reviewer customer status:', reviewerCheckError);
+      }
+    }
+
+    if (isReviewerCustomer) {
+      bookingData.reviewerBypass = true;
+      console.log('🔓 [REVIEWER] Service area validation bypass enabled for reviewer customer');
+    }
+
     // Create booking with atomic transaction
     const result = await bookingService.createBookingAtomically(bookingData);
 

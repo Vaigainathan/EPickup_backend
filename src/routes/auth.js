@@ -4,7 +4,7 @@ const {
   firebaseTokenVerifyLimiter, 
   createProgressiveSlowDown 
 } = require('../middleware/smartRateLimit');
-const asyncHandler = require('express-async-handler');
+const { asyncHandler } = require('../middleware/errorHandler');
 const { getFirestore } = require('../services/firebase');
 const router = express.Router();
 

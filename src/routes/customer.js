@@ -578,8 +578,8 @@ router.get('/active-booking', authenticateToken, async (req, res) => {
     const booking = {
       id: bookingDoc.id,
       ...bookingData,
-      createdAt: bookingData.createdAt?.toDate?.() || bookingData.createdAt,
-      updatedAt: bookingData.updatedAt?.toDate?.() || bookingData.updatedAt
+      createdAt: bookingData.createdAt?.toDate ? bookingData.createdAt.toDate() : (bookingData.createdAt || new Date()),
+      updatedAt: bookingData.updatedAt?.toDate ? bookingData.updatedAt.toDate() : (bookingData.updatedAt || new Date())
     };
     
     res.json({
@@ -635,8 +635,8 @@ router.get('/pending-booking', authenticateToken, async (req, res) => {
     const booking = {
       id: bookingDoc.id,
       ...bookingData,
-      createdAt: bookingData.createdAt?.toDate?.() || bookingData.createdAt,
-      updatedAt: bookingData.updatedAt?.toDate?.() || bookingData.updatedAt
+      createdAt: bookingData.createdAt?.toDate ? bookingData.createdAt.toDate() : (bookingData.createdAt || new Date()),
+      updatedAt: bookingData.updatedAt?.toDate ? bookingData.updatedAt.toDate() : (bookingData.updatedAt || new Date())
     };
     
     res.json({

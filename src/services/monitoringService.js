@@ -203,12 +203,16 @@ class MonitoringService {
           console.warn('🚨 [PERF_MONITOR] Critical memory usage - performing aggressive cleanup');
           
           // Clear all metrics older than 1 hour
-          const oneHourAgo = Date.now() - (60 * 60 * 1000);
-          this.metrics = this.metrics.filter(metric => metric.timestamp > oneHourAgo);
+          const oneHourAgo = new Date(Date.now() - (60 * 60 * 1000)).toISOString();
+          for (const [name, metricArray] of this.metrics.entries()) {
+            if (Array.isArray(metricArray)) {
+              this.metrics.set(name, metricArray.filter(metric => metric.timestamp > oneHourAgo));
+            }
+          }
           
           // Clear all alerts older than 30 minutes
-          const thirtyMinutesAgo = Date.now() - (30 * 60 * 1000);
-          this.alerts = this.alerts.filter(alert => alert.timestamp > thirtyMinutesAgo);
+          const thirtyMinutesAgo = new Date(Date.now() - (30 * 60 * 1000)).toISOString();
+          this.alerts = this.alerts.filter(alert => alert.createdAt > thirtyMinutesAgo);
           
           console.log('✅ [PERF_MONITOR] Aggressive cleanup completed');
         }

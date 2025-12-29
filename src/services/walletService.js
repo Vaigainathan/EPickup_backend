@@ -497,7 +497,16 @@ class PointsService {
             bookingId: bookingId,
             ...tripDetails
           },
-          createdAt: data.createdAt?.toDate?.() ? data.createdAt.toDate().toISOString() : (data.createdAt?.toISOString?.() || new Date(data.createdAt).toISOString()),
+          createdAt: (() => {
+            try {
+              if (data.createdAt?.toDate) return data.createdAt.toDate().toISOString();
+              if (data.createdAt?.toISOString) return data.createdAt.toISOString();
+              if (data.createdAt) return new Date(data.createdAt).toISOString();
+              return new Date().toISOString();
+            } catch {
+              return new Date().toISOString();
+            }
+          })(),
           description: description
         };
       });

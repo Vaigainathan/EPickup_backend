@@ -64,8 +64,16 @@ class AppCheckMiddleware {
       const decodedToken = await admin.appCheck().verifyToken(token);
       
       console.log('✅ App Check token validated successfully with advanced settings');
-      console.log(`  - App ID: ${decodedToken.app_id}`);
-      console.log(`  - Issued at: ${new Date(decodedToken.iat * 1000).toISOString()}`);
+      if (decodedToken) {
+        console.log(`  - App ID: ${decodedToken.appId || decodedToken.sub || 'unknown'}`);
+        if (decodedToken.iat) {
+          try {
+            console.log(`  - Issued at: ${new Date(decodedToken.iat * 1000).toISOString()}`);
+          } catch {
+            console.log(`  - Issued at: ${decodedToken.iat} (raw)`);
+          }
+        }
+      }
       console.log(`  - Play Integrity: Elevated integrity validated`);
       console.log(`  - Risk assessment: Passed custom thresholds`);
       
@@ -113,7 +121,7 @@ class AppCheckMiddleware {
         // Add decoded token to request for use in route handlers
         req.appCheckToken = decodedToken;
         
-        console.log(`🔒 App Check validation passed for app: ${decodedToken.app_id}`);
+        console.log(`🔒 App Check validation passed for app: ${decodedToken.appId || decodedToken.sub || 'unknown'}`);
         next();
       } catch (error) {
         console.error('❌ App Check middleware error:', error);
@@ -141,7 +149,7 @@ class AppCheckMiddleware {
           const decodedToken = await this.validateToken(appCheckToken);
           if (decodedToken) {
             req.appCheckToken = decodedToken;
-            console.log(`🔒 Optional App Check validation passed for app: ${decodedToken.app_id}`);
+            console.log(`🔒 Optional App Check validation passed for app: ${decodedToken.appId || decodedToken.sub || 'unknown'}`);
           } else {
             console.warn('⚠️ App Check token provided but validation failed (continuing without it)');
           }

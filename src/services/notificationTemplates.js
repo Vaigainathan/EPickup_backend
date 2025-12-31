@@ -92,6 +92,29 @@ const NOTIFICATION_TEMPLATES = {
  */
 class NotificationTemplateProcessor {
   /**
+   * Remove undefined values from an object recursively
+   * @param {Object} obj - Object to clean
+   * @returns {Object} Cleaned object
+   */
+  static removeUndefinedValues(obj) {
+    if (obj === null || typeof obj !== 'object') {
+      return obj;
+    }
+
+    if (Array.isArray(obj)) {
+      return obj.map(item => this.removeUndefinedValues(item));
+    }
+
+    const cleaned = {};
+    for (const [key, value] of Object.entries(obj)) {
+      if (value !== undefined) {
+        cleaned[key] = this.removeUndefinedValues(value);
+      }
+    }
+    return cleaned;
+  }
+
+  /**
    * Process a notification template with variables
    * @param {Object} template - The notification template
    * @param {Object} variables - Variables to substitute
@@ -102,14 +125,19 @@ class NotificationTemplateProcessor {
       throw new Error('Template is required');
     }
 
+    // ✅ FIX: Remove undefined values from variables before adding to data
+    const cleanedVariables = this.removeUndefinedValues(variables);
+
     const processedTemplate = {
       title: this.substituteVariables(template.title, variables),
       body: this.substituteVariables(template.body, variables),
       data: { ...template.data }
     };
 
-    // Add variables to data for app processing
-    processedTemplate.data.variables = variables;
+    // Add cleaned variables to data for app processing (only if there are any)
+    if (Object.keys(cleanedVariables).length > 0) {
+      processedTemplate.data.variables = cleanedVariables;
+    }
 
     return processedTemplate;
   }
@@ -217,10 +245,15 @@ class NotificationBuilder {
    */
   static customerBookingCreated(bookingData) {
     const template = NotificationTemplateProcessor.getTemplate('CUSTOMER', 'BOOKING_CREATED');
-    return NotificationTemplateProcessor.process(template, {
-      bookingId: bookingData.id,
+    // ✅ FIX: Handle both bookingData.id and bookingData.bookingId
+    const bookingId = bookingData.id || bookingData.bookingId;
+    const notification = NotificationTemplateProcessor.process(template, {
+      bookingId: bookingId,
       customerName: bookingData.customerName
     });
+    // ✅ FIX: Add bookingId at top level for easy access
+    notification.bookingId = bookingId;
+    return notification;
   }
 
   /**
@@ -228,11 +261,16 @@ class NotificationBuilder {
    */
   static customerDriverAssigned(bookingData, driverData) {
     const template = NotificationTemplateProcessor.getTemplate('CUSTOMER', 'DRIVER_ASSIGNED');
-    return NotificationTemplateProcessor.process(template, {
-      driverName: driverData.name,
+    // ✅ FIX: Handle both bookingData.id and bookingData.bookingId
+    const bookingId = bookingData.id || bookingData.bookingId;
+    const notification = NotificationTemplateProcessor.process(template, {
+      driverName: driverData?.name || driverData?.driverName || 'Driver',
       eta: bookingData.estimatedPickupTime || '15 mins',
-      bookingId: bookingData.id
+      bookingId: bookingId
     });
+    // ✅ FIX: Add bookingId at top level for easy access
+    notification.bookingId = bookingId;
+    return notification;
   }
 
   /**
@@ -240,12 +278,17 @@ class NotificationBuilder {
    */
   static driverNewBookingRequest(bookingData) {
     const template = NotificationTemplateProcessor.getTemplate('DRIVER', 'NEW_BOOKING_REQUEST');
-    return NotificationTemplateProcessor.process(template, {
+    // ✅ FIX: Handle both bookingData.id and bookingData.bookingId
+    const bookingId = bookingData.id || bookingData.bookingId;
+    const notification = NotificationTemplateProcessor.process(template, {
       pickupAddress: bookingData.pickup?.address || 'Pickup Location',
       dropoffAddress: bookingData.dropoff?.address || 'Dropoff Location',
-      fare: bookingData.fare?.total || 0,
-      bookingId: bookingData.id
+      fare: bookingData.fare?.total || bookingData.pricing?.total || 0,
+      bookingId: bookingId
     });
+    // ✅ FIX: Add bookingId at top level for easy access
+    notification.bookingId = bookingId;
+    return notification;
   }
 
   /**
@@ -253,10 +296,15 @@ class NotificationBuilder {
    */
   static customerPackageDelivered(bookingData) {
     const template = NotificationTemplateProcessor.getTemplate('CUSTOMER', 'PACKAGE_DELIVERED');
-    return NotificationTemplateProcessor.process(template, {
-      bookingId: bookingData.id,
-      driverName: bookingData.driverName
+    // ✅ FIX: Handle both bookingData.id and bookingData.bookingId
+    const bookingId = bookingData.id || bookingData.bookingId;
+    const notification = NotificationTemplateProcessor.process(template, {
+      bookingId: bookingId,
+      driverName: bookingData.driverName || 'Driver'
     });
+    // ✅ FIX: Add bookingId at top level for easy access
+    notification.bookingId = bookingId;
+    return notification;
   }
 
   /**

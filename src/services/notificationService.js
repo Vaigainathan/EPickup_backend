@@ -412,6 +412,29 @@ class NotificationService {
   }
 
   /**
+   * Remove undefined values from an object recursively
+   * @param {Object} obj - Object to clean
+   * @returns {Object} Cleaned object
+   */
+  removeUndefinedValues(obj) {
+    if (obj === null || typeof obj !== 'object') {
+      return obj;
+    }
+
+    if (Array.isArray(obj)) {
+      return obj.map(item => this.removeUndefinedValues(item));
+    }
+
+    const cleaned = {};
+    for (const [key, value] of Object.entries(obj)) {
+      if (value !== undefined) {
+        cleaned[key] = this.removeUndefinedValues(value);
+      }
+    }
+    return cleaned;
+  }
+
+  /**
    * Save notification to database
    * @param {string} userId - User ID
    * @param {Object} notification - Notification data
@@ -420,17 +443,21 @@ class NotificationService {
    */
   async saveNotification(userId, notification, status, errorMessage = null) {
     try {
+      // ✅ FIX: Remove undefined values from notification data to prevent Firestore errors
+      const cleanedData = notification.data ? this.removeUndefinedValues(notification.data) : {};
+      
       // Filter undefined fields before persisting
       const doc = {
         userId,
         title: notification.title || '',
         body: notification.body || '',
         type: notification.type || 'generic',
+        data: cleanedData,
         bookingId: notification.bookingId || null,
         driverId: notification.driverId || null,
         paymentId: notification.paymentId || null,
         status,
-        errorMessage,
+        errorMessage: errorMessage || null,
         createdAt: new Date(),
         updatedAt: new Date()
       };
@@ -862,6 +889,10 @@ class NotificationService {
     try {
       const template = NotificationTemplateProcessor.getTemplate(category, type);
       const notification = NotificationTemplateProcessor.process(template, variables);
+      // ✅ FIX: Add bookingId at top level if it exists in variables
+      if (variables.bookingId) {
+        notification.bookingId = variables.bookingId;
+      }
       return await this.sendToUser(userId, notification);
     } catch (error) {
       console.error('Error sending template notification:', error);
@@ -876,6 +907,10 @@ class NotificationService {
     try {
       const template = NotificationTemplateProcessor.getTemplate(category, type);
       const notification = NotificationTemplateProcessor.process(template, variables);
+      // ✅ FIX: Add bookingId at top level if it exists in variables
+      if (variables.bookingId) {
+        notification.bookingId = variables.bookingId;
+      }
       
       const results = [];
       for (const userId of userIds) {

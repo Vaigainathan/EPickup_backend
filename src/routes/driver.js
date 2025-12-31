@@ -4,7 +4,7 @@ const { getFirestore, getStorage } = require('../services/firebase');
 const multer = require('multer');
 const { requireDriver } = require('../middleware/auth');
 const { documentStatusRateLimit } = require('../middleware/rateLimiter');
-const { speedLimiter } = require('../middleware/rateLimit');
+const { speedLimiter, bookingStatusLimiter } = require('../middleware/rateLimit');
 const { documentStatusCache, invalidateUserCache } = require('../middleware/cache');
 const BookingLockService = require('../services/bookingLockService');
 const bookingLockService = new BookingLockService();
@@ -7589,6 +7589,7 @@ router.put('/:id/status', [
 });
 router.put('/bookings/:id/status', [
   requireDriver,
+  bookingStatusLimiter, // ✅ CRITICAL FIX: Use lenient rate limiter for booking status updates
   body('status')
     .isIn([
       'pending',

@@ -1,6 +1,7 @@
 const express = require('express');
 const { body, validationResult, query } = require('express-validator');
 const { requireRole } = require('../middleware/auth');
+const { trackingDataLimiter } = require('../middleware/rateLimit');
 const TrackingService = require('../services/trackingService');
 
 const router = express.Router();
@@ -657,7 +658,8 @@ router.get('/health', async (req, res) => {
  * @access  Private (Customer, Driver)
  */
 router.get('/:bookingId', [
-  requireRole(['driver', 'customer'])
+  requireRole(['driver', 'customer']),
+  trackingDataLimiter // ✅ CRITICAL FIX: Use lenient rate limiter for tracking data requests
 ], async (req, res) => {
   try {
     const { bookingId } = req.params;

@@ -171,11 +171,83 @@ const bruteForceLimiter = rateLimit({
   }
 });
 
+// ✅ CRITICAL FIX: Lenient rate limiter for booking status updates
+// Booking status updates are critical operations that should not be rate limited aggressively
+// Drivers need to update status frequently during active trips (arrived, picked_up, etc.)
+const bookingStatusLimiter = rateLimit({
+  windowMs: 1 * 60 * 1000, // 1 minute window
+  max: process.env.NODE_ENV === 'development' ? 1000 : 100, // ✅ Very lenient: 100 status updates per minute (was hitting limit with 20)
+  message: {
+    success: false,
+    error: {
+      code: 'BOOKING_STATUS_RATE_LIMIT_EXCEEDED',
+      message: 'Too many booking status updates. Please wait a moment and try again.',
+      details: 'Rate limit exceeded for booking status updates. This is a temporary restriction.'
+    },
+    timestamp: new Date().toISOString()
+  },
+  standardHeaders: true,
+  legacyHeaders: false,
+  // Skip rate limiting for localhost in development
+  skip: (req) => {
+    const isDevelopment = process.env.NODE_ENV === 'development';
+    const isLocalhost = req.ip === '::1' || req.ip === '127.0.0.1' || req.ip === '::ffff:127.0.0.1';
+    return isDevelopment && isLocalhost;
+  },
+  handler: (req, res) => {
+    res.status(429).json({
+      success: false,
+      error: {
+        code: 'BOOKING_STATUS_RATE_LIMIT_EXCEEDED',
+        message: 'Too many booking status updates. Please wait a moment and try again.',
+        details: 'Rate limit exceeded for booking status updates. This is a temporary restriction.'
+      },
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+// ✅ CRITICAL FIX: Lenient rate limiter for tracking/booking data fetching
+// Customer app polls booking status frequently during live tracking
+const trackingDataLimiter = rateLimit({
+  windowMs: 1 * 60 * 1000, // 1 minute window
+  max: process.env.NODE_ENV === 'development' ? 500 : 60, // ✅ 60 requests per minute for tracking (1 per second)
+  message: {
+    success: false,
+    error: {
+      code: 'TRACKING_DATA_RATE_LIMIT_EXCEEDED',
+      message: 'Too many tracking requests. Please wait a moment.',
+      details: 'Rate limit exceeded for tracking data requests. This is a temporary restriction.'
+    },
+    timestamp: new Date().toISOString()
+  },
+  standardHeaders: true,
+  legacyHeaders: false,
+  skip: (req) => {
+    const isDevelopment = process.env.NODE_ENV === 'development';
+    const isLocalhost = req.ip === '::1' || req.ip === '127.0.0.1' || req.ip === '::ffff:127.0.0.1';
+    return isDevelopment && isLocalhost;
+  },
+  handler: (req, res) => {
+    res.status(429).json({
+      success: false,
+      error: {
+        code: 'TRACKING_DATA_RATE_LIMIT_EXCEEDED',
+        message: 'Too many tracking requests. Please wait a moment.',
+        details: 'Rate limit exceeded for tracking data requests. This is a temporary restriction.'
+      },
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
 module.exports = {
   generalLimiter,
   authLimiter,
   adminLimiter,
   speedLimiter,
   lightRateLimit,
-  bruteForceLimiter
+  bruteForceLimiter,
+  bookingStatusLimiter,
+  trackingDataLimiter
 };

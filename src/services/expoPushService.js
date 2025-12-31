@@ -214,6 +214,9 @@ class ExpoPushService {
         throw new Error('No valid Expo push tokens provided');
       }
 
+      // ✅ FIX: Clean notification data to remove undefined values before sending
+      const cleanedNotificationData = notification.data ? this.removeUndefinedValues(notification.data) : {};
+      
       // Create notification messages
       const messages = validTokens.map(token => ({
         to: token,
@@ -226,7 +229,7 @@ class ExpoPushService {
           driverId: notification.driverId || '',
           paymentId: notification.paymentId || '',
           timestamp: new Date().toISOString(),
-          ...notification.data
+          ...cleanedNotificationData
         },
         ...options
       }));
@@ -481,6 +484,29 @@ class ExpoPushService {
   }
 
   /**
+   * Remove undefined values from an object recursively
+   * @param {Object} obj - Object to clean
+   * @returns {Object} Cleaned object
+   */
+  removeUndefinedValues(obj) {
+    if (obj === null || typeof obj !== 'object') {
+      return obj;
+    }
+
+    if (Array.isArray(obj)) {
+      return obj.map(item => this.removeUndefinedValues(item));
+    }
+
+    const cleaned = {};
+    for (const [key, value] of Object.entries(obj)) {
+      if (value !== undefined) {
+        cleaned[key] = this.removeUndefinedValues(value);
+      }
+    }
+    return cleaned;
+  }
+
+  /**
    * Save notification to database
    * @param {string} userId - User ID
    * @param {Object} notification - Notification data
@@ -491,14 +517,21 @@ class ExpoPushService {
     try {
       // ✅ FIX: Use getDb() to ensure database is initialized
       const db = this.getDb();
+      
+      // ✅ FIX: Remove undefined values from notification data to prevent Firestore errors
+      const cleanedData = notification.data ? this.removeUndefinedValues(notification.data) : {};
+      
       await db.collection('notifications').add({
         userId,
-        title: notification.title,
-        body: notification.body,
+        title: notification.title || '',
+        body: notification.body || '',
         type: notification.type || 'general',
-        data: notification.data || {},
+        data: cleanedData,
+        bookingId: notification.bookingId || null,
+        driverId: notification.driverId || null,
+        paymentId: notification.paymentId || null,
         status,
-        errorMessage,
+        errorMessage: errorMessage || null,
         sentAt: new Date()
       });
     } catch (error) {

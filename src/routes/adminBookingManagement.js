@@ -827,6 +827,407 @@ router.post('/bookings/:bookingId/cancel', [
   }
 });
 
+/**
+ * @route   GET /api/admin/bookings/cancellations
+ * @desc    Get pickup cancellations with filters
+ * @access  Private (Admin only)
+ */
+router.get('/bookings/cancellations', authMiddleware, async (req, res) => {
+  try {
+    const { userType } = req.user;
+    
+    if (userType !== 'admin') {
+      return res.status(403).json({
+        success: false,
+        error: {
+          code: 'PERMISSION_DENIED',
+          message: 'Only admins can access cancellation data'
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    const { 
+      reason, 
+      driverId, 
+      customerId, 
+      startDate, 
+      endDate, 
+      cancelledAtStage,
+      limit = 50, 
+      offset = 0 
+    } = req.query;
+
+    const db = getFirestore();
+    let query = db.collection('pickup_cancellations');
+
+    // Apply filters
+    if (reason) {
+      query = query.where('reason', '==', reason);
+    }
+    if (driverId) {
+      query = query.where('driverId', '==', driverId);
+    }
+    if (customerId) {
+      query = query.where('customerId', '==', customerId);
+    }
+    if (cancelledAtStage) {
+      query = query.where('cancelledAtStage', '==', cancelledAtStage);
+    }
+    if (startDate) {
+      query = query.where('cancelledAt', '>=', new Date(startDate));
+    }
+    if (endDate) {
+      query = query.where('cancelledAt', '<=', new Date(endDate));
+    }
+
+    // Order by cancellation date
+    query = query.orderBy('cancelledAt', 'desc');
+
+    // Apply pagination
+    query = query.limit(parseInt(limit)).offset(parseInt(offset));
+
+    const snapshot = await query.get();
+    const cancellations = [];
+
+    for (const doc of snapshot.docs) {
+      const cancellationData = doc.data();
+      const cancellation = {
+        id: doc.id,
+        ...cancellationData
+      };
+
+      // Include driver info
+      if (cancellationData.driverId) {
+        const driverDoc = await db.collection('users').doc(cancellationData.driverId).get();
+        if (driverDoc.exists) {
+          const driverData = driverDoc.data();
+          cancellation.driverInfo = {
+            name: driverData.name,
+            phone: driverData.phone,
+            vehicleNumber: driverData.driver?.vehicleNumber
+          };
+        }
+      }
+
+      // Include customer info
+      if (cancellationData.customerId) {
+        const customerDoc = await db.collection('users').doc(cancellationData.customerId).get();
+        if (customerDoc.exists) {
+          const customerData = customerDoc.data();
+          cancellation.customerInfo = {
+            name: customerData.name,
+            phone: customerData.phone,
+            email: customerData.email
+          };
+        }
+      }
+
+      // Include booking info
+      if (cancellationData.bookingId) {
+        const bookingDoc = await db.collection('bookings').doc(cancellationData.bookingId).get();
+        if (bookingDoc.exists) {
+          const bookingData = bookingDoc.data();
+          cancellation.bookingInfo = {
+            pickupLocation: bookingData.pickupLocation || bookingData.pickup,
+            dropoffLocation: bookingData.dropoffLocation || bookingData.dropoff,
+            fare: bookingData.fare || bookingData.pricing,
+            createdAt: bookingData.createdAt
+          };
+        }
+      }
+
+      cancellations.push(cancellation);
+    }
+
+    res.status(200).json({
+      success: true,
+      message: 'Cancellations retrieved successfully',
+      data: {
+        cancellations,
+        pagination: {
+          limit: parseInt(limit),
+          offset: parseInt(offset),
+          total: cancellations.length
+        }
+      },
+      timestamp: new Date().toISOString()
+    });
+
+  } catch (error) {
+    console.error('Error getting cancellations:', error);
+    const errorResponse = errorHandlingService.handleApiError(error, {
+      endpoint: '/api/admin/bookings/cancellations',
+      method: 'GET'
+    });
+    res.status(errorResponse.statusCode || 500).json(errorResponse);
+  }
+});
+
+/**
+ * @route   GET /api/admin/bookings/:id/cancellation-details
+ * @desc    Get detailed cancellation information for a booking
+ * @access  Private (Admin only)
+ */
+router.get('/bookings/:id/cancellation-details', authMiddleware, async (req, res) => {
+  try {
+    const { userType } = req.user;
+    
+    if (userType !== 'admin') {
+      return res.status(403).json({
+        success: false,
+        error: {
+          code: 'PERMISSION_DENIED',
+          message: 'Only admins can access cancellation details'
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    const { id } = req.params;
+    const db = getFirestore();
+
+    // Get cancellation record
+    const cancellationQuery = db.collection('pickup_cancellations')
+      .where('bookingId', '==', id)
+      .orderBy('cancelledAt', 'desc')
+      .limit(1);
+
+    const cancellationSnapshot = await cancellationQuery.get();
+
+    if (cancellationSnapshot.empty) {
+      return res.status(404).json({
+        success: false,
+        error: {
+          code: 'CANCELLATION_NOT_FOUND',
+          message: 'Cancellation record not found for this booking'
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    const cancellationDoc = cancellationSnapshot.docs[0];
+    const cancellationData = cancellationDoc.data();
+    const cancellation = {
+      id: cancellationDoc.id,
+      ...cancellationData
+    };
+
+    // Include driver info
+    if (cancellationData.driverId) {
+      const driverDoc = await db.collection('users').doc(cancellationData.driverId).get();
+      if (driverDoc.exists) {
+        const driverData = driverDoc.data();
+        cancellation.driverInfo = {
+          name: driverData.name,
+          phone: driverData.phone,
+          email: driverData.email,
+          vehicleNumber: driverData.driver?.vehicleNumber,
+          rating: driverData.driver?.rating
+        };
+      }
+    }
+
+    // Include customer info
+    if (cancellationData.customerId) {
+      const customerDoc = await db.collection('users').doc(cancellationData.customerId).get();
+      if (customerDoc.exists) {
+        const customerData = customerDoc.data();
+        cancellation.customerInfo = {
+          name: customerData.name,
+          phone: customerData.phone,
+          email: customerData.email
+        };
+      }
+    }
+
+    // Include booking info
+    const bookingDoc = await db.collection('bookings').doc(id).get();
+    if (bookingDoc.exists) {
+      const bookingData = bookingDoc.data();
+      cancellation.bookingInfo = {
+        pickupLocation: bookingData.pickupLocation || bookingData.pickup,
+        dropoffLocation: bookingData.dropoffLocation || bookingData.dropoff,
+        fare: bookingData.fare || bookingData.pricing,
+        createdAt: bookingData.createdAt,
+        status: bookingData.status
+      };
+    }
+
+    res.status(200).json({
+      success: true,
+      message: 'Cancellation details retrieved successfully',
+      data: cancellation,
+      timestamp: new Date().toISOString()
+    });
+
+  } catch (error) {
+    console.error('Error getting cancellation details:', error);
+    const errorResponse = errorHandlingService.handleApiError(error, {
+      endpoint: '/api/admin/bookings/:id/cancellation-details',
+      method: 'GET',
+      bookingId: req.params.id
+    });
+    res.status(errorResponse.statusCode || 500).json(errorResponse);
+  }
+});
+
+/**
+ * @route   GET /api/admin/analytics/cancellations
+ * @desc    Get cancellation analytics data
+ * @access  Private (Admin only)
+ */
+router.get('/analytics/cancellations', authMiddleware, async (req, res) => {
+  try {
+    const { userType } = req.user;
+    
+    if (userType !== 'admin') {
+      return res.status(403).json({
+        success: false,
+        error: {
+          code: 'PERMISSION_DENIED',
+          message: 'Only admins can access cancellation analytics'
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    const { startDate, endDate } = req.query;
+    const db = getFirestore();
+
+    // Build date range
+    const start = startDate ? new Date(startDate) : new Date(Date.now() - 30 * 24 * 60 * 60 * 1000); // Default: last 30 days
+    const end = endDate ? new Date(endDate) : new Date();
+
+    // Get all cancellations in date range
+    const cancellationsQuery = db.collection('pickup_cancellations')
+      .where('cancelledAt', '>=', start)
+      .where('cancelledAt', '<=', end);
+
+    const cancellationsSnapshot = await cancellationsQuery.get();
+
+    // Process data for analytics
+    const cancellations = [];
+    const reasonCounts = {};
+    const driverCancellations = {};
+    const hourlyDistribution = Array(24).fill(0);
+    const dailyDistribution = {};
+
+    cancellationsSnapshot.forEach(doc => {
+      const data = doc.data();
+      cancellations.push({
+        ...data,
+        id: doc.id
+      });
+
+      // Count by reason
+      const reason = data.reason || 'other';
+      reasonCounts[reason] = (reasonCounts[reason] || 0) + 1;
+
+      // Count by driver
+      if (data.driverId) {
+        driverCancellations[data.driverId] = (driverCancellations[data.driverId] || 0) + 1;
+      }
+
+      // Hourly distribution
+      if (data.cancelledAt && data.cancelledAt.toDate) {
+        const cancelledDate = data.cancelledAt.toDate();
+        const hour = cancelledDate.getHours();
+        hourlyDistribution[hour]++;
+      }
+
+      // Daily distribution
+      if (data.cancelledAt && data.cancelledAt.toDate) {
+        const cancelledDate = data.cancelledAt.toDate();
+        const dateKey = cancelledDate.toISOString().split('T')[0];
+        dailyDistribution[dateKey] = (dailyDistribution[dateKey] || 0) + 1;
+      }
+    });
+
+    // Get driver details for top cancellations
+    const topDrivers = [];
+    const driverIds = Object.keys(driverCancellations)
+      .sort((a, b) => driverCancellations[b] - driverCancellations[a])
+      .slice(0, 10); // Top 10
+
+    for (const driverId of driverIds) {
+      const driverDoc = await db.collection('users').doc(driverId).get();
+      if (driverDoc.exists) {
+        const driverData = driverDoc.data();
+        topDrivers.push({
+          driverId,
+          driverName: driverData.name,
+          cancellationCount: driverCancellations[driverId],
+          rating: driverData.driver?.rating || 0
+        });
+      }
+    }
+
+    // Format daily distribution for chart
+    const dailyData = Object.keys(dailyDistribution)
+      .sort()
+      .map(date => ({
+        date,
+        count: dailyDistribution[date]
+      }));
+
+    // Format hourly distribution for chart
+    const hourlyData = hourlyDistribution.map((count, hour) => ({
+      hour,
+      count
+    }));
+
+    // Format reason distribution for pie chart
+    const reasonData = Object.keys(reasonCounts).map(reason => ({
+      reason,
+      label: getCancellationReasonLabel(reason),
+      count: reasonCounts[reason]
+    }));
+
+    res.status(200).json({
+      success: true,
+      message: 'Cancellation analytics retrieved successfully',
+      data: {
+        summary: {
+          totalCancellations: cancellations.length,
+          dateRange: {
+            start: start.toISOString(),
+            end: end.toISOString()
+          }
+        },
+        byReason: reasonData,
+        byDriver: topDrivers,
+        hourlyDistribution: hourlyData,
+        dailyDistribution: dailyData,
+        cancellations: cancellations.slice(0, 100) // Return first 100 for details
+      },
+      timestamp: new Date().toISOString()
+    });
+
+  } catch (error) {
+    console.error('Error getting cancellation analytics:', error);
+    const errorResponse = errorHandlingService.handleApiError(error, {
+      endpoint: '/api/admin/analytics/cancellations',
+      method: 'GET'
+    });
+    res.status(errorResponse.statusCode || 500).json(errorResponse);
+  }
+});
+
+// Helper function to get user-friendly cancellation reason label
+function getCancellationReasonLabel(reason) {
+  const labels = {
+    'package_damaged': 'Package Damaged/Opened',
+    'wrong_item': 'Wrong Package/Item',
+    'package_too_large': 'Package Too Large/Heavy',
+    'prohibited_item': 'Prohibited Item',
+    'customer_unavailable': 'Customer Not Available',
+    'wrong_address': 'Incorrect Address',
+    'other': 'Other Reason'
+  };
+  return labels[reason] || reason;
+}
+
 // Helper function to calculate distance
 function calculateDistance(lat1, lon1, lat2, lon2) {
   const R = 6371; // Radius of the Earth in kilometers

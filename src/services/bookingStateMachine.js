@@ -16,7 +16,8 @@ class BookingStateMachine {
       'driver_assigned': ['driver_enroute', 'driver_arrived', 'rejected', 'cancelled'], // ✅ FIX: Allow direct transition to driver_arrived
       'accepted': ['driver_enroute', 'driver_arrived', 'picked_up', 'cancelled'], // ✅ KEEP: Allow direct pickup confirmation when driver skips enroute status
       'driver_enroute': ['driver_arrived', 'picked_up', 'cancelled'],
-      'driver_arrived': ['picked_up', 'cancelled'],
+      'driver_arrived': ['photo_captured', 'picked_up', 'cancelled'], // ✅ NEW: Allow transition to photo_captured
+      'photo_captured': ['picked_up', 'cancelled'], // ✅ NEW: Intermediate state after photo capture
       'picked_up': ['in_transit', 'cancelled'],
       'in_transit': ['at_dropoff', 'delivered', 'cancelled'],
       'at_dropoff': ['delivered', 'cancelled'],
@@ -33,6 +34,7 @@ class BookingStateMachine {
       'accepted': ['acceptedAt', 'driverId'],
       'driver_enroute': ['enrouteAt', 'driverId'],
       'driver_arrived': ['arrivedAt', 'driverId'],
+      'photo_captured': ['photoCapturedAt', 'driverId'], // ✅ NEW: Required fields for photo_captured state
       'picked_up': ['pickedUpAt', 'driverId'],
       'in_transit': ['inTransitAt', 'driverId'],
       'at_dropoff': ['arrivedDropoffAt', 'driverId'],
@@ -202,6 +204,9 @@ class BookingStateMachine {
         break;
       case 'driver_arrived':
         stateData.arrivedAt = eventTimestamp;
+        break;
+      case 'photo_captured':
+        stateData.photoCapturedAt = eventTimestamp;
         break;
       case 'picked_up':
         stateData.pickedUpAt = eventTimestamp;

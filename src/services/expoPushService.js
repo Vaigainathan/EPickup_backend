@@ -217,19 +217,50 @@ class ExpoPushService {
       // ✅ FIX: Clean notification data to remove undefined values before sending
       const cleanedNotificationData = notification.data ? this.removeUndefinedValues(notification.data) : {};
       
+      // ✅ CRITICAL FIX: Include variables in notification data for frontend to display order details
+      // This allows the frontend to show order info even before fetching from API
+      const notificationData = {
+        type: notification.type || 'general',
+        bookingId: notification.bookingId || '',
+        driverId: notification.driverId || '',
+        paymentId: notification.paymentId || '',
+        timestamp: new Date().toISOString(),
+        ...cleanedNotificationData
+      };
+      
+      // ✅ CRITICAL: Include variables from notification template (pickupAddress, dropoffAddress, fare, etc.)
+      if (cleanedNotificationData.variables) {
+        notificationData.variables = cleanedNotificationData.variables;
+      }
+      
       // Create notification messages
       const messages = validTokens.map(token => ({
         to: token,
         sound: options.sound || 'default',
         title: notification.title,
         body: notification.body,
-        data: {
-          type: notification.type || 'general',
-          bookingId: notification.bookingId || '',
-          driverId: notification.driverId || '',
-          paymentId: notification.paymentId || '',
-          timestamp: new Date().toISOString(),
-          ...cleanedNotificationData
+        priority: options.priority || 'high', // ✅ CRITICAL: High priority for urgent notifications
+        badge: options.badge,
+        data: notificationData,
+        // ✅ CRITICAL: Android-specific settings for sound and vibration
+        android: {
+          priority: 'high',
+          sound: options.sound || 'default',
+          vibrate: [0, 500, 200, 500], // ✅ Long vibration pattern: 0ms delay, 500ms vibrate, 200ms pause, 500ms vibrate
+          channelId: 'epickup_urgent', // High priority channel
+          notification: {
+            sound: options.sound || 'default',
+            vibrate: [0, 500, 200, 500],
+            priority: 'high',
+            defaultSound: true,
+            defaultVibrateTimings: true
+          }
+        },
+        // ✅ CRITICAL: iOS-specific settings for sound and vibration
+        ios: {
+          sound: options.sound || 'default',
+          badge: options.badge,
+          priority: 'high'
         },
         ...options
       }));

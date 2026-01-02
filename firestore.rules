@@ -116,7 +116,8 @@ service cloud.firestore {
     }
     
     function isValidVehicleNumber(vehicleNumber) {
-      return vehicleNumber is string && vehicleNumber.matches('^[A-Z]{2}[0-9]{2}[A-Z]{1,2}[0-9]{4}$');
+      // Only check if vehicle number is not empty (removed pattern validation to support old vehicle number formats)
+      return vehicleNumber is string && vehicleNumber.size() > 0;
     }
     
     function isValidLicenseNumber(licenseNumber) {

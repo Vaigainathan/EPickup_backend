@@ -5321,7 +5321,10 @@ router.post('/bookings/:id/photo-verification/upload', [
   // Accept location as JSON string or object in multipart form
   body('location').optional(),
   body('notes').optional().isLength({ min: 0, max: 200 }).withMessage('Notes must be between 0 and 200 characters'),
-  body('traceId').optional().isString().withMessage('TraceId must be a string')
+  body('traceId').optional().isString().withMessage('TraceId must be a string'),
+  // ✅ NEW: Accept status parameter for photo workflow
+  body('status').optional().isIn(['pending_confirmation', 'confirmed', 'cancellation_evidence', 'retaken']).withMessage('Status must be one of: pending_confirmation, confirmed, cancellation_evidence, retaken'),
+  body('previousPhotoId').optional().isString().withMessage('Previous photo ID must be a string')
 ], async (req, res) => {
   try {
     const errors = validationResult(req);
@@ -5338,8 +5341,11 @@ router.post('/bookings/:id/photo-verification/upload', [
 
     const { id } = req.params;
     const { uid } = req.user;
-    const { photoType, notes, traceId } = req.body;
+    const { photoType, notes, traceId, status, previousPhotoId } = req.body;
     let { location } = req.body;
+    
+    // ✅ NEW: Default status to 'pending_confirmation' if not provided
+    const photoStatus = status || 'pending_confirmation';
     
     // ✅ CRITICAL FIX: Log traceId for request correlation
     console.log(`📸 [PHOTO_UPLOAD] Photo upload request received (traceId: ${traceId || 'none'}):`, {
@@ -5392,7 +5398,7 @@ router.post('/bookings/:id/photo-verification/upload', [
     }
 
     const validStatuses = {
-      pickup: ['driver_arrived', 'picked_up'],
+      pickup: ['driver_arrived', 'photo_captured', 'picked_up'],
       delivery: ['in_transit', 'at_dropoff', 'delivered', 'arrived_dropoff', 'picked_up']
     };
     if (!validStatuses[photoType] || !validStatuses[photoType].includes(bookingData.status)) {
@@ -5451,7 +5457,9 @@ router.post('/bookings/:id/photo-verification/upload', [
       uploadedAt: verifiedAtTimestamp,
       verifiedAt: verifiedAtTimestamp,
       verifiedBy: uid,
-      notes: notes || null
+      notes: notes || null,
+      status: photoStatus, // ✅ NEW: Store photo status
+      previousPhotoId: previousPhotoId || null // ✅ NEW: Link to previous photo if retake
     };
 
     const updateData = { updatedAt: new Date() };
@@ -5464,6 +5472,12 @@ router.post('/bookings/:id/photo-verification/upload', [
         location: location || null,
         notes: notes || null
       };
+      
+      // ✅ FIX: If photo status is 'pending_confirmation' and booking is 'driver_arrived', update booking status to 'photo_captured'
+      if (photoStatus === 'pending_confirmation' && bookingData.status === 'driver_arrived') {
+        updateData['status'] = 'photo_captured';
+        updateData['photoCapturedAt'] = verifiedAtTimestamp;
+      }
     } else {
       updateData['deliveryVerification'] = {
         photoUrl: downloadURL,
@@ -5475,6 +5489,7 @@ router.post('/bookings/:id/photo-verification/upload', [
     }
 
     // Atomic transaction to link
+    let photoId = null;
     await db.runTransaction(async (transaction) => {
       transaction.update(bookingRef, updateData);
       const oldRef = db.collection('photo_verifications').doc();
@@ -5485,6 +5500,7 @@ router.post('/bookings/:id/photo-verification/upload', [
         ...photoVerification
       });
       const newRef = db.collection('photoVerifications').doc();
+      photoId = newRef.id; // ✅ NEW: Store photoId from document reference
       transaction.set(newRef, {
         id: newRef.id,
         bookingId: id,
@@ -5495,7 +5511,8 @@ router.post('/bookings/:id/photo-verification/upload', [
         photoMetadata: { location: location || null, notes: notes || null },
         location: location || null,
         notes: notes || null,
-        status: 'verified',
+        status: photoStatus, // ✅ NEW: Use provided status instead of hardcoded 'verified'
+        previousPhotoId: previousPhotoId || null, // ✅ NEW: Link to previous photo if retake
         uploadedAt: verifiedAtTimestamp,
         verifiedAt: verifiedAtTimestamp,
         verifiedBy: uid,
@@ -5546,7 +5563,9 @@ router.post('/bookings/:id/photo-verification/upload', [
     console.log(`✅ [PHOTO_UPLOAD] Photo verification uploaded successfully (traceId: ${traceId || 'none'}):`, {
       bookingId: id,
       photoType: safeType,
-      photoUrl: downloadURL
+      photoUrl: downloadURL,
+      photoId: photoId,
+      status: photoStatus
     });
 
     return res.status(200).json({
@@ -5556,6 +5575,8 @@ router.post('/bookings/:id/photo-verification/upload', [
         photoType: safeType,
         photoUrl: downloadURL,
         storagePath: filePath,
+        photoId: photoId, // ✅ NEW: Return photoId for linking
+        status: photoStatus, // ✅ NEW: Return status
         traceId: traceId || null // ✅ CRITICAL FIX: Echo traceId in response
       },
       traceId: traceId || null // ✅ CRITICAL FIX: Also include in top-level response
@@ -5589,6 +5610,414 @@ router.post('/bookings/:id/photo-verification/upload', [
     });
   }
 });
+
+/**
+ * @route   PUT /api/driver/bookings/:id/photo-verification/:photoId/status
+ * @desc    Update photo verification status
+ * @access  Private (Driver only)
+ */
+router.put('/bookings/:id/photo-verification/:photoId/status', [
+  requireDriver,
+  body('status').isIn(['pending_confirmation', 'confirmed', 'cancellation_evidence', 'retaken']).withMessage('Valid status is required')
+], async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'VALIDATION_ERROR',
+          message: 'Validation failed',
+          details: errors.array()
+        }
+      });
+    }
+
+    const { id, photoId } = req.params;
+    const { uid } = req.user;
+    const { status } = req.body;
+
+    const db = getFirestore();
+    const bookingRef = db.collection('bookings').doc(id);
+    const bookingDoc = await bookingRef.get();
+
+    if (!bookingDoc.exists) {
+      return res.status(404).json({
+        success: false,
+        error: {
+          code: 'BOOKING_NOT_FOUND',
+          message: 'Booking not found'
+        }
+      });
+    }
+
+    const bookingData = bookingDoc.data();
+    if (bookingData.driverId !== uid) {
+      return res.status(403).json({
+        success: false,
+        error: {
+          code: 'ACCESS_DENIED',
+          message: 'You can only update photos for your assigned bookings'
+        }
+      });
+    }
+
+    const photoRef = db.collection('photoVerifications').doc(photoId);
+    const photoDoc = await photoRef.get();
+
+    if (!photoDoc.exists) {
+      return res.status(404).json({
+        success: false,
+        error: {
+          code: 'PHOTO_NOT_FOUND',
+          message: 'Photo verification not found'
+        }
+      });
+    }
+
+    const photoData = photoDoc.data();
+    if (photoData.bookingId !== id || photoData.driverId !== uid) {
+      return res.status(403).json({
+        success: false,
+        error: {
+          code: 'ACCESS_DENIED',
+          message: 'You can only update your own photo verifications'
+        }
+      });
+    }
+
+    const admin = require('firebase-admin');
+    const updateData = {
+      status: status,
+      updatedAt: admin.firestore.Timestamp.now()
+    };
+
+    if (status === 'confirmed') {
+      updateData.confirmedAt = admin.firestore.Timestamp.now();
+    } else if (status === 'retaken') {
+      updateData.retakenAt = admin.firestore.Timestamp.now();
+    }
+
+    await photoRef.update(updateData);
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        message: 'Photo status updated successfully',
+        photoId: photoId,
+        status: status
+      }
+    });
+  } catch (error) {
+    console.error('❌ [PHOTO_STATUS_UPDATE] Error updating photo status:', error);
+    return res.status(500).json({
+      success: false,
+      error: {
+        code: 'PHOTO_STATUS_UPDATE_ERROR',
+        message: 'Failed to update photo status',
+        details: error.message || 'An unexpected error occurred'
+      }
+    });
+  }
+});
+
+/**
+ * @route   POST /api/driver/bookings/:id/cancel-at-pickup
+ * @desc    Cancel booking at pickup location with issue reporting
+ * @access  Private (Driver only)
+ */
+router.post('/bookings/:id/cancel-at-pickup', [
+  requireDriver,
+  body('reason').isIn([
+    'package_damaged',
+    'wrong_item',
+    'package_too_large',
+    'prohibited_item',
+    'customer_unavailable',
+    'wrong_address',
+    'other'
+  ]).withMessage('Valid cancellation reason is required'),
+  body('reasonText').optional().isLength({ max: 500 }).withMessage('Reason text must not exceed 500 characters'),
+  body('photoId').optional().isString().withMessage('Photo ID must be a string'),
+  body('additionalPhotos').optional().isArray().withMessage('Additional photos must be an array')
+], async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'VALIDATION_ERROR',
+          message: 'Validation failed',
+          details: errors.array()
+        }
+      });
+    }
+
+    const { id } = req.params;
+    const { uid } = req.user;
+    const { reason, reasonText, photoId, additionalPhotos } = req.body;
+
+    const db = getFirestore();
+    const bookingRef = db.collection('bookings').doc(id);
+    const bookingDoc = await bookingRef.get();
+
+    if (!bookingDoc.exists) {
+      return res.status(404).json({
+        success: false,
+        error: {
+          code: 'BOOKING_NOT_FOUND',
+          message: 'Booking not found'
+        }
+      });
+    }
+
+    const bookingData = bookingDoc.data();
+
+    // Validate driver is assigned to this booking
+    if (bookingData.driverId !== uid) {
+      return res.status(403).json({
+        success: false,
+        error: {
+          code: 'ACCESS_DENIED',
+          message: 'You can only cancel bookings assigned to you'
+        }
+      });
+    }
+
+    // Validate booking status - must be at pickup stage
+    const validStatuses = ['driver_arrived', 'photo_captured'];
+    if (!validStatuses.includes(bookingData.status)) {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'INVALID_STATUS',
+          message: `Cannot cancel booking at pickup. Current status: ${bookingData.status}. Valid statuses: ${validStatuses.join(', ')}`
+        }
+      });
+    }
+
+    // Get driver location for cancellation record
+    const driverDoc = await db.collection('users').doc(uid).get();
+    const driverData = driverDoc.exists ? driverDoc.data() : {};
+    const driverLocation = driverData.driver?.currentLocation || null;
+
+    const admin = require('firebase-admin');
+    const cancelledAtTimestamp = admin.firestore.Timestamp.now();
+    const cancelledAt = new Date();
+
+    // Build cancellation object
+    const cancellation = {
+      cancelledBy: 'driver',
+      cancelledAt: cancelledAtTimestamp,
+      cancelledAtStage: bookingData.status === 'photo_captured' ? 'photo_captured' : 'driver_arrived',
+      reason: reason,
+      reasonText: reasonText || null,
+      evidencePhotoId: photoId || null,
+      driverLocation: driverLocation || null
+    };
+
+    // Get evidence photo URL if photoId provided
+    let evidencePhotoUrl = null;
+    if (photoId) {
+      try {
+        const photoDoc = await db.collection('photoVerifications').doc(photoId).get();
+        if (photoDoc.exists) {
+          const photoData = photoDoc.data();
+          evidencePhotoUrl = photoData.photoUrl || null;
+        }
+      } catch (photoError) {
+        console.warn('⚠️ [CANCEL_AT_PICKUP] Failed to fetch evidence photo:', photoError);
+      }
+    }
+
+    // Build evidence photos array
+    const evidencePhotos = [];
+    if (photoId && evidencePhotoUrl) {
+      evidencePhotos.push({
+        photoId: photoId,
+        photoUrl: evidencePhotoUrl,
+        uploadedAt: cancelledAtTimestamp,
+        description: 'Initial pickup photo showing issue'
+      });
+    }
+
+    // Process additional photos if provided
+    if (additionalPhotos && Array.isArray(additionalPhotos)) {
+      for (const additionalPhotoId of additionalPhotos) {
+        try {
+          const additionalPhotoDoc = await db.collection('photoVerifications').doc(additionalPhotoId).get();
+          if (additionalPhotoDoc.exists) {
+            const additionalPhotoData = additionalPhotoDoc.data();
+            evidencePhotos.push({
+              photoId: additionalPhotoId,
+              photoUrl: additionalPhotoData.photoUrl || null,
+              uploadedAt: additionalPhotoDoc.data().uploadedAt || cancelledAtTimestamp,
+              description: 'Additional evidence photo'
+            });
+          }
+        } catch (additionalPhotoError) {
+          console.warn('⚠️ [CANCEL_AT_PICKUP] Failed to fetch additional photo:', additionalPhotoError);
+        }
+      }
+    }
+
+    // Create cancellation record in pickup_cancellations collection
+    const cancellationRef = db.collection('pickup_cancellations').doc();
+    const cancellationRecord = {
+      id: cancellationRef.id,
+      bookingId: id,
+      driverId: uid,
+      customerId: bookingData.customerId || null,
+      cancelledAt: cancelledAtTimestamp,
+      cancelledAtStage: cancellation.cancelledAtStage,
+      reason: reason,
+      reasonText: reasonText || null,
+      evidencePhotos: evidencePhotos,
+      additionalPhotos: additionalPhotos || [],
+      driverLocation: driverLocation || null,
+      bookingStatus: bookingData.status,
+      createdAt: cancelledAtTimestamp,
+      updatedAt: cancelledAtTimestamp
+    };
+
+    // Update photo status to 'cancellation_evidence' if photoId provided
+    if (photoId) {
+      try {
+        const photoRef = db.collection('photoVerifications').doc(photoId);
+        await photoRef.update({
+          status: 'cancellation_evidence',
+          cancelledAt: cancelledAtTimestamp,
+          cancellationReason: reason,
+          linkedCancellationId: cancellationRef.id,
+          updatedAt: cancelledAtTimestamp
+        });
+      } catch (photoUpdateError) {
+        console.warn('⚠️ [CANCEL_AT_PICKUP] Failed to update photo status:', photoUpdateError);
+        // Continue - cancellation should still proceed
+      }
+    }
+
+    // Atomic transaction to update booking and create cancellation record
+    await db.runTransaction(async (transaction) => {
+      // Update booking status to cancelled
+      transaction.update(bookingRef, {
+        status: 'cancelled',
+        cancellation: cancellation,
+        updatedAt: new Date()
+      });
+
+      // Create cancellation record
+      transaction.set(cancellationRef, cancellationRecord);
+
+      // Free driver (set isAvailable=true, currentBookingId=null)
+      const driverRef = db.collection('users').doc(uid);
+      transaction.update(driverRef, {
+        'driver.isAvailable': true,
+        'driver.currentBookingId': null,
+        updatedAt: new Date()
+      });
+    });
+
+    // Emit WebSocket events to customer
+    try {
+      const socketService = require('../services/socket');
+      const io = socketService.getSocketIO();
+
+      if (io && bookingData.customerId) {
+        const bookingRoom = `booking:${id}`;
+        const customerRoom = `user:${bookingData.customerId}`;
+
+        // Emit booking_cancelled_notification
+        io.to(bookingRoom).emit('booking_cancelled_notification', {
+          bookingId: id,
+          reason: reason,
+          reasonText: reasonText || null,
+          cancelledBy: 'driver',
+          cancelledAt: cancelledAt.toISOString(),
+          cancelledAtStage: cancellation.cancelledAtStage,
+          message: `Your booking has been cancelled by the driver due to: ${getCancellationReasonLabel(reason)}`,
+          timestamp: new Date().toISOString()
+        });
+
+        io.to(customerRoom).emit('booking_cancelled_notification', {
+          bookingId: id,
+          reason: reason,
+          reasonText: reasonText || null,
+          cancelledBy: 'driver',
+          cancelledAt: cancelledAt.toISOString(),
+          cancelledAtStage: cancellation.cancelledAtStage,
+          message: `Your booking has been cancelled by the driver due to: ${getCancellationReasonLabel(reason)}`,
+          timestamp: new Date().toISOString()
+        });
+
+        // Emit booking_status_update
+        const updatedBookingDoc = await bookingRef.get();
+        if (updatedBookingDoc.exists) {
+          const updatedBookingData = updatedBookingDoc.data();
+          io.to(bookingRoom).emit('booking_status_update', {
+            bookingId: id,
+            status: 'cancelled',
+            booking: updatedBookingData,
+            timestamp: new Date().toISOString()
+          });
+          io.to(customerRoom).emit('booking_status_update', {
+            bookingId: id,
+            status: 'cancelled',
+            booking: updatedBookingData,
+            timestamp: new Date().toISOString()
+          });
+        }
+
+        console.log(`✅ [CANCEL_AT_PICKUP] Cancellation events emitted to rooms: ${bookingRoom}, ${customerRoom}`);
+      }
+    } catch (wsError) {
+      console.error('❌ [CANCEL_AT_PICKUP] Error emitting WebSocket event:', wsError);
+      // Continue - cancellation is saved even if WebSocket fails
+    }
+
+    console.log(`✅ [CANCEL_AT_PICKUP] Booking cancelled at pickup successfully:`, {
+      bookingId: id,
+      driverId: uid,
+      reason: reason,
+      cancellationId: cancellationRef.id
+    });
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        message: 'Booking cancelled successfully',
+        bookingId: id,
+        cancellationId: cancellationRef.id,
+        cancelledAt: cancelledAt.toISOString()
+      }
+    });
+  } catch (error) {
+    console.error('❌ [CANCEL_AT_PICKUP] Error cancelling booking:', error);
+    return res.status(500).json({
+      success: false,
+      error: {
+        code: 'CANCEL_AT_PICKUP_ERROR',
+        message: 'Failed to cancel booking at pickup',
+        details: error.message || 'An unexpected error occurred'
+      }
+    });
+  }
+});
+
+// Helper function to get user-friendly cancellation reason label
+function getCancellationReasonLabel(reason) {
+  const labels = {
+    'package_damaged': 'Package Damaged/Opened',
+    'wrong_item': 'Wrong Package/Item',
+    'package_too_large': 'Package Too Large/Heavy',
+    'prohibited_item': 'Prohibited Item',
+    'customer_unavailable': 'Customer Not Available',
+    'wrong_address': 'Incorrect Address',
+    'other': 'Other Reason'
+  };
+  return labels[reason] || reason;
+}
 
 /**
  * @route   POST /api/driver/bookings/:id/photo-verification
@@ -7671,6 +8100,35 @@ router.put('/bookings/:id/status', [
       newStatus: statusResult.status,
       idempotent: statusResult.idempotent
     });
+
+    // ✅ FIX: Update photo status to 'confirmed' when transitioning from 'photo_captured' to 'picked_up'
+    if (statusResult.previousStatus === 'photo_captured' && statusResult.status === 'picked_up') {
+      try {
+        const db = getFirestore();
+        // Find the pending_confirmation photo for this booking
+        const photosQuery = db.collection('photoVerifications')
+          .where('bookingId', '==', bookingId)
+          .where('photoType', '==', 'pickup')
+          .where('status', '==', 'pending_confirmation')
+          .orderBy('uploadedAt', 'desc')
+          .limit(1);
+        
+        const photosSnapshot = await photosQuery.get();
+        if (!photosSnapshot.empty) {
+          const photoDoc = photosSnapshot.docs[0];
+          const admin = require('firebase-admin');
+          await photoDoc.ref.update({
+            status: 'confirmed',
+            confirmedAt: admin.firestore.Timestamp.now(),
+            updatedAt: admin.firestore.Timestamp.now()
+          });
+          console.log(`✅ [STATUS_UPDATE] Updated photo status to 'confirmed' for photo ${photoDoc.id}`);
+        }
+      } catch (photoUpdateError) {
+        console.warn('⚠️ [STATUS_UPDATE] Failed to update photo status to confirmed:', photoUpdateError);
+        // Continue - booking status update is more important
+      }
+    }
 
     const liveTrackingService = require('../services/liveTrackingService');
 

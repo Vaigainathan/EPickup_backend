@@ -829,10 +829,31 @@ class NotificationService {
   async notifyDriverNewBookingRequest(bookingData, driverId) {
     try {
       const notification = NotificationBuilder.driverNewBookingRequest(bookingData);
-      // ✅ Add sound configuration - URGENT for new orders (most critical)
+      // ✅ CRITICAL: Add sound, vibration, and high priority for urgent new orders (like Zomato/Porter)
       return await this.sendToUser(driverId, notification, {
-        sound: 'default', // Urgent sound for new orders
-        priority: 'high'
+        sound: 'default', // System default sound (urgent)
+        priority: 'high', // High priority for immediate delivery
+        badge: 1, // Show badge count
+        // ✅ Android-specific: Long vibration pattern
+        android: {
+          priority: 'high',
+          sound: 'default',
+          vibrate: [0, 500, 200, 500], // Long vibration: 0ms delay, 500ms vibrate, 200ms pause, 500ms vibrate
+          channelId: 'epickup_urgent',
+          notification: {
+            sound: 'default',
+            vibrate: [0, 500, 200, 500],
+            priority: 'high',
+            defaultSound: true,
+            defaultVibrateTimings: true
+          }
+        },
+        // ✅ iOS-specific: Sound and badge
+        ios: {
+          sound: 'default',
+          badge: 1,
+          priority: 'high'
+        }
       });
     } catch (error) {
       console.error('Error sending new booking request notification:', error);

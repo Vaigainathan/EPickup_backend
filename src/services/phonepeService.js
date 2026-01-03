@@ -173,6 +173,10 @@ class PhonePeService {
       
       console.log('🔗 [PHONEPE SDK] SDK order endpoint:', sdkOrderUrl);
       
+      // #region agent log
+      fetch('http://127.0.0.1:7242/ingest/69c0470c-7f5e-43c1-a034-8d3565ea0466',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'phonepeService.js:172',message:'SDK order request details',data:{endpoint:sdkOrderUrl,payload:orderPayload,headers:{Authorization:`Bearer ${token.substring(0,20)}...`,ContentType:'application/json'}},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A,B,C'})}).catch(()=>{});
+      // #endregion
+      
       const response = await axios.post(
         sdkOrderUrl,
         orderPayload,
@@ -184,6 +188,10 @@ class PhonePeService {
           timeout: 15000 // 15 second timeout
         }
       );
+      
+      // #region agent log
+      fetch('http://127.0.0.1:7242/ingest/69c0470c-7f5e-43c1-a034-8d3565ea0466',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'phonepeService.js:188',message:'SDK order response received',data:{status:response.status,hasOrderToken:!!response.data?.orderToken,responseKeys:Object.keys(response.data||{})},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
+      // #endregion
 
       if (response.data && response.data.orderToken) {
         console.log('✅ [PHONEPE SDK] SDK order created successfully');
@@ -198,6 +206,10 @@ class PhonePeService {
         status: error.response?.status,
         code: error.code
       };
+      
+      // #region agent log
+      fetch('http://127.0.0.1:7242/ingest/69c0470c-7f5e-43c1-a034-8d3565ea0466',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'phonepeService.js:194',message:'SDK order error caught',data:{errorMessage:error.message,status:error.response?.status,errorCode:error.response?.data?.errorCode,errorResponse:error.response?.data,requestConfig:{url:error.config?.url,method:error.config?.method,headers:error.config?.headers}},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A,B,C,D,E'})}).catch(()=>{});
+      // #endregion
       
       console.error('❌ [PHONEPE SDK] SDK order creation failed:', errorDetails);
       console.error('❌ [PHONEPE SDK] Request payload sent:', {
@@ -221,6 +233,11 @@ class PhonePeService {
           message: errorMsg,
           fullResponse: error.response?.data
         });
+        
+        // #region agent log
+        fetch('http://127.0.0.1:7242/ingest/69c0470c-7f5e-43c1-a034-8d3565ea0466',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'phonepeService.js:220',message:'PR000 error details extracted',data:{errorCode,errorMsg,fullResponse:error.response?.data},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A,B,C'})}).catch(()=>{});
+        // #endregion
+        
         throw new Error(`PhonePe API Error (${errorCode}): ${errorMsg}`);
       } else if (error.response?.status === 429) {
         throw new Error('Too many requests. Please wait a moment and try again.');

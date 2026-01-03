@@ -871,11 +871,12 @@ try {
   // Initialize services first
   initializeServices().then(() => {
     server.listen(PORT, () => {
+      const backendUrl = process.env.BACKEND_URL || `http://localhost:${PORT}`;
       console.log(`🚀 EPickup Backend Server running on port ${PORT}`);
       console.log(`📱 Environment: ${process.env.NODE_ENV || 'development'}`);
-      console.log(`🔗 Health Check: http://localhost:${PORT}/api/health`);
-      console.log(`📈 Metrics: http://localhost:${PORT}/api/health/metrics`);
-      console.log(`📚 API Docs: http://localhost:${PORT}/api-docs`);
+      console.log(`🔗 Health Check: ${backendUrl}/api/health`);
+      console.log(`📈 Metrics: ${backendUrl}/api/health/metrics`);
+      console.log(`📚 API Docs: ${backendUrl}/api-docs`);
       
       if (process.env.NODE_ENV === 'development') {
         console.log(`🔄 Auto-reload enabled with nodemon`);

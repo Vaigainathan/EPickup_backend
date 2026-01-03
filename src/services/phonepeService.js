@@ -78,18 +78,16 @@ class PhonePeService {
         `${this.config.clientId}:${this.config.clientSecret}`
       ).toString('base64');
 
-      // Get OAuth base URL (replace /pg-sandbox or /pg with /identity-manager)
+      // Get OAuth base URL
+      // PhonePe OAuth endpoint is at the SAME base URL: https://api-preprod.phonepe.com/apis/pg-sandbox/v1/oauth/token
       const baseUrl = this.config.baseUrl || phonepeConfig.getBaseUrl();
-      const oauthBaseUrl = baseUrl
-        .replace('/pg-sandbox', '/identity-manager')
-        .replace('/pg', '/identity-manager')
-        .replace('/apis/pg-sandbox', '/identity-manager')
-        .replace('/apis/pg', '/identity-manager');
+      // OAuth endpoint is at the same base URL, just append /v1/oauth/token
+      const oauthUrl = `${baseUrl.replace(/\/$/, '')}/v1/oauth/token`;
 
-      console.log('🔐 [PHONEPE SDK] Requesting OAuth token from:', oauthBaseUrl);
+      console.log('🔐 [PHONEPE SDK] Requesting OAuth token from:', oauthUrl);
 
       const response = await axios.post(
-        `${oauthBaseUrl}/v1/oauth/token`,
+        oauthUrl,
         { grant_type: 'client_credentials' },
         {
           headers: {

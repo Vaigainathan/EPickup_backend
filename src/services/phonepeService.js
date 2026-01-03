@@ -153,7 +153,13 @@ class PhonePeService {
         amount: amountInPaise,
         merchantUserId: customerId,
         mobileNumber: customerPhone || '+919999999999',
-        callbackUrl: phonepeConfig.getCallbackUrl()
+        callbackUrl: phonepeConfig.getCallbackUrl(),
+        paymentFlow: {
+          type: 'PG_CHECKOUT',
+          merchantUrls: {
+            redirectUrl: phonepeConfig.getRedirectUrl() || 'epickup://payment/callback'
+          }
+        }
       };
 
       console.log('📦 [PHONEPE SDK] Creating SDK order:', {

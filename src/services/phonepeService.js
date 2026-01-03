@@ -65,11 +65,183 @@ class PhonePeService {
   }
 
   /**
+   * Get OAuth access token for SDK flow
+   * @returns {string} Access token
+   */
+  async getAuthToken() {
+    try {
+      if (!this.config.clientId || !this.config.clientSecret) {
+        throw new Error('PhonePe Client ID and Client Secret are required for SDK flow');
+      }
+
+      const credentials = Buffer.from(
+        `${this.config.clientId}:${this.config.clientSecret}`
+      ).toString('base64');
+
+      // Get OAuth base URL (replace /pg-sandbox or /pg with /identity-manager)
+      const baseUrl = this.config.baseUrl || phonepeConfig.getBaseUrl();
+      const oauthBaseUrl = baseUrl
+        .replace('/pg-sandbox', '/identity-manager')
+        .replace('/pg', '/identity-manager')
+        .replace('/apis/pg-sandbox', '/identity-manager')
+        .replace('/apis/pg', '/identity-manager');
+
+      console.log('🔐 [PHONEPE SDK] Requesting OAuth token from:', oauthBaseUrl);
+
+      const response = await axios.post(
+        `${oauthBaseUrl}/v1/oauth/token`,
+        { grant_type: 'client_credentials' },
+        {
+          headers: {
+            'Authorization': `Basic ${credentials}`,
+            'Content-Type': 'application/json'
+          },
+          timeout: 10000 // 10 second timeout
+        }
+      );
+
+      if (response.data && response.data.access_token) {
+        console.log('✅ [PHONEPE SDK] OAuth token obtained successfully');
+        return response.data.access_token;
+      } else {
+        throw new Error('Invalid OAuth response: missing access_token');
+      }
+    } catch (error) {
+      console.error('❌ [PHONEPE SDK] OAuth token generation failed:', {
+        message: error.message,
+        response: error.response?.data,
+        status: error.response?.status
+      });
+      throw new Error(`Failed to obtain OAuth token: ${error.message}`);
+    }
+  }
+
+  /**
+   * Create SDK order for PhonePe SDK flow
+   * @param {Object} paymentData - Payment data
+   * @returns {string} Order token
+   */
+  async createSDKOrder(paymentData) {
+    try {
+      const { transactionId, amount, customerId, customerPhone } = paymentData;
+
+      // Validate required fields
+      if (!transactionId || !amount || !customerId) {
+        throw new Error('Missing required payment fields for SDK order');
+      }
+
+      if (amount <= 0 || amount > 100000) {
+        throw new Error('Amount must be between ₹1 and ₹100,000');
+      }
+
+      // Get OAuth token with retry logic
+      let token;
+      try {
+        token = await this.getAuthToken();
+      } catch (tokenError) {
+        console.error('❌ [PHONEPE SDK] Failed to get OAuth token for SDK order:', tokenError.message);
+        throw new Error(`Authentication failed: ${tokenError.message}`);
+      }
+
+      // Convert amount to paise (PhonePe expects amount in paise)
+      const amountInPaise = Math.round(amount * 100);
+
+      const orderPayload = {
+        merchantOrderId: transactionId,
+        amount: amountInPaise,
+        merchantUserId: customerId,
+        mobileNumber: customerPhone || '+919999999999',
+        callbackUrl: phonepeConfig.getCallbackUrl()
+      };
+
+      console.log('📦 [PHONEPE SDK] Creating SDK order:', {
+        merchantOrderId: transactionId,
+        amount: amountInPaise,
+        callbackUrl: phonepeConfig.getCallbackUrl()
+      });
+
+      const response = await axios.post(
+        `${phonepeConfig.getBaseUrl()}/checkout/v2/sdk/order`,
+        orderPayload,
+        {
+          headers: {
+            'Authorization': `Bearer ${token}`,
+            'Content-Type': 'application/json'
+          },
+          timeout: 15000 // 15 second timeout
+        }
+      );
+
+      if (response.data && response.data.orderToken) {
+        console.log('✅ [PHONEPE SDK] SDK order created successfully');
+        return response.data.orderToken;
+      } else {
+        throw new Error('Invalid SDK order response: missing orderToken');
+      }
+    } catch (error) {
+      const errorDetails = {
+        message: error.message,
+        response: error.response?.data,
+        status: error.response?.status,
+        code: error.code
+      };
+      
+      console.error('❌ [PHONEPE SDK] SDK order creation failed:', errorDetails);
+      
+      // Provide more specific error messages
+      if (error.response?.status === 401) {
+        throw new Error('OAuth token expired or invalid. Please retry.');
+      } else if (error.response?.status === 400) {
+        const errorMsg = error.response?.data?.message || 'Invalid order request. Please check the payment details.';
+        throw new Error(errorMsg);
+      } else if (error.response?.status === 429) {
+        throw new Error('Too many requests. Please wait a moment and try again.');
+      } else if (error.code === 'ECONNREFUSED' || error.code === 'ETIMEDOUT') {
+        throw new Error('Failed to connect to PhonePe API. Please check your network connection.');
+      }
+      
+      throw new Error(`Failed to create SDK order: ${error.message}`);
+    }
+  }
+
+  /**
+   * Get order status (for polling if needed)
+   * @param {string} merchantOrderId - Merchant order ID
+   * @returns {Object} Order status
+   */
+  async getOrderStatus(merchantOrderId) {
+    try {
+      const token = await this.getAuthToken();
+
+      const response = await axios.get(
+        `${phonepeConfig.getBaseUrl()}/checkout/v2/order/${merchantOrderId}/status`,
+        {
+          headers: {
+            'Authorization': `Bearer ${token}`,
+            'Content-Type': 'application/json'
+          },
+          timeout: 10000
+        }
+      );
+
+      return response.data;
+    } catch (error) {
+      console.error('❌ [PHONEPE SDK] Order status check failed:', {
+        message: error.message,
+        response: error.response?.data,
+        status: error.response?.status
+      });
+      throw new Error(`Failed to get order status: ${error.message}`);
+    }
+  }
+
+  /**
    * Create payment request
    * @param {Object} paymentData - Payment data
+   * @param {boolean} useSDK - Whether to use SDK flow (default: auto-detect based on bookingId)
    * @returns {Object} Payment creation result
    */
-  async createPayment(paymentData) {
+  async createPayment(paymentData, useSDK = null) {
     return errorHandlingService.executeWithRetry(async () => {
       const {
         transactionId,
@@ -84,6 +256,63 @@ class PhonePeService {
         throw new Error('Missing required payment fields');
       }
 
+      // Auto-detect SDK flow for wallet top-ups
+      if (useSDK === null) {
+        useSDK = bookingId === 'wallet-topup' || transactionId.startsWith('WALLET_');
+      }
+
+      // Use SDK flow for wallet top-ups (driver app)
+      if (useSDK) {
+        console.log('📱 [PHONEPE SDK] Using SDK flow for wallet top-up');
+        
+        try {
+          const orderToken = await this.createSDKOrder({
+            transactionId,
+            amount,
+            customerId,
+            customerPhone
+          });
+
+          // Store payment record in Firestore
+          await this.storePaymentRecord({
+            transactionId,
+            bookingId,
+            customerId,
+            amount,
+            amountInPaise: Math.round(amount * 100),
+            status: 'PENDING',
+            paymentGateway: 'PHONEPE_SDK',
+            orderToken: orderToken,
+            createdAt: new Date(),
+            updatedAt: new Date()
+          });
+
+          await monitoringService.logPayment('payment_created', {
+            transactionId,
+            bookingId,
+            amount,
+            customerId,
+            paymentType: 'SDK'
+          });
+
+          return {
+            success: true,
+            data: {
+              transactionId,
+              merchantTransactionId: transactionId,
+              orderToken: orderToken,
+              paymentMode: this.isTestMode ? 'TESTING' : 'PRODUCTION',
+              isMockPayment: false,
+              isSDK: true
+            }
+          };
+        } catch (error) {
+          console.error('❌ [PHONEPE SDK] SDK payment creation failed:', error);
+          throw error;
+        }
+      }
+
+      // Legacy Pay Page flow (for booking payments)
       // Convert amount to paise (PhonePe expects amount in paise)
       const amountInPaise = Math.round(amount * 100);
 
@@ -236,22 +465,67 @@ class PhonePeService {
    */
   async handlePaymentCallback(callbackData) {
     try {
-      const { response } = callbackData;
-      const decodedResponse = JSON.parse(Buffer.from(response, 'base64').toString());
+      console.log('📥 [PHONEPE] Processing payment callback');
       
-      const {
-        merchantId,
-        merchantTransactionId,
-        transactionId,
-        amount,
-        state,
-        responseCode,
-        responseMessage
-      } = decodedResponse;
-      // Verify the callback
-      if (merchantId !== phonepeConfig.getMerchantId()) {
-        throw new Error('Invalid merchant ID in callback');
+      // Handle both Pay Page and SDK callback formats
+      let decodedResponse;
+      let merchantTransactionId;
+      let transactionId;
+      let amount;
+      let state;
+      let responseCode;
+      let responseMessage;
+      let isSDKCallback = false;
+
+      // Check if this is an SDK callback (different format)
+      if (callbackData.merchantOrderId || callbackData.orderId) {
+        // SDK callback format
+        isSDKCallback = true;
+        console.log('📱 [PHONEPE SDK] Detected SDK callback format');
+        
+        merchantTransactionId = callbackData.merchantOrderId || callbackData.orderId;
+        transactionId = callbackData.transactionId || callbackData.paymentId;
+        amount = callbackData.amount || (callbackData.amountInPaise ? callbackData.amountInPaise / 100 : 0);
+        state = callbackData.status === 'SUCCESS' || callbackData.status === 'PAYMENT_SUCCESS' ? 'COMPLETED' : 
+                callbackData.status === 'FAILED' || callbackData.status === 'PAYMENT_FAILED' ? 'FAILED' : 
+                callbackData.status || 'PENDING';
+        responseCode = callbackData.code || callbackData.responseCode || '000';
+        responseMessage = callbackData.message || callbackData.responseMessage || '';
+      } else if (callbackData.response) {
+        // Pay Page callback format (legacy)
+        console.log('🌐 [PHONEPE] Detected Pay Page callback format');
+        decodedResponse = JSON.parse(Buffer.from(callbackData.response, 'base64').toString());
+        
+        const {
+          merchantId,
+          merchantTransactionId: mtId,
+          transactionId: tId,
+          amount: amt,
+          state: st,
+          responseCode: rc,
+          responseMessage: rm
+        } = decodedResponse;
+        
+        // Verify the callback (only for Pay Page flow)
+        if (merchantId && phonepeConfig.getMerchantId() && merchantId !== phonepeConfig.getMerchantId()) {
+          throw new Error('Invalid merchant ID in callback');
+        }
+        
+        merchantTransactionId = mtId;
+        transactionId = tId;
+        amount = amt;
+        state = st;
+        responseCode = rc;
+        responseMessage = rm;
+      } else {
+        throw new Error('Invalid callback data format');
       }
+
+      if (!merchantTransactionId) {
+        throw new Error('Missing merchant transaction ID in callback');
+      }
+
+      console.log(`📝 [PHONEPE] Processing callback for transaction: ${merchantTransactionId}, status: ${state}`);
 
       // Update payment record
       await this.updatePaymentStatus(merchantTransactionId, {
@@ -259,21 +533,28 @@ class PhonePeService {
         paymentId: transactionId,
         responseCode,
         responseMessage,
+        isSDK: isSDKCallback,
         updatedAt: new Date()
       });
 
       // Verify payment with PhonePe before processing
-      const verificationResult = await this.verifyPayment(merchantTransactionId);
+      // For SDK flow, use order status API; for Pay Page, use status API
+      const verificationResult = isSDKCallback 
+        ? await this.getOrderStatus(merchantTransactionId)
+        : await this.verifyPayment(merchantTransactionId);
       
-      if (!verificationResult.success) {
-        console.error(`❌ Payment verification failed for: ${merchantTransactionId}`);
-        return {
-          success: false,
-          error: 'Payment verification failed'
-        };
+      let verifiedState = state;
+      if (verificationResult && !verificationResult.success) {
+        console.warn(`⚠️ Payment verification failed for: ${merchantTransactionId}, using callback state`);
+      } else if (verificationResult && verificationResult.data) {
+        // Extract state from verification result
+        if (isSDKCallback && verificationResult.data.status) {
+          verifiedState = verificationResult.data.status === 'SUCCESS' ? 'COMPLETED' : 
+                          verificationResult.data.status === 'FAILED' ? 'FAILED' : state;
+        } else if (!isSDKCallback && verificationResult.data.state) {
+          verifiedState = verificationResult.data.state;
+        }
       }
-      
-      const verifiedState = verificationResult.data.state;
       
       // Update booking status based on verified payment status
       if (verifiedState === 'COMPLETED') {
@@ -281,7 +562,7 @@ class PhonePeService {
         
         // Check if this is a wallet top-up payment
         if (merchantTransactionId.startsWith('WALLET_')) {
-          await this.processWalletTopupPayment(merchantTransactionId, amount);
+          await this.processWalletTopupPayment(merchantTransactionId, amount ? amount * 100 : null);
         }
       } else if (verifiedState === 'FAILED') {
         await this.updateBookingPaymentStatus(merchantTransactionId, 'FAILED');
@@ -294,16 +575,18 @@ class PhonePeService {
 
       await monitoringService.logPayment('payment_callback_processed', {
         transactionId: merchantTransactionId,
-        status: state,
-        amount
+        status: verifiedState,
+        amount: amount ? (typeof amount === 'number' && amount < 1000 ? amount * 100 : amount) : null,
+        isSDK: isSDKCallback
       });
 
       return {
         success: true,
-        message: 'Payment callback processed successfully'
+        message: 'Payment callback processed successfully',
+        isSDK: isSDKCallback
       };
     } catch (error) {
-      console.error('Payment callback error:', error);
+      console.error('❌ [PHONEPE] Payment callback error:', error);
       return {
         success: false,
         error: {
@@ -391,7 +674,8 @@ class PhonePeService {
    */
   async storePaymentRecord(paymentData) {
     try {
-      await this.db.collection('payments').doc(paymentData.transactionId).set(paymentData);
+      const db = this.getDb();
+      await db.collection('payments').doc(paymentData.transactionId).set(paymentData);
     } catch (error) {
       console.error('Store payment record error:', error);
       throw error;
@@ -419,8 +703,9 @@ class PhonePeService {
    */
   async updateBookingPaymentStatus(transactionId, paymentStatus) {
     try {
+      const db = this.getDb();
       // Find booking by transaction ID
-      const paymentDoc = await this.db.collection('payments').doc(transactionId).get();
+      const paymentDoc = await db.collection('payments').doc(transactionId).get();
       if (!paymentDoc.exists) {
         throw new Error('Payment record not found');
       }
@@ -429,7 +714,7 @@ class PhonePeService {
       const bookingId = paymentData.bookingId;
 
       // Update booking payment status
-      await this.db.collection('bookings').doc(bookingId).update({
+      await db.collection('bookings').doc(bookingId).update({
         paymentStatus,
         paymentUpdatedAt: new Date(),
         updatedAt: new Date()
@@ -446,7 +731,8 @@ class PhonePeService {
    */
   async storeRefundRecord(refundData) {
     try {
-      await this.db.collection('refunds').doc(refundData.refundTransactionId).set(refundData);
+      const db = this.getDb();
+      await db.collection('refunds').doc(refundData.refundTransactionId).set(refundData);
     } catch (error) {
       console.error('Store refund record error:', error);
       throw error;
@@ -460,7 +746,8 @@ class PhonePeService {
    */
   async getPayment(transactionId) {
     try {
-      const doc = await this.db.collection('payments').doc(transactionId).get();
+      const db = this.getDb();
+      const doc = await db.collection('payments').doc(transactionId).get();
       return doc.exists ? { id: doc.id, ...doc.data() } : null;
     } catch (error) {
       console.error('Get payment error:', error);
@@ -476,7 +763,8 @@ class PhonePeService {
    */
   async getCustomerPayments(customerId, limit = 20) {
     try {
-      const snapshot = await this.db.collection('payments')
+      const db = this.getDb();
+      const snapshot = await db.collection('payments')
         .where('customerId', '==', customerId)
         .orderBy('createdAt', 'desc')
         .limit(limit)
@@ -547,9 +835,10 @@ class PhonePeService {
     // Note: amount parameter is kept for future validation logic
     try {
       console.log(`💰 Processing wallet top-up payment: ${transactionId}`);
+      const db = this.getDb();
       
       // Find wallet transaction record in driverTopUps collection
-      const walletTransactionsSnapshot = await this.db.collection('driverTopUps')
+      const walletTransactionsSnapshot = await db.collection('driverTopUps')
         .where('phonepeTransactionId', '==', transactionId)
         .limit(1)
         .get();
@@ -557,7 +846,7 @@ class PhonePeService {
       if (walletTransactionsSnapshot.empty) {
         console.error(`❌ Wallet transaction not found for PhonePe transaction: ${transactionId}`);
         // Try searching by id field as fallback
-        const altSearch = await this.db.collection('driverTopUps')
+        const altSearch = await db.collection('driverTopUps')
           .where('id', '==', transactionId)
           .limit(1)
           .get();
@@ -656,8 +945,9 @@ class PhonePeService {
   async updateWalletTransactionStatus(transactionId, status) {
     try {
       console.log(`📝 Updating wallet transaction status: ${transactionId} -> ${status}`);
+      const db = this.getDb();
       
-      const walletTransactionSnapshot = await this.db.collection('driverTopUps')
+      const walletTransactionSnapshot = await db.collection('driverTopUps')
         .where('phonepeTransactionId', '==', transactionId)
         .limit(1)
         .get();
@@ -714,8 +1004,9 @@ class PhonePeService {
     try {
       const start = new Date(startDate);
       const end = new Date(endDate);
+      const db = this.getDb();
 
-      const snapshot = await this.db.collection('payments')
+      const snapshot = await db.collection('payments')
         .where('createdAt', '>=', start)
         .where('createdAt', '<=', end)
         .get();

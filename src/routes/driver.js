@@ -9047,10 +9047,10 @@ router.post('/wallet/top-up', [
     const phonepeService = require('../services/phonepeService');
     const phonepeConfig = require('../services/phonepeConfigService');
     
-    // Check if PhonePe is configured (test or production)
-    const isPhonePeConfigured = process.env.PHONEPE_MERCHANT_ID && 
-                                 process.env.PHONEPE_SALT_KEY &&
-                                 process.env.PHONEPE_SALT_KEY.length > 0;
+    // Check if PhonePe SDK is configured (OAuth credentials required for SDK flow)
+    const isPhonePeConfigured = process.env.PHONEPE_CLIENT_ID && 
+                                 process.env.PHONEPE_CLIENT_SECRET &&
+                                 process.env.PHONEPE_CLIENT_SECRET.length > 0;
     
     if (!isPhonePeConfigured) {
       return res.status(500).json({
@@ -9058,7 +9058,7 @@ router.post('/wallet/top-up', [
         error: {
           code: 'PHONEPE_NOT_CONFIGURED',
           message: 'PhonePe payment gateway is not configured',
-          details: 'Please configure PhonePe credentials in environment variables'
+          details: 'Please configure PhonePe Client ID and Client Secret in environment variables for SDK flow'
         },
         timestamp: new Date().toISOString()
       });
@@ -9096,11 +9096,13 @@ router.post('/wallet/top-up', [
         message: 'Top-up already processed (duplicate request prevented)',
         data: {
           transactionId: existingData.id,
-          paymentUrl: existingData.phonepePaymentUrl,
+          orderToken: existingData.phonepeOrderToken || null,
+          paymentUrl: existingData.phonepePaymentUrl || null,
           merchantTransactionId: existingData.phonepeTransactionId,
           amount: existingData.amount,
           paymentMethod: existingData.paymentMethod,
           status: existingData.status,
+          isSDK: !!existingData.phonepeOrderToken,
           isDuplicate: true
         },
         timestamp: new Date().toISOString()
@@ -9141,25 +9143,37 @@ router.post('/wallet/top-up', [
     });
     
     if (paymentResult.success) {
-      // Update transaction with PhonePe details
-      await walletTransactionRef.update({
+      // Update transaction with PhonePe SDK details
+      const updateData = {
         phonepeTransactionId: paymentResult.data.merchantTransactionId,
-        phonepePaymentUrl: paymentResult.data.paymentUrl,
         updatedAt: new Date()
-      });
+      };
+      
+      // SDK flow returns orderToken, legacy flow returns paymentUrl
+      if (paymentResult.data.orderToken) {
+        updateData.phonepeOrderToken = paymentResult.data.orderToken;
+      } else if (paymentResult.data.paymentUrl) {
+        updateData.phonepePaymentUrl = paymentResult.data.paymentUrl;
+      }
+      
+      await walletTransactionRef.update(updateData);
       
       res.status(200).json({
         success: true,
         message: `Payment request created successfully (${paymentMode} mode)`,
         data: {
           transactionId: transactionId,
-          paymentUrl: paymentResult.data.paymentUrl,
+          // SDK flow: return orderToken
+          orderToken: paymentResult.data.orderToken || null,
+          // Legacy flow: return paymentUrl (for backward compatibility)
+          paymentUrl: paymentResult.data.paymentUrl || null,
           merchantTransactionId: paymentResult.data.merchantTransactionId,
           amount: amount,
           paymentMethod: paymentMethod,
-          paymentMode: paymentResult.data.paymentMode || paymentMode, // From PhonePe service or fallback
-          isMockPayment: false, // Always false - using real PhonePe (test or production)
-          isTestMode: isTestMode // Explicit test mode flag
+          paymentMode: paymentResult.data.paymentMode || paymentMode,
+          isSDK: paymentResult.data.isSDK || false,
+          isMockPayment: false,
+          isTestMode: isTestMode
         },
         timestamp: new Date().toISOString()
       });

@@ -74,7 +74,7 @@ class PhonePeConfigService {
   }
 
   /**
-   * Get merchant ID
+   * Get merchant ID (for Pay Page flow - legacy)
    * @returns {string} Merchant ID
    */
   getMerchantId() {
@@ -82,7 +82,7 @@ class PhonePeConfigService {
   }
 
   /**
-   * Get salt key
+   * Get salt key (for Pay Page flow - legacy)
    * @returns {string} Salt key
    */
   getSaltKey() {
@@ -90,11 +90,40 @@ class PhonePeConfigService {
   }
 
   /**
-   * Get salt index
+   * Get salt index (for Pay Page flow - legacy)
    * @returns {string} Salt index
    */
   getSaltIndex() {
     return this.config.saltIndex;
+  }
+
+  /**
+   * Get OAuth base URL for SDK flow
+   * @returns {string} OAuth base URL
+   */
+  getOAuthBaseUrl() {
+    const baseUrl = this.config.baseUrl || 'https://api-preprod.phonepe.com/apis/pg-sandbox';
+    return baseUrl
+      .replace('/pg-sandbox', '/identity-manager')
+      .replace('/pg', '/identity-manager')
+      .replace('/apis/pg-sandbox', '/identity-manager')
+      .replace('/apis/pg', '/identity-manager');
+  }
+
+  /**
+   * Check if SDK flow is available (has Client ID/Secret)
+   * @returns {boolean} True if SDK credentials are available
+   */
+  isSDKFlowAvailable() {
+    return !!(this.config.clientId && this.config.clientSecret);
+  }
+
+  /**
+   * Check if Pay Page flow is available (has Merchant ID/Salt Key)
+   * @returns {boolean} True if Pay Page credentials are available
+   */
+  isPayPageFlowAvailable() {
+    return !!(this.config.merchantId && this.config.saltKey && this.config.saltKey.length > 20);
   }
 
   /**

@@ -498,14 +498,21 @@ app.post('/api/payments/phonepe/callback',
     try {
       console.log('📥 [WEBHOOK] Received PhonePe callback (public endpoint)');
       
-      // Intelligent service selection
-      const isPhonePeConfigured = process.env.PHONEPE_MERCHANT_ID && 
-                                   process.env.PHONEPE_MERCHANT_ID !== 'PGTESTPAYUAT' &&
-                                   process.env.PHONEPE_SALT_KEY &&
-                                   process.env.PHONEPE_SALT_KEY.length > 20;
+      // Intelligent service selection - Check for SDK credentials (Client ID/Secret) or Pay Page credentials (Merchant ID/Salt Key)
+      const hasSDKCredentials = process.env.PHONEPE_CLIENT_ID && 
+                                process.env.PHONEPE_CLIENT_SECRET &&
+                                process.env.PHONEPE_CLIENT_SECRET.length > 0;
+      const hasPayPageCredentials = process.env.PHONEPE_MERCHANT_ID && 
+                                    process.env.PHONEPE_MERCHANT_ID !== 'PGTESTPAYUAT' &&
+                                    process.env.PHONEPE_SALT_KEY &&
+                                    process.env.PHONEPE_SALT_KEY.length > 20;
       
+      const isPhonePeConfigured = hasSDKCredentials || hasPayPageCredentials;
       const callbackService = isPhonePeConfigured ? phonepeService : mockPaymentService;
       console.log(`🔧 [WEBHOOK] Using ${isPhonePeConfigured ? 'Real PhonePe' : 'Mock Payment'} callback handler`);
+      if (isPhonePeConfigured) {
+        console.log(`   SDK Flow: ${hasSDKCredentials ? '✅' : '❌'}, Pay Page Flow: ${hasPayPageCredentials ? '✅' : '❌'}`);
+      }
       
       const result = await callbackService.handlePaymentCallback(req.body);
 

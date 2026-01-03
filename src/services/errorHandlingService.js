@@ -215,6 +215,33 @@ class ErrorHandlingService {
   }
 
   /**
+   * Remove undefined values from object (Firestore doesn't allow undefined)
+   * @param {Object} obj - Object to clean
+   * @returns {Object} Cleaned object
+   */
+  removeUndefinedValues(obj) {
+    if (obj === null || obj === undefined) {
+      return null;
+    }
+    
+    if (Array.isArray(obj)) {
+      return obj.map(item => this.removeUndefinedValues(item)).filter(item => item !== undefined);
+    }
+    
+    if (typeof obj !== 'object') {
+      return obj;
+    }
+    
+    const cleaned = {};
+    for (const [key, value] of Object.entries(obj)) {
+      if (value !== undefined) {
+        cleaned[key] = this.removeUndefinedValues(value);
+      }
+    }
+    return cleaned;
+  }
+
+  /**
    * Log error to database and console
    * @param {Error} error - Error object
    * @param {Object} context - Error context
@@ -222,24 +249,27 @@ class ErrorHandlingService {
   async logError(error, context = {}) {
     try {
       const errorLog = {
-        message: error.message,
-        stack: error.stack,
-        name: error.name,
-        code: error.code,
-        context,
+        message: error.message || 'Unknown error',
+        stack: error.stack || null,
+        name: error.name || 'Error',
+        code: error.code || null,
+        context: context || {},
         timestamp: new Date(),
         severity: this.determineSeverity(error),
         environment: process.env.NODE_ENV || 'development'
       };
 
-      // Log to console
+      // Log to console (can include undefined for debugging)
       console.error('🚨 [ERROR_HANDLING] Error logged:', errorLog);
 
-      // Store in Firestore
-      await this.db.collection('errorLogs').add(errorLog);
+      // Clean object before saving to Firestore (remove undefined values)
+      const cleanedErrorLog = this.removeUndefinedValues(errorLog);
 
-      // Check for error thresholds
-      await this.checkErrorThresholds(errorLog);
+      // Store in Firestore
+      await this.db.collection('errorLogs').add(cleanedErrorLog);
+
+      // Check for error thresholds (use cleaned log)
+      await this.checkErrorThresholds(cleanedErrorLog);
 
     } catch (logError) {
       console.error('❌ [ERROR_HANDLING] Failed to log error:', logError);
@@ -332,7 +362,7 @@ class ErrorHandlingService {
           type: 'error_alert',
           level,
           count,
-          errorId: errorLog.id,
+          errorId: errorLog.id || errorLog.message || 'unknown',
           timestamp: new Date().toISOString()
         }
       };

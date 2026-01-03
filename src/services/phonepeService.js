@@ -165,8 +165,11 @@ class PhonePeService {
         callbackUrl: phonepeConfig.getCallbackUrl()
       });
 
-      // PhonePe SDK order endpoint format: /pg/v2/sdk/order (not /checkout/v2/sdk/order)
-      const sdkOrderUrl = `${phonepeConfig.getBaseUrl()}/pg/v2/sdk/order`;
+      // PhonePe SDK order endpoint: /payments/v2/sdk/order (as per PhonePe API documentation)
+      // Sandbox: https://api-preprod.phonepe.com/apis/pg-sandbox/payments/v2/sdk/order
+      // Production: https://api.phonepe.com/apis/pg/payments/v2/sdk/order
+      const baseUrl = phonepeConfig.getBaseUrl();
+      const sdkOrderUrl = `${baseUrl.replace(/\/$/, '')}/payments/v2/sdk/order`;
       
       console.log('🔗 [PHONEPE SDK] SDK order endpoint:', sdkOrderUrl);
       
@@ -238,8 +241,9 @@ class PhonePeService {
     try {
       const token = await this.getAuthToken();
 
-      // PhonePe SDK order status endpoint format: /pg/v2/order/{merchantOrderId}/status
-      const orderStatusUrl = `${phonepeConfig.getBaseUrl()}/pg/v2/order/${merchantOrderId}/status`;
+      // PhonePe SDK order status endpoint: /payments/v2/order/{merchantOrderId}/status (matching SDK order pattern)
+      const baseUrl = phonepeConfig.getBaseUrl();
+      const orderStatusUrl = `${baseUrl.replace(/\/$/, '')}/payments/v2/order/${merchantOrderId}/status`;
 
       const response = await axios.get(
         orderStatusUrl,

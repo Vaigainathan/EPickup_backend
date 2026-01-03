@@ -9043,24 +9043,35 @@ router.post('/wallet/top-up', [
       } : {})
     };
     
-    // Intelligent payment service selection
-    // Automatically uses mock if PhonePe credentials not configured
+    // Use PhonePe service (test or production based on configuration)
     const phonepeService = require('../services/phonepeService');
-    const mockPaymentService = require('../services/mockPaymentService');
+    const phonepeConfig = require('../services/phonepeConfigService');
     
-    // Check if PhonePe is properly configured
+    // Check if PhonePe is configured (test or production)
     const isPhonePeConfigured = process.env.PHONEPE_MERCHANT_ID && 
-                                 process.env.PHONEPE_MERCHANT_ID !== 'PGTESTPAYUAT' &&
                                  process.env.PHONEPE_SALT_KEY &&
-                                 process.env.PHONEPE_SALT_KEY.length > 20;
+                                 process.env.PHONEPE_SALT_KEY.length > 0;
     
-    // Select payment service based on configuration
-    const paymentService = isPhonePeConfigured ? phonepeService : mockPaymentService;
-    const paymentMode = isPhonePeConfigured ? 'PRODUCTION' : 'TESTING';
+    if (!isPhonePeConfigured) {
+      return res.status(500).json({
+        success: false,
+        error: {
+          code: 'PHONEPE_NOT_CONFIGURED',
+          message: 'PhonePe payment gateway is not configured',
+          details: 'Please configure PhonePe credentials in environment variables'
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+    
+    // Always use PhonePe service (test or production)
+    const paymentService = phonepeService;
+    const isTestMode = phonepeConfig.isTestMode();
+    const paymentMode = isTestMode ? 'TESTING' : 'PRODUCTION';
     
     console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
     console.log(`💳 [WALLET_TOP_UP] Payment Mode: ${paymentMode}`);
-    console.log(`🔧 [WALLET_TOP_UP] Service: ${isPhonePeConfigured ? 'Real PhonePe' : 'Mock Payment (Sandbox)'}`);
+    console.log(`🔧 [WALLET_TOP_UP] Service: PhonePe ${isTestMode ? '(Test/Sandbox)' : '(Production)'}`);
     console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
     
     const transactionId = `WALLET_${uid}_${Date.now()}`;
@@ -9146,8 +9157,9 @@ router.post('/wallet/top-up', [
           merchantTransactionId: paymentResult.data.merchantTransactionId,
           amount: amount,
           paymentMethod: paymentMethod,
-          paymentMode: paymentMode, // Let frontend know which mode
-          isMockPayment: !isPhonePeConfigured // Explicit flag
+          paymentMode: paymentResult.data.paymentMode || paymentMode, // From PhonePe service or fallback
+          isMockPayment: false, // Always false - using real PhonePe (test or production)
+          isTestMode: isTestMode // Explicit test mode flag
         },
         timestamp: new Date().toISOString()
       });

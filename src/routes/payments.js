@@ -212,56 +212,12 @@ router.get('/verify/:transactionId',
  * @route POST /api/payments/phonepe/callback
  * @desc Handle PhonePe payment callback
  * @access Public
+ * 
+ * NOTE: This route is registered in server.js directly to handle webhooks without auth.
+ * This route handler is kept for reference but may not be reached due to route precedence.
+ * The actual callback is handled in server.js:495
  */
-router.post('/phonepe/callback',
-  async (req, res) => {
-    try {
-      console.log('📥 [PAYMENTS] Received PhonePe callback');
-      
-      // Intelligent service selection (same logic as driver route)
-      const phonepeService = require('../services/phonepeService');
-      const mockPaymentService = require('../services/mockPaymentService');
-      
-      const isPhonePeConfigured = process.env.PHONEPE_MERCHANT_ID && 
-                                   process.env.PHONEPE_MERCHANT_ID !== 'PGTESTPAYUAT' &&
-                                   process.env.PHONEPE_SALT_KEY &&
-                                   process.env.PHONEPE_SALT_KEY.length > 20;
-      
-      const callbackService = isPhonePeConfigured ? phonepeService : mockPaymentService;
-      console.log(`🔧 [PAYMENTS] Using ${isPhonePeConfigured ? 'Real PhonePe' : 'Mock Payment'} callback handler`);
-      
-      const result = await callbackService.handlePaymentCallback(req.body);
-
-      if (result.success) {
-        console.log('✅ [PAYMENTS] Callback processed successfully');
-        res.json({
-          success: true,
-          message: 'Callback processed successfully',
-          timestamp: new Date().toISOString()
-        });
-      } else {
-        console.warn('⚠️ [PAYMENTS] Callback processing failed:', result.error);
-        res.status(400).json({
-          success: false,
-          message: 'Callback processing failed',
-          error: result.error,
-          timestamp: new Date().toISOString()
-        });
-      }
-    } catch (error) {
-      console.error('❌ [PAYMENTS] Payment callback error:', error);
-      res.status(500).json({
-        success: false,
-        message: 'Internal server error',
-        error: {
-          code: 'CALLBACK_ERROR',
-          message: error.message
-        },
-        timestamp: new Date().toISOString()
-      });
-    }
-  }
-);
+// router.post('/phonepe/callback', ...) - DISABLED: Handled in server.js to avoid duplicate routes
 
 /**
  * @route POST /api/payments/refund

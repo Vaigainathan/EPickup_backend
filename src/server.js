@@ -145,6 +145,7 @@ const adminAuthRoutes = require('./routes/adminAuth');
 const adminSignupRoutes = require('./routes/adminSignup');
 // const adminBookingManagementRoutes = require('./routes/adminBookingManagement'); // Included in adminRoutes
 const locationTrackingRoutes = require('./routes/locationTracking');
+const revenueRoutes = require('./routes/revenue');
 console.log('✅ All routes imported successfully');
 
 // Import middleware after Firebase initialization
@@ -590,6 +591,7 @@ app.use('/api/admin/signup', lightRateLimit, adminSignupRoutes); // Admin signup
 // Import admin role validation
 const { requireAdmin } = require('./middleware/auth');
 app.use('/api/admin', adminLimiter, authMiddleware, requireAdmin, adminRoutes); // Admin routes require admin role
+app.use('/api/admin/revenue', adminLimiter, authMiddleware, requireAdmin, revenueRoutes); // Revenue routes require admin role
 // Note: adminBookingManagementRoutes are included in adminRoutes to avoid conflicts
 
 // Health check routes (for keepalive script) - No auth required

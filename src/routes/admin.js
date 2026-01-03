@@ -3,6 +3,7 @@ const admin = require('firebase-admin');
 const { getFirestore } = require('firebase-admin/firestore');
 const { getStorage } = require('../services/firebase');
 const verificationService = require('../services/verificationService');
+const walletService = require('../services/walletService');
 const { sanitizeInput, validateEmail, checkValidation } = require('../middleware/validation');
 const { requireAdmin } = require('../middleware/auth');
 const router = express.Router();
@@ -6547,6 +6548,266 @@ router.post('/bookings/:id/intervene', async (req, res) => {
       error: {
         code: 'BOOKING_INTERVENTION_ERROR',
         message: 'Failed to intervene in booking',
+        details: error.message
+      },
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+/**
+ * @route   GET /api/admin/drivers/:driverId/wallet
+ * @desc    Get driver wallet details
+ * @access  Private (Admin only)
+ */
+router.get('/drivers/:driverId/wallet', async (req, res) => {
+  try {
+    const { driverId } = req.params;
+    const db = getFirestore();
+
+    // Get wallet balance
+    const walletDoc = await db.collection('driverPointsWallets').doc(driverId).get();
+    
+    if (!walletDoc.exists) {
+      return res.status(404).json({
+        success: false,
+        error: {
+          code: 'WALLET_NOT_FOUND',
+          message: 'Wallet not found for this driver'
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    const walletData = walletDoc.data();
+    
+    // Get recent transactions
+    const transactionsQuery = db.collection('pointsTransactions')
+      .where('driverId', '==', driverId)
+      .orderBy('createdAt', 'desc')
+      .limit(20);
+    
+    const transactionsSnapshot = await transactionsQuery.get();
+    const transactions = transactionsSnapshot.docs.map(doc => {
+      const data = doc.data();
+      return {
+        id: doc.id,
+        ...data,
+        createdAt: normalizeTimestamp(data.createdAt)
+      };
+    });
+
+    // Get top-up history
+    const topUpsQuery = db.collection('driverTopUps')
+      .where('driverId', '==', driverId)
+      .orderBy('createdAt', 'desc')
+      .limit(10);
+    
+    const topUpsSnapshot = await topUpsQuery.get();
+    const topUps = topUpsSnapshot.docs.map(doc => {
+      const data = doc.data();
+      return {
+        id: doc.id,
+        ...data,
+        createdAt: normalizeTimestamp(data.createdAt),
+        completedAt: normalizeTimestamp(data.completedAt)
+      };
+    });
+
+    // Calculate statistics
+    const debitTransactions = transactions.filter(t => t.type === 'debit');
+    const totalCommission = debitTransactions.reduce((sum, t) => sum + Math.abs(t.pointsAmount || 0), 0);
+    const totalTopUps = topUps
+      .filter(t => t.status === 'completed')
+      .reduce((sum, t) => sum + (t.amount || 0), 0);
+
+    res.json({
+      success: true,
+      data: {
+        wallet: {
+          balance: walletData.pointsBalance || 0,
+          totalEarned: walletData.totalPointsEarned || 0,
+          totalSpent: walletData.totalPointsSpent || 0,
+          requiresTopUp: walletData.requiresTopUp || false,
+          canWork: walletData.canWork || false,
+          lastUpdated: normalizeTimestamp(walletData.lastUpdated)
+        },
+        transactions: transactions,
+        topUps: topUps,
+        statistics: {
+          totalCommission,
+          totalTopUps,
+          transactionCount: transactions.length,
+          topUpCount: topUps.length,
+          averageTopUp: topUps.length > 0 ? totalTopUps / topUps.length : 0
+        }
+      },
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('Error getting driver wallet:', error);
+    res.status(500).json({
+      success: false,
+      error: {
+        code: 'GET_WALLET_ERROR',
+        message: 'Failed to get driver wallet',
+        details: error.message
+      },
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+/**
+ * @route   GET /api/admin/drivers/:driverId/wallet/transactions
+ * @desc    Get driver wallet transactions
+ * @access  Private (Admin only)
+ */
+router.get('/drivers/:driverId/wallet/transactions', async (req, res) => {
+  try {
+    const { driverId } = req.params;
+    const { limit = 50, offset = 0, type, startDate, endDate } = req.query;
+
+    const result = await walletService.getTransactionHistory(driverId, {
+      limit: parseInt(limit),
+      offset: parseInt(offset),
+      type: type || undefined,
+      startDate: startDate ? new Date(startDate) : undefined,
+      endDate: endDate ? new Date(endDate) : undefined
+    });
+
+    if (result.success) {
+      res.json({
+        success: true,
+        data: result.transactions,
+        pagination: result.pagination,
+        timestamp: new Date().toISOString()
+      });
+    } else {
+      res.status(400).json({
+        success: false,
+        error: {
+          code: 'GET_TRANSACTIONS_ERROR',
+          message: result.error || 'Failed to get transactions'
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+  } catch (error) {
+    console.error('Error getting driver wallet transactions:', error);
+    res.status(500).json({
+      success: false,
+      error: {
+        code: 'GET_TRANSACTIONS_ERROR',
+        message: 'Failed to get driver wallet transactions',
+        details: error.message
+      },
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+/**
+ * @route   GET /api/admin/drivers/:driverId/earnings
+ * @desc    Get driver earnings
+ * @access  Private (Admin only)
+ */
+router.get('/drivers/:driverId/earnings', async (req, res) => {
+  try {
+    const { driverId } = req.params;
+    const { startDate, endDate, period = 'all' } = req.query;
+    const db = getFirestore();
+
+    // Get all completed bookings for this driver
+    let bookingsQuery = db.collection('bookings')
+      .where('driverId', '==', driverId)
+      .where('status', '==', 'completed');
+
+    if (startDate) {
+      bookingsQuery = bookingsQuery.where('completedAt', '>=', new Date(startDate));
+    }
+    if (endDate) {
+      bookingsQuery = bookingsQuery.where('completedAt', '<=', new Date(endDate));
+    }
+
+    const bookingsSnapshot = await bookingsQuery.get();
+    
+    let totalEarnings = 0;
+    let totalCommission = 0;
+    const earningsByPeriod = {};
+    
+    bookingsSnapshot.forEach(doc => {
+      const booking = doc.data();
+      const fare = booking.fare || booking.totalFare || 0;
+      const commission = booking.commission || 0;
+      
+      totalEarnings += fare;
+      totalCommission += commission;
+
+      // Group by period if requested
+      if (period !== 'all' && booking.completedAt) {
+        const completedDate = booking.completedAt.toDate ? booking.completedAt.toDate() : new Date(booking.completedAt);
+        let periodKey;
+
+        if (period === 'daily') {
+          periodKey = completedDate.toISOString().split('T')[0];
+        } else if (period === 'weekly') {
+          const weekStart = new Date(completedDate);
+          weekStart.setDate(weekStart.getDate() - weekStart.getDay());
+          periodKey = weekStart.toISOString().split('T')[0];
+        } else if (period === 'monthly') {
+          periodKey = `${completedDate.getFullYear()}-${String(completedDate.getMonth() + 1).padStart(2, '0')}`;
+        }
+
+        if (periodKey) {
+          if (!earningsByPeriod[periodKey]) {
+            earningsByPeriod[periodKey] = {
+              period: periodKey,
+              earnings: 0,
+              commission: 0,
+              trips: 0
+            };
+          }
+          earningsByPeriod[periodKey].earnings += fare;
+          earningsByPeriod[periodKey].commission += commission;
+          earningsByPeriod[periodKey].trips += 1;
+        }
+      }
+    });
+
+    // Get commission from wallet transactions
+    const transactionsQuery = db.collection('pointsTransactions')
+      .where('driverId', '==', driverId)
+      .where('type', '==', 'debit');
+    
+    const transactionsSnapshot = await transactionsQuery.get();
+    let walletCommission = 0;
+    transactionsSnapshot.forEach(doc => {
+      const transaction = doc.data();
+      walletCommission += Math.abs(transaction.pointsAmount || 0);
+    });
+
+    const netEarnings = totalEarnings - totalCommission;
+
+    res.json({
+      success: true,
+      data: {
+        totalEarnings,
+        totalCommission: totalCommission || walletCommission,
+        netEarnings,
+        tripCount: bookingsSnapshot.size,
+        averageEarningsPerTrip: bookingsSnapshot.size > 0 ? totalEarnings / bookingsSnapshot.size : 0,
+        earningsByPeriod: Object.values(earningsByPeriod).sort((a, b) => a.period.localeCompare(b.period))
+      },
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('Error getting driver earnings:', error);
+    res.status(500).json({
+      success: false,
+      error: {
+        code: 'GET_EARNINGS_ERROR',
+        message: 'Failed to get driver earnings',
         details: error.message
       },
       timestamp: new Date().toISOString()

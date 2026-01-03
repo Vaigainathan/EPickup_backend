@@ -1119,6 +1119,87 @@ const getPayment = async (paymentId) => {
   return { bookingId: 'placeholder_booking_id', customerId: 'placeholder_customer_id' };
 };
 
+/**
+ * Emit wallet update event to driver
+ */
+const emitWalletUpdate = (driverId, walletData) => {
+  try {
+    if (!io) return false;
+    
+    console.log(`💰 [SOCKET] Emitting wallet update for driver: ${driverId}`);
+    
+    // Send to specific driver
+    sendToUser(driverId, 'wallet:update', {
+      balance: walletData.balance,
+      transactions: walletData.transactions || [],
+      lastUpdated: new Date().toISOString()
+    });
+    
+    // Also send to admin dashboard
+    sendToUserType('admin', 'wallet:driver:update', {
+      driverId,
+      balance: walletData.balance,
+      lastUpdated: new Date().toISOString()
+    });
+    
+    return true;
+  } catch (error) {
+    console.error('Socket emitWalletUpdate error:', error);
+    return false;
+  }
+};
+
+/**
+ * Emit transaction event
+ */
+const emitTransactionEvent = (driverId, transaction) => {
+  try {
+    if (!io) return false;
+    
+    console.log(`💰 [SOCKET] Emitting transaction event for driver: ${driverId}`);
+    
+    // Send to specific driver
+    sendToUser(driverId, 'wallet:transaction', {
+      transaction,
+      timestamp: new Date().toISOString()
+    });
+    
+    // Also send to admin dashboard
+    sendToUserType('admin', 'wallet:transaction:new', {
+      driverId,
+      transaction,
+      timestamp: new Date().toISOString()
+    });
+    
+    return true;
+  } catch (error) {
+    console.error('Socket emitTransactionEvent error:', error);
+    return false;
+  }
+};
+
+/**
+ * Emit revenue update event to admin dashboard
+ */
+const emitRevenueUpdate = (revenueData) => {
+  try {
+    if (!io) return false;
+    
+    console.log(`💰 [SOCKET] Emitting revenue update`);
+    
+    // Send to all admin users
+    sendToUserType('admin', 'revenue:update', {
+      ...revenueData,
+      timestamp: new Date().toISOString()
+    });
+    
+    return true;
+  } catch (error) {
+    console.error('Socket emitRevenueUpdate error:', error);
+    return false;
+  }
+};
+
 module.exports = {
   initializeSocketIO,
   getSocketIO,
@@ -1143,5 +1224,9 @@ module.exports = {
   sendToBooking,
   updateBookingStatus,
   updatePaymentStatus,
-  getPayment
+  getPayment,
+  // Wallet and revenue events
+  emitWalletUpdate,
+  emitTransactionEvent,
+  emitRevenueUpdate
 };

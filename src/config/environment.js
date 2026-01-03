@@ -60,7 +60,12 @@ class EnvironmentConfig {
         saltIndex: process.env.PHONEPE_SALT_INDEX || '1',
         baseUrl: process.env.PHONEPE_BASE_URL || 'https://api-preprod.phonepe.com/apis/pg-sandbox',
         redirectUrl: process.env.PHONEPE_REDIRECT_URL || 'https://epickup-app.web.app/payment/callback',
-        callbackUrl: process.env.PHONEPE_CALLBACK_URL || 'https://epickup-app.web.app/api/payments/phonepe/callback'
+        callbackUrl: process.env.PHONEPE_CALLBACK_URL || 'https://epickup-app.web.app/api/payments/phonepe/callback',
+        // PhonePe Test Credentials
+        clientId: process.env.PHONEPE_CLIENT_ID || 'M23TOSHOITZU8_2512281840',
+        clientSecret: process.env.PHONEPE_CLIENT_SECRET || 'NjFlZDgxYmEtNTQxZC00NzFhLTg0ZTctOGY1NjFjZTJhNTc5',
+        clientVersion: process.env.PHONEPE_CLIENT_VERSION || '1',
+        testMode: process.env.PHONEPE_TEST_MODE === 'true' || process.env.NODE_ENV !== 'production'
       },
     };
 

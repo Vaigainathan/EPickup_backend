@@ -206,6 +206,8 @@ class PointsService {
         paymentMethod,
         paymentDetails,
         pointsAwarded: pointsToAdd,
+        phonepeTransactionId: paymentDetails?.transactionId || paymentDetails?.phonepeTransactionId || null,
+        transactionId: transactionId, // Link to points transaction
         createdAt: new Date()
       });
 
@@ -225,6 +227,35 @@ class PointsService {
       }
 
       console.info(`[WALLET_SERVICE] Points added successfully: ${pointsToAdd} points for ₹${realMoneyAmount}`);
+
+      // Emit real-time wallet update event
+      try {
+        const socketService = require('./socket');
+        const walletData = {
+          balance: newPointsBalance,
+          transactions: [{
+            id: transactionId,
+            type: 'credit',
+            amount: pointsToAdd,
+            previousBalance: currentWallet?.pointsBalance || 0,
+            newBalance: newPointsBalance,
+            paymentMethod,
+            status: 'completed',
+            createdAt: new Date().toISOString()
+          }]
+        };
+        socketService.emitWalletUpdate(driverId, walletData);
+        socketService.emitTransactionEvent(driverId, walletData.transactions[0]);
+        
+        // Emit revenue update to admin
+        socketService.emitRevenueUpdate({
+          totalRevenue: realMoneyAmount,
+          driverId,
+          source: 'driver_topup'
+        });
+      } catch (socketError) {
+        console.warn('⚠️ [WALLET_SERVICE] Failed to emit wallet update event:', socketError.message);
+      }
       
       return {
         success: true,
@@ -346,6 +377,29 @@ class PointsService {
       }
 
       console.info(`[WALLET_SERVICE] Points deducted successfully: ${pointsAmount} points`);
+
+      // Emit real-time wallet update event
+      try {
+        const socketService = require('./socket');
+        const walletData = {
+          balance: newBalance,
+          transactions: [{
+            id: transactionId,
+            type: 'debit',
+            amount: -pointsAmount,
+            previousBalance: currentBalance,
+            newBalance: newBalance,
+            status: 'completed',
+            tripId,
+            distanceKm: roundedDistanceKm,
+            createdAt: new Date().toISOString()
+          }]
+        };
+        socketService.emitWalletUpdate(driverId, walletData);
+        socketService.emitTransactionEvent(driverId, walletData.transactions[0]);
+      } catch (socketError) {
+        console.warn('⚠️ [WALLET_SERVICE] Failed to emit wallet update event:', socketError.message);
+      }
       
       return {
         success: true,
@@ -385,22 +439,69 @@ class PointsService {
     try {
       const limit = Math.min(filters.limit || 20, 100);
       const offset = filters.offset || 0;
+      const type = filters.type; // 'credit' or 'debit'
+      const startDate = filters.startDate;
+      const endDate = filters.endDate;
+      const sortBy = filters.sortBy || 'createdAt'; // 'createdAt' or 'amount'
+      const sortOrder = filters.sortOrder || 'desc'; // 'asc' or 'desc'
 
       // ✅ CRITICAL FIX: Use cursor-based pagination for better performance
       // Instead of fetching all transactions and slicing, use startAfter for offset
       let query = this.db.collection('pointsTransactions')
-        .where('driverId', '==', driverId)
-        .orderBy('createdAt', 'desc')
-        .limit(limit);
+        .where('driverId', '==', driverId);
+      
+      // Apply type filter if provided
+      if (type) {
+        query = query.where('type', '==', type);
+      }
+      
+      // Apply date range filters if provided
+      if (startDate) {
+        const start = startDate instanceof Date ? startDate : new Date(startDate);
+        query = query.where('createdAt', '>=', start);
+      }
+      if (endDate) {
+        const end = endDate instanceof Date ? endDate : new Date(endDate);
+        query = query.where('createdAt', '<=', end);
+      }
+      
+      // Apply sorting - Firestore requires composite index for multiple where clauses
+      // For now, we'll sort by createdAt (most common case)
+      // If sorting by amount is needed with filters, a composite index is required
+      if (sortBy === 'amount' && !type && !startDate && !endDate) {
+        query = query.orderBy('pointsAmount', sortOrder);
+      } else {
+        query = query.orderBy('createdAt', sortOrder);
+      }
+      
+      query = query.limit(limit);
 
       // ✅ CRITICAL FIX: For offset > 0, we need to fetch offset documents first to get cursor
       // This is still better than fetching ALL transactions
       if (offset > 0) {
-        // Fetch offset documents to get the cursor position
-        const offsetQuery = this.db.collection('pointsTransactions')
-          .where('driverId', '==', driverId)
-          .orderBy('createdAt', 'desc')
-          .limit(offset);
+        // Build offset query with same filters
+        let offsetQuery = this.db.collection('pointsTransactions')
+          .where('driverId', '==', driverId);
+        
+        if (type) {
+          offsetQuery = offsetQuery.where('type', '==', type);
+        }
+        if (startDate) {
+          const start = startDate instanceof Date ? startDate : new Date(startDate);
+          offsetQuery = offsetQuery.where('createdAt', '>=', start);
+        }
+        if (endDate) {
+          const end = endDate instanceof Date ? endDate : new Date(endDate);
+          offsetQuery = offsetQuery.where('createdAt', '<=', end);
+        }
+        
+        if (sortBy === 'amount' && !type && !startDate && !endDate) {
+          offsetQuery = offsetQuery.orderBy('pointsAmount', sortOrder);
+        } else {
+          offsetQuery = offsetQuery.orderBy('createdAt', sortOrder);
+        }
+        
+        offsetQuery = offsetQuery.limit(offset);
         
         const offsetSnapshot = await offsetQuery.get();
         
@@ -468,16 +569,21 @@ class PointsService {
         const bookingId = data.tripId || tripDetails.bookingId || 'N/A';
         const distance = data.distanceKm || tripDetails.distance || 0;
         
-        // Generate description based on transaction type
+        // Generate description based on transaction type (money format only)
         let description = '';
+        const commissionAmount = Math.abs(data.pointsAmount || 0);
+        const roundedDistance = Math.ceil(distance);
+        
         if (data.type === 'debit') {
           if (tripDetails.bookingId || data.tripId) {
-            description = `Commission for booking ${bookingId} (${Math.ceil(distance)}km × ₹2/km)`;
+            // Commission deduction with breakdown
+            description = `Commission: ₹${commissionAmount} (${roundedDistance}km × ₹2/km)`;
           } else {
-            description = 'Commission deduction';
+            description = `Commission: ₹${commissionAmount}`;
           }
         } else if (data.type === 'credit') {
-          description = tripDetails.paymentMethod ? `Top-up via ${tripDetails.paymentMethod}` : 'Points added';
+          // Money added (top-up)
+          description = `Money Added: ₹${commissionAmount}`;
         } else {
           description = 'Transaction';
         }

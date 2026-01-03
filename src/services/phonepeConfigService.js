@@ -21,7 +21,31 @@ class PhonePeConfigService {
       saltIndex: this.config.saltIndex,
       baseUrl: this.config.baseUrl,
       redirectUrl: this.config.redirectUrl,
-      callbackUrl: this.config.callbackUrl
+      callbackUrl: this.config.callbackUrl,
+      clientId: this.config.clientId,
+      clientSecret: this.config.clientSecret,
+      clientVersion: this.config.clientVersion,
+      testMode: this.config.testMode
+    };
+  }
+
+  /**
+   * Check if PhonePe is in test mode
+   * @returns {boolean} True if test mode
+   */
+  isTestMode() {
+    return this.config.testMode === true;
+  }
+
+  /**
+   * Get client credentials
+   * @returns {Object} Client credentials
+   */
+  getClientCredentials() {
+    return {
+      clientId: this.config.clientId,
+      clientSecret: this.config.clientSecret,
+      clientVersion: this.config.clientVersion
     };
   }
 
@@ -77,12 +101,15 @@ class PhonePeConfigService {
    * Log configuration (for debugging)
    */
   logConfig() {
-    console.log('🔧 PhonePe Configuration:', {
+    const mode = this.isTestMode() ? 'TEST MODE' : 'PRODUCTION MODE';
+    console.log(`🔧 PhonePe Configuration (${mode}):`, {
       merchantId: this.config.merchantId,
       baseUrl: this.config.baseUrl,
       saltIndex: this.config.saltIndex,
       redirectUrl: this.config.redirectUrl,
-      callbackUrl: this.getCallbackUrl()
+      callbackUrl: this.getCallbackUrl(),
+      clientId: this.config.clientId ? `${this.config.clientId.substring(0, 10)}...` : 'Not set',
+      testMode: this.isTestMode()
     });
   }
 }

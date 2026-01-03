@@ -16,8 +16,15 @@ class PhonePeService {
     // Use centralized PhonePe configuration
     this.config = phonepeConfig.getConfig();
     
+    // Check if in test mode
+    this.isTestMode = phonepeConfig.isTestMode();
+    
     // Log configuration for debugging
     phonepeConfig.logConfig();
+    
+    if (this.isTestMode) {
+      console.log('🧪 [PHONEPE] Running in TEST MODE - Using test credentials and sandbox environment');
+    }
   }
 
   /**
@@ -105,7 +112,8 @@ class PhonePeService {
       };
 
       // Log PhonePe API call details for debugging
-      console.log('📱 [PHONEPE] Creating payment with configuration:');
+      const modeLabel = this.isTestMode ? '🧪 TEST MODE' : '🚀 PRODUCTION';
+      console.log(`📱 [PHONEPE] ${modeLabel} - Creating payment with configuration:`);
       console.log('  Merchant ID:', this.config.merchantId);
       console.log('  Salt Index:', this.config.saltIndex);
       console.log('  Base URL:', phonepeConfig.getBaseUrl());
@@ -113,6 +121,9 @@ class PhonePeService {
       console.log('  Amount (paise):', amountInPaise);
       console.log('  Callback URL:', phonepeConfig.getCallbackUrl());
       console.log('  Checksum:', checksum.substring(0, 20) + '...');
+      if (this.isTestMode) {
+        console.log('  Client ID:', this.config.clientId ? `${this.config.clientId.substring(0, 10)}...` : 'Not set');
+      }
 
       // Make API call to PhonePe
       const response = await axios.post(
@@ -126,7 +137,6 @@ class PhonePeService {
           }
         }
       );
-
       console.log('✅ [PHONEPE] Payment API response:', {
         success: response.data.success,
         code: response.data.code,
@@ -162,7 +172,9 @@ class PhonePeService {
             merchantTransactionId: transactionId, // ADDED: Backend expects this field
             paymentUrl: response.data.data.instrumentResponse.redirectInfo.url,
             merchantId: this.config.merchantId,
-            amount: amountInPaise
+            amount: amountInPaise,
+            paymentMode: this.isTestMode ? 'TESTING' : 'PRODUCTION',
+            isMockPayment: false // Real PhonePe payment
           }
         };
       } else {
@@ -236,7 +248,6 @@ class PhonePeService {
         responseCode,
         responseMessage
       } = decodedResponse;
-
       // Verify the callback
       if (merchantId !== phonepeConfig.getMerchantId()) {
         throw new Error('Invalid merchant ID in callback');
@@ -486,7 +497,6 @@ class PhonePeService {
   async verifyPayment(merchantTransactionId) {
     try {
       console.log(`🔍 Verifying payment status for: ${merchantTransactionId}`);
-      
       const payload = {
         merchantId: this.config.merchantId,
         merchantTransactionId: merchantTransactionId,
@@ -506,7 +516,6 @@ class PhonePeService {
           }
         }
       );
-      
       if (response.data.success) {
         const decodedResponse = JSON.parse(Buffer.from(response.data.data, 'base64').toString());
         return {
@@ -531,7 +540,7 @@ class PhonePeService {
   /**
    * Process wallet top-up payment
    * @param {string} transactionId - Transaction ID
-   * @param {number} amount - Amount in paise
+   * @param {number} amount - Amount in paise (kept for future validation logic)
    */
   // eslint-disable-next-line no-unused-vars
   async processWalletTopupPayment(transactionId, amount) {
@@ -547,6 +556,49 @@ class PhonePeService {
 
       if (walletTransactionsSnapshot.empty) {
         console.error(`❌ Wallet transaction not found for PhonePe transaction: ${transactionId}`);
+        // Try searching by id field as fallback
+        const altSearch = await this.db.collection('driverTopUps')
+          .where('id', '==', transactionId)
+          .limit(1)
+          .get();
+        if (altSearch.empty) {
+          return;
+        }
+        // Use alternative search result
+        const walletTransactionDoc = altSearch.docs[0];
+        const walletTransactionData = walletTransactionDoc.data();
+        const driverId = walletTransactionData.driverId;
+        
+        // Update wallet transaction status
+        await walletTransactionDoc.ref.update({
+          status: 'completed',
+          phonepePaymentId: transactionId,
+          completedAt: new Date(),
+          updatedAt: new Date()
+        });
+        
+        // Convert real money to points using points service
+        const pointsService = require('./walletService');
+        const pointsResult = await pointsService.addPoints(
+          driverId,
+          walletTransactionData.amount,
+          walletTransactionData.paymentMethod || 'phonepe',
+          {
+            transactionId,
+            phonepeTransactionId: transactionId,
+            originalTransaction: walletTransactionData
+          }
+        );
+        
+        if (pointsResult.success) {
+          await walletTransactionDoc.ref.update({
+            pointsAwarded: pointsResult.data.pointsAdded,
+            newPointsBalance: pointsResult.data.newBalance,
+            updatedAt: new Date()
+          });
+          console.log(`✅ Points top-up completed for driver ${driverId}: +${pointsResult.data.pointsAdded} points for ₹${walletTransactionData.amount}`);
+          await this.sendWalletTopupNotification(driverId, walletTransactionData.amount, pointsResult.data.newBalance);
+        }
         return;
       }
 

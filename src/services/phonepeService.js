@@ -74,10 +74,6 @@ class PhonePeService {
         throw new Error('PhonePe Client ID and Client Secret are required for SDK flow');
       }
 
-      const credentials = Buffer.from(
-        `${this.config.clientId}:${this.config.clientSecret}`
-      ).toString('base64');
-
       // Get OAuth base URL
       // PhonePe OAuth endpoint is at the SAME base URL: https://api-preprod.phonepe.com/apis/pg-sandbox/v1/oauth/token
       const baseUrl = this.config.baseUrl || phonepeConfig.getBaseUrl();
@@ -85,17 +81,20 @@ class PhonePeService {
       const oauthUrl = `${baseUrl.replace(/\/$/, '')}/v1/oauth/token`;
 
       console.log('🔐 [PHONEPE SDK] Requesting OAuth token from:', oauthUrl);
+      console.log('🔐 [PHONEPE SDK] Client ID:', this.config.clientId ? `${this.config.clientId.substring(0, 10)}...` : 'NOT SET');
+      console.log('🔐 [PHONEPE SDK] Client Secret:', this.config.clientSecret ? 'SET' : 'NOT SET');
+      console.log('🔐 [PHONEPE SDK] Client Version:', this.config.clientVersion || 'NOT SET');
 
-      // OAuth token requests use application/x-www-form-urlencoded (not JSON)
-      // PhonePe expects form-urlencoded format, not JSON
-      const formData = 'grant_type=client_credentials';
+      // PhonePe expects client_id, client_secret, client_version, and grant_type in form body
+      // NOT in Authorization header (Basic Auth)
+      const clientVersion = this.config.clientVersion || '1';
+      const formData = `grant_type=client_credentials&client_id=${encodeURIComponent(this.config.clientId)}&client_secret=${encodeURIComponent(this.config.clientSecret)}&client_version=${encodeURIComponent(clientVersion)}`;
 
       const response = await axios.post(
         oauthUrl,
         formData,
         {
           headers: {
-            'Authorization': `Basic ${credentials}`,
             'Content-Type': 'application/x-www-form-urlencoded'
           },
           timeout: 10000 // 10 second timeout

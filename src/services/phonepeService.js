@@ -86,13 +86,17 @@ class PhonePeService {
 
       console.log('🔐 [PHONEPE SDK] Requesting OAuth token from:', oauthUrl);
 
+      // OAuth token requests use application/x-www-form-urlencoded (not JSON)
+      // PhonePe expects form-urlencoded format, not JSON
+      const formData = 'grant_type=client_credentials';
+
       const response = await axios.post(
         oauthUrl,
-        { grant_type: 'client_credentials' },
+        formData,
         {
           headers: {
             'Authorization': `Basic ${credentials}`,
-            'Content-Type': 'application/json'
+            'Content-Type': 'application/x-www-form-urlencoded'
           },
           timeout: 10000 // 10 second timeout
         }

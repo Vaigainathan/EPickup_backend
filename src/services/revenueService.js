@@ -271,6 +271,110 @@ class RevenueService {
       };
     }
   }
+
+  /**
+   * Get revenue summary (general overview)
+   * @returns {Promise<Object>} Revenue summary
+   */
+  async getRevenueSummary() {
+    try {
+      const stats = await this.getRevenueStats();
+      if (!stats.success) {
+        return stats;
+      }
+
+      return {
+        success: true,
+        ...stats.stats
+      };
+    } catch (error) {
+      console.error('Error getting revenue summary:', error);
+      return {
+        success: false,
+        error: 'Failed to get revenue summary',
+        details: error.message
+      };
+    }
+  }
+
+  /**
+   * Calculate revenue for a date range
+   * @param {Date} startDate - Start date
+   * @param {Date} endDate - End date
+   * @returns {Promise<Object>} Revenue calculation result
+   */
+  async calculateRevenue(startDate, endDate) {
+    try {
+      const result = await this.getTotalRevenue({
+        startDate,
+        endDate
+      });
+      return result;
+    } catch (error) {
+      console.error('Error calculating revenue:', error);
+      return {
+        success: false,
+        error: 'Failed to calculate revenue',
+        details: error.message
+      };
+    }
+  }
+
+  /**
+   * Get real money revenue summary (from wallet top-ups)
+   * @returns {Promise<Object>} Real money revenue summary
+   */
+  async getRealMoneyRevenueSummary() {
+    try {
+      const db = this.getDb();
+      
+      // Get wallet top-ups (driverTopUps collection)
+      const topUpsSnapshot = await db.collection('driverTopUps')
+        .where('status', '==', 'completed')
+        .get();
+
+      let totalRealMoney = 0;
+      let totalTopUps = 0;
+
+      topUpsSnapshot.forEach(doc => {
+        const data = doc.data();
+        const amount = data.realMoneyAmount || data.amount || 0;
+        totalRealMoney += amount;
+        totalTopUps++;
+      });
+
+      // Get driver earnings (from bookings)
+      const bookingsSnapshot = await db.collection('bookings')
+        .where('status', '==', 'completed')
+        .where('paymentStatus', '==', 'PAID')
+        .get();
+
+      let totalDriverEarnings = 0;
+      bookingsSnapshot.forEach(doc => {
+        const data = doc.data();
+        const earnings = data.driverEarnings || data.fare?.driverEarnings || 0;
+        totalDriverEarnings += earnings;
+      });
+
+      return {
+        success: true,
+        totalRealMoney,
+        totalTopUps,
+        totalDriverEarnings,
+        currency: 'INR'
+      };
+    } catch (error) {
+      console.error('Error getting real money revenue summary:', error);
+      return {
+        success: false,
+        totalRealMoney: 0,
+        totalTopUps: 0,
+        totalDriverEarnings: 0,
+        error: 'Failed to get real money revenue summary',
+        details: error.message
+      };
+    }
+  }
 }
 
 // Export singleton instance

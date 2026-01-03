@@ -123,18 +123,18 @@ class PhonePeService {
    * @returns {string} Order token
    */
   async createSDKOrder(paymentData) {
+    const { transactionId, amount, customerId, customerPhone } = paymentData;
+
+    // Validate required fields
+    if (!transactionId || !amount || !customerId) {
+      throw new Error('Missing required payment fields for SDK order');
+    }
+
+    if (amount <= 0 || amount > 100000) {
+      throw new Error('Amount must be between ₹1 and ₹100,000');
+    }
+
     try {
-      const { transactionId, amount, customerId, customerPhone } = paymentData;
-
-      // Validate required fields
-      if (!transactionId || !amount || !customerId) {
-        throw new Error('Missing required payment fields for SDK order');
-      }
-
-      if (amount <= 0 || amount > 100000) {
-        throw new Error('Amount must be between ₹1 and ₹100,000');
-      }
-
       // Get OAuth token with retry logic
       let token;
       try {
@@ -145,6 +145,7 @@ class PhonePeService {
       }
 
       // Convert amount to paise (PhonePe expects amount in paise)
+      // User enters ₹250 -> we send 25000 paise (250 * 100 = 25000)
       const amountInPaise = Math.round(amount * 100);
 
       const orderPayload = {
@@ -157,7 +158,10 @@ class PhonePeService {
 
       console.log('📦 [PHONEPE SDK] Creating SDK order:', {
         merchantOrderId: transactionId,
-        amount: amountInPaise,
+        amountRupees: `₹${amount}`, // Show original amount in rupees for clarity
+        amountPaise: amountInPaise, // PhonePe expects amount in paise (₹250 = 25000 paise)
+        merchantUserId: customerId,
+        mobileNumber: customerPhone || '+919999999999',
         callbackUrl: phonepeConfig.getCallbackUrl()
       });
 
@@ -188,13 +192,28 @@ class PhonePeService {
       };
       
       console.error('❌ [PHONEPE SDK] SDK order creation failed:', errorDetails);
+      console.error('❌ [PHONEPE SDK] Request payload sent:', {
+        merchantOrderId: transactionId,
+        amountRupees: `₹${amount}`,
+        amountPaise: Math.round(amount * 100),
+        merchantUserId: customerId,
+        mobileNumber: customerPhone || '+919999999999',
+        callbackUrl: phonepeConfig.getCallbackUrl()
+      });
       
       // Provide more specific error messages
       if (error.response?.status === 401) {
         throw new Error('OAuth token expired or invalid. Please retry.');
-      } else if (error.response?.status === 400) {
-        const errorMsg = error.response?.data?.message || 'Invalid order request. Please check the payment details.';
-        throw new Error(errorMsg);
+      } else if (error.response?.status === 400 || error.response?.status === 500) {
+        // PhonePe sometimes returns 500 for bad requests
+        const errorCode = error.response?.data?.errorCode || '';
+        const errorMsg = error.response?.data?.message || error.response?.data?.error || 'Invalid order request. Please check the payment details.';
+        console.error('❌ [PHONEPE SDK] PhonePe API error details:', {
+          errorCode,
+          message: errorMsg,
+          fullResponse: error.response?.data
+        });
+        throw new Error(`PhonePe API Error (${errorCode}): ${errorMsg}`);
       } else if (error.response?.status === 429) {
         throw new Error('Too many requests. Please wait a moment and try again.');
       } else if (error.code === 'ECONNREFUSED' || error.code === 'ETIMEDOUT') {

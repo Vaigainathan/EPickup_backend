@@ -165,29 +165,46 @@ class PhonePeService {
         callbackUrl: phonepeConfig.getCallbackUrl()
       });
 
-      // PhonePe SDK order endpoint: /payments/v2/sdk/order (as per PhonePe API documentation)
-      // Sandbox: https://api-preprod.phonepe.com/apis/pg-sandbox/payments/v2/sdk/order
-      // Production: https://api.phonepe.com/apis/pg/payments/v2/sdk/order
+      // PhonePe SDK order endpoint: /checkout/v2/sdk/order (as per PhonePe API documentation)
+      // Sandbox: https://api-preprod.phonepe.com/apis/pg-sandbox/checkout/v2/sdk/order
+      // Production: https://api.phonepe.com/apis/pg/checkout/v2/sdk/order
+      // Authorization header format: O-Bearer {token} (NOT Bearer {token})
       const baseUrl = phonepeConfig.getBaseUrl();
-      const sdkOrderUrl = `${baseUrl.replace(/\/$/, '')}/payments/v2/sdk/order`;
+      const sdkOrderUrl = `${baseUrl.replace(/\/$/, '')}/checkout/v2/sdk/order`;
       
       console.log('🔗 [PHONEPE SDK] SDK order endpoint:', sdkOrderUrl);
       
+      const requestHeaders = {
+        'Authorization': `O-Bearer ${token}`, // PhonePe SDK requires O-Bearer format, not Bearer
+        'Content-Type': 'application/json'
+      };
+      
       // #region agent log
-      fetch('http://127.0.0.1:7242/ingest/69c0470c-7f5e-43c1-a034-8d3565ea0466',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'phonepeService.js:172',message:'SDK order request details',data:{endpoint:sdkOrderUrl,payload:orderPayload,headers:{Authorization:`Bearer ${token.substring(0,20)}...`,ContentType:'application/json'}},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A,B,C'})}).catch(()=>{});
+      fetch('http://127.0.0.1:7242/ingest/69c0470c-7f5e-43c1-a034-8d3565ea0466',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'phonepeService.js:176',message:'SDK order request - BEFORE axios call',data:{endpoint:sdkOrderUrl,payload:orderPayload,headers:{Authorization:`${requestHeaders.Authorization.substring(0,30)}...`,ContentType:requestHeaders['Content-Type']},payloadKeys:Object.keys(orderPayload),payloadValues:Object.values(orderPayload).map(v=>typeof v==='string'?v.substring(0,50):v)},timestamp:Date.now(),sessionId:'debug-session',runId:'run3',hypothesisId:'A,B,C'})}).catch(()=>{});
       // #endregion
+      
+      console.log('🔍 [PHONEPE SDK DEBUG] Full request details:', {
+        url: sdkOrderUrl,
+        method: 'POST',
+        headers: {
+          'Authorization': `${requestHeaders.Authorization.substring(0, 30)}...`,
+          'Content-Type': requestHeaders['Content-Type']
+        },
+        payload: orderPayload
+      });
       
       const response = await axios.post(
         sdkOrderUrl,
         orderPayload,
         {
-          headers: {
-            'Authorization': `Bearer ${token}`,
-            'Content-Type': 'application/json'
-          },
+          headers: requestHeaders,
           timeout: 15000 // 15 second timeout
         }
       );
+      
+      // #region agent log
+      fetch('http://127.0.0.1:7242/ingest/69c0470c-7f5e-43c1-a034-8d3565ea0466',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'phonepeService.js:200',message:'SDK order response received',data:{status:response.status,hasOrderToken:!!response.data?.orderToken,responseKeys:Object.keys(response.data||{}),responseData:response.data},timestamp:Date.now(),sessionId:'debug-session',runId:'run3',hypothesisId:'A'})}).catch(()=>{});
+      // #endregion
       
       // #region agent log
       fetch('http://127.0.0.1:7242/ingest/69c0470c-7f5e-43c1-a034-8d3565ea0466',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'phonepeService.js:188',message:'SDK order response received',data:{status:response.status,hasOrderToken:!!response.data?.orderToken,responseKeys:Object.keys(response.data||{})},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
@@ -258,15 +275,16 @@ class PhonePeService {
     try {
       const token = await this.getAuthToken();
 
-      // PhonePe SDK order status endpoint: /payments/v2/order/{merchantOrderId}/status (matching SDK order pattern)
+      // PhonePe SDK order status endpoint: /checkout/v2/order/{merchantOrderId}/status (matching SDK order pattern)
+      // Authorization header format: O-Bearer {token} (NOT Bearer {token})
       const baseUrl = phonepeConfig.getBaseUrl();
-      const orderStatusUrl = `${baseUrl.replace(/\/$/, '')}/payments/v2/order/${merchantOrderId}/status`;
+      const orderStatusUrl = `${baseUrl.replace(/\/$/, '')}/checkout/v2/order/${merchantOrderId}/status`;
 
       const response = await axios.get(
         orderStatusUrl,
         {
           headers: {
-            'Authorization': `Bearer ${token}`,
+            'Authorization': `O-Bearer ${token}`, // PhonePe SDK requires O-Bearer format, not Bearer
             'Content-Type': 'application/json'
           },
           timeout: 10000

@@ -224,19 +224,22 @@ class PhonePeService {
       fetch('http://127.0.0.1:7242/ingest/69c0470c-7f5e-43c1-a034-8d3565ea0466',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'phonepeService.js:209',message:'SDK order response received - FULL',data:{status:response.status,statusText:response.statusText,dataKeys:response.data?Object.keys(response.data):[],responseData:response.data,hasOrderToken:!!response.data?.orderToken,orderTokenValue:response.data?.orderToken},timestamp:Date.now(),sessionId:'debug-session',runId:'run4',hypothesisId:'A'})}).catch(()=>{});
       // #endregion
 
-      // PhonePe SDK API may return orderToken in different structures:
-      // 1. response.data.orderToken (direct)
-      // 2. response.data.data.orderToken (wrapped in data)
-      // 3. response.data.orderToken (but field name might be different)
-      const orderToken = response.data?.orderToken || response.data?.data?.orderToken;
+      // PhonePe SDK API returns the token in the "token" field (not "orderToken")
+      // Response structure: { orderId, state, expireAt, token }
+      const orderToken = response.data?.token || response.data?.orderToken || response.data?.data?.token;
       
       if (orderToken) {
         console.log('✅ [PHONEPE SDK] SDK order created successfully');
+        console.log('📋 [PHONEPE SDK] Order details:', {
+          orderId: response.data?.orderId,
+          state: response.data?.state,
+          expireAt: response.data?.expireAt
+        });
         return orderToken;
       } else {
         // Log what we actually got to help debug
         console.error('❌ [PHONEPE SDK] Response structure:', JSON.stringify(response.data, null, 2));
-        throw new Error(`Invalid SDK order response: missing orderToken. Response structure: ${JSON.stringify(response.data)}`);
+        throw new Error(`Invalid SDK order response: missing token. Response structure: ${JSON.stringify(response.data)}`);
       }
     } catch (error) {
       const errorDetails = {

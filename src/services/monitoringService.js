@@ -357,6 +357,35 @@ class MonitoringService {
   }
 
   /**
+   * Log payment event
+   * @param {string} eventType - Event type (e.g., 'payment_created', 'payment_callback_processed')
+   * @param {Object} data - Payment data
+   */
+  async logPayment(eventType, data = {}) {
+    try {
+      const paymentLog = {
+        eventType,
+        ...data,
+        timestamp: new Date().toISOString()
+      };
+
+      // Store in Firestore
+      await this.db.collection('payment_logs').add(paymentLog);
+
+      // Also record as metric
+      this.recordCounter(`payment.${eventType}`, 1, {
+        paymentType: data.paymentType || 'unknown',
+        isSDK: data.isSDK || false
+      });
+
+      console.log(`📊 [MONITORING] Payment event logged: ${eventType}`, data);
+    } catch (error) {
+      console.error('❌ [MONITORING] Failed to log payment event:', error);
+      // Don't throw - monitoring failures shouldn't break payment flow
+    }
+  }
+
+  /**
    * Cleanup intervals to prevent memory leaks
    */
   cleanup() {

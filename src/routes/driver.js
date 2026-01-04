@@ -9091,6 +9091,10 @@ router.post('/wallet/top-up', [
     if (!existingTopUp.empty) {
       const existingData = existingTopUp.docs[0].data();
       console.log('⚠️ [IDEMPOTENCY] Duplicate request detected, returning existing result');
+      // Get merchantId from config for duplicate response (consistent with new payment flow)
+      const phonepeConfig = require('../services/phonepeConfigService');
+      const merchantId = phonepeConfig.getMerchantId() || 'PGTESTPAYUAT';
+      
       return res.status(200).json({
         success: true,
         message: 'Top-up already processed (duplicate request prevented)',
@@ -9099,6 +9103,7 @@ router.post('/wallet/top-up', [
           orderToken: existingData.phonepeOrderToken || null,
           paymentUrl: existingData.phonepePaymentUrl || null,
           merchantTransactionId: existingData.phonepeTransactionId,
+          merchantId: merchantId, // Include merchantId for native SDK (consistent with new payment flow)
           amount: existingData.amount,
           paymentMethod: existingData.paymentMethod,
           status: existingData.status,
@@ -9168,6 +9173,7 @@ router.post('/wallet/top-up', [
           // Legacy flow: return paymentUrl (for backward compatibility)
           paymentUrl: paymentResult.data.paymentUrl || null,
           merchantTransactionId: paymentResult.data.merchantTransactionId,
+          merchantId: paymentResult.data.merchantId || null, // Include merchantId for native SDK
           amount: amount,
           paymentMethod: paymentMethod,
           paymentMode: paymentResult.data.paymentMode || paymentMode,

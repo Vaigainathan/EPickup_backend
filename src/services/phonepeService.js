@@ -185,10 +185,6 @@ class PhonePeService {
         'Content-Type': 'application/json'
       };
       
-      // #region agent log
-      fetch('http://127.0.0.1:7242/ingest/69c0470c-7f5e-43c1-a034-8d3565ea0466',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'phonepeService.js:176',message:'SDK order request - BEFORE axios call',data:{endpoint:sdkOrderUrl,payload:orderPayload,headers:{Authorization:`${requestHeaders.Authorization.substring(0,30)}...`,ContentType:requestHeaders['Content-Type']},payloadKeys:Object.keys(orderPayload),payloadValues:Object.values(orderPayload).map(v=>typeof v==='string'?v.substring(0,50):v)},timestamp:Date.now(),sessionId:'debug-session',runId:'run3',hypothesisId:'A,B,C'})}).catch(()=>{});
-      // #endregion
-      
       console.log('🔍 [PHONEPE SDK DEBUG] Full request details:', {
         url: sdkOrderUrl,
         method: 'POST',
@@ -219,10 +215,6 @@ class PhonePeService {
         hasOrderToken: !!response.data?.orderToken,
         orderTokenValue: response.data?.orderToken
       });
-      
-      // #region agent log
-      fetch('http://127.0.0.1:7242/ingest/69c0470c-7f5e-43c1-a034-8d3565ea0466',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'phonepeService.js:209',message:'SDK order response received - FULL',data:{status:response.status,statusText:response.statusText,dataKeys:response.data?Object.keys(response.data):[],responseData:response.data,hasOrderToken:!!response.data?.orderToken,orderTokenValue:response.data?.orderToken},timestamp:Date.now(),sessionId:'debug-session',runId:'run4',hypothesisId:'A'})}).catch(()=>{});
-      // #endregion
 
       // PhonePe SDK API returns the token in the "token" field (not "orderToken")
       // Response structure: { orderId, state, expireAt, token }
@@ -249,10 +241,6 @@ class PhonePeService {
         code: error.code
       };
       
-      // #region agent log
-      fetch('http://127.0.0.1:7242/ingest/69c0470c-7f5e-43c1-a034-8d3565ea0466',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'phonepeService.js:194',message:'SDK order error caught',data:{errorMessage:error.message,status:error.response?.status,errorCode:error.response?.data?.errorCode,errorResponse:error.response?.data,requestConfig:{url:error.config?.url,method:error.config?.method,headers:error.config?.headers}},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A,B,C,D,E'})}).catch(()=>{});
-      // #endregion
-      
       console.error('❌ [PHONEPE SDK] SDK order creation failed:', errorDetails);
       console.error('❌ [PHONEPE SDK] Request payload sent:', {
         merchantOrderId: transactionId,
@@ -275,10 +263,6 @@ class PhonePeService {
           message: errorMsg,
           fullResponse: error.response?.data
         });
-        
-        // #region agent log
-        fetch('http://127.0.0.1:7242/ingest/69c0470c-7f5e-43c1-a034-8d3565ea0466',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'phonepeService.js:220',message:'PR000 error details extracted',data:{errorCode,errorMsg,fullResponse:error.response?.data},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A,B,C'})}).catch(()=>{});
-        // #endregion
         
         throw new Error(`PhonePe API Error (${errorCode}): ${errorMsg}`);
       } else if (error.response?.status === 429) {
@@ -393,6 +377,7 @@ class PhonePeService {
               transactionId,
               merchantTransactionId: transactionId,
               orderToken: orderToken,
+              merchantId: this.config.merchantId || 'PGTESTPAYUAT', // Include merchantId for native SDK
               paymentMode: this.isTestMode ? 'TESTING' : 'PRODUCTION',
               isMockPayment: false,
               isSDK: true

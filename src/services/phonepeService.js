@@ -208,19 +208,35 @@ class PhonePeService {
         }
       );
       
-      // #region agent log
-      fetch('http://127.0.0.1:7242/ingest/69c0470c-7f5e-43c1-a034-8d3565ea0466',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'phonepeService.js:200',message:'SDK order response received',data:{status:response.status,hasOrderToken:!!response.data?.orderToken,responseKeys:Object.keys(response.data||{}),responseData:response.data},timestamp:Date.now(),sessionId:'debug-session',runId:'run3',hypothesisId:'A'})}).catch(()=>{});
-      // #endregion
+      // Log the FULL response to understand the structure
+      console.log('🔍 [PHONEPE SDK DEBUG] Full response received:', {
+        status: response.status,
+        statusText: response.statusText,
+        headers: response.headers,
+        data: response.data,
+        dataKeys: response.data ? Object.keys(response.data) : [],
+        dataType: typeof response.data,
+        hasOrderToken: !!response.data?.orderToken,
+        orderTokenValue: response.data?.orderToken
+      });
       
       // #region agent log
-      fetch('http://127.0.0.1:7242/ingest/69c0470c-7f5e-43c1-a034-8d3565ea0466',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'phonepeService.js:188',message:'SDK order response received',data:{status:response.status,hasOrderToken:!!response.data?.orderToken,responseKeys:Object.keys(response.data||{})},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
+      fetch('http://127.0.0.1:7242/ingest/69c0470c-7f5e-43c1-a034-8d3565ea0466',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'phonepeService.js:209',message:'SDK order response received - FULL',data:{status:response.status,statusText:response.statusText,dataKeys:response.data?Object.keys(response.data):[],responseData:response.data,hasOrderToken:!!response.data?.orderToken,orderTokenValue:response.data?.orderToken},timestamp:Date.now(),sessionId:'debug-session',runId:'run4',hypothesisId:'A'})}).catch(()=>{});
       // #endregion
 
-      if (response.data && response.data.orderToken) {
+      // PhonePe SDK API may return orderToken in different structures:
+      // 1. response.data.orderToken (direct)
+      // 2. response.data.data.orderToken (wrapped in data)
+      // 3. response.data.orderToken (but field name might be different)
+      const orderToken = response.data?.orderToken || response.data?.data?.orderToken;
+      
+      if (orderToken) {
         console.log('✅ [PHONEPE SDK] SDK order created successfully');
-        return response.data.orderToken;
+        return orderToken;
       } else {
-        throw new Error('Invalid SDK order response: missing orderToken');
+        // Log what we actually got to help debug
+        console.error('❌ [PHONEPE SDK] Response structure:', JSON.stringify(response.data, null, 2));
+        throw new Error(`Invalid SDK order response: missing orderToken. Response structure: ${JSON.stringify(response.data)}`);
       }
     } catch (error) {
       const errorDetails = {

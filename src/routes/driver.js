@@ -5488,10 +5488,24 @@ router.post('/bookings/:id/photo-verification/upload', [
       };
     }
 
-    // Atomic transaction to link
+    // ✅ CRITICAL FIX: Check if we need to update booking status to photo_captured
+    let shouldUpdateStatusToPhotoCaptured = false;
+    if (photoStatus === 'pending_confirmation' && bookingData.status === 'driver_arrived' && safeType === 'pickup') {
+      shouldUpdateStatusToPhotoCaptured = true;
+    }
+
+    // Atomic transaction to link photo and update booking (without status update)
     let photoId = null;
+    // ✅ CRITICAL FIX: Remove status from updateData - will be updated via state machine after transaction
+    const transactionUpdateData = { ...updateData };
+    if (shouldUpdateStatusToPhotoCaptured) {
+      // Remove status from transaction data - we'll use state machine after transaction
+      delete transactionUpdateData.status;
+      // Keep photoCapturedAt for consistency
+    }
+    
     await db.runTransaction(async (transaction) => {
-      transaction.update(bookingRef, updateData);
+      transaction.update(bookingRef, transactionUpdateData);
       const oldRef = db.collection('photo_verifications').doc();
       transaction.set(oldRef, {
         bookingId: id,
@@ -5520,6 +5534,33 @@ router.post('/bookings/:id/photo-verification/upload', [
         updatedAt: verifiedAtTimestamp
       });
     });
+
+    // ✅ CRITICAL FIX: Update booking status to photo_captured using state machine after transaction
+    if (shouldUpdateStatusToPhotoCaptured) {
+      try {
+        const bookingStateMachine = require('../services/bookingStateMachine');
+        await bookingStateMachine.transitionBooking(
+          id,
+          'photo_captured',
+          {
+            photoCapturedAt: verifiedAtTimestamp,
+            pickupVerification: updateData.pickupVerification || null
+          },
+          {
+            userId: uid,
+            userType: 'driver',
+            driverId: uid,
+            source: 'photo_upload',
+            eventTimestamp: verifiedAtTimestamp
+          }
+        );
+        console.log(`✅ [PHOTO_UPLOAD] Booking status updated to photo_captured for booking ${id}`);
+      } catch (statusUpdateError) {
+        console.error(`❌ [PHOTO_UPLOAD] Failed to update booking status to photo_captured:`, statusUpdateError);
+        // Continue - photo is saved, status update can be retried
+        // The photo upload is successful even if status update fails
+      }
+    }
 
     // ✅ CRITICAL FIX: Emit WebSocket event to notify customer about photo upload
     try {

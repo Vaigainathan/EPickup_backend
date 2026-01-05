@@ -39,7 +39,11 @@ const STATUS_RULES = {
   // ✅ CRITICAL FIX: Allow driver_arrived from driver_assigned, driver_enroute, or accepted
   // This allows drivers who accept and immediately go to pickup location to mark as arrived
   driver_arrived: { allowedFrom: ['driver_assigned', 'driver_enroute', 'accepted'], requireLocation: 'pickup' },
-  picked_up: { allowedFrom: ['driver_arrived', 'driver_enroute', 'accepted'], requireLocation: 'pickup' },
+  // ✅ CRITICAL FIX: Allow photo_captured as intermediate state after photo is taken
+  photo_captured: { allowedFrom: ['driver_arrived'], requireLocation: null },
+  // ✅ CRITICAL FIX: Allow picked_up from photo_captured, driver_arrived, driver_enroute, or accepted
+  // This allows drivers to confirm pickup after photo is captured
+  picked_up: { allowedFrom: ['photo_captured', 'driver_arrived', 'driver_enroute', 'accepted'], requireLocation: 'pickup' },
   in_transit: { allowedFrom: ['picked_up'], requireLocation: null },
   at_dropoff: { allowedFrom: ['in_transit'], requireLocation: 'dropoff' },
   money_collection: { allowedFrom: ['delivered'], requireLocation: null },

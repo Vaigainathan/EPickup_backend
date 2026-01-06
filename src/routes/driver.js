@@ -65,40 +65,52 @@ router.post('/tracking/update', [
       bookingId
     }, { merge: true });
 
-    // Emit to customer and booking rooms
+    // ✅ ROOT CAUSE FIX: Emit to customer and booking rooms
+    // Always attempt to emit even if booking lookup fails (defensive programming)
     const bookingDoc = await db.collection('bookings').doc(bookingId).get();
+    let customerId = null;
+    
     if (bookingDoc.exists) {
       const bookingData = bookingDoc.data();
-      const customerId = bookingData.customerId;
-      const userRoom = `user:${customerId}`;
-      const bookingRoom = `booking:${bookingId}`;
-      const payload = {
-        bookingId,
-        driverId,
-        location: {
-          latitude: Number(location.latitude ?? location.lat),
-          longitude: Number(location.longitude ?? location.lng),
-          accuracy: Number(location.accuracy || 0),
-          speed: Number(location.speed || 0),
-          heading: Number(location.heading || 0),
-          timestamp: new Date().toISOString()
-        },
-        estimatedArrival,
-        // Top-level timestamp for consumers that expect it outside the location object
+      customerId = bookingData.customerId;
+    } else {
+      console.warn(`⚠️ [DRIVER_TRACKING] Booking ${bookingId} not found in database, attempting to emit to booking room only`);
+    }
+    
+    // ✅ ROOT CAUSE FIX: Always emit to booking room (even if customerId is missing)
+    // This ensures location updates are delivered if customer is in booking room
+    const bookingRoom = `booking:${bookingId}`;
+    const payload = {
+      bookingId,
+      driverId,
+      location: {
+        latitude: Number(location.latitude ?? location.lat),
+        longitude: Number(location.longitude ?? location.lng),
+        accuracy: Number(location.accuracy || 0),
+        speed: Number(location.speed || 0),
+        heading: Number(location.heading || 0),
         timestamp: new Date().toISOString()
-      };
-      try {
-        const { getSocketIO } = require('../services/socket');
-        const io = getSocketIO();
-        
-        // ✅ CRITICAL FIX: Emit to both rooms and log for debugging
+      },
+      estimatedArrival,
+      // Top-level timestamp for consumers that expect it outside the location object
+      timestamp: new Date().toISOString()
+    };
+    
+    try {
+      const { getSocketIO } = require('../services/socket');
+      const io = getSocketIO();
+      
+      // ✅ ROOT CAUSE FIX: Always emit to booking room
+      const bookingRoomSize = io.sockets.adapter.rooms.get(bookingRoom)?.size || 0;
+      io.to(bookingRoom).emit('driver_location_update', payload);
+      
+      // ✅ ROOT CAUSE FIX: Also emit to user room if customerId is available
+      if (customerId) {
+        const userRoom = `user:${customerId}`;
         const userRoomSize = io.sockets.adapter.rooms.get(userRoom)?.size || 0;
-        const bookingRoomSize = io.sockets.adapter.rooms.get(bookingRoom)?.size || 0;
-        
         io.to(userRoom).emit('driver_location_update', payload);
-        io.to(bookingRoom).emit('driver_location_update', payload);
         
-        console.log(`📍 [DRIVER_TRACKING] Location update emitted:`, {
+        console.log(`📍 [DRIVER_TRACKING] Location update emitted to both rooms:`, {
           bookingId,
           driverId,
           userRoom,
@@ -107,9 +119,19 @@ router.post('/tracking/update', [
           bookingRoomSize,
           location: { lat: payload.location.latitude, lng: payload.location.longitude }
         });
-      } catch (ioErr) {
-        console.error('❌ [DRIVER] Emit location failed:', ioErr);
+      } else {
+        console.log(`📍 [DRIVER_TRACKING] Location update emitted to booking room only:`, {
+          bookingId,
+          driverId,
+          bookingRoom,
+          bookingRoomSize,
+          location: { lat: payload.location.latitude, lng: payload.location.longitude },
+          reason: 'customerId not found in booking document'
+        });
       }
+    } catch (ioErr) {
+      console.error('❌ [DRIVER] Emit location failed:', ioErr);
+      // Don't fail the request - location is still saved to database
     }
 
     return res.status(200).json({

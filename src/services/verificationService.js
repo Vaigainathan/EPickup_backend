@@ -98,12 +98,6 @@ class VerificationService {
       const requiredDocs = ['drivingLicense', 'aadhaarCard', 'bikeInsurance', 'rcBook', 'profilePhoto'];
       let verifiedCount = 0;
       let totalCount = 0;
-
-      // ✅ SAFETY CHECK: Preserve already-verified drivers
-      const wasAlreadyVerified = userData.driver?.isVerified === true || 
-                                 userData.isVerified === true ||
-                                 userData.driver?.verificationStatus === 'verified' ||
-                                 userData.driver?.verificationStatus === 'approved';
       
       requiredDocs.forEach(docType => {
         const camelKey = docType;
@@ -138,66 +132,57 @@ class VerificationService {
       
       console.log(`📊 Document count summary: ${verifiedCount} verified out of ${totalCount} total`);
 
-      // ✅ CRITICAL FIX: Determine status - driver is ONLY verified if ALL required documents are uploaded AND verified
+      // ✅ CRITICAL FIX: Determine status based on documents (source of truth)
+      // Documents are the source of truth - calculate status strictly from document verification
       let verificationStatus;
       const requiredDocsCount = requiredDocs.length;
       
-      // ✅ SAFETY CHECK: If driver was already verified, be more careful about downgrading
-      if (wasAlreadyVerified && verifiedCount === requiredDocsCount && totalCount === requiredDocsCount) {
-        // Driver was verified and all documents are verified - keep verified
+      // ✅ CRITICAL: Check for rejected documents first
+      let rejectedCount = 0;
+      requiredDocs.forEach(docType => {
+        const camelKey = docType;
+        const snakeCaseKey = docType.replace(/([A-Z])/g, '_$1').toLowerCase();
+        const doc = documents[camelKey] || documents[snakeCaseKey];
+        if (doc && (doc.url || doc.downloadURL)) {
+          const isRejected = doc.status === 'rejected' || 
+                           doc.verificationStatus === 'rejected' ||
+                           doc.rejected === true;
+          if (isRejected) {
+            rejectedCount++;
+          }
+        }
+      });
+      
+      // ✅ CRITICAL: Calculate status strictly from documents (source of truth)
+      if (totalCount === 0) {
+        // No documents uploaded at all
+        verificationStatus = 'not_uploaded';
+      } else if (rejectedCount > 0) {
+        // Any document rejected → driver is rejected
+        verificationStatus = 'rejected';
+      } else if (verifiedCount === requiredDocsCount && totalCount === requiredDocsCount) {
+        // ✅ CRITICAL: ALL required documents are uploaded AND verified → driver is verified
         verificationStatus = 'verified';
-      } else if (wasAlreadyVerified && verifiedCount < requiredDocsCount) {
-        // Driver was verified but document check shows fewer verified
-        // This could be due to data format issues - check if we can find documents with alternative formats
-        console.log(`⚠️ Driver was verified but document check shows ${verifiedCount}/${requiredDocsCount} verified. Preserving verified status if documents exist.`);
-        
-        // If documents exist (even if not all verified in our check), preserve status
-        // Only downgrade if we're certain
-        if (totalCount >= requiredDocsCount) {
-          // Documents exist - might be format issue, preserve verified status
-          verificationStatus = userData.driver?.verificationStatus || 'verified';
-          console.log(`✅ Preserving verified status for driver (documents exist, possible format mismatch)`);
-        } else {
-          // Truly missing documents - update status
-          verificationStatus = 'pending_verification';
-        }
+      } else if (totalCount < requiredDocsCount) {
+        // Some documents uploaded but not all required documents
+        verificationStatus = 'pending_verification';
+      } else if (verifiedCount < requiredDocsCount) {
+        // All documents uploaded but not all verified
+        verificationStatus = 'pending_verification';
       } else {
-        // Normal flow for non-verified or newly verified drivers
-        if (totalCount === 0) {
-          // No documents uploaded
-          verificationStatus = 'pending';
-        } else if (totalCount < requiredDocsCount) {
-          // Some documents uploaded but not all required documents
-          verificationStatus = 'pending_verification';
-        } else if (verifiedCount === 0) {
-          // All documents uploaded but none verified
-          verificationStatus = 'pending_verification';
-        } else if (verifiedCount < requiredDocsCount) {
-          // Some documents verified but not all required documents
-          verificationStatus = 'pending_verification';
-        } else if (verifiedCount === requiredDocsCount && totalCount === requiredDocsCount) {
-          // ✅ CRITICAL: ALL required documents are uploaded AND verified
-          verificationStatus = 'verified';
-        } else {
-          // Fallback: if verifiedCount equals totalCount but not all required docs are present
-          verificationStatus = 'pending_verification';
-        }
+        // Fallback
+        verificationStatus = 'pending_verification';
       }
 
-      // Check for admin approval (only if all documents are verified)
+      // ✅ CRITICAL: Preserve 'approved' status only if all documents are verified
+      // 'approved' is a special status that means verified + admin approved
       if (userData.driver?.verificationStatus === 'approved' && verifiedCount === requiredDocsCount && totalCount === requiredDocsCount) {
         verificationStatus = 'approved';
-      } else if (userData.driver?.verificationStatus === 'approved' && wasAlreadyVerified) {
-        // Preserve approved status if driver was already approved
-        verificationStatus = 'approved';
       }
 
-      // ✅ CRITICAL: isVerified is ONLY true if ALL required documents are verified
-      // For already-verified drivers, preserve status if documents exist (might be format issue)
-      // But only if we found at least some verified documents
-      const isVerified = verificationStatus === 'verified' || 
-                        verificationStatus === 'approved' ||
-                        (wasAlreadyVerified && verifiedCount > 0 && totalCount >= requiredDocsCount && verificationStatus !== 'pending');
+      // ✅ CRITICAL: isVerified is ONLY true if verificationStatus is 'verified' or 'approved'
+      // This ensures consistency - driver is only verified if ALL documents are verified
+      const isVerified = verificationStatus === 'verified' || verificationStatus === 'approved';
 
       return {
         verificationStatus,
@@ -227,9 +212,10 @@ class VerificationService {
     }
 
     try {
-      // ✅ CRITICAL: isVerified should ONLY be true if verificationStatus is 'verified'
+      // ✅ CRITICAL: isVerified should ONLY be true if verificationStatus is 'verified' or 'approved'
       // This ensures consistency - driver is only verified if ALL documents are verified
-      const isVerified = verificationData.verificationStatus === 'verified';
+      const isVerified = verificationData.verificationStatus === 'verified' || 
+                        verificationData.verificationStatus === 'approved';
       
       const updates = {
         'driver.verificationStatus': verificationData.verificationStatus,

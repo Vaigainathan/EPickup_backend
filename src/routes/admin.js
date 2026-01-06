@@ -1005,6 +1005,85 @@ router.get('/drivers', async (req, res) => {
       const averageRating = Math.max(0, Math.min(5, ratingsData.average)); // Clamp between 0-5
       const totalRatings = ratingsData.total;
       
+      // ✅ CRITICAL FIX: Calculate verification status based on documents (source of truth)
+      // This ensures verified drivers show correctly even if verificationStatus field is stale
+      const requiredDocTypes = ['drivingLicense', 'aadhaarCard', 'bikeInsurance', 'rcBook', 'profilePhoto'];
+      let verifiedDocs = 0;
+      let totalDocs = 0;
+      let rejectedDocs = 0;
+      
+      requiredDocTypes.forEach(docType => {
+        // Try both camelCase and snake_case keys
+        const camelKey = docType;
+        const snakeKey = docType.replace(/([A-Z])/g, '_$1').toLowerCase();
+        const doc = normalizedDocuments[camelKey] || normalizedDocuments[snakeKey];
+        
+        if (doc && (doc.url || doc.downloadURL)) {
+          totalDocs++;
+          const isDocVerified = doc.status === 'verified' || 
+                               doc.verified === true || 
+                               doc.verificationStatus === 'verified' ||
+                               doc.verificationStatus === 'approved' ||
+                               doc.status === 'approved';
+          const isDocRejected = doc.status === 'rejected' || 
+                               doc.verificationStatus === 'rejected' ||
+                               doc.rejected === true;
+          
+          if (isDocVerified) {
+            verifiedDocs++;
+          } else if (isDocRejected) {
+            rejectedDocs++;
+          }
+        }
+      });
+      
+      // ✅ CRITICAL: Calculate status and isVerified based on documents (source of truth)
+      let calculatedStatus = 'pending_verification';
+      let calculatedIsVerified = false;
+      
+      if (totalDocs === 0) {
+        calculatedStatus = 'not_uploaded';
+      } else if (rejectedDocs > 0) {
+        calculatedStatus = 'rejected';
+      } else if (totalDocs === requiredDocTypes.length && verifiedDocs === requiredDocTypes.length) {
+        // ✅ CRITICAL: ALL documents verified → driver is verified
+        calculatedStatus = 'verified';
+        calculatedIsVerified = true;
+      } else if (totalDocs > 0 && verifiedDocs < requiredDocTypes.length) {
+        calculatedStatus = 'pending_verification';
+      }
+      
+      // ✅ CRITICAL: Use calculated status if documents exist and can be checked
+      // If documents can't be checked (totalDocs === 0), fall back to stored status
+      // BUT: If driver was already verified and we can't verify documents, preserve verified status
+      const storedStatus = driverData.verificationStatus || data.verificationStatus || 'pending';
+      const storedIsVerified = driverData.isVerified || data.isVerified || false;
+      
+      let finalStatus = calculatedStatus;
+      let finalIsVerified = calculatedIsVerified;
+      
+      if (totalDocs === 0) {
+        // No documents to check - use stored status
+        // BUT: If driver was verified, preserve that status (might be verified but documents not accessible)
+        if (storedStatus === 'verified' || storedStatus === 'approved' || storedIsVerified) {
+          finalStatus = storedStatus;
+          finalIsVerified = true;
+        } else {
+          finalStatus = storedStatus;
+          finalIsVerified = storedIsVerified;
+        }
+      } else {
+        // Documents exist - use calculated status (source of truth)
+        finalStatus = calculatedStatus;
+        finalIsVerified = calculatedIsVerified;
+      }
+      
+      // ✅ CRITICAL: Preserve 'approved' status if driver was approved and all documents are verified
+      if (storedStatus === 'approved' && verifiedDocs === requiredDocTypes.length && totalDocs === requiredDocTypes.length) {
+        finalStatus = 'approved';
+        finalIsVerified = true;
+      }
+      
       // ✅ CRITICAL FIX: Flatten nested driver data for admin dashboard
       // Admin expects isOnline/isAvailable at top level, not nested under driver object
       drivers.push({
@@ -1016,7 +1095,10 @@ router.get('/drivers', async (req, res) => {
         // Override nested fields with flattened versions for admin dashboard compatibility
         isOnline: driverData.isOnline || false,
         isAvailable: driverData.isAvailable || false,
-        verificationStatus: driverData.verificationStatus || data.verificationStatus || 'pending',
+        verificationStatus: finalStatus,
+        // ✅ CRITICAL FIX: Set status and isVerified based on document verification (source of truth)
+        status: finalStatus,
+        isVerified: finalIsVerified,
         // ✅ CRITICAL FIX: Use calculated rating from ratings collection (driver isolated) with fallback for backward compatibility
         rating: averageRating,
         totalRatings: totalRatings,

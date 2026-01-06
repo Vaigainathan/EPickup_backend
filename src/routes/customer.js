@@ -3,6 +3,7 @@ const router = express.Router();
 const { getFirestore } = require('firebase-admin/firestore');
 const { authenticateToken } = require('../middleware/auth');
 const { body, validationResult } = require('express-validator');
+const { trackingDataLimiter } = require('../middleware/rateLimit'); // ✅ Add rate limiting for booking details
 
 /**
  * @route GET /api/customer/profile
@@ -418,8 +419,9 @@ router.get('/bookings', authenticateToken, async (req, res) => {
  * @route GET /api/customer/bookings/:id
  * @desc Get single booking by ID
  * @access Private (Customer only)
+ * ✅ RATE LIMITING: Added trackingDataLimiter (60 requests/minute) to prevent server overload
  */
-router.get('/bookings/:id', authenticateToken, async (req, res) => {
+router.get('/bookings/:id', authenticateToken, trackingDataLimiter, async (req, res) => {
   try {
     const { uid: userId } = req.user;
     const { id: bookingId } = req.params;

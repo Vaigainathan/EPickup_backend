@@ -5473,9 +5473,10 @@ router.post('/bookings/:id/photo-verification/upload', [
         notes: notes || null
       };
       
-      // ✅ FIX: If photo status is 'pending_confirmation' and booking is 'driver_arrived', update booking status to 'photo_captured'
-      if (photoStatus === 'pending_confirmation' && bookingData.status === 'driver_arrived') {
-        updateData['status'] = 'photo_captured';
+      // ✅ FIX: If photo status is 'pending_confirmation' and booking is 'driver_arrived', prepare to update booking status to 'photo_captured'
+      // Note: Status update will be done via state machine after transaction (see below)
+      if (photoStatus === 'pending_confirmation' && bookingData.status === 'driver_arrived' && safeType === 'pickup') {
+        // Only set photoCapturedAt in transaction - status will be updated via state machine
         updateData['photoCapturedAt'] = verifiedAtTimestamp;
       }
     } else {
@@ -6124,7 +6125,7 @@ router.post('/bookings/:id/photo-verification', [
     }
     
     const validStatuses = {
-      pickup: ['driver_arrived', 'picked_up'], // Only when actually at pickup location
+      pickup: ['driver_arrived', 'photo_captured', 'picked_up'], // ✅ FIX: Allow photo_captured for retakes
       delivery: ['in_transit', 'at_dropoff', 'delivered', 'arrived_dropoff', 'picked_up'] // Allow delivery photos if already picked up (delivered = payment pending)
     };
 
@@ -8142,8 +8143,10 @@ router.put('/bookings/:id/status', [
       idempotent: statusResult.idempotent
     });
 
-    // ✅ FIX: Update photo status to 'confirmed' when transitioning from 'photo_captured' to 'picked_up'
-    if (statusResult.previousStatus === 'photo_captured' && statusResult.status === 'picked_up') {
+    // ✅ FIX: Update photo status to 'confirmed' when transitioning to 'picked_up'
+    // Handle both cases: from 'photo_captured' OR from 'driver_arrived' (in case photo status update failed)
+    if (statusResult.status === 'picked_up' && 
+        (statusResult.previousStatus === 'photo_captured' || statusResult.previousStatus === 'driver_arrived')) {
       try {
         const db = getFirestore();
         // Find the pending_confirmation photo for this booking
@@ -8163,7 +8166,7 @@ router.put('/bookings/:id/status', [
             confirmedAt: admin.firestore.Timestamp.now(),
             updatedAt: admin.firestore.Timestamp.now()
           });
-          console.log(`✅ [STATUS_UPDATE] Updated photo status to 'confirmed' for photo ${photoDoc.id}`);
+          console.log(`✅ [STATUS_UPDATE] Updated photo status to 'confirmed' for photo ${photoDoc.id} (transitioned from ${statusResult.previousStatus})`);
         }
       } catch (photoUpdateError) {
         console.warn('⚠️ [STATUS_UPDATE] Failed to update photo status to confirmed:', photoUpdateError);
@@ -8336,6 +8339,7 @@ router.put('/bookings/:id/status', [
  */
 router.post('/confirm-pickup', [
   requireDriver,
+  bookingStatusLimiter, // ✅ CRITICAL FIX: Add rate limiting to prevent duplicate/spam calls
   body('bookingId')
     .isString()
     .notEmpty()
@@ -8388,6 +8392,36 @@ router.post('/confirm-pickup', [
       eventTimestamp,
       source: 'driver_app'
     });
+
+    // ✅ CRITICAL FIX: Update photo status to 'confirmed' when confirming pickup
+    // Handle both cases: from 'photo_captured' OR from 'driver_arrived' (in case photo status update failed earlier)
+    if (statusResult.status === 'picked_up' && 
+        (statusResult.previousStatus === 'photo_captured' || statusResult.previousStatus === 'driver_arrived')) {
+      try {
+        // Find the pending_confirmation photo for this booking
+        const photosQuery = db.collection('photoVerifications')
+          .where('bookingId', '==', bookingId)
+          .where('photoType', '==', 'pickup')
+          .where('status', '==', 'pending_confirmation')
+          .orderBy('uploadedAt', 'desc')
+          .limit(1);
+        
+        const photosSnapshot = await photosQuery.get();
+        if (!photosSnapshot.empty) {
+          const photoDoc = photosSnapshot.docs[0];
+          const admin = require('firebase-admin');
+          await photoDoc.ref.update({
+            status: 'confirmed',
+            confirmedAt: admin.firestore.Timestamp.now(),
+            updatedAt: admin.firestore.Timestamp.now()
+          });
+          console.log(`✅ [CONFIRM_PICKUP] Updated photo status to 'confirmed' for photo ${photoDoc.id} (transitioned from ${statusResult.previousStatus})`);
+        }
+      } catch (photoUpdateError) {
+        console.warn('⚠️ [CONFIRM_PICKUP] Failed to update photo status to confirmed:', photoUpdateError);
+        // Continue - booking status update is more important
+      }
+    }
 
     // ✅ CRITICAL FIX: Notify customer about pickup via WebSocket
     const liveTrackingService = require('../services/liveTrackingService');

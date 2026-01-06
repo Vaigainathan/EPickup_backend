@@ -219,15 +219,20 @@ class PhonePeService {
       // PhonePe SDK API returns the token in the "token" field (not "orderToken")
       // Response structure: { orderId, state, expireAt, token }
       const orderToken = response.data?.token || response.data?.orderToken || response.data?.data?.token;
+      const sdkOrderId = response.data?.orderId || null;
       
       if (orderToken) {
         console.log('✅ [PHONEPE SDK] SDK order created successfully');
         console.log('📋 [PHONEPE SDK] Order details:', {
-          orderId: response.data?.orderId,
+          orderId: sdkOrderId,
           state: response.data?.state,
           expireAt: response.data?.expireAt
         });
-        return orderToken;
+        // Return both token and SDK orderId so the client SDK can construct the request body
+        return {
+          orderToken,
+          orderId: sdkOrderId
+        };
       } else {
         // Log what we actually got to help debug
         console.error('❌ [PHONEPE SDK] Response structure:', JSON.stringify(response.data, null, 2));
@@ -342,7 +347,7 @@ class PhonePeService {
         console.log('📱 [PHONEPE SDK] Using SDK flow for wallet top-up');
         
         try {
-          const orderToken = await this.createSDKOrder({
+          const { orderToken, orderId: sdkOrderId } = await this.createSDKOrder({
             transactionId,
             amount,
             customerId,
@@ -359,6 +364,7 @@ class PhonePeService {
             status: 'PENDING',
             paymentGateway: 'PHONEPE_SDK',
             orderToken: orderToken,
+            sdkOrderId: sdkOrderId || null,
             createdAt: new Date(),
             updatedAt: new Date()
           });
@@ -377,6 +383,7 @@ class PhonePeService {
               transactionId,
               merchantTransactionId: transactionId,
               orderToken: orderToken,
+              sdkOrderId: sdkOrderId || null,
               merchantId: this.config.merchantId || 'PGTESTPAYUAT', // Include merchantId for native SDK
               paymentMode: this.isTestMode ? 'TESTING' : 'PRODUCTION',
               isMockPayment: false,

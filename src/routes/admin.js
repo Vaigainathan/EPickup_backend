@@ -1055,7 +1055,7 @@ router.get('/drivers', async (req, res) => {
       const normalizedDocuments = mergedDocuments;
       
       // ✅ CRITICAL FIX: Get calculated earnings from map (batch fetched above)
-      const driverId = doc.id;
+      // driverId is declared at line 990 above
       const earningsData = earningsMap.get(driverId) || {
         total: driverData.totalEarnings || driverData.earnings?.total || 0,
         thisMonth: driverData.earnings?.thisMonth || 0,

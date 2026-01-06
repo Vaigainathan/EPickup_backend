@@ -895,10 +895,26 @@ router.get('/drivers', async (req, res) => {
         })
     );
     
+    // ✅ CRITICAL FIX: Batch fetch all document verification requests in parallel for all drivers
+    // This is where verified document status is stored, so we MUST fetch from here
+    const verificationRequestsPromises = driverIds.map(driverId => 
+      db.collection('documentVerificationRequests')
+        .where('driverId', '==', driverId)
+        .orderBy('createdAt', 'desc')
+        .limit(1)
+        .get()
+        .catch(err => {
+          console.warn(`⚠️ [ADMIN] Failed to fetch verification requests for driver ${driverId}:`, err.message);
+          return { docs: [] }; // Return empty snapshot on error
+        })
+    );
+    
     const earningsSnapshots = await Promise.all(earningsPromises);
     const ratingsSnapshots = await Promise.all(ratingsPromises);
+    const verificationRequestsSnapshots = await Promise.all(verificationRequestsPromises);
     const earningsMap = new Map();
     const ratingsMap = new Map();
+    const verificationRequestsMap = new Map();
     
     // Build earnings map for quick lookup
     earningsSnapshots.forEach((earningsSnapshot, index) => {
@@ -957,30 +973,86 @@ router.get('/drivers', async (req, res) => {
       });
       console.log(`⭐ [ADMIN] Calculated ratings for driver ${driverId}: Average: ${averageRating}, Total Ratings: ${ratings.length}`);
     });
+    
+    // ✅ CRITICAL FIX: Build verification requests map for quick lookup
+    verificationRequestsSnapshots.forEach((verificationSnapshot, index) => {
+      const driverId = driverIds[index];
+      if (!verificationSnapshot.empty) {
+        const verificationData = verificationSnapshot.docs[0]?.data();
+        verificationRequestsMap.set(driverId, verificationData);
+        console.log(`📄 [ADMIN] Found verification request for driver ${driverId}`);
+      }
+    });
 
     for (const doc of snapshot.docs) {
       const data = doc.data();
       const driverData = data.driver || {};
+      const driverId = doc.id;
       
-      // ✅ CRITICAL FIX: Merge documents from both locations (top-level and nested)
-      // Documents can be in data.documents OR data.driver.documents
+      // ✅ CRITICAL FIX: Get documents from documentVerificationRequests FIRST (most authoritative)
+      // Then merge with documents from user collection (fallback)
+      const verificationRequestData = verificationRequestsMap.get(driverId);
+      const verificationRequestDocs = verificationRequestData?.documents || {};
+      
+      // Get documents from user collection (fallback)
       const topLevelDocs = data.documents || {};
       const driverDocs = driverData.documents || {};
       
-      // Merge documents, prefer top-level over nested
-      const mergedDocuments = { ...driverDocs, ...topLevelDocs };
-      
-      // Helper to convert snake_case to camelCase
-      const toCamelCase = (str) => {
-        return str.replace(/_([a-z])/g, (_, letter) => letter.toUpperCase());
+      // Helper function to normalize document keys
+      const normalizeDocKey = (key) => {
+        // Convert snake_case to camelCase
+        return key.replace(/_([a-z])/g, (_, letter) => letter.toUpperCase());
       };
       
-      // ✅ CRITICAL FIX: Normalize all document keys to camelCase for frontend
-      const normalizedDocuments = {};
-      Object.keys(mergedDocuments).forEach(key => {
-        const camelKey = toCamelCase(key);
-        normalizedDocuments[camelKey] = mergedDocuments[key];
+      // ✅ CRITICAL FIX: Merge documents with verification request docs taking precedence
+      // Build a map of normalized documents
+      const mergedDocuments = {};
+      
+      // First, add documents from user collection
+      [...Object.keys(driverDocs), ...Object.keys(topLevelDocs)].forEach(key => {
+        const normalizedKey = normalizeDocKey(key);
+        if (!mergedDocuments[normalizedKey]) {
+          mergedDocuments[normalizedKey] = driverDocs[key] || topLevelDocs[key];
+        }
       });
+      
+      // Then, override with documents from verification requests (most authoritative)
+      Object.keys(verificationRequestDocs).forEach(key => {
+        const normalizedKey = normalizeDocKey(key);
+        const verificationDoc = verificationRequestDocs[key];
+        
+        // Merge verification request doc with existing doc, preserving URL if missing in verification request
+        if (mergedDocuments[normalizedKey]) {
+          mergedDocuments[normalizedKey] = {
+            ...mergedDocuments[normalizedKey],
+            // ✅ CRITICAL: Verification request status takes precedence
+            status: verificationDoc.verificationStatus || verificationDoc.status || mergedDocuments[normalizedKey].status,
+            verificationStatus: verificationDoc.verificationStatus || verificationDoc.status || mergedDocuments[normalizedKey].verificationStatus,
+            verified: verificationDoc.verificationStatus === 'verified' || verificationDoc.verificationStatus === 'approved' || 
+                     verificationDoc.status === 'verified' || verificationDoc.status === 'approved' ||
+                     verificationDoc.verified === true || mergedDocuments[normalizedKey].verified,
+            // Use downloadURL from verification request if available
+            url: verificationDoc.downloadURL || verificationDoc.url || mergedDocuments[normalizedKey].url || mergedDocuments[normalizedKey].downloadURL,
+            downloadURL: verificationDoc.downloadURL || verificationDoc.url || mergedDocuments[normalizedKey].downloadURL || mergedDocuments[normalizedKey].url
+          };
+        } else {
+          // New document from verification request
+          mergedDocuments[normalizedKey] = {
+            url: verificationDoc.downloadURL || verificationDoc.url || '',
+            downloadURL: verificationDoc.downloadURL || verificationDoc.url || '',
+            status: verificationDoc.verificationStatus || verificationDoc.status || 'pending',
+            verificationStatus: verificationDoc.verificationStatus || verificationDoc.status || 'pending',
+            verified: verificationDoc.verificationStatus === 'verified' || verificationDoc.verificationStatus === 'approved' || 
+                     verificationDoc.status === 'verified' || verificationDoc.status === 'approved' ||
+                     verificationDoc.verified === true,
+            uploadedAt: verificationDoc.uploadedAt || ''
+          };
+        }
+      });
+      
+      // ✅ CRITICAL FIX: Documents are already normalized in mergedDocuments (keys converted to camelCase)
+      // Use mergedDocuments directly as normalizedDocuments
+      const normalizedDocuments = mergedDocuments;
       
       // ✅ CRITICAL FIX: Get calculated earnings from map (batch fetched above)
       const driverId = doc.id;

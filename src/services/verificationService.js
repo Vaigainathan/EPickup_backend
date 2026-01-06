@@ -283,6 +283,75 @@ class VerificationService {
       
       await db.collection('users').doc(driverId).update(updates);
       
+      // ✅ CRITICAL FIX: Also update documentVerificationRequests collection
+      // This is where the admin dashboard reads document status from, so it MUST be updated
+      try {
+        const verificationRequestsQuery = db.collection('documentVerificationRequests')
+          .where('driverId', '==', driverId)
+          .orderBy('createdAt', 'desc')
+          .limit(1);
+        
+        const verificationRequestsSnapshot = await verificationRequestsQuery.get();
+        
+        if (!verificationRequestsSnapshot.empty) {
+          const latestRequest = verificationRequestsSnapshot.docs[0];
+          const requestData = latestRequest.data();
+          const requestDocuments = requestData.documents || {};
+          
+          // Update the specific document in the verification request
+          // Handle both camelCase and snake_case document keys
+          // documentType comes from admin (e.g., "drivingLicense")
+          // normalizedType is snake_case (e.g., "driving_license")
+          
+          // Try to find the document in the request (could be camelCase, snake_case, or any variation)
+          let foundDocKey = null;
+          
+          // First try exact matches
+          if (requestDocuments[documentType]) {
+            foundDocKey = documentType; // camelCase from admin
+          } else if (requestDocuments[normalizedType]) {
+            foundDocKey = normalizedType; // snake_case
+          } else {
+            // Try to find any variation by normalizing both sides
+            const normalizeKey = (key) => key.toLowerCase().replace(/[_-]/g, '');
+            const normalizedSearchKey = normalizeKey(normalizedType);
+            
+            for (const key of Object.keys(requestDocuments)) {
+              if (normalizeKey(key) === normalizedSearchKey) {
+                foundDocKey = key;
+                break;
+              }
+            }
+          }
+          
+          if (foundDocKey) {
+            const verificationRequestUpdates = {
+              [`documents.${foundDocKey}.verificationStatus`]: status,
+              [`documents.${foundDocKey}.status`]: status,
+              [`documents.${foundDocKey}.verified`]: status === 'verified',
+              [`documents.${foundDocKey}.verifiedAt`]: admin.firestore.FieldValue.serverTimestamp(),
+              [`documents.${foundDocKey}.verifiedBy`]: adminId,
+              [`documents.${foundDocKey}.comments`]: comments || null,
+              'updatedAt': admin.firestore.FieldValue.serverTimestamp()
+            };
+            
+            if (status === 'rejected') {
+              verificationRequestUpdates[`documents.${foundDocKey}.rejectionReason`] = rejectionReason || null;
+            }
+            
+            await latestRequest.ref.update(verificationRequestUpdates);
+            console.log(`✅ [VerificationService] Updated document in documentVerificationRequests: ${foundDocKey} with status: ${status}`);
+          } else {
+            console.warn(`⚠️ [VerificationService] Document ${documentType} (${normalizedType}) not found in documentVerificationRequests`);
+          }
+        } else {
+          console.warn(`⚠️ [VerificationService] No verification request found for driver ${driverId}`);
+        }
+      } catch (verificationRequestError) {
+        console.error(`❌ [VerificationService] Error updating documentVerificationRequests:`, verificationRequestError);
+        // Don't fail the whole operation if this update fails
+      }
+      
       // ✅ Log the update for debugging
       const updatedDoc = await db.collection('users').doc(driverId).get();
       const updatedData = updatedDoc.data();

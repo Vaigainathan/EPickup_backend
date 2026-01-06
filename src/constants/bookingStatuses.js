@@ -10,6 +10,7 @@
 /**
  * Active booking statuses - bookings that prevent creating new bookings
  * Includes all statuses from pending through money_collection
+ * ✅ CRITICAL FIX: Must include photo_captured
  */
 const ACTIVE_BOOKING_STATUSES = [
   'pending',
@@ -17,6 +18,7 @@ const ACTIVE_BOOKING_STATUSES = [
   'accepted',
   'driver_enroute',
   'driver_arrived',
+  'photo_captured', // ✅ CRITICAL FIX: Add photo_captured state
   'picked_up',
   'in_transit',
   'at_dropoff',
@@ -27,11 +29,13 @@ const ACTIVE_BOOKING_STATUSES = [
 /**
  * Active booking statuses with driver assigned
  * Statuses where customer should see trip progress screen
+ * ✅ CRITICAL FIX: Must include photo_captured
  */
 const ACTIVE_BOOKING_WITH_DRIVER_STATUSES = [
   'driver_assigned',
   'driver_enroute',
   'driver_arrived',
+  'photo_captured', // ✅ CRITICAL FIX: Add photo_captured state
   'picked_up',
   'in_transit',
   'at_dropoff',
@@ -59,6 +63,7 @@ const COMPLETED_BOOKING_STATUSES = [
 
 /**
  * All valid booking statuses
+ * ✅ CRITICAL FIX: Must include photo_captured to match state machine
  */
 const VALID_BOOKING_STATUSES = [
   'pending',
@@ -66,6 +71,7 @@ const VALID_BOOKING_STATUSES = [
   'accepted',
   'driver_enroute',
   'driver_arrived',
+  'photo_captured', // ✅ CRITICAL FIX: Add photo_captured state
   'picked_up',
   'in_transit',
   'at_dropoff',

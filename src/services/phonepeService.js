@@ -354,6 +354,10 @@ class PhonePeService {
             customerPhone
           });
 
+          // ✅ CRITICAL FIX: Use Firestore Timestamp for consistent date handling
+          const { Timestamp } = require('firebase-admin/firestore');
+          const now = Timestamp.now();
+          
           // Store payment record in Firestore
           await this.storePaymentRecord({
             transactionId,
@@ -365,8 +369,8 @@ class PhonePeService {
             paymentGateway: 'PHONEPE_SDK',
             orderToken: orderToken,
             sdkOrderId: sdkOrderId || null,
-            createdAt: new Date(),
-            updatedAt: new Date()
+            createdAt: now, // ✅ FIX: Use Firestore Timestamp instead of Date
+            updatedAt: now  // ✅ FIX: Use Firestore Timestamp instead of Date
           });
 
           await monitoringService.logPayment('payment_created', {
@@ -457,6 +461,10 @@ class PhonePeService {
       });
 
       if (response.data.success) {
+        // ✅ CRITICAL FIX: Use Firestore Timestamp for consistent date handling
+        const { Timestamp } = require('firebase-admin/firestore');
+        const now = Timestamp.now();
+        
         // Store payment record in Firestore
         await this.storePaymentRecord({
           transactionId,
@@ -467,8 +475,8 @@ class PhonePeService {
           status: 'PENDING',
           paymentGateway: 'PHONEPE',
           paymentUrl: response.data.data.instrumentResponse.redirectInfo.url,
-          createdAt: new Date(),
-          updatedAt: new Date()
+          createdAt: now, // ✅ FIX: Use Firestore Timestamp instead of Date
+          updatedAt: now  // ✅ FIX: Use Firestore Timestamp instead of Date
         });
 
         await monitoringService.logPayment('payment_created', {
@@ -631,34 +639,86 @@ class PhonePeService {
       if (verificationResult && !verificationResult.success) {
         console.warn(`⚠️ Payment verification failed for: ${merchantTransactionId}, using callback state`);
       } else if (verificationResult && verificationResult.data) {
-        // Extract state from verification result
+        // ✅ CRITICAL FIX: Extract state from verification result with comprehensive mapping
         if (isSDKCallback && verificationResult.data.status) {
-          verifiedState = verificationResult.data.status === 'SUCCESS' ? 'COMPLETED' : 
-                          verificationResult.data.status === 'FAILED' ? 'FAILED' : state;
+          const apiStatus = verificationResult.data.status;
+          // Map PhonePe SDK API statuses to our internal states
+          if (apiStatus === 'SUCCESS' || apiStatus === 'PAYMENT_SUCCESS') {
+            verifiedState = 'COMPLETED';
+          } else if (apiStatus === 'FAILED' || apiStatus === 'PAYMENT_FAILED' || apiStatus === 'PAYMENT_ERROR') {
+            verifiedState = 'FAILED';
+          } else if (apiStatus === 'PENDING' || apiStatus === 'INITIATED' || apiStatus === 'AUTHORIZED') {
+            verifiedState = 'PENDING';
+          } else if (apiStatus === 'CANCELLED' || apiStatus === 'PAYMENT_CANCELLED' || apiStatus === 'INTERRUPTED') {
+            verifiedState = 'CANCELLED';
+          } else {
+            // Unknown status from API - use callback state
+            console.warn(`⚠️ [PHONEPE] Unknown API status: ${apiStatus}, using callback state: ${state}`);
+            verifiedState = state;
+          }
         } else if (!isSDKCallback && verificationResult.data.state) {
           verifiedState = verificationResult.data.state;
         }
       }
       
+      // ✅ CRITICAL FIX: Log status mapping for debugging
+      console.log(`📊 [PHONEPE] Status mapping for ${merchantTransactionId}:`, {
+        callbackState: state,
+        verifiedState: verifiedState,
+        isSDKCallback: isSDKCallback,
+        verificationSuccess: verificationResult?.success
+      });
+      
+      // ✅ CRITICAL FIX: Handle ALL payment statuses properly
       // Update booking status based on verified payment status
-      if (verifiedState === 'COMPLETED') {
+      if (verifiedState === 'COMPLETED' || verifiedState === 'SUCCESS' || verifiedState === 'PAYMENT_SUCCESS') {
         await this.updateBookingPaymentStatus(merchantTransactionId, 'PAID');
         
-      // Check if this is a wallet top-up payment
-      if (merchantTransactionId.startsWith('WALLET_')) {
-        // Amount conversion: SDK callback sends amount in rupees, Pay Page sends in paise
-        // For SDK flow, amount is already in rupees (from callbackData.amount)
-        // For Pay Page flow, amount is in paise (from decodedResponse.amount)
-        // Since we're using SDK flow, amount is in rupees, so we pass it as-is
-        // processWalletTopupPayment expects rupees, not paise
-        await this.processWalletTopupPayment(merchantTransactionId, amount || null);
-      }
-      } else if (verifiedState === 'FAILED') {
+        // Check if this is a wallet top-up payment
+        if (merchantTransactionId.startsWith('WALLET_')) {
+          // Amount conversion: SDK callback sends amount in rupees, Pay Page sends in paise
+          // For SDK flow, amount is already in rupees (from callbackData.amount)
+          // For Pay Page flow, amount is in paise (from decodedResponse.amount)
+          // Since we're using SDK flow, amount is in rupees, so we pass it as-is
+          // processWalletTopupPayment expects rupees, not paise
+          await this.processWalletTopupPayment(merchantTransactionId, amount || null);
+        }
+      } else if (verifiedState === 'FAILED' || verifiedState === 'FAILURE' || verifiedState === 'PAYMENT_FAILED' || verifiedState === 'PAYMENT_ERROR') {
         await this.updateBookingPaymentStatus(merchantTransactionId, 'FAILED');
         
         // Update wallet transaction status if it's a wallet top-up
         if (merchantTransactionId.startsWith('WALLET_')) {
           await this.updateWalletTransactionStatus(merchantTransactionId, 'failed');
+        }
+      } else if (verifiedState === 'PENDING' || verifiedState === 'INITIATED' || verifiedState === 'AUTHORIZED') {
+        // ✅ CRITICAL FIX: Handle PENDING/INITIATED/AUTHORIZED states
+        // These are intermediate states - payment is still processing
+        // Don't update wallet yet, but log the status
+        console.log(`⏳ [PHONEPE] Payment ${merchantTransactionId} is in ${verifiedState} state - waiting for final status`);
+        
+        // Update payment record with current status (already done above)
+        // Don't process wallet top-up yet - wait for COMPLETED status
+        
+        // Update wallet transaction status to 'processing' if it's a wallet top-up
+        if (merchantTransactionId.startsWith('WALLET_')) {
+          await this.updateWalletTransactionStatus(merchantTransactionId, 'processing');
+        }
+      } else if (verifiedState === 'CANCELLED' || verifiedState === 'PAYMENT_CANCELLED' || verifiedState === 'INTERRUPTED') {
+        // ✅ CRITICAL FIX: Handle CANCELLED/INTERRUPTED states
+        await this.updateBookingPaymentStatus(merchantTransactionId, 'CANCELLED');
+        
+        // Update wallet transaction status if it's a wallet top-up
+        if (merchantTransactionId.startsWith('WALLET_')) {
+          await this.updateWalletTransactionStatus(merchantTransactionId, 'cancelled');
+        }
+      } else {
+        // ✅ CRITICAL FIX: Handle unknown/unexpected statuses
+        console.warn(`⚠️ [PHONEPE] Unknown payment status: ${verifiedState} for transaction: ${merchantTransactionId}`);
+        console.warn(`   Original state: ${state}, Verified state: ${verifiedState}`);
+        
+        // For unknown statuses, keep as pending and log for investigation
+        if (merchantTransactionId.startsWith('WALLET_')) {
+          await this.updateWalletTransactionStatus(merchantTransactionId, 'pending');
         }
       }
 
@@ -778,6 +838,16 @@ class PhonePeService {
    */
   async updatePaymentStatus(transactionId, updateData) {
     try {
+      // ✅ CRITICAL FIX: Ensure updatedAt is always a Firestore Timestamp
+      const { Timestamp } = require('firebase-admin/firestore');
+      if (updateData.updatedAt && !(updateData.updatedAt instanceof Timestamp)) {
+        updateData.updatedAt = updateData.updatedAt instanceof Date 
+          ? Timestamp.fromDate(updateData.updatedAt)
+          : Timestamp.now();
+      } else if (!updateData.updatedAt) {
+        updateData.updatedAt = Timestamp.now();
+      }
+      
       await this.db.collection('payments').doc(transactionId).update(updateData);
     } catch (error) {
       console.error('Update payment status error:', error);
@@ -802,11 +872,15 @@ class PhonePeService {
       const paymentData = paymentDoc.data();
       const bookingId = paymentData.bookingId;
 
+      // ✅ CRITICAL FIX: Use Firestore Timestamp for consistent date handling
+      const { Timestamp } = require('firebase-admin/firestore');
+      const now = Timestamp.now();
+      
       // Update booking payment status
       await db.collection('bookings').doc(bookingId).update({
         paymentStatus,
-        paymentUpdatedAt: new Date(),
-        updatedAt: new Date()
+        paymentUpdatedAt: now, // ✅ FIX: Use Firestore Timestamp instead of Date
+        updatedAt: now        // ✅ FIX: Use Firestore Timestamp instead of Date
       });
     } catch (error) {
       console.error('Update booking payment status error:', error);
@@ -1002,12 +1076,16 @@ class PhonePeService {
           return; // Already processed
         }
 
+        // ✅ CRITICAL FIX: Use Firestore Timestamp for consistent date handling
+        const { Timestamp } = require('firebase-admin/firestore');
+        const now = Timestamp.now();
+        
         // Update wallet transaction status atomically
         transaction.update(walletTransactionDoc.ref, {
           status: 'completed',
           phonepePaymentId: transactionId,
-          completedAt: new Date(),
-          updatedAt: new Date()
+          completedAt: now, // ✅ FIX: Use Firestore Timestamp instead of Date
+          updatedAt: now    // ✅ FIX: Use Firestore Timestamp instead of Date
         });
 
         // Convert real money to points using points service
@@ -1024,11 +1102,15 @@ class PhonePeService {
         );
 
         if (pointsResult.success) {
+          // ✅ CRITICAL FIX: Use Firestore Timestamp for consistent date handling
+          const { Timestamp } = require('firebase-admin/firestore');
+          const updateTime = Timestamp.now();
+          
           // Update wallet transaction with points data (within same transaction)
           transaction.update(walletTransactionDoc.ref, {
             pointsAwarded: pointsResult.data.pointsAdded,
             newPointsBalance: pointsResult.data.newBalance,
-            updatedAt: new Date()
+            updatedAt: updateTime // ✅ FIX: Use Firestore Timestamp instead of Date
           });
 
           console.log(`✅ Points top-up completed for driver ${driverId}: +${pointsResult.data.pointsAdded} points for ₹${walletTransactionData.amount}`);
@@ -1055,10 +1137,21 @@ class PhonePeService {
   /**
    * Update wallet transaction status
    * @param {string} transactionId - Transaction ID
-   * @param {string} status - New status
+   * @param {string} status - New status (pending, processing, completed, failed, cancelled)
    */
   async updateWalletTransactionStatus(transactionId, status) {
     try {
+      // ✅ CRITICAL FIX: Validate and normalize status before updating
+      const validStatuses = ['pending', 'processing', 'completed', 'failed', 'cancelled'];
+      const normalizedStatus = status.toLowerCase();
+      
+      if (!validStatuses.includes(normalizedStatus)) {
+        console.warn(`⚠️ [WALLET] Invalid status '${status}' provided, defaulting to 'pending'`);
+        status = 'pending';
+      } else {
+        status = normalizedStatus;
+      }
+      
       console.log(`📝 Updating wallet transaction status: ${transactionId} -> ${status}`);
       const db = this.getDb();
       
@@ -1067,11 +1160,15 @@ class PhonePeService {
         .limit(1)
         .get();
 
+      // ✅ CRITICAL FIX: Use Firestore Timestamp for consistent date handling
+      const { Timestamp } = require('firebase-admin/firestore');
+      const now = Timestamp.now();
+
       if (!walletTransactionSnapshot.empty) {
         const walletTransactionDoc = walletTransactionSnapshot.docs[0];
         await walletTransactionDoc.ref.update({
           status: status,
-          updatedAt: new Date()
+          updatedAt: now // ✅ FIX: Use Firestore Timestamp instead of Date
         });
         console.log(`✅ Wallet transaction status updated: ${transactionId} -> ${status}`);
       } else {

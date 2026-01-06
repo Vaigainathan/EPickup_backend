@@ -702,11 +702,18 @@ class FileUploadService {
     try {
       const driverRef = this.getDb().collection('users').doc(driverId);
       
-      await driverRef.update({
+      const updateData = {
         [`driver.documents.${documentType}.status`]: status,
+        [`driver.documents.${documentType}.verificationStatus`]: status === 'verified' ? 'verified' : status === 'rejected' ? 'rejected' : 'pending',
+        [`driver.documents.${documentType}.verified`]: status === 'verified',
         [`driver.documents.${documentType}.updatedAt`]: new Date(),
         'updatedAt': new Date()
-      });
+      };
+      
+      await driverRef.update(updateData);
+      
+      // ✅ CRITICAL FIX: Check and update driver's overall verification status after document status change
+      await this.checkDriverVerificationStatus(driverId);
 
     } catch (error) {
       console.error('Driver document status update failed:', error);
@@ -740,9 +747,14 @@ class FileUploadService {
         [`driver.documents.${frontendDocType}.status`]: 'uploaded',
         [`driver.documents.${frontendDocType}.uploadedAt`]: new Date(),
         [`driver.documents.${frontendDocType}.verificationStatus`]: 'pending',
+        [`driver.documents.${frontendDocType}.verified`]: false,
         'driver.updatedAt': new Date(),
         updatedAt: new Date()
       });
+      
+      // ✅ CRITICAL FIX: Update driver's overall verification status when document is uploaded
+      // Set to 'pending_verification' if documents are uploaded but not verified
+      await this.checkDriverVerificationStatus(driverId);
       
       console.log(`User driver documents updated: ${driverId} - ${frontendDocType} - ${downloadURL}`);
     } catch (error) {
@@ -827,10 +839,9 @@ class FileUploadService {
         status === 'verified' ? 'verified' : 'rejected'
       );
 
-      // Check if all required documents are verified
-      if (status === 'verified') {
-        await this.checkDriverVerificationStatus(documentData.driverId);
-      }
+      // ✅ CRITICAL FIX: Always check driver verification status after document verification/rejection
+      // This ensures driver status is updated correctly whether document is verified or rejected
+      await this.checkDriverVerificationStatus(documentData.driverId);
 
       // Send notification to driver
       await this.sendVerificationNotification(
@@ -869,12 +880,125 @@ class FileUploadService {
 
       const documents = await this.getDriverDocuments(driverId);
       const verifiedDocuments = documents.filter(
-        doc => doc.verificationStatus === 'approved' && requiredDocuments.includes(doc.documentType)
+        doc => (doc.verificationStatus === 'approved' || doc.verificationStatus === 'verified') && requiredDocuments.includes(doc.documentType)
       );
 
-      if (verifiedDocuments.length === requiredDocuments.length) {
-        // All required documents are verified
+      // Also check driver documents in user collection
+      const driverRef = this.getDb().collection('users').doc(driverId);
+      const driverDoc = await driverRef.get();
+      
+      if (driverDoc.exists) {
+        const driverData = driverDoc.data();
+        const driverDocs = driverData.driver?.documents || {};
+        
+        // ✅ CRITICAL FIX: Map snake_case backend keys to camelCase frontend keys
+        // Backend uses: driving_license, aadhaar_card, bike_insurance, rc_book, profile_photo
+        // Frontend uses: drivingLicense, aadhaarCard, bikeInsurance, rcBook, profilePhoto
+        const documentKeyMap = {
+          'driving_license': 'drivingLicense',
+          'aadhaar_card': 'aadhaarCard',
+          'bike_insurance': 'bikeInsurance',
+          'rc_book': 'rcBook',
+          'profile_photo': 'profilePhoto'
+        };
+        
+        // ✅ SAFETY CHECK: Preserve already-verified drivers
+        // If driver was already verified and has isVerified flag, check documents carefully
+        const wasAlreadyVerified = driverData.driver?.isVerified === true || 
+                                   driverData.isVerified === true ||
+                                   driverData.driver?.verificationStatus === 'verified' ||
+                                   driverData.driver?.verificationStatus === 'approved';
+        
+        // Count verified documents from driver.documents
+        let verifiedCount = 0;
+        let uploadedCount = 0;
+        let rejectedCount = 0;
+        
+        requiredDocuments.forEach(docType => {
+          // Try both snake_case (backend) and camelCase (frontend) keys
+          const camelCaseKey = documentKeyMap[docType] || docType;
+          const doc = driverDocs[docType] || driverDocs[camelCaseKey];
+          
+          if (doc && (doc.url || doc.downloadURL)) {
+            uploadedCount++;
+            // Check multiple verification status fields for compatibility
+            const isDocVerified = doc.status === 'verified' || 
+                                 doc.verified === true || 
+                                 doc.verificationStatus === 'verified' ||
+                                 doc.verificationStatus === 'approved';
+            const isDocRejected = doc.status === 'rejected' || 
+                                 doc.verificationStatus === 'rejected';
+            
+            if (isDocVerified) {
+              verifiedCount++;
+            } else if (isDocRejected) {
+              rejectedCount++;
+            }
+          }
+        });
+
+        // ✅ CRITICAL SAFETY CHECK: Preserve already-verified drivers
+        // If driver was already verified and we can't verify all documents (maybe due to data format),
+        // don't downgrade their status - only update if we're certain
+        if (wasAlreadyVerified && verifiedCount === requiredDocuments.length && uploadedCount === requiredDocuments.length) {
+          // Driver was already verified and all documents are verified - keep verified
+          await this.updateDriverVerificationStatus(driverId, 'verified');
+        } else if (wasAlreadyVerified && verifiedCount < requiredDocuments.length) {
+          // Driver was verified but documents don't match - check if it's a data format issue
+          // Only downgrade if we're certain documents are not verified
+          console.log(`⚠️ Driver ${driverId} was verified but document check shows ${verifiedCount}/${requiredDocuments.length} verified. Checking document format...`);
+          
+          // Try to find documents with alternative key formats
+          let altVerifiedCount = 0;
+          const requiredCamelCase = ['drivingLicense', 'aadhaarCard', 'bikeInsurance', 'rcBook', 'profilePhoto'];
+          requiredCamelCase.forEach(camelKey => {
+            const doc = driverDocs[camelKey];
+            if (doc && (doc.url || doc.downloadURL)) {
+              const isDocVerified = doc.status === 'verified' || 
+                                   doc.verified === true || 
+                                   doc.verificationStatus === 'verified' ||
+                                   doc.verificationStatus === 'approved';
+              if (isDocVerified) altVerifiedCount++;
+            }
+          });
+          
+          if (altVerifiedCount === requiredCamelCase.length) {
+            // Found all documents with camelCase keys - keep verified
+            console.log(`✅ Found all documents with camelCase keys - preserving verified status for driver ${driverId}`);
+            await this.updateDriverVerificationStatus(driverId, 'verified');
+          } else {
+            // Documents are truly not all verified - update status
+            if (rejectedCount > 0) {
+              await this.updateDriverVerificationStatus(driverId, 'rejected');
+            } else {
+              await this.updateDriverVerificationStatus(driverId, 'pending_verification');
+            }
+          }
+        } else {
+          // Normal flow for non-verified or newly verified drivers
+          if (verifiedCount === requiredDocuments.length && uploadedCount === requiredDocuments.length) {
+            // All required documents are verified
+            await this.updateDriverVerificationStatus(driverId, 'verified');
+          } else if (rejectedCount > 0) {
+            // At least one document is rejected
+            await this.updateDriverVerificationStatus(driverId, 'rejected');
+          } else if (uploadedCount > 0 && uploadedCount < requiredDocuments.length) {
+            // Some documents uploaded but not all
+            await this.updateDriverVerificationStatus(driverId, 'pending_verification');
+          } else if (uploadedCount === requiredDocuments.length && verifiedCount < requiredDocuments.length) {
+            // All documents uploaded but not all verified
+            await this.updateDriverVerificationStatus(driverId, 'pending_verification');
+          } else if (uploadedCount === 0) {
+            // No documents uploaded
+            await this.updateDriverVerificationStatus(driverId, 'pending');
+          }
+        }
+      } else if (verifiedDocuments.length === requiredDocuments.length) {
+        // Fallback: All required documents are verified (from driverDocuments collection)
         await this.updateDriverVerificationStatus(driverId, 'verified');
+      } else if (documents.length > 0 && verifiedDocuments.length < requiredDocuments.length) {
+        // Some documents uploaded but not all verified
+        await this.updateDriverVerificationStatus(driverId, 'pending_verification');
       }
 
     } catch (error) {
@@ -891,11 +1015,17 @@ class FileUploadService {
     try {
       const driverRef = this.getDb().collection('users').doc(driverId);
       
-      await driverRef.update({
+      const updateData = {
         'driver.verificationStatus': status,
         'driver.verifiedAt': status === 'verified' ? new Date() : null,
+        'driver.isVerified': status === 'verified', // ✅ CRITICAL: Only set isVerified to true if status is 'verified'
+        'isVerified': status === 'verified', // ✅ CRITICAL: Also set top-level isVerified for consistency
         'updatedAt': new Date()
-      });
+      };
+      
+      await driverRef.update(updateData);
+      
+      console.log(`✅ Updated driver ${driverId} verification status to: ${status}, isVerified: ${status === 'verified'}`);
 
     } catch (error) {
       console.error('Driver verification status update failed:', error);

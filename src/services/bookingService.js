@@ -827,12 +827,21 @@ class BookingService {
         case 'driver_enroute':
           updateData['timing.driverEnrouteAt'] = new Date();
           break;
-        case 'driver_arrived':
-          updateData['timing.driverArrivedAt'] = new Date();
-          break;
-        case 'picked_up':
-          updateData['timing.pickedUpAt'] = new Date();
-          break;
+      case 'driver_arrived':
+        updateData['timing.driverArrivedAt'] = new Date();
+        break;
+      case 'photo_captured':
+        updateData['timing.photoCapturedAt'] = new Date();
+        break;
+      case 'picked_up':
+        updateData['timing.pickedUpAt'] = new Date();
+        break;
+      case 'in_transit':
+        updateData['timing.inTransitAt'] = new Date();
+        break;
+      case 'at_dropoff':
+        updateData['timing.arrivedDropoffAt'] = new Date();
+        break;
       case 'delivered':
         updateData['timing.deliveredAt'] = new Date();
         

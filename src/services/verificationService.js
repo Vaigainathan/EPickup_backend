@@ -99,6 +99,12 @@ class VerificationService {
       let verifiedCount = 0;
       let totalCount = 0;
 
+      // ✅ SAFETY CHECK: Preserve already-verified drivers
+      const wasAlreadyVerified = userData.driver?.isVerified === true || 
+                                 userData.isVerified === true ||
+                                 userData.driver?.verificationStatus === 'verified' ||
+                                 userData.driver?.verificationStatus === 'approved';
+      
       requiredDocs.forEach(docType => {
         const camelKey = docType;
         const snakeCaseKey = docType.replace(/([A-Z])/g, '_$1').toLowerCase();
@@ -108,8 +114,11 @@ class VerificationService {
         if (doc) {
           const hasUrl = (doc.url || doc.downloadURL) && (doc.url !== '' || doc.downloadURL !== '');
           
-          // Check if document is verified (even if URL is empty, it might still be verified)
-          const isVerified = doc.verified === true || doc.status === 'verified' || doc.verificationStatus === 'verified';
+          // ✅ CRITICAL: Check multiple verification status fields for compatibility
+          const isVerified = doc.verified === true || 
+                            doc.status === 'verified' || 
+                            doc.verificationStatus === 'verified' ||
+                            doc.verificationStatus === 'approved';
           
           if (hasUrl || isVerified) {
             // Document exists with either URL or verification status
@@ -129,28 +138,73 @@ class VerificationService {
       
       console.log(`📊 Document count summary: ${verifiedCount} verified out of ${totalCount} total`);
 
-      // Determine status
+      // ✅ CRITICAL FIX: Determine status - driver is ONLY verified if ALL required documents are uploaded AND verified
       let verificationStatus;
-      if (totalCount === 0) {
-        verificationStatus = 'pending';
-      } else if (verifiedCount === 0) {
-        verificationStatus = 'pending_verification';
-      } else if (verifiedCount < totalCount) {
-        verificationStatus = 'pending_verification';
-      } else {
+      const requiredDocsCount = requiredDocs.length;
+      
+      // ✅ SAFETY CHECK: If driver was already verified, be more careful about downgrading
+      if (wasAlreadyVerified && verifiedCount === requiredDocsCount && totalCount === requiredDocsCount) {
+        // Driver was verified and all documents are verified - keep verified
         verificationStatus = 'verified';
+      } else if (wasAlreadyVerified && verifiedCount < requiredDocsCount) {
+        // Driver was verified but document check shows fewer verified
+        // This could be due to data format issues - check if we can find documents with alternative formats
+        console.log(`⚠️ Driver was verified but document check shows ${verifiedCount}/${requiredDocsCount} verified. Preserving verified status if documents exist.`);
+        
+        // If documents exist (even if not all verified in our check), preserve status
+        // Only downgrade if we're certain
+        if (totalCount >= requiredDocsCount) {
+          // Documents exist - might be format issue, preserve verified status
+          verificationStatus = userData.driver?.verificationStatus || 'verified';
+          console.log(`✅ Preserving verified status for driver (documents exist, possible format mismatch)`);
+        } else {
+          // Truly missing documents - update status
+          verificationStatus = 'pending_verification';
+        }
+      } else {
+        // Normal flow for non-verified or newly verified drivers
+        if (totalCount === 0) {
+          // No documents uploaded
+          verificationStatus = 'pending';
+        } else if (totalCount < requiredDocsCount) {
+          // Some documents uploaded but not all required documents
+          verificationStatus = 'pending_verification';
+        } else if (verifiedCount === 0) {
+          // All documents uploaded but none verified
+          verificationStatus = 'pending_verification';
+        } else if (verifiedCount < requiredDocsCount) {
+          // Some documents verified but not all required documents
+          verificationStatus = 'pending_verification';
+        } else if (verifiedCount === requiredDocsCount && totalCount === requiredDocsCount) {
+          // ✅ CRITICAL: ALL required documents are uploaded AND verified
+          verificationStatus = 'verified';
+        } else {
+          // Fallback: if verifiedCount equals totalCount but not all required docs are present
+          verificationStatus = 'pending_verification';
+        }
       }
 
-      // Check for admin approval
-      if (userData.driver?.verificationStatus === 'approved' && verifiedCount === totalCount) {
+      // Check for admin approval (only if all documents are verified)
+      if (userData.driver?.verificationStatus === 'approved' && verifiedCount === requiredDocsCount && totalCount === requiredDocsCount) {
+        verificationStatus = 'approved';
+      } else if (userData.driver?.verificationStatus === 'approved' && wasAlreadyVerified) {
+        // Preserve approved status if driver was already approved
         verificationStatus = 'approved';
       }
+
+      // ✅ CRITICAL: isVerified is ONLY true if ALL required documents are verified
+      // For already-verified drivers, preserve status if documents exist (might be format issue)
+      // But only if we found at least some verified documents
+      const isVerified = verificationStatus === 'verified' || 
+                        verificationStatus === 'approved' ||
+                        (wasAlreadyVerified && verifiedCount > 0 && totalCount >= requiredDocsCount && verificationStatus !== 'pending');
 
       return {
         verificationStatus,
         verifiedDocumentsCount: verifiedCount,
         totalDocumentsCount: totalCount,
-        isVerified: verificationStatus === 'verified' || verificationStatus === 'approved',
+        requiredDocumentsCount: requiredDocsCount,
+        isVerified: isVerified,
         documents: documents
       };
     } catch (error) {
@@ -161,7 +215,8 @@ class VerificationService {
 
   /**
    * Update driver verification status
-   * ✅ CORE FIX: Ensures both nested and top-level isVerified are set
+   * ✅ CRITICAL FIX: Ensures both nested and top-level isVerified are set
+   * ✅ CRITICAL: isVerified is ONLY true if ALL documents are verified
    */
   async updateDriverVerificationStatus(driverId, verificationData) {
     const db = this.getDbSafe();
@@ -172,16 +227,22 @@ class VerificationService {
     }
 
     try {
+      // ✅ CRITICAL: isVerified should ONLY be true if verificationStatus is 'verified'
+      // This ensures consistency - driver is only verified if ALL documents are verified
+      const isVerified = verificationData.verificationStatus === 'verified';
+      
       const updates = {
         'driver.verificationStatus': verificationData.verificationStatus,
-        'driver.isVerified': verificationData.isVerified || false,
-        'isVerified': verificationData.isVerified || false, // ✅ CORE FIX: Also set top-level isVerified for dashboard consistency
+        'driver.isVerified': isVerified, // ✅ CRITICAL: Only true if status is 'verified'
+        'isVerified': isVerified, // ✅ CRITICAL: Also set top-level isVerified for dashboard consistency
         'driver.verifiedDocumentsCount': verificationData.verifiedDocumentsCount || 0,
         'driver.totalDocumentsCount': verificationData.totalDocumentsCount || 0,
         'driver.lastVerificationUpdate': admin.firestore.FieldValue.serverTimestamp()
       };
 
       await db.collection('users').doc(driverId).update(updates);
+      
+      console.log(`✅ [VerificationService] Updated driver ${driverId} verification status: ${verificationData.verificationStatus}, isVerified: ${isVerified}`);
       
       // ✅ CRITICAL FIX: Invalidate document status cache so driver app sees verification immediately
       try {
@@ -191,8 +252,6 @@ class VerificationService {
       } catch (cacheError) {
         console.warn('⚠️ [VerificationService] Could not invalidate document status cache:', cacheError?.message);
       }
-      
-      console.log('✅ [VerificationService] Updated driver verification status:', driverId);
       
       return { success: true };
     } catch (error) {

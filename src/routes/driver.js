@@ -8495,6 +8495,37 @@ router.post('/confirm-pickup', [
       status: 'verified'
     });
 
+    // ✅ CRITICAL FIX: Automatically transition to in_transit after picked_up
+    // This ensures atomic status transition and prevents frontend/backend sync issues
+    let finalStatus = statusResult.status;
+    let inTransitResult = null;
+    
+    if (statusResult.status === 'picked_up') {
+      try {
+        console.log('🔄 [CONFIRM_PICKUP] Automatically transitioning to in_transit after picked_up...');
+        inTransitResult = await driverStatusWorkflowService.updateStatus({
+          bookingId,
+          driverId: uid,
+          requestedStatus: 'in_transit',
+          location: location, // Use same location as pickup confirmation
+          eventId: `in_transit_${Date.now()}`,
+          eventTimestamp: statusResult.eventTimestamp,
+          source: 'driver_app'
+        });
+        
+        if (inTransitResult && inTransitResult.status === 'in_transit') {
+          finalStatus = 'in_transit';
+          console.log('✅ [CONFIRM_PICKUP] Successfully transitioned to in_transit');
+        } else {
+          console.warn('⚠️ [CONFIRM_PICKUP] Failed to transition to in_transit, but pickup was confirmed');
+        }
+      } catch (inTransitError) {
+        console.error('❌ [CONFIRM_PICKUP] Error transitioning to in_transit:', inTransitError);
+        // Don't fail pickup confirmation if in_transit transition fails
+        // Pickup was successful, in_transit can be set manually if needed
+      }
+    }
+
     // Update trip tracking
     const tripTrackingRef = db.collection('tripTracking').doc(bookingId);
     await tripTrackingRef.set({
@@ -8502,24 +8533,25 @@ router.post('/confirm-pickup', [
       bookingId: bookingId,
       driverId: uid,
       customerId: statusResult.booking.customerId,
-      currentStatus: statusResult.status,
+      currentStatus: finalStatus, // ✅ Use final status (in_transit if transition succeeded)
       pickupConfirmedAt: statusResult.eventTimestamp,
       lastUpdated: new Date()
     }, { merge: true });
 
-    console.log('✅ [CONFIRM_PICKUP] Pickup confirmed successfully for booking:', bookingId);
+    console.log('✅ [CONFIRM_PICKUP] Pickup confirmed successfully for booking:', bookingId, 'Final status:', finalStatus);
 
     res.status(200).json({
       success: true,
       message: 'Pickup confirmed successfully',
       data: {
         bookingId: bookingId,
-        status: statusResult.status,
+        status: finalStatus, // ✅ Return final status (in_transit if transition succeeded)
+        previousStatus: statusResult.status, // Include previous status for reference
         location: location,
         photoUrl: photoUrl,
         notes: notes,
         verifiedAt: statusResult.eventTimestamp.toISOString(),
-        sequence: statusResult.sequence || null
+        sequence: inTransitResult?.sequence || statusResult.sequence || null
       },
       timestamp: new Date().toISOString()
     });
@@ -9192,6 +9224,10 @@ router.post('/wallet/top-up', [
     
     const walletTransactionRef = db.collection('driverTopUps').doc(transactionId);
     
+    // ✅ CRITICAL FIX: Use Firestore Timestamp for consistent date handling
+    const { Timestamp } = require('firebase-admin/firestore');
+    const now = Timestamp.now();
+    
     await walletTransactionRef.set({
       id: transactionId,
       driverId: uid,
@@ -9204,8 +9240,8 @@ router.post('/wallet/top-up', [
       newPointsBalance: 0,
       paymentDetails: sanitizedPaymentDetails,
       idempotencyKey: idempotencyKey, // Store for duplicate detection
-      createdAt: new Date(),
-      updatedAt: new Date()
+      createdAt: now, // ✅ FIX: Use Firestore Timestamp instead of Date
+      updatedAt: now  // ✅ FIX: Use Firestore Timestamp instead of Date
     });
     
     // Create payment request (works with both real PhonePe and mock)
@@ -9223,10 +9259,14 @@ router.post('/wallet/top-up', [
     });
     
     if (paymentResult.success) {
+      // ✅ CRITICAL FIX: Use Firestore Timestamp for consistent date handling
+      const { Timestamp } = require('firebase-admin/firestore');
+      const updateTime = Timestamp.now();
+      
       // Update transaction with PhonePe SDK details
       const updateData = {
         phonepeTransactionId: paymentResult.data.merchantTransactionId,
-        updatedAt: new Date()
+        updatedAt: updateTime // ✅ FIX: Use Firestore Timestamp instead of Date
       };
       
       // SDK flow returns orderToken, legacy flow returns paymentUrl

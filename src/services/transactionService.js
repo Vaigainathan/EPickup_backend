@@ -369,26 +369,23 @@ class TransactionService {
 
   /**
    * Validate status transition
+   * ✅ CRITICAL FIX: Use bookingStateMachine for validation to ensure consistency
    * @param {string} currentStatus - Current status
    * @param {string} newStatus - New status
    * @returns {boolean} True if transition is valid
    */
   isValidStatusTransition(currentStatus, newStatus) {
-    const validTransitions = {
-      'pending': ['driver_assigned', 'cancelled'],
-      'driver_assigned': ['accepted', 'rejected', 'cancelled'],
-      'accepted': ['driver_enroute', 'cancelled'],
-      'driver_enroute': ['driver_arrived', 'cancelled'],
-      'driver_arrived': ['picked_up', 'cancelled'],
-      'picked_up': ['in_transit', 'cancelled'],
-      'in_transit': ['delivered', 'cancelled'],
-      'delivered': ['completed'],
-      'completed': [],
-      'cancelled': [],
-      'rejected': []
-    };
-
-    return validTransitions[currentStatus]?.includes(newStatus) || false;
+    // ✅ CRITICAL FIX: Use the centralized state machine for validation
+    // This ensures all validation logic is consistent across the application
+    try {
+      const bookingStateMachine = require('./bookingStateMachine');
+      const validation = bookingStateMachine.validateTransition(currentStatus, newStatus);
+      return validation.isValid;
+    } catch (error) {
+      console.error('❌ [TRANSACTION_SERVICE] Error validating status transition:', error);
+      // Fallback to basic check if state machine fails
+      return currentStatus === newStatus || false;
+    }
   }
 
   /**

@@ -569,15 +569,38 @@ class PhonePeService {
       let responseMessage;
       let isSDKCallback = false;
 
-      // Check if this is an SDK callback (different format)
+      // ✅ CRITICAL FIX: Check if this is an SDK callback (different format)
       if (callbackData.merchantOrderId || callbackData.orderId) {
         // SDK callback format
         isSDKCallback = true;
         console.log('📱 [PHONEPE SDK] Detected SDK callback format');
         
-        merchantTransactionId = callbackData.merchantOrderId || callbackData.orderId;
-        transactionId = callbackData.transactionId || callbackData.paymentId;
-        amount = callbackData.amount || (callbackData.amountInPaise ? callbackData.amountInPaise / 100 : 0);
+        // ✅ CRITICAL FIX: Extract transaction identifiers with proper validation
+        // PhonePe SDK callback can send either merchantOrderId (our WALLET_xxx) or orderId (SDK orderId like OMOxxx)
+        merchantTransactionId = callbackData.merchantOrderId || callbackData.orderId || null;
+        transactionId = callbackData.transactionId || callbackData.paymentId || merchantTransactionId;
+        
+        // ✅ CRITICAL FIX: Validate transaction ID is present
+        if (!merchantTransactionId) {
+          throw new Error('Missing merchantOrderId or orderId in SDK callback data');
+        }
+        
+        // ✅ CRITICAL FIX: Validate amount extraction with proper conversion
+        // SDK callback sends amount in rupees, but verify the format
+        if (callbackData.amount) {
+          // Amount is in rupees (already converted)
+          amount = typeof callbackData.amount === 'number' ? callbackData.amount : parseFloat(callbackData.amount) || 0;
+        } else if (callbackData.amountInPaise) {
+          // Amount is in paise, convert to rupees
+          amount = typeof callbackData.amountInPaise === 'number' 
+            ? callbackData.amountInPaise / 100 
+            : parseFloat(callbackData.amountInPaise) / 100 || 0;
+        } else {
+          amount = 0;
+          console.warn('⚠️ [PHONEPE] No amount found in SDK callback data');
+        }
+        
+        // ✅ CRITICAL FIX: Map status with comprehensive handling
         state = callbackData.status === 'SUCCESS' || callbackData.status === 'PAYMENT_SUCCESS' ? 'COMPLETED' : 
                 callbackData.status === 'FAILED' || callbackData.status === 'PAYMENT_FAILED' ? 'FAILED' : 
                 callbackData.status || 'PENDING';
@@ -619,14 +642,15 @@ class PhonePeService {
 
       console.log(`📝 [PHONEPE] Processing callback for transaction: ${merchantTransactionId}, status: ${state}`);
 
-      // Update payment record
+      // ✅ CRITICAL FIX: Update payment record with Firestore Timestamp
+      const { Timestamp } = require('firebase-admin/firestore');
       await this.updatePaymentStatus(merchantTransactionId, {
         status: state,
         paymentId: transactionId,
         responseCode,
         responseMessage,
         isSDK: isSDKCallback,
-        updatedAt: new Date()
+        updatedAt: Timestamp.now() // ✅ FIX: Use Firestore Timestamp instead of Date
       });
 
       // Verify payment with PhonePe before processing
@@ -790,7 +814,8 @@ class PhonePeService {
       );
 
       if (response.data.success) {
-        // Store refund record
+        // ✅ CRITICAL FIX: Store refund record with Firestore Timestamp
+        const { Timestamp } = require('firebase-admin/firestore');
         await this.storeRefundRecord({
           originalTransactionId: transactionId,
           refundTransactionId: response.data.data.merchantRefundId,
@@ -798,7 +823,7 @@ class PhonePeService {
           reason: refundReason,
           refundedBy,
           status: 'PENDING',
-          createdAt: new Date()
+          createdAt: Timestamp.now() // ✅ FIX: Use Firestore Timestamp instead of Date
         });
 
         return {
@@ -1020,10 +1045,20 @@ class PhonePeService {
           .get();
       }
 
-      // Third try: Search by phonepeOrderToken's orderId (SDK orderId like OMO260106...)
-      // This handles the case where PhonePe sends SDK orderId in callback instead of merchantOrderId
+      // Third try: Search by phonepeSDKOrderId (stored separately for easier lookup)
       if (walletTransactionsSnapshot.empty) {
-        console.log(`⚠️ [WALLET] Transaction not found by id, trying by SDK orderId: ${transactionId}`);
+        console.log(`⚠️ [WALLET] Transaction not found by id, trying by phonepeSDKOrderId: ${transactionId}`);
+        walletTransactionsSnapshot = await db.collection('driverTopUps')
+          .where('phonepeSDKOrderId', '==', transactionId)
+          .limit(1)
+          .get();
+      }
+      
+      // Fourth try: Search by phonepeOrderToken's orderId (SDK orderId like OMO260106...)
+      // This handles the case where PhonePe sends SDK orderId in callback instead of merchantOrderId
+      // AND phonepeSDKOrderId wasn't stored (backward compatibility)
+      if (walletTransactionsSnapshot.empty) {
+        console.log(`⚠️ [WALLET] Transaction not found by phonepeSDKOrderId, trying by SDK orderId pattern: ${transactionId}`);
         // Note: SDK orderId is stored in phonepeOrderToken field, but we need to search differently
         // Since we can't query by nested field, we'll search all pending transactions and match
         const allPendingTopUps = await db.collection('driverTopUps')
@@ -1038,6 +1073,7 @@ class PhonePeService {
           // SDK orderId might be stored separately or we need to extract from orderToken
           if (data.id === transactionId || 
               data.phonepeTransactionId === transactionId ||
+              data.phonepeSDKOrderId === transactionId ||
               (data.phonepeOrderToken && transactionId.includes('OMO'))) {
             walletTransactionsSnapshot = { docs: [doc], empty: false };
             break;
@@ -1047,13 +1083,29 @@ class PhonePeService {
 
       if (walletTransactionsSnapshot.empty) {
         console.error(`❌ [CRITICAL] Wallet transaction not found for PhonePe transaction: ${transactionId}`);
-        console.error(`   Searched by: phonepeTransactionId, id, and SDK orderId`);
+        console.error(`   Searched by: phonepeTransactionId, id, phonepeSDKOrderId, and SDK orderId pattern`);
+        console.error(`   Callback transaction ID: ${transactionId}`);
+        console.error(`   Transaction ID type: ${typeof transactionId}, length: ${transactionId ? transactionId.length : 0}`);
         return; // Can't process if transaction not found
       }
 
       const walletTransactionDoc = walletTransactionsSnapshot.docs[0];
       const walletTransactionData = walletTransactionDoc.data();
       const driverId = walletTransactionData.driverId;
+      
+      // ✅ CRITICAL FIX: Validate driverId is present
+      if (!driverId || typeof driverId !== 'string' || driverId.trim().length === 0) {
+        console.error(`❌ [CRITICAL] Missing or invalid driverId in wallet transaction: ${transactionId}`);
+        console.error(`   Transaction data:`, JSON.stringify(walletTransactionData, null, 2));
+        return; // Can't process without driverId
+      }
+      
+      // ✅ CRITICAL FIX: Validate amount is present and valid
+      if (!walletTransactionData.amount || walletTransactionData.amount <= 0) {
+        console.error(`❌ [CRITICAL] Missing or invalid amount in wallet transaction: ${transactionId}`);
+        console.error(`   Amount: ${walletTransactionData.amount}`);
+        return; // Can't process without valid amount
+      }
       
       console.log(`✅ [WALLET] Found wallet transaction: ${walletTransactionDoc.id} for driver: ${driverId}`);
 
@@ -1120,10 +1172,30 @@ class PhonePeService {
           this.sendWalletTopupNotification(driverId, walletTransactionData.amount, pointsResult.data.newBalance)
             .catch(err => console.error('Failed to send notification:', err));
         } else {
-          console.error(`❌ Failed to convert top-up to points: ${pointsResult.error}`);
+          // ✅ CRITICAL FIX: Enhanced error handling for addPoints failure
+          const { Timestamp } = require('firebase-admin/firestore');
+          const errorTime = Timestamp.now();
+          
+          console.error(`❌ [CRITICAL] Failed to convert top-up to points: ${pointsResult.error}`);
+          console.error(`   Transaction ID: ${transactionId}`);
+          console.error(`   Driver ID: ${driverId}`);
+          console.error(`   Amount: ₹${walletTransactionData.amount}`);
+          console.error(`   Error details:`, JSON.stringify(pointsResult, null, 2));
+          
+          // ✅ CRITICAL FIX: Mark transaction with error flag for manual review
+          transaction.update(walletTransactionDoc.ref, {
+            pointsAwarded: 0,
+            newPointsBalance: 0,
+            pointsError: pointsResult.error || 'Failed to add points',
+            pointsErrorDetails: pointsResult.details || null,
+            pointsErrorCode: pointsResult.code || null,
+            updatedAt: errorTime
+          });
+          
           // Don't throw error - payment is already completed, just log the issue
           // This allows webhook to return success even if points conversion fails
           // Points can be manually credited later if needed
+          // Admin should be notified via monitoring/logging system
         }
       });
 

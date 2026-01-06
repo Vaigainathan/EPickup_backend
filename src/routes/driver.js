@@ -9263,15 +9263,20 @@ router.post('/wallet/top-up', [
       const { Timestamp } = require('firebase-admin/firestore');
       const updateTime = Timestamp.now();
       
-      // Update transaction with PhonePe SDK details
+      // ✅ CRITICAL FIX: Update transaction with PhonePe SDK details
+      // Store ALL required fields for callback processing
       const updateData = {
-        phonepeTransactionId: paymentResult.data.merchantTransactionId,
+        phonepeTransactionId: paymentResult.data.merchantTransactionId || transactionId,
         updatedAt: updateTime // ✅ FIX: Use Firestore Timestamp instead of Date
       };
       
-      // SDK flow returns orderToken, legacy flow returns paymentUrl
+      // SDK flow returns orderToken and sdkOrderId, legacy flow returns paymentUrl
       if (paymentResult.data.orderToken) {
         updateData.phonepeOrderToken = paymentResult.data.orderToken;
+        // ✅ CRITICAL FIX: Store sdkOrderId separately for easier callback lookup
+        if (paymentResult.data.sdkOrderId) {
+          updateData.phonepeSDKOrderId = paymentResult.data.sdkOrderId;
+        }
       } else if (paymentResult.data.paymentUrl) {
         updateData.phonepePaymentUrl = paymentResult.data.paymentUrl;
       }

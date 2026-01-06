@@ -1128,12 +1128,20 @@ const emitWalletUpdate = (driverId, walletData) => {
     
     console.log(`💰 [SOCKET] Emitting wallet update for driver: ${driverId}`);
     
-    // Send to specific driver
-    sendToUser(driverId, 'wallet:update', {
+    const walletUpdatePayload = {
       balance: walletData.balance,
+      newBalance: walletData.balance, // For compatibility
       transactions: walletData.transactions || [],
-      lastUpdated: new Date().toISOString()
-    });
+      lastUpdated: new Date().toISOString(),
+      transactionId: walletData.transactions?.[0]?.id || null,
+      pointsAdded: walletData.transactions?.find(t => t.type === 'credit')?.amount || 0,
+      pointsDeducted: walletData.transactions?.find(t => t.type === 'debit')?.amount || 0
+    };
+    
+    // Send to specific driver - emit both event names for compatibility
+    sendToUser(driverId, 'wallet:update', walletUpdatePayload);
+    // Also emit legacy event name for backward compatibility
+    sendToUser(driverId, 'wallet_balance_updated', walletUpdatePayload);
     
     // Also send to admin dashboard
     sendToUserType('admin', 'wallet:driver:update', {

@@ -9243,8 +9243,9 @@ router.post('/wallet/top-up', [
         message: `Payment request created successfully (${paymentMode} mode)`,
         data: {
           transactionId: transactionId,
-          // SDK flow: return orderToken
+          // SDK flow: return orderToken and sdkOrderId
           orderToken: paymentResult.data.orderToken || null,
+          sdkOrderId: paymentResult.data.sdkOrderId || null, // Include sdkOrderId for native SDK
           // Legacy flow: return paymentUrl (for backward compatibility)
           paymentUrl: paymentResult.data.paymentUrl || null,
           merchantTransactionId: paymentResult.data.merchantTransactionId,

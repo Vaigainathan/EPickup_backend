@@ -154,6 +154,7 @@ class PhonePeService {
         merchantUserId: customerId,
         mobileNumber: customerPhone || '+919999999999',
         callbackUrl: phonepeConfig.getCallbackUrl(),
+        expireAfter: 1200, // ✅ OPTIONAL: Order expiration in seconds (20 minutes) - matches reference
         paymentFlow: {
           type: 'PG_CHECKOUT',
           merchantUrls: {

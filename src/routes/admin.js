@@ -4272,6 +4272,20 @@ router.get('/analytics/revenue', async (req, res) => {
 
     const revenue = await revenueService.calculateRevenue(start, end);
 
+    // Check if the revenue service returned an error
+    if (!revenue || revenue.success === false) {
+      console.error('❌ [ADMIN] Revenue analytics failed:', revenue?.error || revenue?.details || 'Unknown error');
+      return res.status(500).json({
+        success: false,
+        error: {
+          code: 'ANALYTICS_ERROR',
+          message: revenue?.error || 'Failed to get revenue analytics',
+          details: revenue?.details || 'Unknown error occurred'
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
     res.json({
       success: true,
       data: revenue,
@@ -4279,14 +4293,16 @@ router.get('/analytics/revenue', async (req, res) => {
     });
 
   } catch (error) {
-    console.error('Get revenue analytics error:', error);
+    console.error('❌ [ADMIN] Get revenue analytics error:', error);
+    console.error('❌ [ADMIN] Error stack:', error.stack);
     res.status(500).json({
       success: false,
       error: {
         code: 'ANALYTICS_ERROR',
         message: 'Failed to get revenue analytics',
-        details: error.message
-      }
+        details: error.message || 'Unknown error occurred'
+      },
+      timestamp: new Date().toISOString()
     });
   }
 });
@@ -4302,6 +4318,20 @@ router.get('/revenue/summary', async (req, res) => {
     
     const revenueSummary = await revenueService.getRevenueSummary();
 
+    // Check if the revenue service returned an error
+    if (!revenueSummary || revenueSummary.success === false) {
+      console.error('❌ [ADMIN] Revenue summary failed:', revenueSummary?.error || revenueSummary?.details || 'Unknown error');
+      return res.status(500).json({
+        success: false,
+        error: {
+          code: 'REVENUE_SUMMARY_ERROR',
+          message: revenueSummary?.error || 'Failed to get revenue summary',
+          details: revenueSummary?.details || 'Unknown error occurred'
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
     res.json({
       success: true,
       data: revenueSummary,
@@ -4309,14 +4339,16 @@ router.get('/revenue/summary', async (req, res) => {
     });
 
   } catch (error) {
-    console.error('Get revenue summary error:', error);
+    console.error('❌ [ADMIN] Get revenue summary error:', error);
+    console.error('❌ [ADMIN] Error stack:', error.stack);
     res.status(500).json({
       success: false,
       error: {
         code: 'REVENUE_SUMMARY_ERROR',
         message: 'Failed to get revenue summary',
-        details: error.message
-      }
+        details: error.message || 'Unknown error occurred'
+      },
+      timestamp: new Date().toISOString()
     });
   }
 });
@@ -4330,7 +4362,50 @@ router.get('/revenue/trends', async (req, res) => {
   try {
     const revenueService = require('../services/revenueService');
     
+    // Check if method exists
+    if (typeof revenueService.getRevenueTrends !== 'function') {
+      console.error('❌ [ADMIN] getRevenueTrends method not found in revenueService');
+      // Fallback: use getRevenueByPeriod for last 30 days
+      const endDate = new Date();
+      const startDate = new Date();
+      startDate.setDate(startDate.getDate() - 30);
+      
+      const revenueTrends = await revenueService.getRevenueByPeriod(startDate, endDate, 'daily');
+      
+      if (!revenueTrends || revenueTrends.success === false) {
+        return res.status(500).json({
+          success: false,
+          error: {
+            code: 'REVENUE_TRENDS_ERROR',
+            message: 'Failed to get revenue trends',
+            details: revenueTrends?.details || 'Unknown error occurred'
+          },
+          timestamp: new Date().toISOString()
+        });
+      }
+      
+      return res.json({
+        success: true,
+        data: revenueTrends,
+        timestamp: new Date().toISOString()
+      });
+    }
+    
     const revenueTrends = await revenueService.getRevenueTrends();
+
+    // Check if the revenue service returned an error
+    if (!revenueTrends || revenueTrends.success === false) {
+      console.error('❌ [ADMIN] Revenue trends failed:', revenueTrends?.error || revenueTrends?.details || 'Unknown error');
+      return res.status(500).json({
+        success: false,
+        error: {
+          code: 'REVENUE_TRENDS_ERROR',
+          message: revenueTrends?.error || 'Failed to get revenue trends',
+          details: revenueTrends?.details || 'Unknown error occurred'
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
 
     res.json({
       success: true,
@@ -4339,14 +4414,16 @@ router.get('/revenue/trends', async (req, res) => {
     });
 
   } catch (error) {
-    console.error('Get revenue trends error:', error);
+    console.error('❌ [ADMIN] Get revenue trends error:', error);
+    console.error('❌ [ADMIN] Error stack:', error.stack);
     res.status(500).json({
       success: false,
       error: {
         code: 'REVENUE_TRENDS_ERROR',
         message: 'Failed to get revenue trends',
-        details: error.message
-      }
+        details: error.message || 'Unknown error occurred'
+      },
+      timestamp: new Date().toISOString()
     });
   }
 });
@@ -4362,6 +4439,20 @@ router.get('/revenue/real-money', requireAdmin, async (req, res) => {
     
     const realMoneyRevenue = await revenueService.getRealMoneyRevenueSummary();
 
+    // Check if the revenue service returned an error
+    if (!realMoneyRevenue || realMoneyRevenue.success === false) {
+      console.error('❌ [ADMIN] Real money revenue failed:', realMoneyRevenue?.error || realMoneyRevenue?.details || 'Unknown error');
+      return res.status(500).json({
+        success: false,
+        error: {
+          code: 'REAL_MONEY_REVENUE_ERROR',
+          message: realMoneyRevenue?.error || 'Failed to get real money revenue',
+          details: realMoneyRevenue?.details || 'Unknown error occurred'
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
     res.json({
       success: true,
       data: realMoneyRevenue,
@@ -4369,7 +4460,8 @@ router.get('/revenue/real-money', requireAdmin, async (req, res) => {
     });
 
   } catch (error) {
-    console.error('Get real money revenue error:', error);
+    console.error('❌ [ADMIN] Get real money revenue error:', error);
+    console.error('❌ [ADMIN] Error stack:', error.stack);
     res.status(500).json({
       success: false,
       error: {

@@ -16,10 +16,19 @@ class RevenueService {
     if (!this.db) {
       try {
         this.db = getFirestore();
+        // Double-check that db is not null
+        if (!this.db) {
+          throw new Error('Firestore instance is null. Firebase may not be properly initialized.');
+        }
       } catch (error) {
         console.error('❌ [REVENUE_SERVICE] Failed to get Firestore:', error);
+        this.db = null; // Ensure db is set to null on error
         throw new Error('Firebase not initialized. Please ensure Firebase is initialized before using RevenueService.');
       }
+    }
+    // Additional safety check before returning
+    if (!this.db) {
+      throw new Error('Firestore instance is null. Firebase may not be properly initialized.');
     }
     return this.db;
   }
@@ -32,6 +41,17 @@ class RevenueService {
   async getTotalRevenue(filters = {}) {
     try {
       const db = this.getDb();
+      
+      // Validate db is not null before using it
+      if (!db) {
+        console.error('❌ [REVENUE_SERVICE] Firestore instance is null');
+        return {
+          success: false,
+          error: 'Failed to get total revenue',
+          details: 'Firebase is not initialized. Please ensure Firebase is properly configured.'
+        };
+      }
+      
       let query = db.collection('companyRevenue');
 
       // Apply filters
@@ -85,6 +105,17 @@ class RevenueService {
   async getRevenueByPeriod(startDate, endDate, period = 'daily') {
     try {
       const db = this.getDb();
+      
+      // Validate db is not null before using it
+      if (!db) {
+        console.error('❌ [REVENUE_SERVICE] Firestore instance is null');
+        return {
+          success: false,
+          error: 'Failed to get revenue by period',
+          details: 'Firebase is not initialized. Please ensure Firebase is properly configured.'
+        };
+      }
+      
       const snapshot = await db.collection('companyRevenue')
         .where('createdAt', '>=', startDate)
         .where('createdAt', '<=', endDate)
@@ -146,6 +177,17 @@ class RevenueService {
   async getRevenueByDriver(driverId = null) {
     try {
       const db = this.getDb();
+      
+      // Validate db is not null before using it
+      if (!db) {
+        console.error('❌ [REVENUE_SERVICE] Firestore instance is null');
+        return {
+          success: false,
+          error: 'Failed to get revenue by driver',
+          details: 'Firebase is not initialized. Please ensure Firebase is properly configured.'
+        };
+      }
+      
       let query = db.collection('companyRevenue');
 
       if (driverId) {
@@ -197,6 +239,17 @@ class RevenueService {
   async getRevenueStats() {
     try {
       const db = this.getDb();
+      
+      // Validate db is not null before using it
+      if (!db) {
+        console.error('❌ [REVENUE_SERVICE] Firestore instance is null');
+        return {
+          success: false,
+          error: 'Failed to get revenue statistics',
+          details: 'Firebase is not initialized. Please ensure Firebase is properly configured.'
+        };
+      }
+      
       const snapshot = await db.collection('companyRevenue').get();
 
       let totalRevenue = 0;
@@ -263,11 +316,23 @@ class RevenueService {
         }
       };
     } catch (error) {
-      console.error('Error getting revenue stats:', error);
+      console.error('❌ [REVENUE_SERVICE] Error getting revenue stats:', error);
+      console.error('❌ [REVENUE_SERVICE] Error stack:', error.stack);
+      
+      // Check if it's a Firebase initialization error
+      if (error.message && error.message.includes('Firebase') || error.message.includes('Firestore')) {
+        return {
+          success: false,
+          error: 'Failed to get revenue statistics',
+          details: 'Firebase is not initialized. Please ensure Firebase is properly configured.',
+          firebaseError: true
+        };
+      }
+      
       return {
         success: false,
         error: 'Failed to get revenue statistics',
-        details: error.message
+        details: error.message || 'Unknown error occurred'
       };
     }
   }
@@ -327,6 +392,19 @@ class RevenueService {
   async getRealMoneyRevenueSummary() {
     try {
       const db = this.getDb();
+      
+      // Validate db is not null before using it
+      if (!db) {
+        console.error('❌ [REVENUE_SERVICE] Firestore instance is null');
+        return {
+          success: false,
+          totalRealMoney: 0,
+          totalTopUps: 0,
+          totalDriverEarnings: 0,
+          error: 'Failed to get real money revenue summary',
+          details: 'Firebase is not initialized. Please ensure Firebase is properly configured.'
+        };
+      }
       
       // Get wallet top-ups (driverTopUps collection)
       const topUpsSnapshot = await db.collection('driverTopUps')

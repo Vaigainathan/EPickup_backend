@@ -9509,7 +9509,8 @@ router.post('/wallet/verify-payment', requireDriver, async (req, res) => {
     }
     
     // If that failed and we have sdkOrderId, try with sdkOrderId
-    if ((!orderStatus || !orderStatus.status) && sdkOrderId) {
+    // ✅ CRITICAL FIX: Check both state and status fields
+    if ((!orderStatus || (!orderStatus.state && !orderStatus.status)) && sdkOrderId) {
       try {
         console.log(`📞 [MANUAL_VERIFY] Checking payment status with PhonePe using sdkOrderId: ${sdkOrderId}`);
         orderStatus = await phonepeService.getOrderStatus(sdkOrderId);
@@ -9520,15 +9521,32 @@ router.post('/wallet/verify-payment', requireDriver, async (req, res) => {
       }
     }
     
-    // Extract status from PhonePe response
-    if (orderStatus && orderStatus.status) {
-      const apiStatus = orderStatus.status;
-      if (apiStatus === 'SUCCESS' || apiStatus === 'PAYMENT_SUCCESS') {
+    // ✅ CRITICAL FIX: Extract status from PhonePe response
+    // PhonePe API returns "state" field, not "status" field
+    // Check both for compatibility
+    let apiStatus = null;
+    if (orderStatus) {
+      // PhonePe SDK order status API returns "state" field (e.g., "COMPLETED", "PENDING", "FAILED")
+      apiStatus = orderStatus.state || orderStatus.status;
+      
+      console.log('📋 [MANUAL_VERIFY] PhonePe API status fields:', {
+        state: orderStatus.state,
+        status: orderStatus.status,
+        using: apiStatus,
+        fullResponse: JSON.stringify(orderStatus).substring(0, 200)
+      });
+    }
+    
+    if (apiStatus) {
+      // Handle PhonePe state values: COMPLETED, PENDING, FAILED, CANCELLED
+      if (apiStatus === 'COMPLETED' || apiStatus === 'SUCCESS' || apiStatus === 'PAYMENT_SUCCESS') {
         paymentStatus = 'COMPLETED';
       } else if (apiStatus === 'FAILED' || apiStatus === 'PAYMENT_FAILED' || apiStatus === 'PAYMENT_ERROR') {
         paymentStatus = 'FAILED';
       } else if (apiStatus === 'CANCELLED' || apiStatus === 'PAYMENT_CANCELLED') {
         paymentStatus = 'CANCELLED';
+      } else if (apiStatus === 'PENDING') {
+        paymentStatus = 'PENDING';
       }
     } else if (statusCheckError) {
       // If we couldn't check status, assume still pending but log the error

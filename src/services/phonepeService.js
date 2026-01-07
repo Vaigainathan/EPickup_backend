@@ -671,10 +671,20 @@ class PhonePeService {
         console.warn(`⚠️ Payment verification failed for: ${merchantTransactionId}, using callback state`);
       } else if (verificationResult && verificationResult.data) {
         // ✅ CRITICAL FIX: Extract state from verification result with comprehensive mapping
-        if (isSDKCallback && verificationResult.data.status) {
-          const apiStatus = verificationResult.data.status;
+        // PhonePe SDK API returns "state" field, not "status" field
+        if (isSDKCallback) {
+          // ✅ CRITICAL FIX: Check "state" field (PhonePe's actual field name)
+          const apiStatus = verificationResult.data.state || verificationResult.data.status;
+          
+          console.log('📋 [PHONEPE WEBHOOK] SDK verification result:', {
+            state: verificationResult.data.state,
+            status: verificationResult.data.status,
+            using: apiStatus,
+            fullResponse: JSON.stringify(verificationResult.data).substring(0, 200)
+          });
+          
           // Map PhonePe SDK API statuses to our internal states
-          if (apiStatus === 'SUCCESS' || apiStatus === 'PAYMENT_SUCCESS') {
+          if (apiStatus === 'COMPLETED' || apiStatus === 'SUCCESS' || apiStatus === 'PAYMENT_SUCCESS') {
             verifiedState = 'COMPLETED';
           } else if (apiStatus === 'FAILED' || apiStatus === 'PAYMENT_FAILED' || apiStatus === 'PAYMENT_ERROR') {
             verifiedState = 'FAILED';

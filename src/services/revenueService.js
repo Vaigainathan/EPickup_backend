@@ -296,10 +296,36 @@ class RevenueService {
         ? ((thisMonthRevenue - lastMonthRevenue) / lastMonthRevenue) * 100 
         : 0;
 
+      // ✅ NEW: Get commission deductions data for comprehensive revenue tracking
+      let totalCommissionsDeducted = 0;
+      let commissionTransactionCount = 0;
+      
+      try {
+        const commissionTransactionsSnapshot = await db.collection('pointsTransactions')
+          .where('type', '==', 'debit')
+          .get();
+
+        commissionTransactionsSnapshot.forEach(doc => {
+          const data = doc.data();
+          // Commission transactions have a tripId field (they're linked to a booking/trip)
+          const isCommission = !!data.tripId || !!data.bookingId;
+          
+          if (isCommission) {
+            const pointsAmount = data.pointsAmount || 0;
+            // Points = Rupees in this system (1 point = ₹1)
+            totalCommissionsDeducted += pointsAmount;
+            commissionTransactionCount++;
+          }
+        });
+      } catch (commissionError) {
+        console.warn('⚠️ [REVENUE_SERVICE] Error fetching commission data:', commissionError.message);
+        // Continue without commission data
+      }
+
       return {
         success: true,
         stats: {
-          totalRevenue,
+          totalRevenue, // Real money from driver top-ups
           transactionCount,
           averageTransactionValue: transactionCount > 0 ? totalRevenue / transactionCount : 0,
           revenueByPaymentMethod: Object.entries(revenueByPaymentMethod).map(([method, revenue]) => ({
@@ -312,7 +338,11 @@ class RevenueService {
             .sort((a, b) => a.month.localeCompare(b.month)),
           thisMonthRevenue,
           lastMonthRevenue,
-          monthOverMonthGrowth
+          monthOverMonthGrowth,
+          // ✅ NEW: Commission tracking
+          totalCommissionsDeducted, // Total commissions deducted from driver virtual wallets
+          commissionTransactionCount, // Number of commission deductions
+          netRevenue: totalRevenue // Net revenue (company keeps all top-up money)
         }
       };
     } catch (error) {
@@ -401,12 +431,14 @@ class RevenueService {
           totalRealMoney: 0,
           totalTopUps: 0,
           totalDriverEarnings: 0,
+          totalCommissionsDeducted: 0,
+          netRevenue: 0,
           error: 'Failed to get real money revenue summary',
           details: 'Firebase is not initialized. Please ensure Firebase is properly configured.'
         };
       }
       
-      // Get wallet top-ups (driverTopUps collection)
+      // Get wallet top-ups (driverTopUps collection) - This is REAL MONEY company receives
       const topUpsSnapshot = await db.collection('driverTopUps')
         .where('status', '==', 'completed')
         .get();
@@ -421,7 +453,7 @@ class RevenueService {
         totalTopUps++;
       });
 
-      // Get driver earnings (from bookings)
+      // Get driver earnings (from bookings) - Money drivers receive
       const bookingsSnapshot = await db.collection('bookings')
         .where('status', '==', 'completed')
         .where('paymentStatus', '==', 'PAID')
@@ -434,11 +466,44 @@ class RevenueService {
         totalDriverEarnings += earnings;
       });
 
+      // ✅ NEW: Get total commissions deducted from driver virtual wallets
+      // Commissions are deducted from points wallet when bookings complete
+      // Commission transactions are identified by having a 'tripId' field (debit transactions for trips)
+      const commissionTransactionsSnapshot = await db.collection('pointsTransactions')
+        .where('type', '==', 'debit')
+        .get();
+
+      let totalCommissionsDeducted = 0;
+      let commissionTransactionCount = 0;
+
+      commissionTransactionsSnapshot.forEach(doc => {
+        const data = doc.data();
+        // Commission transactions have a tripId field (they're linked to a booking/trip)
+        // This distinguishes commission deductions from other debit transactions
+        const isCommission = !!data.tripId || !!data.bookingId;
+        
+        if (isCommission) {
+          const pointsAmount = data.pointsAmount || 0;
+          // Commission is in points, but represents real value (₹2 per km = 2 points)
+          // Points = Rupees in this system (1 point = ₹1)
+          totalCommissionsDeducted += pointsAmount;
+          commissionTransactionCount++;
+        }
+      });
+
+      // Net Revenue = Real Money from Top-ups (company receives this)
+      // Note: Commissions are already "earned" when deducted from virtual wallets
+      // The company's revenue is the top-up money, commissions are just tracking
+      const netRevenue = totalRealMoney; // Company keeps all top-up money
+
       return {
         success: true,
-        totalRealMoney,
-        totalTopUps,
-        totalDriverEarnings,
+        totalRealMoney, // Real money company received from driver top-ups
+        totalTopUps, // Number of top-up transactions
+        totalDriverEarnings, // Total money drivers earned from bookings
+        totalCommissionsDeducted, // Total commissions deducted from driver virtual wallets
+        commissionTransactionCount, // Number of commission deductions
+        netRevenue, // Net revenue (same as totalRealMoney in this model)
         currency: 'INR'
       };
     } catch (error) {
@@ -448,6 +513,8 @@ class RevenueService {
         totalRealMoney: 0,
         totalTopUps: 0,
         totalDriverEarnings: 0,
+        totalCommissionsDeducted: 0,
+        netRevenue: 0,
         error: 'Failed to get real money revenue summary',
         details: error.message
       };

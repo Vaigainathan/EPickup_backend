@@ -897,15 +897,48 @@ router.get('/drivers', async (req, res) => {
     
     // ✅ CRITICAL FIX: Batch fetch all document verification requests in parallel for all drivers
     // This is where verified document status is stored, so we MUST fetch from here
+    // ✅ FIX: Remove orderBy('createdAt') to avoid index requirement - we'll sort in memory instead
+    // This avoids the FAILED_PRECONDITION error for missing composite index
     const verificationRequestsPromises = driverIds.map(driverId => 
       db.collection('documentVerificationRequests')
         .where('driverId', '==', driverId)
-        .orderBy('createdAt', 'desc')
-        .limit(1)
         .get()
+        .then(snapshot => {
+          // Early return if no documents
+          if (snapshot.empty) {
+            return { docs: [], empty: true };
+          }
+          
+          // Sort in memory by createdAt or requestedAt (whichever exists) descending
+          // This handles both field names for backward compatibility
+          const docs = snapshot.docs.sort((a, b) => {
+            const aData = a.data();
+            const bData = b.data();
+            
+            // Helper to extract date from various formats
+            const getDate = (data) => {
+              const time = data.createdAt || data.requestedAt;
+              if (!time) return new Date(0); // Default to epoch if no date
+              if (time instanceof Date) return time;
+              if (time.toDate && typeof time.toDate === 'function') return time.toDate();
+              return new Date(time);
+            };
+            
+            const aDate = getDate(aData);
+            const bDate = getDate(bData);
+            return bDate.getTime() - aDate.getTime(); // Descending order (newest first)
+          });
+          
+          // Return only the first (most recent) document, matching original limit(1) behavior
+          return { docs: docs.slice(0, 1), empty: false };
+        })
         .catch(err => {
-          console.warn(`⚠️ [ADMIN] Failed to fetch verification requests for driver ${driverId}:`, err.message);
-          return { docs: [] }; // Return empty snapshot on error
+          // Suppress index-related errors since we're handling them by removing orderBy
+          // But log other errors for debugging
+          if (!err.message || (!err.message.includes('index') && !err.message.includes('FAILED_PRECONDITION'))) {
+            console.warn(`⚠️ [ADMIN] Failed to fetch verification requests for driver ${driverId}:`, err.message);
+          }
+          return { docs: [], empty: true }; // Return empty snapshot on error
         })
     );
     

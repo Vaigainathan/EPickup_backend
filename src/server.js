@@ -563,6 +563,43 @@ app.post('/api/payments/phonepe/callback',
   }
 );
 
+// ✅ WEBHOOK TEST ENDPOINT: Verify webhook URL is reachable
+app.get('/api/payments/phonepe/callback/test', async (req, res) => {
+  try {
+    const phonepeConfig = require('./services/phonepeConfigService');
+    const callbackUrl = phonepeConfig.getCallbackUrl();
+    const backendUrl = process.env.BACKEND_URL || process.env.API_BASE_URL || 'https://epickupbackend-production.up.railway.app';
+    
+    res.json({
+      success: true,
+      message: 'Webhook endpoint is reachable',
+      data: {
+        callbackUrl: callbackUrl,
+        backendUrl: backendUrl,
+        endpoint: '/api/payments/phonepe/callback',
+        fullUrl: `${backendUrl}/api/payments/phonepe/callback`,
+        timestamp: new Date().toISOString(),
+        instructions: {
+          step1: 'Verify this URL matches the webhook URL in PhonePe dashboard',
+          step2: 'Ensure PhonePe dashboard webhook URL is exactly: ' + callbackUrl,
+          step3: 'Check PhonePe dashboard webhook delivery logs for this transaction',
+          step4: 'If webhook still not received, use manual verification endpoint: POST /api/driver/wallet/verify-payment'
+        }
+      },
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: {
+        code: 'WEBHOOK_TEST_ERROR',
+        message: error.message
+      },
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
 // All other payment routes require authentication
 app.use('/api/payments', appCheckMiddleware.optionalMiddleware(), authMiddleware, paymentRoutes);
 // app.use('/api/payments', appCheckMiddleware.middleware(), authMiddleware, paymentRoutes); // Production mode

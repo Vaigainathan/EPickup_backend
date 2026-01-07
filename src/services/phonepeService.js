@@ -123,7 +123,7 @@ class PhonePeService {
    * @returns {string} Order token
    */
   async createSDKOrder(paymentData) {
-    const { transactionId, amount, customerId, customerPhone } = paymentData;
+    const { transactionId, amount, customerId, customerPhone, callbackUrl } = paymentData;
 
     // Validate required fields
     if (!transactionId || !amount || !customerId) {
@@ -148,12 +148,18 @@ class PhonePeService {
       // User enters ₹250 -> we send 25000 paise (250 * 100 = 25000)
       const amountInPaise = Math.round(amount * 100);
 
+      // ✅ CRITICAL FIX: Use callbackUrl from paymentData if provided, otherwise use config
+      const finalCallbackUrl = callbackUrl || phonepeConfig.getCallbackUrl();
+      
+      console.log('🔗 [PHONEPE SDK] Callback URL being sent to PhonePe:', finalCallbackUrl);
+      console.log('   Source:', callbackUrl ? 'From paymentData' : 'From phonepeConfig');
+
       const orderPayload = {
         merchantOrderId: transactionId,
         amount: amountInPaise,
         merchantUserId: customerId,
         mobileNumber: customerPhone || '+919999999999',
-        callbackUrl: phonepeConfig.getCallbackUrl(),
+        callbackUrl: finalCallbackUrl, // ✅ FIX: Use provided callbackUrl or fallback to config
         expireAfter: 1200, // ✅ OPTIONAL: Order expiration in seconds (20 minutes) - matches reference
         paymentFlow: {
           type: 'PG_CHECKOUT',
@@ -169,7 +175,7 @@ class PhonePeService {
         amountPaise: amountInPaise, // PhonePe expects amount in paise (₹250 = 25000 paise)
         merchantUserId: customerId,
         mobileNumber: customerPhone || '+919999999999',
-        callbackUrl: phonepeConfig.getCallbackUrl()
+        callbackUrl: finalCallbackUrl // ✅ FIX: Show actual callback URL being sent
       });
 
       // PhonePe SDK order endpoint: /checkout/v2/sdk/order (as per PhonePe API documentation)

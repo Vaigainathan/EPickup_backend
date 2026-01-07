@@ -11,24 +11,43 @@ class RevenueService {
 
   /**
    * Get Firestore instance (lazy initialization)
+   * Returns null if Firebase is not initialized (instead of throwing)
    */
   getDb() {
     if (!this.db) {
       try {
+        // Check if Firebase app exists first
+        const { getFirebaseApp } = require('./firebase');
+        const firebaseApp = getFirebaseApp();
+        
+        if (!firebaseApp) {
+          console.warn('⚠️ [REVENUE_SERVICE] Firebase app is not initialized. Returning null.');
+          this.db = null;
+          return null;
+        }
+        
+        // Try to get Firestore - this may throw if Firebase is not properly initialized
         this.db = getFirestore();
         // Double-check that db is not null
         if (!this.db) {
-          throw new Error('Firestore instance is null. Firebase may not be properly initialized.');
+          console.warn('⚠️ [REVENUE_SERVICE] Firestore instance is null. Firebase may not be properly initialized.');
+          this.db = null;
+          return null;
         }
       } catch (error) {
-        console.error('❌ [REVENUE_SERVICE] Failed to get Firestore:', error);
+        console.error('❌ [REVENUE_SERVICE] Failed to get Firestore:', error.message);
+        console.error('❌ [REVENUE_SERVICE] Error details:', {
+          message: error.message,
+          name: error.name,
+          stack: error.stack?.split('\n').slice(0, 3).join('\n')
+        });
         this.db = null; // Ensure db is set to null on error
-        throw new Error('Firebase not initialized. Please ensure Firebase is initialized before using RevenueService.');
+        return null; // Return null instead of throwing
       }
     }
     // Additional safety check before returning
     if (!this.db) {
-      throw new Error('Firestore instance is null. Firebase may not be properly initialized.');
+      return null; // Return null instead of throwing
     }
     return this.db;
   }

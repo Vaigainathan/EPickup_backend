@@ -9356,6 +9356,265 @@ router.post('/wallet/top-up', [
 });
 
 /**
+ * @route   POST /api/driver/wallet/verify-payment
+ * @desc    Manually verify payment status and update wallet (backup if callback missed)
+ * @access  Private (Driver only)
+ * 
+ * This endpoint allows the driver app to manually verify payment status
+ * after PhonePe SDK shows success, in case the webhook callback was missed.
+ * It checks payment status with PhonePe and processes wallet top-up if needed.
+ * 
+ * Accepts either transactionId (WALLET_xxx) or sdkOrderId (OMOxxx)
+ */
+router.post('/wallet/verify-payment', requireDriver, async (req, res) => {
+  try {
+    const { uid } = req.user;
+    const { transactionId, sdkOrderId } = req.body;
+    
+    // ✅ CRITICAL FIX: Accept either transactionId or sdkOrderId
+    if (!transactionId && !sdkOrderId) {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'MISSING_IDENTIFIER',
+          message: 'Either transactionId or sdkOrderId is required'
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+    
+    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+    console.log('🔍 [MANUAL_VERIFY] Verifying payment status');
+    console.log('   transactionId:', transactionId || 'not provided');
+    console.log('   sdkOrderId:', sdkOrderId || 'not provided');
+    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+    
+    const { getFirestore } = require('../services/firebase');
+    const db = getFirestore();
+    const phonepeService = require('../services/phonepeService');
+    
+    // ✅ CRITICAL FIX: Find transaction by either ID
+    let walletTransactionDoc = null;
+    let walletTransactionData = null;
+    let actualTransactionId = transactionId;
+    
+    if (transactionId) {
+      // Try by transactionId first (most common case)
+      walletTransactionDoc = await db.collection('driverTopUps').doc(transactionId).get();
+      if (walletTransactionDoc.exists) {
+        walletTransactionData = walletTransactionDoc.data();
+        actualTransactionId = transactionId;
+      }
+    }
+    
+    // If not found by transactionId, try by sdkOrderId
+    if (!walletTransactionDoc || !walletTransactionDoc.exists) {
+      if (sdkOrderId) {
+        console.log(`⚠️ [MANUAL_VERIFY] Transaction not found by transactionId, trying by sdkOrderId: ${sdkOrderId}`);
+        const sdkOrderQuery = await db.collection('driverTopUps')
+          .where('phonepeSDKOrderId', '==', sdkOrderId)
+          .where('driverId', '==', uid)
+          .limit(1)
+          .get();
+        
+        if (!sdkOrderQuery.empty) {
+          walletTransactionDoc = sdkOrderQuery.docs[0];
+          walletTransactionData = walletTransactionDoc.data();
+          actualTransactionId = walletTransactionData.id || walletTransactionDoc.id;
+          console.log(`✅ [MANUAL_VERIFY] Found transaction by sdkOrderId: ${actualTransactionId}`);
+        }
+      }
+    }
+    
+    // If still not found, try searching all pending transactions for this driver
+    if (!walletTransactionDoc || !walletTransactionDoc.exists) {
+      console.log(`⚠️ [MANUAL_VERIFY] Transaction not found by IDs, searching pending transactions for driver: ${uid}`);
+      const pendingQuery = await db.collection('driverTopUps')
+        .where('driverId', '==', uid)
+        .where('status', '==', 'pending')
+        .orderBy('createdAt', 'desc')
+        .limit(10)
+        .get();
+      
+      // Find by matching either transactionId or sdkOrderId
+      for (const doc of pendingQuery.docs) {
+        const data = doc.data();
+        if ((transactionId && (data.id === transactionId || data.phonepeTransactionId === transactionId)) ||
+            (sdkOrderId && (data.phonepeSDKOrderId === sdkOrderId))) {
+          walletTransactionDoc = doc;
+          walletTransactionData = data;
+          actualTransactionId = data.id || doc.id;
+          console.log(`✅ [MANUAL_VERIFY] Found transaction in pending list: ${actualTransactionId}`);
+          break;
+        }
+      }
+    }
+    
+    if (!walletTransactionDoc || !walletTransactionDoc.exists) {
+      return res.status(404).json({
+        success: false,
+        error: {
+          code: 'TRANSACTION_NOT_FOUND',
+          message: 'Wallet transaction not found',
+          details: `No transaction found with transactionId: ${transactionId || 'N/A'} or sdkOrderId: ${sdkOrderId || 'N/A'}`
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+    
+    // Check if already completed
+    if (walletTransactionData.status === 'completed') {
+      console.log('✅ [MANUAL_VERIFY] Transaction already completed');
+      return res.status(200).json({
+        success: true,
+        message: 'Payment already verified and wallet updated',
+        data: {
+          transactionId: actualTransactionId,
+          status: 'completed',
+          amount: walletTransactionData.amount,
+          pointsAwarded: walletTransactionData.pointsAwarded || 0,
+          newBalance: walletTransactionData.newPointsBalance || 0
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+    
+    // Verify ownership
+    if (walletTransactionData.driverId !== uid) {
+      return res.status(403).json({
+        success: false,
+        error: {
+          code: 'ACCESS_DENIED',
+          message: 'You do not have permission to verify this transaction'
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+    
+    // ✅ CRITICAL FIX: Try checking status with both transactionId and sdkOrderId
+    let orderStatus = null;
+    let paymentStatus = 'PENDING';
+    let statusCheckError = null;
+    
+    // First try with transactionId (merchantOrderId)
+    if (actualTransactionId) {
+      try {
+        console.log(`📞 [MANUAL_VERIFY] Checking payment status with PhonePe using transactionId: ${actualTransactionId}`);
+        orderStatus = await phonepeService.getOrderStatus(actualTransactionId);
+        console.log('📋 [MANUAL_VERIFY] PhonePe order status (by transactionId):', JSON.stringify(orderStatus, null, 2));
+      } catch (error) {
+        console.warn(`⚠️ [MANUAL_VERIFY] Failed to check status by transactionId: ${error.message}`);
+        statusCheckError = error.message;
+      }
+    }
+    
+    // If that failed and we have sdkOrderId, try with sdkOrderId
+    if ((!orderStatus || !orderStatus.status) && sdkOrderId) {
+      try {
+        console.log(`📞 [MANUAL_VERIFY] Checking payment status with PhonePe using sdkOrderId: ${sdkOrderId}`);
+        orderStatus = await phonepeService.getOrderStatus(sdkOrderId);
+        console.log('📋 [MANUAL_VERIFY] PhonePe order status (by sdkOrderId):', JSON.stringify(orderStatus, null, 2));
+      } catch (error) {
+        console.warn(`⚠️ [MANUAL_VERIFY] Failed to check status by sdkOrderId: ${error.message}`);
+        if (!statusCheckError) statusCheckError = error.message;
+      }
+    }
+    
+    // Extract status from PhonePe response
+    if (orderStatus && orderStatus.status) {
+      const apiStatus = orderStatus.status;
+      if (apiStatus === 'SUCCESS' || apiStatus === 'PAYMENT_SUCCESS') {
+        paymentStatus = 'COMPLETED';
+      } else if (apiStatus === 'FAILED' || apiStatus === 'PAYMENT_FAILED' || apiStatus === 'PAYMENT_ERROR') {
+        paymentStatus = 'FAILED';
+      } else if (apiStatus === 'CANCELLED' || apiStatus === 'PAYMENT_CANCELLED') {
+        paymentStatus = 'CANCELLED';
+      }
+    } else if (statusCheckError) {
+      // If we couldn't check status, assume still pending but log the error
+      console.warn(`⚠️ [MANUAL_VERIFY] Could not verify payment status: ${statusCheckError}`);
+      paymentStatus = 'PENDING';
+    }
+    
+    console.log(`📊 [MANUAL_VERIFY] Final payment status: ${paymentStatus}`);
+    
+    // If payment is successful, process wallet top-up
+    if (paymentStatus === 'COMPLETED') {
+      console.log('✅ [MANUAL_VERIFY] Payment successful, processing wallet top-up...');
+      
+      // Use the same processWalletTopupPayment method that the callback uses
+      // This method searches by multiple IDs, so it should find the transaction
+      await phonepeService.processWalletTopupPayment(actualTransactionId, walletTransactionData.amount);
+      
+      // Re-fetch to get updated data
+      const updatedDoc = await db.collection('driverTopUps').doc(actualTransactionId).get();
+      const updatedData = updatedDoc.exists ? updatedDoc.data() : walletTransactionData;
+      
+      return res.status(200).json({
+        success: true,
+        message: 'Payment verified and wallet updated successfully',
+        data: {
+          transactionId: actualTransactionId,
+          status: 'completed',
+          amount: updatedData.amount,
+          pointsAwarded: updatedData.pointsAwarded || 0,
+          newBalance: updatedData.newPointsBalance || 0,
+          verifiedAt: new Date().toISOString(),
+          verifiedBy: 'manual_verification'
+        },
+        timestamp: new Date().toISOString()
+      });
+    } else if (paymentStatus === 'FAILED') {
+      // Update transaction status to failed
+      const { Timestamp } = require('firebase-admin/firestore');
+      await walletTransactionDoc.ref.update({
+        status: 'failed',
+        updatedAt: Timestamp.now()
+      });
+      
+      return res.status(200).json({
+        success: false,
+        message: 'Payment verification failed',
+        data: {
+          transactionId: actualTransactionId,
+          status: 'failed',
+          paymentStatus: paymentStatus
+        },
+        timestamp: new Date().toISOString()
+      });
+    } else {
+      // Still pending or couldn't verify
+      return res.status(200).json({
+        success: true,
+        message: statusCheckError ? 'Could not verify payment status' : 'Payment is still pending',
+        data: {
+          transactionId: actualTransactionId,
+          status: 'pending',
+          paymentStatus: paymentStatus,
+          error: statusCheckError || null,
+          message: statusCheckError 
+            ? `Could not verify payment status: ${statusCheckError}. Please try again in a moment.`
+            : 'Payment is still being processed. Please wait a moment and try again, or wait for automatic webhook callback.'
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+    
+  } catch (error) {
+    console.error('❌ [MANUAL_VERIFY] Error verifying payment:', error);
+    res.status(500).json({
+      success: false,
+      error: {
+        code: 'VERIFICATION_ERROR',
+        message: 'Failed to verify payment',
+        details: error.message
+      },
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+/**
  * @route   POST /api/driver/wallet/process-welcome-bonus-direct
  * @desc    DEPRECATED - Welcome bonus removed, use points top-up instead
  * @access  Private (Driver only)

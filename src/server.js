@@ -496,7 +496,23 @@ app.post('/api/payments/phonepe/callback',
   appCheckMiddleware.optionalMiddleware(),
   async (req, res) => {
     try {
+      // ✅ ENHANCED LOGGING: Log full request details for debugging
+      console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
       console.log('📥 [WEBHOOK] Received PhonePe callback (public endpoint)');
+      console.log('📋 [WEBHOOK] Request details:', {
+        method: req.method,
+        url: req.url,
+        headers: {
+          'content-type': req.headers['content-type'],
+          'user-agent': req.headers['user-agent'],
+          'x-forwarded-for': req.headers['x-forwarded-for'],
+          'origin': req.headers['origin']
+        },
+        bodyKeys: req.body ? Object.keys(req.body) : [],
+        bodyPreview: req.body ? JSON.stringify(req.body).substring(0, 500) : 'No body'
+      });
+      console.log('📦 [WEBHOOK] Full request body:', JSON.stringify(req.body, null, 2));
+      console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
       
       // Intelligent service selection - Check for SDK credentials (Client ID/Secret) or Pay Page credentials (Merchant ID/Salt Key)
       const hasSDKCredentials = process.env.PHONEPE_CLIENT_ID && 

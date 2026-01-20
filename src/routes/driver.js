@@ -113,11 +113,13 @@ router.post('/tracking/update', [
         console.log(`📍 [DRIVER_TRACKING] Location update emitted to both rooms:`, {
           bookingId,
           driverId,
+          customerId,
           userRoom,
           bookingRoom,
           userRoomSize,
           bookingRoomSize,
-          location: { lat: payload.location.latitude, lng: payload.location.longitude }
+          location: { lat: payload.location.latitude, lng: payload.location.longitude },
+          payload: JSON.stringify(payload)
         });
       } else {
         console.log(`📍 [DRIVER_TRACKING] Location update emitted to booking room only:`, {
@@ -126,7 +128,8 @@ router.post('/tracking/update', [
           bookingRoom,
           bookingRoomSize,
           location: { lat: payload.location.latitude, lng: payload.location.longitude },
-          reason: 'customerId not found in booking document'
+          reason: 'customerId not found in booking document',
+          payload: JSON.stringify(payload)
         });
       }
     } catch (ioErr) {

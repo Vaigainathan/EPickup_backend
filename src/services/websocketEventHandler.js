@@ -337,15 +337,25 @@ class WebSocketEventHandler {
 
   /**
    * Handle location update from driver app
+   * ✅ FIX: Support both tripId and bookingId for compatibility
    * @param {Socket} socket - Socket instance
    * @param {Object} data - Location data
    */
   async handleLocationUpdate(socket, data) {
     try {
-      const { tripId, location } = data;
+      // ✅ FIX: Support both tripId and bookingId for compatibility
+      const tripId = data.tripId || data.bookingId;
+      const location = data.location || {
+        latitude: data.latitude,
+        longitude: data.longitude,
+        accuracy: data.accuracy,
+        speed: data.speed,
+        heading: data.heading,
+        timestamp: data.timestamp
+      };
       const { userId, userType } = socket;
 
-      if (!tripId || !location) {
+      if (!tripId || !location || typeof location.latitude !== 'number' || typeof location.longitude !== 'number') {
         socket.emit('error', {
           code: 'INVALID_LOCATION_DATA',
           message: 'Trip ID and location data are required'
@@ -383,7 +393,9 @@ class WebSocketEventHandler {
       console.log(`📍 Location update from driver ${userId} for trip ${tripId}`);
 
       // Send location update via real-time service
-      await this.realTimeService.sendLocationUpdate(tripId, userId, location);
+      if (this.realTimeService) {
+        await this.realTimeService.sendLocationUpdate(tripId, userId, location);
+      }
 
       // Confirm location update
       socket.emit('location_update_confirmed', {
@@ -391,6 +403,7 @@ class WebSocketEventHandler {
         message: 'Location update sent successfully',
         data: {
           tripId,
+          bookingId: tripId, // For compatibility
           timestamp: new Date().toISOString()
         }
       });

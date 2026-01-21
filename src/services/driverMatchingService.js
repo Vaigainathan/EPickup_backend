@@ -894,28 +894,47 @@ class DriverMatchingService {
   /**
   async sendDriverAssignmentNotification(driverId, assignment) {
     try {
-      // Get driver's FCM token
+      // Get driver's push token
       const driverDoc = await this.db.collection('users').doc(driverId).get();
       if (!driverDoc.exists) return;
 
       const driverData = driverDoc.data();
-      const fcmToken = driverData.fcmToken;
+      // ✅ CRITICAL FIX: Check for Expo push token (primary) or FCM token (fallback)
+      const pushToken = driverData.expoPushToken || driverData.fcmToken;
 
-      if (!fcmToken) return;
+      if (!pushToken) {
+        console.log(`⚠️ [DRIVER_NOTIFICATION] Driver ${driverId} has no push token`);
+        return;
+      }
 
       // Create notification
       const notification = {
-        title: 'New Delivery Assignment',
-        body: `You have a new delivery from ${assignment.bookingDetails.pickup.address}`,
+        title: '🚗 New Delivery Assignment!',
+        body: `You have a new delivery from ${assignment.bookingDetails?.pickup?.address || 'pickup location'}`,
+        type: 'driver_assignment',
+        bookingId: assignment.bookingId,
         data: {
           type: 'driver_assignment',
           assignmentId: assignment.id,
-          bookingId: assignment.bookingId
+          bookingId: assignment.bookingId,
+          variables: {
+            pickupAddress: assignment.bookingDetails?.pickup?.address || 'Pickup location',
+            dropoffAddress: assignment.bookingDetails?.dropoff?.address || 'Dropoff location'
+          }
         }
       };
 
-      // Send notification (implement FCM logic here)
-      console.log(`Sending notification to driver ${driverId}:`, notification);
+      // ✅ CRITICAL FIX: Send via Expo Push Service
+      try {
+        const expoPushService = require('./expoPushService');
+        const result = await expoPushService.sendToTokens([pushToken], notification, {
+          priority: 'high',
+          sound: 'default'
+        });
+        console.log(`✅ [DRIVER_NOTIFICATION] Push notification sent to driver ${driverId}:`, result);
+      } catch (pushError) {
+        console.error(`❌ [DRIVER_NOTIFICATION] Failed to send push to driver ${driverId}:`, pushError);
+      }
 
     } catch (error) {
       console.error('Error sending driver notification:', error);

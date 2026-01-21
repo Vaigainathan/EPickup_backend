@@ -1,5 +1,6 @@
 const { getFirestore } = require('./firebase');
 const firestoreSessionService = require('./firestoreSessionService');
+const expoPushService = require('./expoPushService');
 
 /**
  * WebSocket Event Handler Service
@@ -11,6 +12,7 @@ class WebSocketEventHandler {
     this.firestoreSessionService = firestoreSessionService;
     this.realTimeService = null;
     this.io = null;
+    this.expoPushService = expoPushService;
   }
 
   /**
@@ -2043,7 +2045,11 @@ class WebSocketEventHandler {
         }
       });
 
-      console.log(`✅ New booking notification sent to ${driversSnapshot.size} drivers`);
+      console.log(`✅ New booking WebSocket notification sent to ${driversSnapshot.size} drivers`);
+      
+      // ✅ CRITICAL FIX: Send push notifications to drivers (works when app is in background/killed)
+      // This ensures drivers receive notifications even when WebSocket is disconnected
+      await this.sendPushNotificationsToDrivers(driversSnapshot, bookingData);
       
       if (process.env.ENABLE_REAL_TIME_TESTING === 'true') {
         console.log('📊 Real-time testing metrics:', {
@@ -2056,6 +2062,123 @@ class WebSocketEventHandler {
 
     } catch (error) {
       console.error('Error notifying drivers of new booking:', error);
+    }
+  }
+
+  /**
+   * ✅ CRITICAL: Send push notifications to drivers for new booking
+   * This ensures drivers receive notifications even when app is in background/killed
+   * @param {Object} driversSnapshot - Firestore snapshot of available drivers
+   * @param {Object} bookingData - Booking data
+   */
+  async sendPushNotificationsToDrivers(driversSnapshot, bookingData) {
+    try {
+      const tokens = [];
+      const driverIds = [];
+      
+      // ✅ COMPREHENSIVE LOGGING: Debug why notifications might not be sent
+      let totalDrivers = 0;
+      let driversWithToken = 0;
+      let driversWithLocation = 0;
+      let driversWithinRange = 0;
+      const driversSkippedNoToken = [];
+      const driversSkippedNoLocation = [];
+
+      driversSnapshot.forEach(doc => {
+        totalDrivers++;
+        const driverData = doc.data();
+        const driverId = doc.id;
+        
+        // ✅ CRITICAL: Check for Expo push token (primary) or FCM token (fallback)
+        const pushToken = driverData.expoPushToken || driverData.fcmToken;
+        
+        if (!pushToken) {
+          driversSkippedNoToken.push(driverId);
+          console.log(`⚠️ [PUSH_DEBUG] Driver ${driverId} has no push token`);
+          return; // Skip this driver in forEach
+        }
+        
+        driversWithToken++;
+        
+        // Check if driver has location
+        if (!driverData.driver?.currentLocation) {
+          driversSkippedNoLocation.push(driverId);
+          console.log(`⚠️ [PUSH_DEBUG] Driver ${driverId} has no currentLocation`);
+          return; // Skip this driver in forEach
+        }
+        
+        driversWithLocation++;
+        
+        // Calculate distance to filter drivers within range
+        const distance = this.calculateDistance(
+          driverData.driver.currentLocation.latitude,
+          driverData.driver.currentLocation.longitude,
+          bookingData.pickup.coordinates.latitude,
+          bookingData.pickup.coordinates.longitude
+        );
+        
+        // Only send to drivers within 25km
+        if (distance <= 25000) {
+          driversWithinRange++;
+          tokens.push(pushToken);
+          driverIds.push(driverId);
+          console.log(`✅ [PUSH_DEBUG] Driver ${driverId} will receive notification (${Math.round(distance/1000)}km away)`);
+        } else {
+          console.log(`⏭️ [PUSH_DEBUG] Driver ${driverId} too far (${Math.round(distance/1000)}km > 25km)`);
+        }
+      });
+
+      // ✅ COMPREHENSIVE LOG: Summary of notification targeting
+      console.log(`📊 [PUSH_NOTIFICATION_SUMMARY] Booking ${bookingData.id}:`, {
+        totalDrivers,
+        driversWithToken,
+        driversWithLocation,
+        driversWithinRange,
+        skippedNoToken: driversSkippedNoToken.length,
+        skippedNoLocation: driversSkippedNoLocation.length,
+        willSendTo: tokens.length
+      });
+
+      if (tokens.length === 0) {
+        console.log('⚠️ [PUSH_NOTIFICATION] No drivers with push tokens within range');
+        console.log('⚠️ [PUSH_NOTIFICATION] Possible reasons: No tokens registered, no locations, or all too far');
+        return;
+      }
+
+      console.log(`🔔 [PUSH_NOTIFICATION] Sending push notifications to ${tokens.length} drivers for booking ${bookingData.id}`);
+
+      // Create notification payload
+      const notification = {
+        title: '🚗 New Booking Available!',
+        body: `Pickup: ${bookingData.pickup?.address || 'Location'}`,
+        type: 'new_booking',
+        bookingId: bookingData.id,
+        data: {
+          type: 'new_booking',
+          bookingId: bookingData.id,
+          variables: {
+            pickupAddress: bookingData.pickup?.address || 'Pickup location',
+            dropoffAddress: bookingData.dropoff?.address || 'Dropoff location',
+            fare: bookingData.fare?.totalFare || bookingData.pricing?.totalFare || 0
+          }
+        }
+      };
+
+      // Send push notifications via Expo
+      try {
+        const result = await this.expoPushService.sendToTokens(tokens, notification, {
+          priority: 'high',
+          sound: 'default'
+        });
+        
+        console.log(`✅ [PUSH_NOTIFICATION] Push notifications sent: ${result.successCount} success, ${result.failureCount} failed`);
+      } catch (pushError) {
+        console.error('❌ [PUSH_NOTIFICATION] Failed to send push notifications:', pushError);
+        // Don't throw - WebSocket notification already sent
+      }
+
+    } catch (error) {
+      console.error('❌ [PUSH_NOTIFICATION] Error in sendPushNotificationsToDrivers:', error);
     }
   }
 

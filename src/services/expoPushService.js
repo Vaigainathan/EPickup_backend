@@ -278,6 +278,31 @@ class ExpoPushService {
       const successCount = results.filter(result => result.status === 'ok').length;
       const failureCount = results.length - successCount;
 
+      // ✅ NEW: High-signal debug logging when there are failures so we know WHY Expo rejected pushes
+      if (failureCount > 0) {
+        const failed = results.filter(result => result.status === 'error');
+        console.warn('[ExpoPushService] Push failures detail:', failed);
+
+        // Try to detect obvious configuration problems to make debugging easier
+        const hasInvalidCredentials = failed.some((r) =>
+          r.details &&
+          typeof r.details === 'object' &&
+          (
+            r.details.error === 'InvalidCredentials' ||
+            r.details.error === 'InvalidCredentialsError' ||
+            r.details.error === 'InvalidToken' ||
+            r.details.error === 'InvalidAccessToken'
+          )
+        );
+
+        if (hasInvalidCredentials) {
+          console.error(
+            '[ExpoPushService] ❌ Detected InvalidCredentials from Expo. ' +
+            'This usually means EXPO_ACCESS_TOKEN does not match the Expo project used by the apps.'
+          );
+        }
+      }
+
       console.log(`✅ Push notifications sent: ${successCount} success, ${failureCount} failed`);
 
       return {

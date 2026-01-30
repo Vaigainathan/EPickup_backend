@@ -1937,7 +1937,14 @@ class WebSocketEventHandler {
   }
 
   /**
-   * Send new booking notification to available drivers
+   * Send new booking notification to eligible drivers only.
+   * Radius logic (aligned with GET /api/driver/bookings/available and service area):
+   * - Service area = 25–27 km from Tirupattur city center (config). Pickup must be within this; driver must be within this.
+   * - Driver-to-pickup = up to 25 km (driver close enough to this job).
+   * Conditions (all required): userType=driver, isOnline=true, isAvailable=true,
+   * verificationStatus=verified, has currentLocation, no active booking,
+   * pickup within service area (27km from center), driver within service area (27km from center),
+   * driver within 25km of pickup, and (for push) has expoPushToken/fcmToken.
    * @param {Object} bookingData - Booking data
    */
   async notifyDriversOfNewBooking(bookingData) {
@@ -1945,20 +1952,77 @@ class WebSocketEventHandler {
       if (!this.io || !this.db) return;
 
       console.log(`🔔 Notifying drivers of new booking: ${bookingData.id}`);
-      
+
+      // ✅ Defensive: require valid pickup coordinates
+      const pickupCoords = this.getPickupCoords(bookingData);
+      if (!pickupCoords) {
+        console.warn(`⚠️ [NOTIFY_DRIVERS] Skipping notification: booking ${bookingData.id} has no valid pickup coordinates`);
+        return;
+      }
+
+      // ✅ Service area: pickup must be within 27 km of Tirupattur center (same as GET /api/driver/bookings/available)
+      const config = require('../config/environment');
+      const serviceCenter = config.getServiceAreaCenter();
+      const radiusConfig = config.getServiceAreaRadius();
+      const serviceAreaMaxMeters = radiusConfig.MAX_METERS; // 27 km
+      const driverToPickupMaxMeters = radiusConfig.DEFAULT_METERS || 25000; // 25 km
+
+      const pickupDistanceFromCenter = this.calculateDistance(
+        pickupCoords.latitude,
+        pickupCoords.longitude,
+        serviceCenter.LATITUDE,
+        serviceCenter.LONGITUDE
+      );
+      if (pickupDistanceFromCenter > serviceAreaMaxMeters) {
+        console.warn(`⚠️ [NOTIFY_DRIVERS] Skipping notification: pickup is outside service area (${(pickupDistanceFromCenter / 1000).toFixed(1)} km from ${serviceCenter.NAME}, max ${serviceAreaMaxMeters / 1000} km)`);
+        return;
+      }
+
       if (process.env.ENABLE_REAL_TIME_TESTING === 'true') {
         console.log('⚠️ Real-time testing mode enabled - enhanced logging active');
       }
 
-      // ✅ CRITICAL FIX: Get available AND verified drivers in the area
+      // ✅ CRITICAL FIX: Get available AND verified drivers (online, available, verified only)
       const driversQuery = this.db.collection('users')
         .where('userType', '==', 'driver')
         .where('driver.isOnline', '==', true)
         .where('driver.isAvailable', '==', true)
-        .where('driver.verificationStatus', '==', 'verified'); // ✅ Only verified drivers
+        .where('driver.verificationStatus', '==', 'verified');
 
       const driversSnapshot = await driversQuery.get();
-      
+
+      // ✅ CRITICAL: Exclude drivers who already have an active booking (same logic as GET /api/driver/bookings/available)
+      const { ACTIVE_BOOKING_STATUSES } = require('../constants/bookingStatuses');
+      const driverBusyStatuses = ACTIVE_BOOKING_STATUSES.filter(s => s !== 'pending');
+      const busyDriverIds = new Set();
+      try {
+        const activeBookingsQuery = this.db.collection('bookings')
+          .where('status', 'in', driverBusyStatuses)
+          .limit(500);
+        const activeBookingsSnapshot = await activeBookingsQuery.get();
+        activeBookingsSnapshot.docs.forEach(doc => {
+          const data = doc.data();
+          if (data.driverId) busyDriverIds.add(data.driverId);
+        });
+        if (busyDriverIds.size > 0) {
+          console.log(`📋 [NOTIFY_DRIVERS] Excluding ${busyDriverIds.size} driver(s) with active booking(s)`);
+        }
+      } catch (e) {
+        console.warn('⚠️ [NOTIFY_DRIVERS] Active-booking filter failed, proceeding with all drivers:', e?.message);
+      }
+
+      const eligibleDocs = driversSnapshot.docs.filter(doc => !busyDriverIds.has(doc.id));
+      const eligibleSnapshot = {
+        docs: eligibleDocs,
+        size: eligibleDocs.length,
+        forEach(fn) { this.docs.forEach(fn); }
+      };
+
+      if (eligibleSnapshot.size === 0) {
+        console.log(`🔔 [NOTIFY_DRIVERS] No eligible drivers for booking ${bookingData.id} (after filters: online, available, verified, no active booking, within range)`);
+        return;
+      }
+
       const notificationData = {
         type: 'new_booking',
         booking: {
@@ -1977,21 +2041,33 @@ class WebSocketEventHandler {
         timestamp: new Date().toISOString()
       };
 
-      // Send to all available drivers
-      driversSnapshot.forEach(doc => {
+      // Send only to eligible drivers (already filtered: online, available, verified, no active booking)
+      // Radius: (1) driver within service area (27 km from Tirupattur center), (2) driver within 25 km of pickup
+      eligibleSnapshot.forEach(doc => {
         const driverData = doc.data();
-        if (driverData.driver?.currentLocation) {
-          // Calculate distance to pickup location
-          const distance = this.calculateDistance(
-            driverData.driver.currentLocation.latitude,
-            driverData.driver.currentLocation.longitude,
-            bookingData.pickup.coordinates.latitude,
-            bookingData.pickup.coordinates.longitude
-          );
+        const loc = driverData.driver?.currentLocation;
+        if (!loc) return;
+        const driverLat = loc._latitude ?? loc.latitude;
+        const driverLng = loc._longitude ?? loc.longitude;
+        if (typeof driverLat !== 'number' || typeof driverLng !== 'number') return;
 
-          // ✅ COMPREHENSIVE FIX: Notify drivers within reasonable distance (25km to match API radius)
-          const notifyRadius = 25000; // 25km (matches API radius for consistency)
-          if (distance <= notifyRadius) {
+        // (1) Driver must be within service area (27 km from Tirupattur center)
+        const distanceFromCenter = this.calculateDistance(
+          driverLat,
+          driverLng,
+          serviceCenter.LATITUDE,
+          serviceCenter.LONGITUDE
+        );
+        if (distanceFromCenter > serviceAreaMaxMeters) return;
+
+        // (2) Driver must be within 25 km of this pickup (driver close enough to this job)
+        const distanceToPickup = this.calculateDistance(
+          driverLat,
+          driverLng,
+          pickupCoords.latitude,
+          pickupCoords.longitude
+        );
+        if (distanceToPickup > driverToPickupMaxMeters) return;
             // ✅ CRITICAL: Normalize coordinates to plain objects (handle Firestore GeoPoint)
             const normalizeCoords = (coords) => {
               if (!coords) return null;
@@ -2039,21 +2115,19 @@ class WebSocketEventHandler {
                   coordinates: normalizeCoords(bookingData.dropoff.coordinates) || bookingData.dropoff.coordinates
                 } : bookingData.dropoff
               },
-              distanceFromDriver: Math.round(distance / 1000 * 100) / 100
+              distanceFromDriver: Math.round(distanceToPickup / 1000 * 100) / 100
             });
-          }
-        }
       });
 
-      console.log(`✅ New booking WebSocket notification sent to ${driversSnapshot.size} drivers`);
+      console.log(`✅ New booking WebSocket notification sent to ${eligibleSnapshot.size} eligible driver(s)`);
       
       // ✅ CRITICAL FIX: Send push notifications to drivers (works when app is in background/killed)
       // This ensures drivers receive notifications even when WebSocket is disconnected
-      await this.sendPushNotificationsToDrivers(driversSnapshot, bookingData);
+      await this.sendPushNotificationsToDrivers(eligibleSnapshot, bookingData);
       
       if (process.env.ENABLE_REAL_TIME_TESTING === 'true') {
         console.log('📊 Real-time testing metrics:', {
-          totalDrivers: driversSnapshot.size,
+          totalDrivers: eligibleSnapshot.size,
           bookingId: bookingData.id,
           pickupLocation: bookingData.pickup.coordinates,
           timestamp: new Date().toISOString()
@@ -2073,6 +2147,20 @@ class WebSocketEventHandler {
    */
   async sendPushNotificationsToDrivers(driversSnapshot, bookingData) {
     try {
+      // ✅ Defensive: require valid pickup coordinates for distance check
+      const pickupCoords = this.getPickupCoords(bookingData);
+      if (!pickupCoords) {
+        console.warn('⚠️ [PUSH_NOTIFICATION] Skipping push: booking has no valid pickup coordinates');
+        return;
+      }
+
+      // ✅ Same radius logic as notifyDriversOfNewBooking: service area (27 km from Tirupattur center) + driver within 25 km of pickup
+      const config = require('../config/environment');
+      const serviceCenter = config.getServiceAreaCenter();
+      const radiusConfig = config.getServiceAreaRadius();
+      const serviceAreaMaxMeters = radiusConfig.MAX_METERS;
+      const driverToPickupMaxMeters = radiusConfig.DEFAULT_METERS || 25000;
+
       const tokens = [];
       const driverIds = [];
       
@@ -2095,36 +2183,49 @@ class WebSocketEventHandler {
         if (!pushToken) {
           driversSkippedNoToken.push(driverId);
           console.log(`⚠️ [PUSH_DEBUG] Driver ${driverId} has no push token`);
-          return; // Skip this driver in forEach
+          return;
         }
         
         driversWithToken++;
         
-        // Check if driver has location
-        if (!driverData.driver?.currentLocation) {
+        const loc = driverData.driver?.currentLocation;
+        if (!loc) {
           driversSkippedNoLocation.push(driverId);
           console.log(`⚠️ [PUSH_DEBUG] Driver ${driverId} has no currentLocation`);
-          return; // Skip this driver in forEach
+          return;
         }
-        
         driversWithLocation++;
         
-        // Calculate distance to filter drivers within range
-        const distance = this.calculateDistance(
-          driverData.driver.currentLocation.latitude,
-          driverData.driver.currentLocation.longitude,
-          bookingData.pickup.coordinates.latitude,
-          bookingData.pickup.coordinates.longitude
+        const driverLat = loc._latitude ?? loc.latitude;
+        const driverLng = loc._longitude ?? loc.longitude;
+        if (typeof driverLat !== 'number' || typeof driverLng !== 'number') return;
+
+        // (1) Driver must be within service area (27 km from Tirupattur center)
+        const distanceFromCenter = this.calculateDistance(
+          driverLat,
+          driverLng,
+          serviceCenter.LATITUDE,
+          serviceCenter.LONGITUDE
         );
-        
-        // Only send to drivers within 25km
-        if (distance <= 25000) {
+        if (distanceFromCenter > serviceAreaMaxMeters) {
+          console.log(`⏭️ [PUSH_DEBUG] Driver ${driverId} outside service area (${Math.round(distanceFromCenter/1000)}km from center)`);
+          return;
+        }
+
+        // (2) Driver must be within 25 km of pickup
+        const distanceToPickup = this.calculateDistance(
+          driverLat,
+          driverLng,
+          pickupCoords.latitude,
+          pickupCoords.longitude
+        );
+        if (distanceToPickup <= driverToPickupMaxMeters) {
           driversWithinRange++;
           tokens.push(pushToken);
           driverIds.push(driverId);
-          console.log(`✅ [PUSH_DEBUG] Driver ${driverId} will receive notification (${Math.round(distance/1000)}km away)`);
+          console.log(`✅ [PUSH_DEBUG] Driver ${driverId} will receive notification (${Math.round(distanceToPickup/1000)}km from pickup)`);
         } else {
-          console.log(`⏭️ [PUSH_DEBUG] Driver ${driverId} too far (${Math.round(distance/1000)}km > 25km)`);
+          console.log(`⏭️ [PUSH_DEBUG] Driver ${driverId} too far from pickup (${Math.round(distanceToPickup/1000)}km > ${driverToPickupMaxMeters/1000}km)`);
         }
       });
 
@@ -2430,6 +2531,23 @@ class WebSocketEventHandler {
     const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 
     return R * c; // Distance in meters
+  }
+
+  /**
+   * Get pickup coordinates from booking (handles Firestore GeoPoint and plain objects)
+   * @param {Object} bookingData - Booking data
+   * @returns {{ latitude: number, longitude: number } | null}
+   */
+  getPickupCoords(bookingData) {
+    const coords = bookingData?.pickup?.coordinates;
+    if (!coords) return null;
+    if (coords._latitude !== undefined && coords._longitude !== undefined) {
+      return { latitude: coords._latitude, longitude: coords._longitude };
+    }
+    if (typeof coords.latitude === 'number' && typeof coords.longitude === 'number') {
+      return { latitude: coords.latitude, longitude: coords.longitude };
+    }
+    return null;
   }
 
   /**

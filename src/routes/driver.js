@@ -11446,7 +11446,7 @@ router.post('/tracking/update', [
 
     // Verify trip tracking exists; if not, create it (upsert) so first location update enables live tracking
     const tripTrackingRef = db.collection('tripTracking').doc(bookingId);
-    let tripTrackingDoc = await tripTrackingRef.get();
+    const tripTrackingDoc = await tripTrackingRef.get();
     let tripTrackingData = tripTrackingDoc.exists ? tripTrackingDoc.data() : null;
 
     if (!tripTrackingDoc.exists) {

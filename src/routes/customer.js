@@ -796,14 +796,33 @@ router.post('/bookings', authenticateToken, async (req, res) => {
     // Create booking in Firestore
     try {
       const bookingRef = await db.collection('bookings').add(newBooking);
-      
-      console.log(`✅ Created booking ${bookingRef.id} for customer: ${userId}`);
-      
+      const bookingId = bookingRef.id;
+      const createdBooking = { id: bookingId, ...newBooking };
+
+      console.log(`✅ Created booking ${bookingId} for customer: ${userId}`);
+
+      // ✅ CRITICAL: Notify available drivers (WebSocket + push) so they see the order without manual refresh
+      setImmediate(async () => {
+        try {
+          const { getEventHandler } = require('../services/socket');
+          const wsHandler = getEventHandler();
+          if (wsHandler && typeof wsHandler.notifyDriversOfNewBooking === 'function') {
+            console.log(`🔔 [CUSTOMER_BOOKING] Notifying drivers of new booking: ${bookingId}`);
+            await wsHandler.notifyDriversOfNewBooking(createdBooking);
+            console.log(`✅ [CUSTOMER_BOOKING] Driver notification sent for booking: ${bookingId}`);
+          } else {
+            console.warn('⚠️ [CUSTOMER_BOOKING] WebSocket handler not available, drivers not notified');
+          }
+        } catch (notifyErr) {
+          console.error('❌ [CUSTOMER_BOOKING] Failed to notify drivers of new booking:', notifyErr);
+        }
+      });
+
       res.json({
         success: true,
         data: {
           booking: {
-            id: bookingRef.id,
+            id: bookingId,
             ...newBooking
           }
         },

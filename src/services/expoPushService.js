@@ -283,23 +283,36 @@ class ExpoPushService {
         const failed = results.filter(result => result.status === 'error');
         console.warn('[ExpoPushService] Push failures detail:', failed);
 
-        // Try to detect obvious configuration problems to make debugging easier
-        const hasInvalidCredentials = failed.some((r) =>
-          r.details &&
-          typeof r.details === 'object' &&
-          (
-            r.details.error === 'InvalidCredentials' ||
-            r.details.error === 'InvalidCredentialsError' ||
-            r.details.error === 'InvalidToken' ||
-            r.details.error === 'InvalidAccessToken'
-          )
+        // Detect FCM server key missing (Android) – fix: upload FCM V1 service account to Expo project
+        const isFcmKeyError = failed.some((r) =>
+          r.message && typeof r.message === 'string' && r.message.includes('FCM server key')
         );
 
-        if (hasInvalidCredentials) {
+        if (isFcmKeyError) {
           console.error(
-            '[ExpoPushService] ❌ Detected InvalidCredentials from Expo. ' +
-            'This usually means EXPO_ACCESS_TOKEN does not match the Expo project used by the apps.'
+            '[ExpoPushService] ❌ FCM credentials missing in Expo project. ' +
+            'Upload FCM V1 service account JSON to Expo: Project settings → Credentials → Android → FCM V1 service account key. ' +
+            'See driver-app/PUSH_NOTIFICATIONS_FCM_SETUP.md for steps.'
           );
+        } else {
+          // Other InvalidCredentials (e.g. wrong EXPO_ACCESS_TOKEN)
+          const hasInvalidCredentials = failed.some((r) =>
+            r.details &&
+            typeof r.details === 'object' &&
+            (
+              r.details.error === 'InvalidCredentials' ||
+              r.details.error === 'InvalidCredentialsError' ||
+              r.details.error === 'InvalidToken' ||
+              r.details.error === 'InvalidAccessToken'
+            )
+          );
+          if (hasInvalidCredentials) {
+            console.error(
+              '[ExpoPushService] ❌ Detected InvalidCredentials from Expo. ' +
+              'If message mentioned "FCM server key", upload FCM V1 credentials to Expo project. ' +
+              'Otherwise check EXPO_ACCESS_TOKEN matches the Expo project used by the apps.'
+            );
+          }
         }
       }
 

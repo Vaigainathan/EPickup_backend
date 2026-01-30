@@ -5083,10 +5083,9 @@ router.post('/bookings/:id/accept', requireDriver, async (req, res) => {
         }
       );
 
-      // Push notifications
+      // Push notifications: only notify customer (driver just accepted, no self-notification)
       try {
         await notificationService.notifyCustomerDriverAssigned(updatedBookingData, driverData);
-        await notificationService.sendDriverAssignmentNotification(uid, id, updatedBookingData);
       } catch (notifyErr) {
         console.warn('⚠️ [ACCEPT_BOOKING] Notification send failed:', notifyErr?.message);
       }
@@ -11443,50 +11442,70 @@ router.post('/tracking/update', [
     const { uid } = req.user;
     const { bookingId, location, status, speed, heading } = req.body;
     const db = getFirestore();
-    
-    // Verify trip tracking is active
-    const tripTrackingRef = db.collection('tripTracking').doc(bookingId);
-    const tripTrackingDoc = await tripTrackingRef.get();
-    
-    if (!tripTrackingDoc.exists) {
-      return res.status(404).json({
-        success: false,
-        error: {
-          code: 'TRIP_TRACKING_NOT_FOUND',
-          message: 'Trip tracking not found',
-          details: 'Trip tracking for this booking does not exist'
-        },
-        timestamp: new Date().toISOString()
-      });
-    }
-
-    const tripTrackingData = tripTrackingDoc.data();
-    
-    if (tripTrackingData.driverId !== uid) {
-      return res.status(403).json({
-        success: false,
-        error: {
-          code: 'ACCESS_DENIED',
-          message: 'Access denied',
-          details: 'You can only update tracking for your own trips'
-        },
-        timestamp: new Date().toISOString()
-      });
-    }
-
-    if (!tripTrackingData.isActive) {
-      return res.status(400).json({
-        success: false,
-        error: {
-          code: 'TRIP_NOT_ACTIVE',
-          message: 'Trip not active',
-          details: 'Trip tracking is not active for this booking'
-        },
-        timestamp: new Date().toISOString()
-      });
-    }
-
     const currentTime = new Date();
+
+    // Verify trip tracking exists; if not, create it (upsert) so first location update enables live tracking
+    const tripTrackingRef = db.collection('tripTracking').doc(bookingId);
+    let tripTrackingDoc = await tripTrackingRef.get();
+    let tripTrackingData = tripTrackingDoc.exists ? tripTrackingDoc.data() : null;
+
+    if (!tripTrackingDoc.exists) {
+      // Fetch booking to verify driver and get customerId for broadcast
+      const bookingRef = db.collection('bookings').doc(bookingId);
+      const bookingDoc = await bookingRef.get();
+      if (!bookingDoc.exists) {
+        return res.status(404).json({
+          success: false,
+          error: { code: 'BOOKING_NOT_FOUND', message: 'Booking not found', details: 'Booking does not exist' },
+          timestamp: new Date().toISOString()
+        });
+      }
+      const bookingData = bookingDoc.data();
+      if (bookingData.driverId !== uid) {
+        return res.status(403).json({
+          success: false,
+          error: { code: 'ACCESS_DENIED', message: 'Access denied', details: 'You can only update tracking for your own trips' },
+          timestamp: new Date().toISOString()
+        });
+      }
+      // Create trip tracking doc (same shape as tracking/start) so updates and broadcast work
+      const locationUpdateInitial = { ...location, timestamp: currentTime, speed: speed || null, heading: heading || null };
+      tripTrackingData = {
+        tripId: bookingId,
+        bookingId,
+        driverId: uid,
+        customerId: bookingData.customerId,
+        currentStatus: bookingData.status || 'driver_assigned',
+        currentLocation: locationUpdateInitial,
+        route: { pickup: bookingData.pickup?.coordinates, dropoff: bookingData.dropoff?.coordinates, currentRoute: null, distance: null, duration: null },
+        trackingHistory: [{ location: locationUpdateInitial, status: bookingData.status || 'driver_assigned', timestamp: currentTime }],
+        isActive: true,
+        startedAt: currentTime,
+        lastUpdated: currentTime,
+        createdAt: currentTime,
+        updatedAt: currentTime
+      };
+      await tripTrackingRef.set(tripTrackingData);
+      await db.collection('driverLocations').doc(uid).set({ driverId: uid, currentLocation: locationUpdateInitial, currentTripId: bookingId, lastUpdated: currentTime }, { merge: true });
+      await bookingRef.update({ 'tracking.isActive': true, 'tracking.startedAt': currentTime, 'tracking.currentLocation': locationUpdateInitial, 'driver.currentLocation': locationUpdateInitial, updatedAt: currentTime });
+      console.log(`📍 [DRIVER_TRACKING] Created tripTracking for booking ${bookingId} (first location update)`);
+    } else {
+      if (tripTrackingData.driverId !== uid) {
+        return res.status(403).json({
+          success: false,
+          error: { code: 'ACCESS_DENIED', message: 'Access denied', details: 'You can only update tracking for your own trips' },
+          timestamp: new Date().toISOString()
+        });
+      }
+      if (!tripTrackingData.isActive) {
+        return res.status(400).json({
+          success: false,
+          error: { code: 'TRIP_NOT_ACTIVE', message: 'Trip not active', details: 'Trip tracking is not active for this booking' },
+          timestamp: new Date().toISOString()
+        });
+      }
+    }
+
     const locationUpdate = {
       ...location,
       timestamp: currentTime,

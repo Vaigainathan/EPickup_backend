@@ -162,39 +162,10 @@ router.post('/', [
             // Don't fail if push notification fails
           }
           
-          // Notify available drivers of new booking (they will manually accept)
+          // Notify available drivers (WebSocket + push) - single source to avoid duplicate pushes
           const wsEventHandler = getEventHandler();
           await wsEventHandler.notifyDriversOfNewBooking(result.data.booking);
-          
-          // ✅ Send push notifications to available drivers (new order available)
-          try {
-            const notificationService = require('../services/notificationService');
-            const driverMatchingService = require('../services/driverMatchingService');
-            
-            // Get available drivers within radius
-            const availableDrivers = await driverMatchingService.findAvailableDrivers(
-              result.data.booking.pickup.coordinates,
-              25 // 25km radius
-            );
-            
-            // Send push notification to each available driver
-            for (const driver of availableDrivers) {
-              try {
-                await notificationService.notifyDriverNewBookingRequest(
-                  result.data.booking,
-                  driver.driverId || driver.id
-                );
-              } catch (driverNotifyError) {
-                console.warn(`⚠️ [BOOKING_CREATE] Failed to notify driver ${driver.driverId || driver.id}:`, driverNotifyError);
-                // Continue with other drivers
-              }
-            }
-            console.log(`✅ [BOOKING_CREATE] Push notifications sent to ${availableDrivers.length} available drivers`);
-          } catch (driverPushError) {
-            console.warn('⚠️ [BOOKING_CREATE] Failed to send push notifications to drivers:', driverPushError);
-            // Don't fail if push notifications fail
-          }
-          
+
           console.log(`✅ Booking ${result.data.booking.id} broadcasted to nearby drivers for manual acceptance`);
           
           // ✅ CRITICAL FIX: Notify admin dashboard of new booking for real-time customer count updates

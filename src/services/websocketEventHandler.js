@@ -2265,11 +2265,12 @@ class WebSocketEventHandler {
         }
       };
 
-      // Send push notifications via Expo
+      // Send push notifications via Expo – custom sound for "new order" only (Zomato-style)
       try {
         const result = await this.expoPushService.sendToTokens(tokens, notification, {
           priority: 'high',
-          sound: 'default'
+          sound: 'new_order.wav', // Custom sound when driver app has assets/sounds/new_order.wav; else falls back to default
+          channelId: 'new_order'  // Android: use "new order" channel (high importance, custom sound)
         });
         
         console.log(`✅ [PUSH_NOTIFICATION] Push notifications sent: ${result.successCount} success, ${result.failureCount} failed`);

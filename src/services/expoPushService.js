@@ -247,7 +247,7 @@ class ExpoPushService {
           priority: 'high',
           sound: options.sound || 'default',
           vibrate: [0, 500, 200, 500], // ✅ Long vibration pattern: 0ms delay, 500ms vibrate, 200ms pause, 500ms vibrate
-          channelId: 'epickup_urgent', // High priority channel
+          channelId: options.channelId || 'epickup_urgent', // e.g. 'new_order' for new booking (custom sound), else default
           notification: {
             sound: options.sound || 'default',
             vibrate: [0, 500, 200, 500],

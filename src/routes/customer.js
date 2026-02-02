@@ -879,7 +879,21 @@ router.put('/bookings/:bookingId/cancel', authenticateToken, async (req, res) =>
         error: 'Unauthorized to cancel this booking'
       });
     }
-    
+
+    // ✅ Block cancellation once driver has picked up (order must be returned otherwise)
+    const currentStatus = bookingData.status || '';
+    const nonCancellableStatuses = ['picked_up', 'in_transit', 'at_dropoff', 'delivered', 'completed', 'cancelled'];
+    if (nonCancellableStatuses.includes(currentStatus)) {
+      return res.status(400).json({
+        success: false,
+        error: 'Cannot cancel this booking',
+        code: 'CANCELLATION_NOT_ALLOWED',
+        message: currentStatus === 'cancelled'
+          ? 'This booking is already cancelled.'
+          : 'Cancellation is not allowed once the driver has picked up your order. Please contact support if you have an issue.'
+      });
+    }
+
     // Update booking status
     await db.collection('bookings').doc(bookingId).update({
       status: 'cancelled',

@@ -94,9 +94,9 @@ class PointsService {
 
       const walletData = walletDoc.data();
       
-      // ✅ CRITICAL FIX: Calculate canWork directly from walletData (no extra DB query)
-      // This eliminates the redundant canDriverWork() call that was doing another DB read
-      const canWork = walletData.pointsBalance >= 250; // Minimum 250 points required (₹250)
+      // ✅ CRITICAL FIX: canWork is NOT based on a fixed balance threshold
+      // Commission sufficiency is validated per booking acceptance instead
+      const canWork = walletData.status !== 'suspended';
       
       const result = {
         success: true,
@@ -656,7 +656,7 @@ class PointsService {
       }
 
       const walletData = walletDoc.data();
-      const canWork = walletData.pointsBalance >= 250; // Minimum 250 points required (₹250)
+      const canWork = walletData.status !== 'suspended';
 
       return {
         success: true,

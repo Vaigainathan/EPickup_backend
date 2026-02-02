@@ -5,7 +5,6 @@ const express = require('express');
 const cors = require('cors');
 const morgan = require('morgan');
 const compression = require('compression');
-const rateLimit = require('express-rate-limit');
 const helmet = require('helmet');
 const admin = require('firebase-admin');
 
@@ -228,25 +227,8 @@ app.use(cors({
   optionsSuccessStatus: 200
 }));
 
-// Rate limiting
-const rateLimitConfig = env.getRateLimitConfig();
-const limiter = rateLimit({
-  windowMs: rateLimitConfig.windowMs,
-  max: rateLimitConfig.maxRequests,
-  message: {
-    error: 'Too many requests from this IP, please try again later.',
-    retryAfter: `${Math.floor(rateLimitConfig.windowMs / 60000)} minutes`
-  },
-  standardHeaders: true,
-  legacyHeaders: false,
-  // Trust proxy for proper IP detection behind reverse proxy
-  trustProxy: true,
-});
-
-
-// Apply rate limiting to all routes
-app.use(limiter);
-app.use(speedLimiter);
+// NOTE: Global rate limiting is handled by imported `generalLimiter` + `speedLimiter`.
+// Avoid applying a second global limiter here (double 429s + unexpected throttling).
 
 // Admin-specific rate limiter (more lenient) - using imported adminLimiter
 // const adminLimiter = rateLimit({

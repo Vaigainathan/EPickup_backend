@@ -4692,23 +4692,8 @@ router.post('/bookings/:id/accept', requireDriver, async (req, res) => {
       });
     }
 
-    // Check if driver has sufficient points to work
-    const pointsService = require('../services/walletService');
-    const canWorkResult = await pointsService.canDriverWork(uid);
-    
-    if (!canWorkResult.success || !canWorkResult.canWork) {
-      return res.status(400).json({
-        success: false,
-        error: {
-          code: 'INSUFFICIENT_POINTS',
-          message: 'Insufficient points balance',
-          details: 'Driver must top-up points wallet to accept bookings. Minimum balance required for commission deduction.',
-          currentBalance: canWorkResult.currentBalance || 0,
-          requiredBalance: 250
-        },
-        timestamp: new Date().toISOString()
-      });
-    }
+    // ✅ NOTE: Do not block acceptance based on a fixed balance threshold.
+    // Commission sufficiency is validated inside the booking transaction using estimated commission.
 
     // ✅ FIXED: Use BookingLockService for atomic driver acceptance
     const BookingLockService = require('../services/bookingLockService');
@@ -4953,11 +4938,14 @@ router.post('/bookings/:id/accept', requireDriver, async (req, res) => {
         });
       } catch (walletError) {
         if (walletError.message === 'INSUFFICIENT_WALLET_BALANCE') {
-          throw walletError; // Re-throw to be handled below
+          throw walletError; // Re-throw to be handled below (402 error)
         }
-        console.error('❌ [ACCEPT_BOOKING] Error checking wallet balance:', walletError);
-        // Don't block acceptance if wallet check fails - log warning but continue
-        console.warn('⚠️ [ACCEPT_BOOKING] Continuing with acceptance despite wallet check error');
+        
+        // ✅ CRITICAL FIX: Fail safe - block acceptance if wallet can't be verified
+        // This prevents drivers from accepting bookings with unverified balance
+        // which could lead to silent commission loss at Phase 2
+        console.error('❌ [ACCEPT_BOOKING] Wallet verification failed:', walletError.message);
+        throw new Error('WALLET_VERIFICATION_ERROR');
       }
 
       // ✅ CRITICAL FIX: Determine driver verification status using same logic as admin dashboard
@@ -5239,6 +5227,21 @@ router.post('/bookings/:id/accept', requireDriver, async (req, res) => {
       });
     }
 
+    // ✅ CRITICAL FIX: Handle wallet verification failures
+    // Fail-safe: Block acceptance if wallet can't be verified
+    if (error.message === 'WALLET_VERIFICATION_ERROR') {
+      console.error(`❌ [ACCEPT_BOOKING] Wallet verification failed for driver ${uid}. Blocking booking acceptance to prevent silent commission loss.`);
+      return res.status(503).json({
+        success: false,
+        error: {
+          code: 'WALLET_VERIFICATION_ERROR',
+          message: 'Wallet verification failed',
+          details: 'We are unable to verify your wallet balance at the moment. Please try again in a few seconds. If this issue persists, please contact support.'
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
     res.status(500).json({
       success: false,
       error: {
@@ -5444,12 +5447,52 @@ router.post('/bookings/:id/photo-verification/upload', [
       });
     }
 
+    const safeType = photoType === 'pickup' ? 'pickup' : 'delivery';
+    const safeTraceId = traceId ? String(traceId).replace(/[^a-zA-Z0-9_-]/g, '_') : null;
+
+    // ✅ ROOT CAUSE FIX: Idempotency for uploads.
+    // If the client retries the SAME logical upload (same traceId), return the existing photo
+    // and DO NOT upload another file / create another verification doc.
+    if (safeTraceId) {
+      const existingRef = db.collection('photoVerifications').doc(safeTraceId);
+      const existingDoc = await existingRef.get();
+      if (existingDoc.exists) {
+        const existing = existingDoc.data() || {};
+        if (
+          existing.bookingId === id &&
+          existing.driverId === uid &&
+          existing.photoType === safeType &&
+          existing.photoUrl
+        ) {
+          console.log(`✅ [PHOTO_UPLOAD] Idempotent replay detected - returning existing photo (traceId: ${traceId})`, {
+            bookingId: id,
+            photoType: safeType,
+            photoId: existingDoc.id
+          });
+          return res.status(200).json({
+            success: true,
+            data: {
+              message: 'Photo verification already uploaded (idempotent replay)',
+              photoType: safeType,
+              photoUrl: existing.photoUrl,
+              storagePath: existing.storagePath || null,
+              photoId: existingDoc.id,
+              status: existing.status || photoStatus,
+              traceId: traceId || null
+            },
+            traceId: traceId || null
+          });
+        }
+      }
+    }
+
     // Upload to Firebase Storage using admin privileges
     const bucket = getStorage().bucket();
     const timestamp = Date.now();
     const random = Math.random().toString(36).slice(2, 8);
-    const safeType = photoType === 'pickup' ? 'pickup' : 'delivery';
-    const filePath = `bookings/${id}/drivers/${uid}/${safeType}/${timestamp}-${random}.jpg`;
+    // ✅ ROOT CAUSE FIX: Deterministic storage path when traceId is present (prevents duplicates on retry).
+    const fileName = safeTraceId ? `${safeTraceId}.jpg` : `${timestamp}-${random}.jpg`;
+    const filePath = `bookings/${id}/drivers/${uid}/${safeType}/${fileName}`;
     const fileRef = bucket.file(filePath);
 
     await fileRef.save(file.buffer, {
@@ -5459,6 +5502,7 @@ router.post('/bookings/:id/photo-verification/upload', [
           bookingId: id,
           driverId: uid,
           photoType: safeType,
+          traceId: traceId || null,
           uploadedAt: new Date().toISOString()
         }
       }
@@ -5482,6 +5526,7 @@ router.post('/bookings/:id/photo-verification/upload', [
       verifiedAt: verifiedAtTimestamp,
       verifiedBy: uid,
       notes: notes || null,
+      traceId: traceId || null,
       status: photoStatus, // ✅ NEW: Store photo status
       previousPhotoId: previousPhotoId || null // ✅ NEW: Link to previous photo if retake
     };
@@ -5531,14 +5576,15 @@ router.post('/bookings/:id/photo-verification/upload', [
     
     await db.runTransaction(async (transaction) => {
       transaction.update(bookingRef, transactionUpdateData);
-      const oldRef = db.collection('photo_verifications').doc();
+      const oldRef = safeTraceId ? db.collection('photo_verifications').doc(safeTraceId) : db.collection('photo_verifications').doc();
       transaction.set(oldRef, {
         bookingId: id,
         driverId: uid,
         customerId: (bookingData && bookingData.customerId) || null,
+        traceId: traceId || null,
         ...photoVerification
       });
-      const newRef = db.collection('photoVerifications').doc();
+      const newRef = safeTraceId ? db.collection('photoVerifications').doc(safeTraceId) : db.collection('photoVerifications').doc();
       photoId = newRef.id; // ✅ NEW: Store photoId from document reference
       transaction.set(newRef, {
         id: newRef.id,
@@ -5547,6 +5593,8 @@ router.post('/bookings/:id/photo-verification/upload', [
         customerId: (bookingData && bookingData.customerId) || null,
         photoType: safeType,
         photoUrl: downloadURL,
+        storagePath: filePath,
+        traceId: traceId || null,
         photoMetadata: { location: location || null, notes: notes || null },
         location: location || null,
         notes: notes || null,

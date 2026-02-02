@@ -3,6 +3,57 @@
  * Centralized template management for all notifications
  */
 
+const formatNotificationVariableValue = (variableName, value) => {
+  if (value === undefined || value === null) return value;
+
+  const name = String(variableName || '').toLowerCase();
+  const isEta = name.includes('eta');
+  const isTime = name.includes('time');
+  const isDate = name.includes('date') || name.includes('timestamp');
+
+  if (!isEta && !isTime && !isDate) {
+    return value;
+  }
+
+  // Firestore Timestamp
+  if (typeof value?.toDate === 'function') {
+    const date = value.toDate();
+    if (date instanceof Date && !isNaN(date.getTime())) {
+      if (isDate && !isTime && !isEta) {
+        return date.toLocaleString('en-IN', { hour: '2-digit', minute: '2-digit' });
+      }
+      return date.toLocaleTimeString('en-IN', { hour: 'numeric', minute: '2-digit' });
+    }
+  }
+
+  // Date object
+  if (value instanceof Date && !isNaN(value.getTime())) {
+    if (isDate && !isTime && !isEta) {
+      return value.toLocaleString('en-IN', { hour: '2-digit', minute: '2-digit' });
+    }
+    return value.toLocaleTimeString('en-IN', { hour: 'numeric', minute: '2-digit' });
+  }
+
+  // ISO string
+  if (typeof value === 'string') {
+    const parsed = new Date(value);
+    if (!isNaN(parsed.getTime())) {
+      if (isDate && !isTime && !isEta) {
+        return parsed.toLocaleString('en-IN', { hour: '2-digit', minute: '2-digit' });
+      }
+      return parsed.toLocaleTimeString('en-IN', { hour: 'numeric', minute: '2-digit' });
+    }
+    return value;
+  }
+
+  // Minutes as number
+  if (isEta && typeof value === 'number' && isFinite(value)) {
+    return `${Math.round(value)} mins`;
+  }
+
+  return value;
+};
+
 const NOTIFICATION_TEMPLATES = {
   // Customer Notifications
   CUSTOMER: {
@@ -154,7 +205,9 @@ class NotificationTemplateProcessor {
     }
 
     return text.replace(/\{\{(\w+)\}\}/g, (match, variableName) => {
-      return variables[variableName] || match;
+      const rawValue = variables[variableName];
+      const formattedValue = formatNotificationVariableValue(variableName, rawValue);
+      return formattedValue || match;
     });
   }
 
@@ -241,6 +294,43 @@ class NotificationTemplateProcessor {
  */
 class NotificationBuilder {
   /**
+   * Format ETA/time values for notifications
+   * Accepts Date, Firestore Timestamp, ISO string, or minute values
+   */
+  static formatNotificationTime(value) {
+    if (!value) return null;
+
+    // Firestore Timestamp
+    if (typeof value?.toDate === 'function') {
+      const date = value.toDate();
+      if (date instanceof Date && !isNaN(date.getTime())) {
+        return date.toLocaleTimeString('en-IN', { hour: 'numeric', minute: '2-digit' });
+      }
+    }
+
+    // Date object
+    if (value instanceof Date && !isNaN(value.getTime())) {
+      return value.toLocaleTimeString('en-IN', { hour: 'numeric', minute: '2-digit' });
+    }
+
+    // ISO string
+    if (typeof value === 'string') {
+      const parsed = new Date(value);
+      if (!isNaN(parsed.getTime())) {
+        return parsed.toLocaleTimeString('en-IN', { hour: 'numeric', minute: '2-digit' });
+      }
+      return value; // Already human-readable (e.g., "15 mins")
+    }
+
+    // Minutes as number
+    if (typeof value === 'number' && isFinite(value)) {
+      return `${Math.round(value)} mins`;
+    }
+
+    return String(value);
+  }
+
+  /**
    * Build customer booking created notification
    */
   static customerBookingCreated(bookingData) {
@@ -263,9 +353,11 @@ class NotificationBuilder {
     const template = NotificationTemplateProcessor.getTemplate('CUSTOMER', 'DRIVER_ASSIGNED');
     // ✅ FIX: Handle both bookingData.id and bookingData.bookingId
     const bookingId = bookingData.id || bookingData.bookingId;
+    const etaValue = bookingData.estimatedPickupTime || bookingData.estimatedArrival || bookingData.eta;
+    const formattedEta = this.formatNotificationTime(etaValue) || '15 mins';
     const notification = NotificationTemplateProcessor.process(template, {
       driverName: driverData?.name || driverData?.driverName || 'Driver',
-      eta: bookingData.estimatedPickupTime || '15 mins',
+      eta: formattedEta,
       bookingId: bookingId
     });
     // ✅ FIX: Add bookingId at top level for easy access

@@ -24,39 +24,16 @@ router.post('/create',
   checkValidation,
   async (req, res) => {
     try {
-      const { amount, bookingId, customerPhone, customerEmail, customerName } = req.body;
-      const userId = req.user.id;
-
-      // Generate unique transaction ID
-      const transactionId = `TXN_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-
-      const paymentData = {
-        transactionId,
-        amount,
-        customerId: userId,
-        bookingId,
-        customerPhone,
-        customerEmail,
-        customerName: customerName || req.user.name
-      };
-
-      const result = await phonepeService.createPayment(paymentData);
-
-      if (result.success) {
-        res.json({
-          success: true,
-          message: 'Payment created successfully',
-          data: result.data,
-          timestamp: new Date().toISOString()
-        });
-      } else {
-        res.status(400).json({
-          success: false,
-          message: 'Payment creation failed',
-          error: result.error,
-          timestamp: new Date().toISOString()
-        });
-      }
+      // ⚠️ PhonePe payments deprecated - use /api/driver/wallet/top-up for Razorpay
+      return res.status(410).json({
+        success: false,
+        message: 'PhonePe payment method is deprecated. Please use Razorpay wallet top-up.',
+        error: {
+          code: 'PAYMENT_METHOD_DEPRECATED',
+          message: 'Use POST /api/driver/wallet/top-up for Razorpay payments'
+        },
+        timestamp: new Date().toISOString()
+      });
     } catch (error) {
       console.error('Create payment error:', error);
       res.status(500).json({
@@ -89,47 +66,16 @@ router.post('/phonepe/initiate',
   checkValidation,
   async (req, res) => {
     try {
-      const { 
-        bookingId, 
-        amount, 
-        customerPhone, 
-        customerEmail, 
-        customerName,
-        redirectUrl 
-      } = req.body;
-      const userId = req.user.id;
-
-      // Generate unique transaction ID
-      const transactionId = `TXN_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-
-      const paymentData = {
-        transactionId,
-        amount,
-        customerId: userId,
-        bookingId,
-        customerPhone,
-        customerEmail,
-        customerName: customerName || req.user.name,
-        redirectUrl
-      };
-
-      const result = await phonepeService.createPayment(paymentData);
-
-      if (result.success) {
-        res.json({
-          success: true,
-          message: 'Payment initiated successfully',
-          data: result.data,
-          timestamp: new Date().toISOString()
-        });
-      } else {
-        res.status(400).json({
-          success: false,
-          message: 'Payment initiation failed',
-          error: result.error,
-          timestamp: new Date().toISOString()
-        });
-      }
+      // ⚠️ PhonePe payments deprecated - use /api/driver/wallet/top-up for Razorpay
+      return res.status(410).json({
+        success: false,
+        message: 'PhonePe payment method is deprecated. Please use Razorpay wallet top-up.',
+        error: {
+          code: 'PAYMENT_METHOD_DEPRECATED',
+          message: 'Use POST /api/driver/wallet/top-up for Razorpay payments'
+        },
+        timestamp: new Date().toISOString()
+      });
     } catch (error) {
       console.error('Initiate PhonePe payment error:', error);
       res.status(500).json({
@@ -154,44 +100,16 @@ router.get('/verify/:transactionId',
   authMiddleware,
   async (req, res) => {
     try {
-      const { transactionId } = req.params;
-      const userId = req.user.id;
-
-      // Get payment record first to verify ownership
-      const payment = await phonepeService.getPayment(transactionId);
-      if (!payment) {
-        return res.status(404).json({
-          success: false,
-          message: 'Payment not found',
-          timestamp: new Date().toISOString()
-        });
-      }
-
-      if (payment.customerId !== userId) {
-        return res.status(403).json({
-          success: false,
-          message: 'Access denied',
-          timestamp: new Date().toISOString()
-        });
-      }
-
-      const result = await phonepeService.verifyPayment(transactionId);
-
-      if (result.success) {
-        res.json({
-          success: true,
-          message: 'Payment verification successful',
-          data: result.data,
-          timestamp: new Date().toISOString()
-        });
-      } else {
-        res.status(400).json({
-          success: false,
-          message: 'Payment verification failed',
-          error: result.error,
-          timestamp: new Date().toISOString()
-        });
-      }
+      // ⚠️ PhonePe payments deprecated - use /api/driver/wallet/verify-payment for Razorpay
+      return res.status(410).json({
+        success: false,
+        message: 'PhonePe verification is deprecated. Please use Razorpay wallet verification endpoint.',
+        error: {
+          code: 'PAYMENT_METHOD_DEPRECATED',
+          message: 'Use POST /api/driver/wallet/verify-payment for Razorpay verification'
+        },
+        timestamp: new Date().toISOString()
+      });
     } catch (error) {
       console.error('Verify payment error:', error);
       res.status(500).json({
@@ -232,47 +150,16 @@ router.post('/refund',
   checkValidation,
   async (req, res) => {
     try {
-      const { transactionId, refundAmount, refundReason } = req.body;
-      const userId = req.user.id;
-      const userType = req.user.userType;
-
-      // Check if user can process refund
-      if (userType !== 'admin') {
-        // For customers, check if they own the payment
-        const payment = await phonepeService.getPayment(transactionId);
-        if (!payment || payment.customerId !== userId) {
-          return res.status(403).json({
-            success: false,
-            message: 'Access denied',
-            timestamp: new Date().toISOString()
-          });
-        }
-      }
-
-      const refundData = {
-        transactionId,
-        refundAmount,
-        refundReason,
-        refundedBy: userId
-      };
-
-      const result = await phonepeService.processRefund(refundData);
-
-      if (result.success) {
-        res.json({
-          success: true,
-          message: 'Refund processed successfully',
-          data: result.data,
-          timestamp: new Date().toISOString()
-        });
-      } else {
-        res.status(400).json({
-          success: false,
-          message: 'Refund processing failed',
-          error: result.error,
-          timestamp: new Date().toISOString()
-        });
-      }
+      // ⚠️ PhonePe refunds deprecated - use admin support for Razorpay payment refunds
+      return res.status(410).json({
+        success: false,
+        message: 'PhonePe refunds are deprecated. Please contact support for Razorpay payment refunds.',
+        error: {
+          code: 'PAYMENT_METHOD_DEPRECATED',
+          message: 'PhonePe refunds no longer supported - contact admin support'
+        },
+        timestamp: new Date().toISOString()
+      });
     } catch (error) {
       console.error('Process refund error:', error);
       res.status(500).json({
@@ -379,17 +266,13 @@ router.get('/history',
   authMiddleware,
   async (req, res) => {
     try {
-      const userId = req.user.id;
-      const limit = parseInt(req.query.limit) || 20;
-
-      const payments = await phonepeService.getCustomerPayments(userId, limit);
-
-      res.json({
-        success: true,
-        message: 'Payment history retrieved successfully',
-        data: {
-          payments,
-          total: payments.length
+      // ⚠️ PhonePe history deprecated - use Razorpay wallet transaction history
+      return res.status(410).json({
+        success: false,
+        message: 'PhonePe payment history is no longer available. Please use the wallet section for transaction history.',
+        error: {
+          code: 'PAYMENT_METHOD_DEPRECATED',
+          message: 'Use wallet transaction history for payment records'
         },
         timestamp: new Date().toISOString()
       });
@@ -437,23 +320,16 @@ router.get('/statistics',
         });
       }
 
-      const result = await phonepeService.getPaymentStatistics(startDate, endDate);
-
-      if (result.success) {
-        res.json({
-          success: true,
-          message: 'Payment statistics retrieved successfully',
-          data: result.data,
-          timestamp: new Date().toISOString()
-        });
-      } else {
-        res.status(400).json({
-          success: false,
-          message: 'Failed to get payment statistics',
-          error: result.error,
-          timestamp: new Date().toISOString()
-        });
-      }
+      // ⚠️ PhonePe statistics deprecated - use Razorpay wallet analytics
+      return res.status(410).json({
+        success: false,
+        message: 'PhonePe payment statistics are no longer available. Please use Razorpay analytics.',
+        error: {
+          code: 'PAYMENT_METHOD_DEPRECATED',
+          message: 'Use Razorpay dashboard for payment statistics'
+        },
+        timestamp: new Date().toISOString()
+      });
     } catch (error) {
       console.error('Get payment statistics error:', error);
       res.status(500).json({
@@ -478,33 +354,14 @@ router.get('/:transactionId',
   authMiddleware,
   async (req, res) => {
     try {
-      const { transactionId } = req.params;
-      const userId = req.user.id;
-      const userType = req.user.userType;
-
-      const payment = await phonepeService.getPayment(transactionId);
-      
-      if (!payment) {
-        return res.status(404).json({
-          success: false,
-          message: 'Payment not found',
-          timestamp: new Date().toISOString()
-        });
-      }
-
-      // Check access permissions
-      if (userType !== 'admin' && payment.customerId !== userId) {
-        return res.status(403).json({
-          success: false,
-          message: 'Access denied',
-          timestamp: new Date().toISOString()
-        });
-      }
-
-      res.json({
-        success: true,
-        message: 'Payment details retrieved successfully',
-        data: payment,
+      // ⚠️ PhonePe payment details deprecated - use Razorpay wallet transaction endpoints
+      return res.status(410).json({
+        success: false,
+        message: 'PhonePe payment details are no longer available.',
+        error: {
+          code: 'PAYMENT_METHOD_DEPRECATED',
+          message: 'Use Razorpay wallet endpoints for transaction details'
+        },
         timestamp: new Date().toISOString()
       });
     } catch (error) {

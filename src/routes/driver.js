@@ -9322,7 +9322,7 @@ router.post('/wallet/top-up', [
       });
     }
 
-    const { Timestamp } = require('firebase-admin/firestore');
+    // ✅ Timestamp already imported above, reuse it
     await walletTransactionRef.update({
       razorpayPaymentLinkId: paymentResult.data.paymentLinkId,
       razorpayPaymentUrl: paymentResult.data.paymentUrl,

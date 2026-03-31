@@ -113,7 +113,7 @@ class RazorpayService {
   }
 
   async findTopupByTransactionId(transactionId) {
-    let doc = await this.db.collection('driverTopUps').doc(transactionId).get();
+    const doc = await this.db.collection('driverTopUps').doc(transactionId).get();
     if (doc.exists) return doc;
 
     let query = await this.db.collection('driverTopUps')

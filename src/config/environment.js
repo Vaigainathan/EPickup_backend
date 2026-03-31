@@ -53,22 +53,13 @@ class EnvironmentConfig {
     };
 
     // Payment Gateway Configuration
+    // ✅ RAZORPAY ONLY - No fallback to PhonePe
     this.config.payment = {
-      phonepe: {
-        // Pay Page credentials (legacy - optional, only needed for booking payments)
-        merchantId: process.env.PHONEPE_MERCHANT_ID,
-        saltKey: process.env.PHONEPE_SALT_KEY,
-        saltIndex: process.env.PHONEPE_SALT_INDEX || '1',
-        // SDK credentials (required for wallet top-ups)
-        clientId: process.env.PHONEPE_CLIENT_ID || 'M23TOSHOITZU8_2512281840',
-        clientSecret: process.env.PHONEPE_CLIENT_SECRET || 'NjFlZDgxYmEtNTQxZC00NzFhLTg0ZTctOGY1NjFjZTJhNTc5',
-        clientVersion: process.env.PHONEPE_CLIENT_VERSION || '1',
-        // Common configuration
-        baseUrl: process.env.PHONEPE_BASE_URL || 'https://api-preprod.phonepe.com/apis/pg-sandbox',
-        redirectUrl: process.env.PHONEPE_REDIRECT_URL || 'https://epickup-app.web.app/payment/callback',
-        callbackUrl: process.env.PHONEPE_CALLBACK_URL || 'https://epickup-app.web.app/api/payments/phonepe/callback',
-        testMode: process.env.PHONEPE_TEST_MODE === 'true' || process.env.NODE_ENV !== 'production'
-      },
+      razorpay: {
+        keyId: process.env.RAZORPAY_KEY_ID,
+        keySecret: process.env.RAZORPAY_KEY_SECRET,
+        webhookSecret: process.env.RAZORPAY_WEBHOOK_SECRET
+      }
     };
 
     // Application URLs Configuration

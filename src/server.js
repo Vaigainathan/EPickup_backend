@@ -372,9 +372,8 @@ app.get('/api-docs', (req, res) => {
       payments: {
         'GET /api/payments/methods': 'Get available payment methods',
         'POST /api/payments/create': 'Create payment request',
-        'POST /api/payments/phonepe/initiate': 'Initiate PhonePe payment',
+        'POST /api/payments/razorpay/webhook': 'Handle Razorpay webhook',
         'GET /api/payments/verify/:transactionId': 'Verify payment status',
-        'POST /api/payments/phonepe/callback': 'Handle PhonePe callback',
         'POST /api/payments/refund': 'Process refund',
         'GET /api/payments/history': 'Get payment history',
         'GET /api/payments/statistics': 'Get payment statistics (Admin)',
@@ -472,71 +471,46 @@ app.use('/api/bookings', appCheckMiddleware.optionalMiddleware(), authMiddleware
 // ✅ PAYMENT WEBHOOKS MUST BE PUBLIC (no auth middleware)
 // Payment gateway webhooks don't have user tokens - they use signature verification
 // Register webhook route BEFORE the authenticated payment routes
-const phonepeService = require('./services/phonepeService');
-const mockPaymentService = require('./services/mockPaymentService');
-app.post('/api/payments/phonepe/callback', 
+const razorpayService = require('./services/razorpayService');
+
+app.post('/api/payments/razorpay/webhook',
   appCheckMiddleware.optionalMiddleware(),
   async (req, res) => {
     try {
-      // ✅ ENHANCED LOGGING: Log full request details for debugging
       console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-      console.log('📥 [WEBHOOK] Received PhonePe callback (public endpoint)');
+      console.log('📥 [WEBHOOK] Received Razorpay callback (public endpoint)');
       console.log('📋 [WEBHOOK] Request details:', {
         method: req.method,
         url: req.url,
-        headers: {
-          'content-type': req.headers['content-type'],
-          'user-agent': req.headers['user-agent'],
-          'x-forwarded-for': req.headers['x-forwarded-for'],
-          'origin': req.headers['origin']
-        },
         bodyKeys: req.body ? Object.keys(req.body) : [],
-        bodyPreview: req.body ? JSON.stringify(req.body).substring(0, 500) : 'No body'
+        event: req.body?.event || 'unknown'
       });
-      console.log('📦 [WEBHOOK] Full request body:', JSON.stringify(req.body, null, 2));
       console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-      
-      // Intelligent service selection - Check for SDK credentials (Client ID/Secret) or Pay Page credentials (Merchant ID/Salt Key)
-      const hasSDKCredentials = process.env.PHONEPE_CLIENT_ID && 
-                                process.env.PHONEPE_CLIENT_SECRET &&
-                                process.env.PHONEPE_CLIENT_SECRET.length > 0;
-      const hasPayPageCredentials = process.env.PHONEPE_MERCHANT_ID && 
-                                    process.env.PHONEPE_MERCHANT_ID !== 'PGTESTPAYUAT' &&
-                                    process.env.PHONEPE_SALT_KEY &&
-                                    process.env.PHONEPE_SALT_KEY.length > 20;
-      
-      const isPhonePeConfigured = hasSDKCredentials || hasPayPageCredentials;
-      const callbackService = isPhonePeConfigured ? phonepeService : mockPaymentService;
-      console.log(`🔧 [WEBHOOK] Using ${isPhonePeConfigured ? 'Real PhonePe' : 'Mock Payment'} callback handler`);
-      if (isPhonePeConfigured) {
-        console.log(`   SDK Flow: ${hasSDKCredentials ? '✅' : '❌'}, Pay Page Flow: ${hasPayPageCredentials ? '✅' : '❌'}`);
-      }
-      
-      const result = await callbackService.handlePaymentCallback(req.body);
+
+      const signature = req.headers['x-razorpay-signature'];
+      const result = await razorpayService.handlePaymentCallback(req.body, signature);
 
       if (result.success) {
-        console.log('✅ [WEBHOOK] Callback processed successfully');
-        res.json({
+        return res.json({
           success: true,
-          message: 'Callback processed successfully',
-          timestamp: new Date().toISOString()
-        });
-      } else {
-        console.warn('⚠️ [WEBHOOK] Callback processing failed:', result.error);
-        res.status(400).json({
-          success: false,
-          message: 'Callback processing failed',
-          error: result.error,
+          message: result.message || 'Webhook processed successfully',
           timestamp: new Date().toISOString()
         });
       }
+
+      return res.status(400).json({
+        success: false,
+        message: 'Webhook processing failed',
+        error: result.error,
+        timestamp: new Date().toISOString()
+      });
     } catch (error) {
-      console.error('❌ [WEBHOOK] Payment callback error:', error);
-      res.status(500).json({
+      console.error('❌ [WEBHOOK] Razorpay callback error:', error);
+      return res.status(500).json({
         success: false,
         message: 'Internal server error',
         error: {
-          code: 'CALLBACK_ERROR',
+          code: 'RAZORPAY_CALLBACK_ERROR',
           message: error.message
         },
         timestamp: new Date().toISOString()
@@ -545,27 +519,26 @@ app.post('/api/payments/phonepe/callback',
   }
 );
 
-// ✅ WEBHOOK TEST ENDPOINT: Verify webhook URL is reachable
-app.get('/api/payments/phonepe/callback/test', async (req, res) => {
+// All payment routes require authentication
+
+// ✅ RAZORPAY WEBHOOK TEST ENDPOINT: Verify webhook URL is reachable
+app.get('/api/payments/razorpay/webhook/test', async (req, res) => {
   try {
-    const phonepeConfig = require('./services/phonepeConfigService');
-    const callbackUrl = phonepeConfig.getCallbackUrl();
     const backendUrl = process.env.BACKEND_URL || process.env.API_BASE_URL || 'https://epickupbackend-production.up.railway.app';
     
     res.json({
       success: true,
-      message: 'Webhook endpoint is reachable',
+      message: 'Razorpay webhook endpoint is reachable',
       data: {
-        callbackUrl: callbackUrl,
-        backendUrl: backendUrl,
-        endpoint: '/api/payments/phonepe/callback',
-        fullUrl: `${backendUrl}/api/payments/phonepe/callback`,
+        endpoint: '/api/payments/razorpay/webhook',
+        fullUrl: `${backendUrl}/api/payments/razorpay/webhook`,
         timestamp: new Date().toISOString(),
         instructions: {
-          step1: 'Verify this URL matches the webhook URL in PhonePe dashboard',
-          step2: 'Ensure PhonePe dashboard webhook URL is exactly: ' + callbackUrl,
-          step3: 'Check PhonePe dashboard webhook delivery logs for this transaction',
-          step4: 'If webhook still not received, use manual verification endpoint: POST /api/driver/wallet/verify-payment'
+          step1: 'Verify this URL matches the webhook URL in Razorpay dashboard',
+          step2: 'Ensure Razorpay dashboard webhook URL is exactly: ' + `${backendUrl}/api/payments/razorpay/webhook`,
+          step3: 'Enable events: payment_link.paid, payment.captured, payment.failed, payment_link.expired, payment_link.cancelled',
+          step4: 'Copy the Signing Secret and set it in RAZORPAY_WEBHOOK_SECRET env var',
+          step5: 'Check Razorpay dashboard webhook delivery logs for transaction confirmations'
         }
       },
       timestamp: new Date().toISOString()
@@ -582,7 +555,6 @@ app.get('/api/payments/phonepe/callback/test', async (req, res) => {
   }
 });
 
-// All other payment routes require authentication
 app.use('/api/payments', appCheckMiddleware.optionalMiddleware(), authMiddleware, paymentRoutes);
 // app.use('/api/payments', appCheckMiddleware.middleware(), authMiddleware, paymentRoutes); // Production mode
 

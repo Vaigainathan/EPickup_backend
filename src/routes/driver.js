@@ -9183,8 +9183,8 @@ router.post('/wallet/top-up', [
     .isFloat({ min: 250, max: 10000 })
     .withMessage('Amount must be between 250 and 10,000'),
   body('paymentMethod')
-    .isIn(['phonepe', 'upi', 'card'])
-    .withMessage('Payment method must be phonepe, upi, or card'),
+    .isIn(['upi', 'card'])
+    .withMessage('Payment method must be upi or card'),
   body('paymentDetails')
     .optional()
     .isObject()
@@ -9222,35 +9222,24 @@ router.post('/wallet/top-up', [
       } : {})
     };
     
-    // Use PhonePe service (test or production based on configuration)
-    const phonepeService = require('../services/phonepeService');
-    const phonepeConfig = require('../services/phonepeConfigService');
+    // ✅ RAZORPAY ONLY - No fallback to PhonePe
+    const razorpayService = require('../services/razorpayService');
     
-    // Check if PhonePe SDK is configured (OAuth credentials required for SDK flow)
-    const isPhonePeConfigured = process.env.PHONEPE_CLIENT_ID && 
-                                 process.env.PHONEPE_CLIENT_SECRET &&
-                                 process.env.PHONEPE_CLIENT_SECRET.length > 0;
-    
-    if (!isPhonePeConfigured) {
+    if (!razorpayService.isConfigured()) {
       return res.status(500).json({
         success: false,
         error: {
-          code: 'PHONEPE_NOT_CONFIGURED',
-          message: 'PhonePe payment gateway is not configured',
-          details: 'Please configure PhonePe Client ID and Client Secret in environment variables for SDK flow'
+          code: 'RAZORPAY_NOT_CONFIGURED',
+          message: 'Razorpay payment gateway is not configured',
+          details: 'Set RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET in backend environment variables'
         },
         timestamp: new Date().toISOString()
       });
     }
     
-    // Always use PhonePe service (test or production)
-    const paymentService = phonepeService;
-    const isTestMode = phonepeConfig.isTestMode();
-    const paymentMode = isTestMode ? 'TESTING' : 'PRODUCTION';
-    
     console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-    console.log(`💳 [WALLET_TOP_UP] Payment Mode: ${paymentMode}`);
-    console.log(`🔧 [WALLET_TOP_UP] Service: PhonePe ${isTestMode ? '(Test/Sandbox)' : '(Production)'}`);
+    console.log('💳 [WALLET_TOP_UP] Payment Gateway: Razorpay (Production)');
+    console.log('🔧 [WALLET_TOP_UP] Processing wallet top-up via Razorpay payment-link flow');
     console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
     
     const transactionId = `WALLET_${uid}_${Date.now()}`;
@@ -9270,24 +9259,18 @@ router.post('/wallet/top-up', [
     if (!existingTopUp.empty) {
       const existingData = existingTopUp.docs[0].data();
       console.log('⚠️ [IDEMPOTENCY] Duplicate request detected, returning existing result');
-      // Get merchantId from config for duplicate response (consistent with new payment flow)
-      const phonepeConfig = require('../services/phonepeConfigService');
-      const merchantId = phonepeConfig.getMerchantId() || 'PGTESTPAYUAT';
       
       return res.status(200).json({
         success: true,
         message: 'Top-up already processed (duplicate request prevented)',
         data: {
           transactionId: existingData.id,
-          orderToken: existingData.phonepeOrderToken || null,
-          paymentUrl: existingData.phonepePaymentUrl || null,
-          merchantTransactionId: existingData.phonepeTransactionId,
-          merchantId: merchantId, // Include merchantId for native SDK (consistent with new payment flow)
+          paymentUrl: existingData.razorpayPaymentUrl || null,
           amount: existingData.amount,
           paymentMethod: existingData.paymentMethod,
           status: existingData.status,
-          isSDK: !!existingData.phonepeOrderToken,
-          isDuplicate: true
+          isDuplicate: true,
+          gateway: 'razorpay'
         },
         timestamp: new Date().toISOString()
       });
@@ -9306,81 +9289,29 @@ router.post('/wallet/top-up', [
       amount: amount,
       realMoneyAmount: amount,
       paymentMethod: paymentMethod,
+      paymentGateway: 'razorpay',
       status: 'pending',
-      phonepeTransactionId: null,
       pointsAwarded: 0,
       newPointsBalance: 0,
       paymentDetails: sanitizedPaymentDetails,
       idempotencyKey: idempotencyKey, // Store for duplicate detection
-      createdAt: now, // ✅ FIX: Use Firestore Timestamp instead of Date
-      updatedAt: now  // ✅ FIX: Use Firestore Timestamp instead of Date
+      createdAt: now,
+      updatedAt: now
     });
-    
-    // Create payment request (works with both real PhonePe and mock)
-    const paymentResult = await paymentService.createPayment({
-      transactionId: transactionId,
-      merchantTransactionId: transactionId,
-      merchantUserId: uid,
-      amount: amount,
-      customerId: uid, // Legacy param for compatibility
-      mobileNumber: req.user.phone || '+919999999999',
-      customerPhone: req.user.phone || '+919999999999', // Legacy param
-      callbackUrl: `${process.env.API_BASE_URL || 'https://epickupbackend-production.up.railway.app'}/api/payments/phonepe/callback`,
-      redirectUrl: 'epickup://payment/callback',
-      bookingId: 'wallet-topup'
+
+    // ✅ RAZORPAY ONLY - Create payment link
+    const paymentResult = await razorpayService.createWalletTopupPayment({
+      transactionId,
+      driverId: uid,
+      amount,
+      mobileNumber: req.user.phone || null,
+      customerName: req.user.name || 'Driver',
+      customerEmail: req.user.email || null
     });
-    
-    if (paymentResult.success) {
-      // ✅ CRITICAL FIX: Use Firestore Timestamp for consistent date handling
-      const { Timestamp } = require('firebase-admin/firestore');
-      const updateTime = Timestamp.now();
-      
-      // ✅ CRITICAL FIX: Update transaction with PhonePe SDK details
-      // Store ALL required fields for callback processing
-      const updateData = {
-        phonepeTransactionId: paymentResult.data.merchantTransactionId || transactionId,
-        updatedAt: updateTime // ✅ FIX: Use Firestore Timestamp instead of Date
-      };
-      
-      // SDK flow returns orderToken and sdkOrderId, legacy flow returns paymentUrl
-      if (paymentResult.data.orderToken) {
-        updateData.phonepeOrderToken = paymentResult.data.orderToken;
-        // ✅ CRITICAL FIX: Store sdkOrderId separately for easier callback lookup
-        if (paymentResult.data.sdkOrderId) {
-          updateData.phonepeSDKOrderId = paymentResult.data.sdkOrderId;
-        }
-      } else if (paymentResult.data.paymentUrl) {
-        updateData.phonepePaymentUrl = paymentResult.data.paymentUrl;
-      }
-      
-      await walletTransactionRef.update(updateData);
-      
-      res.status(200).json({
-        success: true,
-        message: `Payment request created successfully (${paymentMode} mode)`,
-        data: {
-          transactionId: transactionId,
-          // SDK flow: return orderToken and sdkOrderId
-          orderToken: paymentResult.data.orderToken || null,
-          sdkOrderId: paymentResult.data.sdkOrderId || null, // Include sdkOrderId for native SDK
-          // Legacy flow: return paymentUrl (for backward compatibility)
-          paymentUrl: paymentResult.data.paymentUrl || null,
-          merchantTransactionId: paymentResult.data.merchantTransactionId,
-          merchantId: paymentResult.data.merchantId || null, // Include merchantId for native SDK
-          amount: amount,
-          paymentMethod: paymentMethod,
-          paymentMode: paymentResult.data.paymentMode || paymentMode,
-          isSDK: paymentResult.data.isSDK || false,
-          isMockPayment: false,
-          isTestMode: isTestMode
-        },
-        timestamp: new Date().toISOString()
-      });
-    } else {
-      // Clean up failed transaction
+
+    if (!paymentResult.success) {
       await walletTransactionRef.delete();
-      
-      res.status(400).json({
+      return res.status(400).json({
         success: false,
         error: {
           code: 'PAYMENT_CREATION_ERROR',
@@ -9390,6 +9321,28 @@ router.post('/wallet/top-up', [
         timestamp: new Date().toISOString()
       });
     }
+
+    const { Timestamp } = require('firebase-admin/firestore');
+    await walletTransactionRef.update({
+      razorpayPaymentLinkId: paymentResult.data.paymentLinkId,
+      razorpayPaymentUrl: paymentResult.data.paymentUrl,
+      updatedAt: Timestamp.now()
+    });
+
+    res.status(200).json({
+      success: true,
+      message: 'Payment request created successfully',
+      data: {
+        transactionId,
+        paymentUrl: paymentResult.data.paymentUrl,
+        merchantTransactionId: paymentResult.data.merchantTransactionId,
+        amount,
+        paymentMethod,
+        requiresRedirect: true,
+        gateway: 'razorpay'
+      },
+      timestamp: new Date().toISOString()
+    });
 
   } catch (error) {
     console.error('Error topping up points wallet:', error);
@@ -9411,10 +9364,10 @@ router.post('/wallet/top-up', [
  * @access  Private (Driver only)
  * 
  * This endpoint allows the driver app to manually verify payment status
- * after PhonePe SDK shows success, in case the webhook callback was missed.
- * It checks payment status with PhonePe and processes wallet top-up if needed.
+ * after Razorpay shows success, in case the webhook callback was missed.
+ * It checks payment status with Razorpay and processes wallet top-up if needed.
  * 
- * Accepts either transactionId (WALLET_xxx) or sdkOrderId (OMOxxx)
+ * Accepts transactionId (WALLET_xxx)
  */
 router.post('/wallet/verify-payment', requireDriver, async (req, res) => {
   try {
@@ -9441,15 +9394,14 @@ router.post('/wallet/verify-payment', requireDriver, async (req, res) => {
     
     const { getFirestore } = require('../services/firebase');
     const db = getFirestore();
-    const phonepeService = require('../services/phonepeService');
+    const razorpayService = require('../services/razorpayService');
     
-    // ✅ CRITICAL FIX: Find transaction by either ID
+    // ✅ RAZORPAY ONLY - Find transaction by transactionId
     let walletTransactionDoc = null;
     let walletTransactionData = null;
     let actualTransactionId = transactionId;
     
     if (transactionId) {
-      // Try by transactionId first (most common case)
       walletTransactionDoc = await db.collection('driverTopUps').doc(transactionId).get();
       if (walletTransactionDoc.exists) {
         walletTransactionData = walletTransactionDoc.data();
@@ -9457,28 +9409,9 @@ router.post('/wallet/verify-payment', requireDriver, async (req, res) => {
       }
     }
     
-    // If not found by transactionId, try by sdkOrderId
+    // If not found, search pending transactions for this driver
     if (!walletTransactionDoc || !walletTransactionDoc.exists) {
-      if (sdkOrderId) {
-        console.log(`⚠️ [MANUAL_VERIFY] Transaction not found by transactionId, trying by sdkOrderId: ${sdkOrderId}`);
-        const sdkOrderQuery = await db.collection('driverTopUps')
-          .where('phonepeSDKOrderId', '==', sdkOrderId)
-          .where('driverId', '==', uid)
-          .limit(1)
-          .get();
-        
-        if (!sdkOrderQuery.empty) {
-          walletTransactionDoc = sdkOrderQuery.docs[0];
-          walletTransactionData = walletTransactionDoc.data();
-          actualTransactionId = walletTransactionData.id || walletTransactionDoc.id;
-          console.log(`✅ [MANUAL_VERIFY] Found transaction by sdkOrderId: ${actualTransactionId}`);
-        }
-      }
-    }
-    
-    // If still not found, try searching all pending transactions for this driver
-    if (!walletTransactionDoc || !walletTransactionDoc.exists) {
-      console.log(`⚠️ [MANUAL_VERIFY] Transaction not found by IDs, searching pending transactions for driver: ${uid}`);
+      console.log(`⚠️ [MANUAL_VERIFY] Transaction not found by ID, searching pending transactions for driver: ${uid}`);
       const pendingQuery = await db.collection('driverTopUps')
         .where('driverId', '==', uid)
         .where('status', '==', 'pending')
@@ -9486,11 +9419,9 @@ router.post('/wallet/verify-payment', requireDriver, async (req, res) => {
         .limit(10)
         .get();
       
-      // Find by matching either transactionId or sdkOrderId
       for (const doc of pendingQuery.docs) {
         const data = doc.data();
-        if ((transactionId && (data.id === transactionId || data.phonepeTransactionId === transactionId)) ||
-            (sdkOrderId && (data.phonepeSDKOrderId === sdkOrderId))) {
+        if (transactionId && (data.id === transactionId || data.razorpayPaymentLinkId === transactionId || data.razorpayPaymentId === transactionId)) {
           walletTransactionDoc = doc;
           walletTransactionData = data;
           actualTransactionId = data.id || doc.id;
@@ -9528,145 +9459,50 @@ router.post('/wallet/verify-payment', requireDriver, async (req, res) => {
         timestamp: new Date().toISOString()
       });
     }
-    
-    // Verify ownership
-    if (walletTransactionData.driverId !== uid) {
-      return res.status(403).json({
-        success: false,
-        error: {
-          code: 'ACCESS_DENIED',
-          message: 'You do not have permission to verify this transaction'
-        },
-        timestamp: new Date().toISOString()
-      });
-    }
-    
-    // ✅ CRITICAL FIX: Try checking status with both transactionId and sdkOrderId
-    let orderStatus = null;
-    let paymentStatus = 'PENDING';
-    let statusCheckError = null;
-    
-    // First try with transactionId (merchantOrderId)
-    if (actualTransactionId) {
-      try {
-        console.log(`📞 [MANUAL_VERIFY] Checking payment status with PhonePe using transactionId: ${actualTransactionId}`);
-        orderStatus = await phonepeService.getOrderStatus(actualTransactionId);
-        console.log('📋 [MANUAL_VERIFY] PhonePe order status (by transactionId):', JSON.stringify(orderStatus, null, 2));
-      } catch (error) {
-        console.warn(`⚠️ [MANUAL_VERIFY] Failed to check status by transactionId: ${error.message}`);
-        statusCheckError = error.message;
-      }
-    }
-    
-    // If that failed and we have sdkOrderId, try with sdkOrderId
-    // ✅ CRITICAL FIX: Check both state and status fields
-    if ((!orderStatus || (!orderStatus.state && !orderStatus.status)) && sdkOrderId) {
-      try {
-        console.log(`📞 [MANUAL_VERIFY] Checking payment status with PhonePe using sdkOrderId: ${sdkOrderId}`);
-        orderStatus = await phonepeService.getOrderStatus(sdkOrderId);
-        console.log('📋 [MANUAL_VERIFY] PhonePe order status (by sdkOrderId):', JSON.stringify(orderStatus, null, 2));
-      } catch (error) {
-        console.warn(`⚠️ [MANUAL_VERIFY] Failed to check status by sdkOrderId: ${error.message}`);
-        if (!statusCheckError) statusCheckError = error.message;
-      }
-    }
-    
-    // ✅ CRITICAL FIX: Extract status from PhonePe response
-    // PhonePe API returns "state" field, not "status" field
-    // Check both for compatibility
-    let apiStatus = null;
-    if (orderStatus) {
-      // PhonePe SDK order status API returns "state" field (e.g., "COMPLETED", "PENDING", "FAILED")
-      apiStatus = orderStatus.state || orderStatus.status;
-      
-      console.log('📋 [MANUAL_VERIFY] PhonePe API status fields:', {
-        state: orderStatus.state,
-        status: orderStatus.status,
-        using: apiStatus,
-        fullResponse: JSON.stringify(orderStatus).substring(0, 200)
-      });
-    }
-    
-    if (apiStatus) {
-      // Handle PhonePe state values: COMPLETED, PENDING, FAILED, CANCELLED
-      if (apiStatus === 'COMPLETED' || apiStatus === 'SUCCESS' || apiStatus === 'PAYMENT_SUCCESS') {
-        paymentStatus = 'COMPLETED';
-      } else if (apiStatus === 'FAILED' || apiStatus === 'PAYMENT_FAILED' || apiStatus === 'PAYMENT_ERROR') {
-        paymentStatus = 'FAILED';
-      } else if (apiStatus === 'CANCELLED' || apiStatus === 'PAYMENT_CANCELLED') {
-        paymentStatus = 'CANCELLED';
-      } else if (apiStatus === 'PENDING') {
-        paymentStatus = 'PENDING';
-      }
-    } else if (statusCheckError) {
-      // If we couldn't check status, assume still pending but log the error
-      console.warn(`⚠️ [MANUAL_VERIFY] Could not verify payment status: ${statusCheckError}`);
-      paymentStatus = 'PENDING';
-    }
-    
-    console.log(`📊 [MANUAL_VERIFY] Final payment status: ${paymentStatus}`);
-    
-    // If payment is successful, process wallet top-up
-    if (paymentStatus === 'COMPLETED') {
-      console.log('✅ [MANUAL_VERIFY] Payment successful, processing wallet top-up...');
-      
-      // Use the same processWalletTopupPayment method that the callback uses
-      // This method searches by multiple IDs, so it should find the transaction
-      await phonepeService.processWalletTopupPayment(actualTransactionId, walletTransactionData.amount);
-      
-      // Re-fetch to get updated data
-      const updatedDoc = await db.collection('driverTopUps').doc(actualTransactionId).get();
-      const updatedData = updatedDoc.exists ? updatedDoc.data() : walletTransactionData;
-      
+
+    // ✅ RAZORPAY ONLY - Verify payment status
+    const verifyResult = await razorpayService.verifyWalletTopupStatus(actualTransactionId);
+
+    if (verifyResult.success && verifyResult.status === 'completed') {
       return res.status(200).json({
         success: true,
         message: 'Payment verified and wallet updated successfully',
         data: {
           transactionId: actualTransactionId,
           status: 'completed',
-          amount: updatedData.amount,
-          pointsAwarded: updatedData.pointsAwarded || 0,
-          newBalance: updatedData.newPointsBalance || 0,
+          amount: walletTransactionData.amount,
+          pointsAwarded: verifyResult.data?.pointsAwarded || 0,
+          newBalance: verifyResult.data?.newBalance || 0,
           verifiedAt: new Date().toISOString(),
           verifiedBy: 'manual_verification'
         },
         timestamp: new Date().toISOString()
       });
-    } else if (paymentStatus === 'FAILED') {
-      // Update transaction status to failed
-      const { Timestamp } = require('firebase-admin/firestore');
-      await walletTransactionDoc.ref.update({
-        status: 'failed',
-        updatedAt: Timestamp.now()
-      });
-      
-      return res.status(200).json({
-        success: false,
-        message: 'Payment verification failed',
-        data: {
-          transactionId: actualTransactionId,
-          status: 'failed',
-          paymentStatus: paymentStatus
-        },
-        timestamp: new Date().toISOString()
-      });
-    } else {
-      // Still pending or couldn't verify
+    }
+
+    if (verifyResult.status === 'pending') {
       return res.status(200).json({
         success: true,
-        message: statusCheckError ? 'Could not verify payment status' : 'Payment is still pending',
+        message: 'Payment is still pending',
         data: {
           transactionId: actualTransactionId,
           status: 'pending',
-          paymentStatus: paymentStatus,
-          error: statusCheckError || null,
-          message: statusCheckError 
-            ? `Could not verify payment status: ${statusCheckError}. Please try again in a moment.`
-            : 'Payment is still being processed. Please wait a moment and try again, or wait for automatic webhook callback.'
+          paymentStatus: 'PENDING'
         },
         timestamp: new Date().toISOString()
       });
     }
+
+    return res.status(200).json({
+      success: false,
+      message: 'Payment verification failed',
+      data: {
+        transactionId: actualTransactionId,
+        status: 'failed',
+        paymentStatus: 'FAILED'
+      },
+      timestamp: new Date().toISOString()
+    });
     
   } catch (error) {
     console.error('❌ [MANUAL_VERIFY] Error verifying payment:', error);

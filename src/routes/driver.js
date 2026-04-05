@@ -9237,11 +9237,11 @@ router.post('/wallet/top-up', [
   requireDriver,
   speedLimiter, // Rate limit for sensitive financial operations
   body('amount')
-    .isFloat({ min: 250, max: 10000 })
-    .withMessage('Amount must be between 250 and 10,000'),
+    .isFloat({ min: 250, max: 50000 })
+    .withMessage('Amount must be between 250 and 50,000'),
   body('paymentMethod')
-    .isIn(['upi', 'card'])
-    .withMessage('Payment method must be upi or card'),
+    .isIn(['razorpay'])
+    .withMessage('Payment method must be razorpay'),
   body('paymentDetails')
     .optional()
     .isObject()

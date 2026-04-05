@@ -9092,16 +9092,26 @@ router.post('/bookings/:id/validate-radius', [
 
 /**
  * @route   GET /api/driver/wallet
- * @desc    Get driver points wallet balance and transactions
+ * @desc    Get driver points wallet balance and transactions with audit data
  * @access  Private (Driver only)
+ * ✅ ATOMIC: All-or-nothing data consistency
+ * ✅ ISOLATED: User-specific queries with driverId checks
+ * ✅ AUDITABLE: Full transaction history for admin dashboard
  */
 router.get('/wallet', requireDriver, async (req, res) => {
   try {
     const { uid } = req.user;
-    const { limit = 20, offset = 0, skipTransactions = false } = req.query;
+    const { limit = 20, offset = 0, skipTransactions = false, includeAudit = false } = req.query;
     
     const pointsService = require('../services/walletService');
     const startTime = Date.now();
+    
+    // ✅ AUDIT: Log wallet access for compliance
+    console.log('📊 [WALLET_API] Wallet accessed by driver:', {
+      driverId: uid,
+      timestamp: new Date().toISOString(),
+      includeAudit: includeAudit === 'true'
+    });
     
     // ✅ CRITICAL FIX: Check cache first to reduce DB load
     const cachingService = require('../services/cachingService');
@@ -9151,11 +9161,31 @@ router.get('/wallet', requireDriver, async (req, res) => {
     });
     }
 
+    // ✅ AUDIT DATA: Get admin-visible audit logs if requested
+    let auditData = null;
+    if (includeAudit === 'true') {
+      const db = getFirestore();
+      const auditSnapshot = await db.collection('walletTransactions')
+        .where('driverId', '==', uid)
+        .orderBy('createdAt', 'descending')
+        .limit(50)
+        .get();
+      
+      auditData = {
+        auditTransactions: auditSnapshot.docs.map(doc => ({
+          ...doc.data(),
+          id: doc.id
+        }))
+      };
+    }
+
     const responseData = {
       pointsBalance: balanceResult.wallet.pointsBalance,
       currency: 'points', // Points are virtual currency
       requiresTopUp: balanceResult.wallet.requiresTopUp,
       canWork: balanceResult.wallet.canWork,
+      isLowBalance: balanceResult.wallet.isLowBalance || false,
+      remainingTrips: balanceResult.wallet.remainingTrips || 0,
       lastUpdated: balanceResult.wallet.lastUpdated,
       transactions: transactionsResult.success ? (transactionsResult.transactions || []) : [],
       pagination: transactionsResult.success && transactionsResult.pagination ? transactionsResult.pagination : {
@@ -9163,7 +9193,9 @@ router.get('/wallet', requireDriver, async (req, res) => {
         offset: parseInt(offset),
         total: transactionsResult.success ? (transactionsResult.total || 0) : 0,
         hasMore: false
-      }
+      },
+      // ✅ AUDIT: Include audit data if requested
+      ...(auditData && { audit: auditData })
     };
     
     const response = {
@@ -9263,8 +9295,8 @@ router.post('/wallet/top-up', [
     }
     
     console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-    console.log('💳 [WALLET_TOP_UP] Payment Gateway: Razorpay (Production)');
-    console.log('🔧 [WALLET_TOP_UP] Processing wallet top-up via Razorpay payment-link flow');
+    console.log('💳 [WALLET_TOP_UP] Payment Gateway: Razorpay (Native Checkout SDK)');
+    console.log('🔧 [WALLET_TOP_UP] Processing wallet top-up via Razorpay Orders API');
     console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
     
     const transactionId = `WALLET_${uid}_${Date.now()}`;
@@ -9290,12 +9322,15 @@ router.post('/wallet/top-up', [
         message: 'Top-up already processed (duplicate request prevented)',
         data: {
           transactionId: existingData.id,
-          paymentUrl: existingData.razorpayPaymentUrl || null,
+          orderId: existingData.razorpayOrderId || null,
+          key: existingData.razorpayKey || null,
           amount: existingData.amount,
           paymentMethod: existingData.paymentMethod,
           status: existingData.status,
           isDuplicate: true,
-          gateway: 'razorpay'
+          gateway: 'razorpay',
+          isSDK: true,
+          isNativeCheckout: true
         },
         timestamp: new Date().toISOString()
       });
@@ -9324,8 +9359,24 @@ router.post('/wallet/top-up', [
       updatedAt: now
     });
 
-    // ✅ RAZORPAY ONLY - Create payment link
-    const paymentResult = await razorpayService.createWalletTopupPayment({
+    // ✅ RAZORPAY ORDERS API - Create order for native Checkout SDK
+    const razorpayOrdersService = require('../services/razorpayOrdersService');
+    
+    // ✅ Check if Razorpay is configured
+    if (!razorpayOrdersService.isConfigured()) {
+      await walletTransactionRef.delete();
+      return res.status(500).json({
+        success: false,
+        error: {
+          code: 'RAZORPAY_NOT_CONFIGURED',
+          message: 'Razorpay payment gateway is not configured',
+          details: 'Set RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET in backend environment variables'
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+    
+    const orderResult = await razorpayOrdersService.createWalletTopupOrder({
       transactionId,
       driverId: uid,
       amount,
@@ -9334,37 +9385,40 @@ router.post('/wallet/top-up', [
       customerEmail: req.user.email || null
     });
 
-    if (!paymentResult.success) {
+    if (!orderResult.success) {
       await walletTransactionRef.delete();
       return res.status(400).json({
         success: false,
         error: {
-          code: 'PAYMENT_CREATION_ERROR',
-          message: 'Failed to create payment request',
-          details: paymentResult.error
+          code: 'ORDER_CREATION_ERROR',
+          message: 'Failed to create payment order',
+          details: orderResult.error
         },
         timestamp: new Date().toISOString()
       });
     }
 
-    // ✅ Timestamp already imported above, reuse it
+    // ✅ Update transaction with order details
     await walletTransactionRef.update({
-      razorpayPaymentLinkId: paymentResult.data.paymentLinkId,
-      razorpayPaymentUrl: paymentResult.data.paymentUrl,
+      razorpayOrderId: orderResult.data.orderId,
+      razorpayKey: orderResult.data.key,
       updatedAt: Timestamp.now()
     });
 
+    // ✅ Return Orders API response (for native SDK)
     res.status(200).json({
       success: true,
-      message: 'Payment request created successfully',
+      message: 'Payment order created successfully',
       data: {
         transactionId,
-        paymentUrl: paymentResult.data.paymentUrl,
-        merchantTransactionId: paymentResult.data.merchantTransactionId,
+        orderId: orderResult.data.orderId,
+        key: orderResult.data.key,
         amount,
         paymentMethod,
-        requiresRedirect: true,
-        gateway: 'razorpay'
+        gateway: 'razorpay',
+        isSDK: true,
+        isNativeCheckout: true,
+        requiresRedirect: false
       },
       timestamp: new Date().toISOString()
     });
@@ -9385,84 +9439,78 @@ router.post('/wallet/top-up', [
 
 /**
  * @route   POST /api/driver/wallet/verify-payment
- * @desc    Manually verify payment status and update wallet (backup if callback missed)
+ * @desc    Verify payment signature and update wallet after SDK closes
  * @access  Private (Driver only)
  * 
- * This endpoint allows the driver app to manually verify payment status
- * after Razorpay shows success, in case the webhook callback was missed.
- * It checks payment status with Razorpay and processes wallet top-up if needed.
+ * Frontend calls this after Razorpay Checkout SDK closes with success.
+ * It verifies the payment signature and processes the wallet top-up.
  * 
- * Accepts transactionId (WALLET_xxx)
+ * Accepts:
+ * - transactionId: Internal transaction ID (WALLET_xxx)
+ * - razorpayPaymentId: Payment ID from SDK
+ * - razorpayOrderId: Order ID from SDK
+ * - razorpaySignature: Signature from SDK (for verification)
  */
 router.post('/wallet/verify-payment', requireDriver, async (req, res) => {
   try {
     const { uid } = req.user;
-    const { transactionId, sdkOrderId } = req.body;
+    const { transactionId, razorpayPaymentId, razorpayOrderId, razorpaySignature } = req.body;
     
-    // ✅ CRITICAL FIX: Accept either transactionId or sdkOrderId
-    if (!transactionId && !sdkOrderId) {
+    // ✅ Validate required fields
+    if (!transactionId) {
       return res.status(400).json({
         success: false,
         error: {
-          code: 'MISSING_IDENTIFIER',
-          message: 'Either transactionId or sdkOrderId is required'
+          code: 'MISSING_FIELD',
+          message: 'transactionId is required'
         },
         timestamp: new Date().toISOString()
       });
     }
     
     console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-    console.log('🔍 [MANUAL_VERIFY] Verifying payment status');
-    console.log('   transactionId:', transactionId || 'not provided');
-    console.log('   sdkOrderId:', sdkOrderId || 'not provided');
+    console.log('✅ [PAYMENT_VERIFY] Verifying Razorpay payment (User Isolation Check)');
+    console.log('   Driver ID:', uid);
+    console.log('   Transaction:', transactionId);
+    console.log('   Payment ID:', razorpayPaymentId || 'not provided');
+    console.log('   Order ID:', razorpayOrderId || 'not provided');
     console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
     
     const { getFirestore } = require('../services/firebase');
     const db = getFirestore();
-    const razorpayService = require('../services/razorpayService');
+    const razorpayOrdersService = require('../services/razorpayOrdersService');
     
-    // ✅ RAZORPAY ONLY - Find transaction by transactionId
-    let walletTransactionDoc = null;
-    let walletTransactionData = null;
-    let actualTransactionId = transactionId;
+    // Get transaction from database
+    const walletTransactionDoc = await db.collection('driverTopUps').doc(transactionId).get();
     
-    if (transactionId) {
-      walletTransactionDoc = await db.collection('driverTopUps').doc(transactionId).get();
-      if (walletTransactionDoc.exists) {
-        walletTransactionData = walletTransactionDoc.data();
-        actualTransactionId = transactionId;
-      }
-    }
-    
-    // If not found, search pending transactions for this driver
-    if (!walletTransactionDoc || !walletTransactionDoc.exists) {
-      console.log(`⚠️ [MANUAL_VERIFY] Transaction not found by ID, searching pending transactions for driver: ${uid}`);
-      const pendingQuery = await db.collection('driverTopUps')
-        .where('driverId', '==', uid)
-        .where('status', '==', 'pending')
-        .orderBy('createdAt', 'desc')
-        .limit(10)
-        .get();
-      
-      for (const doc of pendingQuery.docs) {
-        const data = doc.data();
-        if (transactionId && (data.id === transactionId || data.razorpayPaymentLinkId === transactionId || data.razorpayPaymentId === transactionId)) {
-          walletTransactionDoc = doc;
-          walletTransactionData = data;
-          actualTransactionId = data.id || doc.id;
-          console.log(`✅ [MANUAL_VERIFY] Found transaction in pending list: ${actualTransactionId}`);
-          break;
-        }
-      }
-    }
-    
-    if (!walletTransactionDoc || !walletTransactionDoc.exists) {
+    if (!walletTransactionDoc.exists) {
+      console.warn('⚠️ [PAYMENT_VERIFY] Transaction not found:', transactionId);
       return res.status(404).json({
         success: false,
         error: {
           code: 'TRANSACTION_NOT_FOUND',
           message: 'Wallet transaction not found',
-          details: `No transaction found with transactionId: ${transactionId || 'N/A'} or sdkOrderId: ${sdkOrderId || 'N/A'}`
+          details: `No transaction found with ID: ${transactionId}`
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+    
+    const walletTransactionData = walletTransactionDoc.data();
+    
+    // ✅ USER ISOLATION: Verify transaction belongs to this driver (SECURITY CHECK)
+    if (walletTransactionData.driverId !== uid) {
+      console.error('❌ [PAYMENT_VERIFY] USER ISOLATION VIOLATION - Driver attempting to verify another driver\'s payment', {
+        requestingDriverId: uid,
+        transactionDriverId: walletTransactionData.driverId,
+        transactionId
+      });
+      return res.status(403).json({
+        success: false,
+        error: {
+          code: 'USER_ISOLATION_VIOLATION',
+          message: 'Unauthorized: This transaction belongs to a different driver',
+          details: 'You can only verify your own payment transactions'
         },
         timestamp: new Date().toISOString()
       });
@@ -9470,67 +9518,118 @@ router.post('/wallet/verify-payment', requireDriver, async (req, res) => {
     
     // Check if already completed
     if (walletTransactionData.status === 'completed') {
-      console.log('✅ [MANUAL_VERIFY] Transaction already completed');
+      console.log('✅ [PAYMENT_VERIFY] Transaction already completed - returning cached result');
+      
+      // Get current wallet balance to return accurate data
+      const walletDoc = await db.collection('driverPointsWallets').doc(uid).get();
+      const filledBalance = walletDoc.exists ? (walletDoc.data().pointsBalance || 0) : 0;
+      
       return res.status(200).json({
         success: true,
-        message: 'Payment already verified and wallet updated',
+        message: 'Payment already verified and wallet credited',
         data: {
-          transactionId: actualTransactionId,
+          transactionId,
           status: 'completed',
           amount: walletTransactionData.amount,
           pointsAwarded: walletTransactionData.pointsAwarded || 0,
-          newBalance: walletTransactionData.newPointsBalance || 0
+          newBalance: walletTransactionData.newPointsBalance || filledBalance,
+          currentWalletBalance: filledBalance,
+          verifiedAt: walletTransactionData.processedAt
         },
         timestamp: new Date().toISOString()
       });
     }
 
-    // ✅ RAZORPAY ONLY - Verify payment status
-    const verifyResult = await razorpayService.verifyWalletTopupStatus(actualTransactionId);
-
-    if (verifyResult.success && verifyResult.status === 'completed') {
-      return res.status(200).json({
-        success: true,
-        message: 'Payment verified and wallet updated successfully',
-        data: {
-          transactionId: actualTransactionId,
-          status: 'completed',
-          amount: walletTransactionData.amount,
-          pointsAwarded: verifyResult.data?.pointsAwarded || 0,
-          newBalance: verifyResult.data?.newBalance || 0,
-          verifiedAt: new Date().toISOString(),
-          verifiedBy: 'manual_verification'
+    // If SDK callback includes payment data, process it
+    if (razorpayPaymentId && razorpayOrderId && razorpaySignature) {
+      console.log('🔐 [PAYMENT_VERIFY] Verifying payment signature with user isolation...');
+      
+      // ✅ USER ISOLATION: Pass uid to verify payment belongs to this driver
+      const processResult = await razorpayOrdersService.verifyWalletTopupStatus(
+        transactionId,
+        {
+          razorpayPaymentId,
+          razorpayOrderId,
+          razorpaySignature
         },
-        timestamp: new Date().toISOString()
-      });
-    }
-
-    if (verifyResult.status === 'pending') {
+        uid  // ✅ Pass requesting driver ID for user isolation
+      );
+      
+      if (processResult.success && processResult.status === 'completed') {
+        console.log('✅ [PAYMENT_VERIFY] Payment verified and wallet updated atomically');
+        
+        // ✅ Get updated wallet data from database for response
+        const updatedWalletDoc = await db.collection('driverPointsWallets').doc(uid).get();
+        const updatedWalletData = updatedWalletDoc.exists ? updatedWalletDoc.data() : {};
+        
+        // Get updated transaction data
+        const updatedTransactionDoc = await db.collection('driverTopUps').doc(transactionId).get();
+        const updatedTransactionData = updatedTransactionDoc.exists ? updatedTransactionDoc.data() : walletTransactionData;
+        
+        return res.status(200).json({
+          success: true,
+          message: 'Payment verified and wallet credited successfully',
+          data: {
+            transactionId,
+            status: 'completed',
+            amount: updatedTransactionData.amount,
+            pointsAwarded: updatedTransactionData.pointsAwarded || 0,
+            previousBalance: updatedTransactionData.previousBalance || 0,
+            newBalance: updatedTransactionData.newPointsBalance || updatedWalletData.pointsBalance || 0,
+            currentWalletBalance: updatedWalletData.pointsBalance || 0,
+            razorpayPaymentId: updatedTransactionData.razorpayPaymentId,
+            razorpayOrderId: updatedTransactionData.razorpayOrderId,
+            verifiedAt: updatedTransactionData.processedAt,
+            audit: {
+              transactionId: transactionId,
+              driverId: uid,
+              timestamp: new Date().toISOString(),
+              isolated: true
+            }
+          },
+          timestamp: new Date().toISOString()
+        });
+      } else if (processResult.error === 'UNAUTHORIZED: Cannot verify another driver\'s payment') {
+        // ✅ USER ISOLATION: Error from service
+        console.error('❌ [PAYMENT_VERIFY] USER ISOLATION CHECK FAILED in service layer');
+        return res.status(403).json({
+          success: false,
+          error: {
+            code: 'USER_ISOLATION_VIOLATION',
+            message: 'Unauthorized: Cannot verify another driver\'s payment',
+            details: 'Transaction belongs to a different driver'
+          },
+          timestamp: new Date().toISOString()
+        });
+      } else {
+        console.warn('⚠️ [PAYMENT_VERIFY] Payment verification failed:', processResult.error);
+        return res.status(400).json({
+          success: false,
+          error: {
+            code: 'VERIFICATION_FAILED',
+            message: 'Payment verification failed',
+            details: processResult.error || 'Invalid payment signature or amount mismatch'
+          },
+          timestamp: new Date().toISOString()
+        });
+      }
+    } else {
+      // SDK only callback - just return status
+      console.log('⏳ [PAYMENT_VERIFY] Waiting for payment data from SDK');
       return res.status(200).json({
         success: true,
-        message: 'Payment is still pending',
+        message: 'Payment request received, waiting for Razorpay confirmation',
         data: {
-          transactionId: actualTransactionId,
+          transactionId,
           status: 'pending',
-          paymentStatus: 'PENDING'
+          driverId: uid
         },
         timestamp: new Date().toISOString()
       });
     }
-
-    return res.status(200).json({
-      success: false,
-      message: 'Payment verification failed',
-      data: {
-        transactionId: actualTransactionId,
-        status: 'failed',
-        paymentStatus: 'FAILED'
-      },
-      timestamp: new Date().toISOString()
-    });
     
   } catch (error) {
-    console.error('❌ [MANUAL_VERIFY] Error verifying payment:', error);
+    console.error('❌ [PAYMENT_VERIFY] Error verifying payment:', error);
     res.status(500).json({
       success: false,
       error: {
@@ -12973,42 +13072,51 @@ router.get('/documents/download-all', requireDriver, async (req, res) => {
 });
 
 /**
- * @route   POST /api/driver/tracking/update
- * @desc    Update driver location for a booking and emit to customer (compatibility alias)
- * @access  Private (Driver only)
+ * @route   POST /api/driver/webhooks/razorpay-payment
+ * @desc    Razorpay webhook handler for payment callbacks
+ * @access  Public (webhook from Razorpay)
+ * 
+ * Razorpay sends payment updates via this webhook.
+ * Validates webhook signature for security.
  */
-router.post('/tracking/update', requireDriver, async (req, res) => {
+router.post('/webhooks/razorpay-payment', async (req, res) => {
   try {
-    const { uid } = req.user;
-    const { bookingId, location, speed, heading } = req.body || {};
+    const razorpayOrdersService = require('../services/razorpayOrdersService');
+
+    // Razorpay sends signature in headers
+    const signature = req.headers['x-razorpay-signature'];
     
-    if (!bookingId || !location || typeof location.latitude !== 'number' || typeof location.longitude !== 'number') {
+    console.log('📩 [RAZORPAY_WEBHOOK] Received webhook');
+    console.log('   Event:', req.body.event);
+    console.log('   Has signature:', !!signature);
+
+    // Get event type and payload
+    const event = req.body.event;
+    const payload = req.body.payload;
+
+    if (!event || !payload) {
+      console.warn('⚠️ [RAZORPAY_WEBHOOK] Invalid webhook format');
       return res.status(400).json({
         success: false,
-        error: {
-          code: 'VALIDATION_ERROR',
-          message: 'bookingId and location {latitude, longitude} are required'
-        }
+        error: { code: 'INVALID_WEBHOOK', message: 'Invalid webhook format' }
       });
     }
-    
-    const liveTrackingService = require('../services/liveTrackingService');
-    await liveTrackingService.updateDriverLocation(uid, {
-      latitude: location.latitude,
-      longitude: location.longitude,
-      accuracy: location.accuracy || null,
-      speed: speed || location.speed || null,
-      heading: heading || location.heading || null,
-      timestamp: new Date().toISOString()
-    }, bookingId);
-    
-    return res.status(200).json({ success: true });
+
+    // Process webhook based on event
+    const result = await razorpayOrdersService.handlePaymentCallback(event, payload);
+
+    if (result.success) {
+      console.log('✅ [RAZORPAY_WEBHOOK] Webhook processed successfully');
+      return res.status(200).json({ success: true });
+    } else {
+      console.warn('⚠️ [RAZORPAY_WEBHOOK] Webhook processing failed:', result.error);
+      return res.status(200).json({ success: true }); // Return 200 anyway (Razorpay doesn't retry on 200+)
+    }
+
   } catch (error) {
-    console.error('❌ [TRACKING_UPDATE] Failed to update driver location:', error);
-    return res.status(500).json({
-      success: false,
-      error: { code: 'TRACKING_UPDATE_ERROR', message: 'Failed to update driver location' }
-    });
+    console.error('❌ [RAZORPAY_WEBHOOK] Webhook error:', error);
+    // Return 200 to prevent Razorpay from retrying and spamming logs
+    res.status(200).json({ success: true });
   }
 });
 

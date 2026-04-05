@@ -9,6 +9,7 @@ const { documentStatusCache, invalidateUserCache } = require('../middleware/cach
 const BookingLockService = require('../services/bookingLockService');
 const bookingLockService = new BookingLockService();
 const { driverStatusWorkflowService, DriverStatusError } = require('../services/driverStatusWorkflowService');
+const { idempotencyKeyMiddleware } = require('../middleware/idempotencyMiddleware');
 
 const router = express.Router();
 
@@ -4610,8 +4611,9 @@ router.get('/bookings/available', requireDriver, async (req, res) => {
  * @route   POST /api/driver/bookings/:id/accept
  * @desc    Accept a booking
  * @access  Private (Driver only)
+ * ✅ IDEMPOTENT: Uses Idempotency-Key header to prevent duplicate acceptances on retry
  */
-router.post('/bookings/:id/accept', requireDriver, async (req, res) => {
+router.post('/bookings/:id/accept', idempotencyKeyMiddleware, requireDriver, async (req, res) => {
   const { uid } = req.user;
   const { id } = req.params;
   
@@ -5126,6 +5128,29 @@ router.post('/bookings/:id/accept', requireDriver, async (req, res) => {
 
     // ✅ FIXED: Release booking lock on success
     await bookingLockService.releaseBookingLock(id, uid);
+
+    // ✅ CRITICAL FIX: Emit 'booking_taken' event to ALL drivers
+    // This tells other drivers to remove this booking from their available list
+    try {
+      const { getSocketIO } = require('../services/socket');
+      const io = getSocketIO();
+      
+      if (io) {
+        // Broadcast to ALL clients that this booking is no longer available
+        io.emit('booking_taken', {
+          bookingId: id,
+          takenBy: uid,
+          action: 'remove_from_available',
+          reason: 'Driver accepted this booking',
+          timestamp: new Date().toISOString()
+        });
+        
+        console.log(`📢 [ACCEPT_BOOKING] Broadcast 'booking_taken' event for booking ${id} to all drivers`);
+      }
+    } catch (broadcastError) {
+      console.error('⚠️ [ACCEPT_BOOKING] Failed to broadcast booking_taken event:', broadcastError);
+      // Don't fail the request if broadcast fails
+    }
 
     res.status(200).json({
       success: true,

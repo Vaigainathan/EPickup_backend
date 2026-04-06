@@ -9251,22 +9251,44 @@ router.post('/wallet/top-up', [
     .withMessage('Idempotency key is required for duplicate prevention')
 ], async (req, res) => {
   try {
+    const { uid } = req.user;
+    const { amount, paymentMethod, paymentDetails, idempotencyKey } = req.body;
+    
+    // ✅ Log incoming request for debugging
+    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+    console.log('📥 [WALLET_TOP_UP_REQUEST] Received top-up request');
+    console.log('   Driver ID:', uid);
+    console.log('   Amount:', amount, '(type:', typeof amount + ')');
+    console.log('   Payment Method:', paymentMethod);
+    console.log('   Idempotency Key:', idempotencyKey);
+    console.log('   Request Body:', JSON.stringify(req.body, null, 2));
+    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+    
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
+      console.error('❌ [VALIDATION_ERROR] Request validation failed');
+      console.error('   Errors:', JSON.stringify(errors.array(), null, 2));
+      console.error('   Received amount:', amount, '(type:', typeof amount + ')');
+      console.error('   Received paymentMethod:', paymentMethod);
+      console.error('   Received idempotencyKey:', idempotencyKey);
+      
       return res.status(400).json({
         success: false,
         error: {
           code: 'VALIDATION_ERROR',
           message: 'Validation failed',
-          details: errors.array()
+          details: errors.array(),
+          received: {
+            amount,
+            paymentMethod,
+            idempotencyKey,
+            paymentDetailsProvided: !!paymentDetails
+          }
         },
         timestamp: new Date().toISOString()
       });
     }
 
-    const { uid } = req.user;
-    const { amount, paymentMethod, paymentDetails, idempotencyKey } = req.body;
-    
     // Sanitize payment details
     const sanitizedPaymentDetails = {
       timestamp: new Date().toISOString(),
@@ -9279,10 +9301,14 @@ router.post('/wallet/top-up', [
       } : {})
     };
     
-    // ✅ RAZORPAY ONLY - No fallback to PhonePe
-    const razorpayService = require('../services/razorpayService');
+    // ✅ Only import razorpayOrdersService (not razorpayService, which is old/unused)
+    const razorpayOrdersService = require('../services/razorpayOrdersService');
     
-    if (!razorpayService.isConfigured()) {
+    if (!razorpayOrdersService.isConfigured()) {
+      console.error('❌ [CONFIG_ERROR] Razorpay is not configured');
+      console.error('   RAZORPAY_KEY_ID:', process.env.RAZORPAY_KEY_ID ? '✅ set' : '❌ NOT SET');
+      console.error('   RAZORPAY_KEY_SECRET:', process.env.RAZORPAY_KEY_SECRET ? '✅ set' : '❌ NOT SET');
+      
       return res.status(500).json({
         success: false,
         error: {
@@ -9359,23 +9385,9 @@ router.post('/wallet/top-up', [
       updatedAt: now
     });
 
+
+
     // ✅ RAZORPAY ORDERS API - Create order for native Checkout SDK
-    const razorpayOrdersService = require('../services/razorpayOrdersService');
-    
-    // ✅ Check if Razorpay is configured
-    if (!razorpayOrdersService.isConfigured()) {
-      await walletTransactionRef.delete();
-      return res.status(500).json({
-        success: false,
-        error: {
-          code: 'RAZORPAY_NOT_CONFIGURED',
-          message: 'Razorpay payment gateway is not configured',
-          details: 'Set RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET in backend environment variables'
-        },
-        timestamp: new Date().toISOString()
-      });
-    }
-    
     const orderResult = await razorpayOrdersService.createWalletTopupOrder({
       transactionId,
       driverId: uid,
@@ -9383,13 +9395,24 @@ router.post('/wallet/top-up', [
     });
 
     if (!orderResult.success) {
+      console.error('❌ [ORDER_CREATION_FAILED] Razorpay order creation failed');
+      console.error('   Error Code:', orderResult.code);
+      console.error('   Error Message:', orderResult.error);
+      console.error('   Debug Info:', JSON.stringify(orderResult.debug, null, 2));
+      
       await walletTransactionRef.delete();
       return res.status(400).json({
         success: false,
         error: {
           code: 'ORDER_CREATION_ERROR',
           message: 'Failed to create payment order',
-          details: orderResult.error
+          details: orderResult.error,
+          debugInfo: {
+            errorCode: orderResult.code,
+            timestamp: new Date().toISOString(),
+            isConfigured: orderResult.debug?.isConfigured,
+            fullDetails: orderResult.debug
+          }
         },
         timestamp: new Date().toISOString()
       });

@@ -9237,9 +9237,13 @@ router.post('/wallet/top-up', [
   requireDriver,
   speedLimiter, // Rate limit for sensitive financial operations
   body('amount')
+    .trim()
+    .notEmpty().withMessage('Amount is required')
     .isFloat({ min: 250, max: 50000 })
     .withMessage('Amount must be between 250 and 50,000'),
   body('paymentMethod')
+    .trim()
+    .notEmpty().withMessage('Payment method is required')
     .isIn(['razorpay'])
     .withMessage('Payment method must be razorpay'),
   body('paymentDetails')
@@ -9247,8 +9251,10 @@ router.post('/wallet/top-up', [
     .isObject()
     .withMessage('Payment details must be an object'),
   body('idempotencyKey')
+    .trim()
+    .notEmpty().withMessage('Idempotency key is required for duplicate prevention')
     .isString()
-    .withMessage('Idempotency key is required for duplicate prevention')
+    .withMessage('Idempotency key must be a string')
 ], async (req, res) => {
   try {
     const { uid } = req.user;

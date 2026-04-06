@@ -122,14 +122,22 @@ class RazorpayOrdersService {
         throw new Error(`Invalid amount: ${amount} (${amountInPaise} paise). Minimum: ₹250`);
       }
 
+      // ✅ FIX: Razorpay receipt has max length of 40 characters
+      // Create short unique receipt: WLT_<timestamp>_<shortId>
+      // Example: WLT_1775449049681_abc12345 (36 chars max)
+      const timestamp = Date.now();
+      const shortDriverId = driverId.substring(0, 8); // First 8 chars of driver ID
+      const shortReceipt = `WLT_${timestamp}_${shortDriverId}`.substring(0, 40);
+
       const orderPayload = {
         amount: amountInPaise,
         currency: 'INR',
-        receipt: transactionId,
+        receipt: shortReceipt, // ✅ Now guaranteed under 40 chars
         payment_capture: 1,
         notes: {
           transactionId,
           driverId,
+          receipt: shortReceipt,
           purpose: 'driver_wallet_topup'
         }
       };

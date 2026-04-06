@@ -311,10 +311,10 @@ class RazorpayService {
       console.log('   Payment Link reference_id:', paymentLinkEntity.reference_id);
 
       const transactionId =
-        paymentLinkEntity.reference_id ||
         paymentEntity.notes?.transactionId ||
+        paymentLinkEntity.notes?.transactionId ||
         paymentEntity.notes?.merchantTransactionId ||
-        paymentLinkEntity.notes?.transactionId;
+        paymentLinkEntity.reference_id;
 
       console.log('🔍 [RAZORPAY_WEBHOOK] Extracted transactionId:', transactionId);
 

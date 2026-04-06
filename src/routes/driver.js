@@ -9307,10 +9307,10 @@ router.post('/wallet/top-up', [
       } : {})
     };
     
-    // ✅ Only import razorpayOrdersService (not razorpayService, which is old/unused)
-    const razorpayOrdersService = require('../services/razorpayOrdersService');
+    // ✅ Only import razorpayService (uses Payment Links - works with WebView)
+    const razorpayService = require('../services/razorpayService');
     
-    if (!razorpayOrdersService.isConfigured()) {
+    if (!razorpayService.isConfigured()) {
       console.error('❌ [CONFIG_ERROR] Razorpay is not configured');
       console.error('   RAZORPAY_KEY_ID:', process.env.RAZORPAY_KEY_ID ? '✅ set' : '❌ NOT SET');
       console.error('   RAZORPAY_KEY_SECRET:', process.env.RAZORPAY_KEY_SECRET ? '✅ set' : '❌ NOT SET');
@@ -9392,59 +9392,56 @@ router.post('/wallet/top-up', [
     });
 
 
-
-    // ✅ RAZORPAY ORDERS API - Create order for native Checkout SDK
-    const orderResult = await razorpayOrdersService.createWalletTopupOrder({
+    // ✅ RAZORPAY PAYMENT LINKS API - Create payment link for WebView
+    const paymentResult = await razorpayService.createWalletTopupPayment({
       transactionId,
       driverId: uid,
-      amount
+      amount,
+      mobileNumber: sanitizedPaymentDetails.driverId,
+      customerName: sanitizedPaymentDetails.driverId,
+      customerEmail: sanitizedPaymentDetails.driverId
     });
 
-    if (!orderResult.success) {
-      console.error('❌ [ORDER_CREATION_FAILED] Razorpay order creation failed');
-      console.error('   Error Code:', orderResult.code);
-      console.error('   Error Message:', orderResult.error);
-      console.error('   Debug Info:', JSON.stringify(orderResult.debug, null, 2));
+    if (!paymentResult.success) {
+      console.error('❌ [PAYMENT_LINK_FAILED] Razorpay payment link creation failed');
+      console.error('   Error Message:', paymentResult.error);
       
       await walletTransactionRef.delete();
       return res.status(400).json({
         success: false,
         error: {
-          code: 'ORDER_CREATION_ERROR',
-          message: 'Failed to create payment order',
-          details: orderResult.error,
+          code: 'PAYMENT_LINK_ERROR',
+          message: 'Failed to create payment link',
+          details: paymentResult.error,
           debugInfo: {
-            errorCode: orderResult.code,
-            timestamp: new Date().toISOString(),
-            isConfigured: orderResult.debug?.isConfigured,
-            fullDetails: orderResult.debug
+            timestamp: new Date().toISOString()
           }
         },
         timestamp: new Date().toISOString()
       });
     }
 
-    // ✅ Update transaction with order details
+    // ✅ Update transaction with payment link details
     await walletTransactionRef.update({
-      razorpayOrderId: orderResult.data.orderId,
-      razorpayKey: orderResult.data.key,
+      razorpayPaymentLinkId: paymentResult.data.paymentLinkId,
+      razorpayPaymentUrl: paymentResult.data.paymentUrl,
       updatedAt: Timestamp.now()
     });
 
-    // ✅ Return Orders API response (for native SDK)
+    // ✅ Return Payment Links response (for WebView/browser)
     res.status(200).json({
       success: true,
-      message: 'Payment order created successfully',
+      message: 'Payment link created successfully',
       data: {
         transactionId,
-        orderId: orderResult.data.orderId,
-        key: orderResult.data.key,
+        paymentUrl: paymentResult.data.paymentUrl,
+        paymentLinkId: paymentResult.data.paymentLinkId,
         amount,
         paymentMethod,
         gateway: 'razorpay',
-        isSDK: true,
-        isNativeCheckout: true,
-        requiresRedirect: false
+        requiresRedirect: true,
+        isSDK: false,
+        isNativeCheckout: false
       },
       timestamp: new Date().toISOString()
     });
@@ -13104,15 +13101,19 @@ router.get('/documents/download-all', requireDriver, async (req, res) => {
 
 /**
  * @route   POST /api/driver/webhooks/razorpay-payment
- * @desc    Razorpay webhook handler for payment callbacks
+ * @desc    Razorpay webhook handler for payment callbacks (both Orders API and Payment Links)
  * @access  Public (webhook from Razorpay)
  * 
- * Razorpay sends payment updates via this webhook.
+ * Razorpay sends payment updates via this webhook for:
+ * 1. Orders API: payment.captured event
+ * 2. Payment Links: payment_link.paid event
+ * 
  * Validates webhook signature for security.
  */
 router.post('/webhooks/razorpay-payment', async (req, res) => {
   try {
-    const razorpayOrdersService = require('../services/razorpayOrdersService');
+    // ✅ Use razorpayService which handles BOTH Orders API and Payment Links webhooks
+    const razorpayService = require('../services/razorpayService');
 
     // Razorpay sends signature in headers
     const signature = req.headers['x-razorpay-signature'];
@@ -13120,6 +13121,7 @@ router.post('/webhooks/razorpay-payment', async (req, res) => {
     console.log('📩 [RAZORPAY_WEBHOOK] Received webhook');
     console.log('   Event:', req.body.event);
     console.log('   Has signature:', !!signature);
+    console.log('   Signature:', signature || 'none');
 
     // Get event type and payload
     const event = req.body.event;
@@ -13133,11 +13135,12 @@ router.post('/webhooks/razorpay-payment', async (req, res) => {
       });
     }
 
-    // Process webhook based on event
-    const result = await razorpayOrdersService.handlePaymentCallback(event, payload);
+    // ✅ Process webhook with razorpayService (handles both Payment Links and Orders API)
+    const result = await razorpayService.handlePaymentCallback(req.body, signature);
 
     if (result.success) {
       console.log('✅ [RAZORPAY_WEBHOOK] Webhook processed successfully');
+      console.log('   Message:', result.message);
       return res.status(200).json({ success: true });
     } else {
       console.warn('⚠️ [RAZORPAY_WEBHOOK] Webhook processing failed:', result.error);

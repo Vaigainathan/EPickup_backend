@@ -98,18 +98,23 @@ class PointsService {
       // Commission sufficiency is validated per booking acceptance instead
       const canWork = walletData.status !== 'suspended';
       
+      // ✅ FIX: Convert all numeric fields to ensure they're numbers (not strings)
+      const pointsBalance = Number(walletData.pointsBalance || 0);
+      const totalPointsEarned = Number(walletData.totalPointsEarned || 0);
+      const totalPointsSpent = Number(walletData.totalPointsSpent || 0);
+      
       const result = {
         success: true,
         wallet: {
           driverId: walletData.driverId,
-          pointsBalance: walletData.pointsBalance,
-          totalPointsEarned: walletData.totalPointsEarned,
-          totalPointsSpent: walletData.totalPointsSpent,
+          pointsBalance: pointsBalance,
+          totalPointsEarned: totalPointsEarned,
+          totalPointsSpent: totalPointsSpent,
           status: walletData.status,
           requiresTopUp: walletData.requiresTopUp,
           canWork: canWork,
-          isLowBalance: this.isLowBalance(walletData.pointsBalance),
-          remainingTrips: this.getRemainingTrips(walletData.pointsBalance),
+          isLowBalance: this.isLowBalance(pointsBalance),
+          remainingTrips: this.getRemainingTrips(pointsBalance),
           lastUpdated: walletData.lastUpdated
         }
       };
@@ -149,8 +154,9 @@ class PointsService {
     try {
       console.info(`[WALLET_SERVICE] Adding points for driver: ${driverId}, amount: ₹${realMoneyAmount}`);
       
+      // ✅ FIX: Ensure numeric conversion to prevent string concatenation
       // 1:1 conversion rate (1 rupee = 1 point)
-      const pointsToAdd = realMoneyAmount;
+      const pointsToAdd = Number(realMoneyAmount);
       
       // Get current wallet
       const walletDoc = await this.db.collection('driverPointsWallets').doc(driverId).get();
@@ -166,8 +172,14 @@ class PointsService {
         currentWallet = walletDoc.data();
       }
       
-      const newPointsBalance = (currentWallet?.pointsBalance || 0) + pointsToAdd;
-      const newTotalEarned = (currentWallet?.totalPointsEarned || 0) + pointsToAdd;
+      // ✅ FIX: Convert balance to number (might be stored as string in Firestore)
+      const currentBalance = Number(currentWallet?.pointsBalance || 0);
+      const currentTotalEarned = Number(currentWallet?.totalPointsEarned || 0);
+      
+      const newPointsBalance = currentBalance + pointsToAdd;
+      const newTotalEarned = currentTotalEarned + pointsToAdd;
+      
+      console.log(`✅ [WALLET_SERVICE] Balance calculation: ${currentBalance} + ${pointsToAdd} = ${newPointsBalance}`);
 
       // Update points wallet
       const walletRef = this.db.collection('driverPointsWallets').doc(driverId);
@@ -186,8 +198,8 @@ class PointsService {
         driverId,
         type: 'credit',
         pointsAmount: pointsToAdd,
-        realMoneyAmount: realMoneyAmount,
-        previousBalance: currentWallet?.pointsBalance || 0,
+        realMoneyAmount: Number(realMoneyAmount),
+        previousBalance: currentBalance,  // ✅ Use numeric currentBalance
         newBalance: newPointsBalance,
         paymentMethod,
         paymentDetails,
@@ -237,7 +249,7 @@ class PointsService {
             id: transactionId,
             type: 'credit',
             amount: pointsToAdd,
-            previousBalance: currentWallet?.pointsBalance || 0,
+            previousBalance: currentBalance,  // ✅ Use numeric currentBalance
             newBalance: newPointsBalance,
             paymentMethod,
             status: 'completed',
@@ -249,7 +261,7 @@ class PointsService {
         
         // Emit revenue update to admin
         socketService.emitRevenueUpdate({
-          totalRevenue: realMoneyAmount,
+          totalRevenue: Number(realMoneyAmount),
           driverId,
           source: 'driver_topup'
         });
@@ -569,9 +581,14 @@ class PointsService {
         const bookingId = data.tripId || tripDetails.bookingId || 'N/A';
         const distance = data.distanceKm || tripDetails.distance || 0;
         
+        // ✅ FIX: Convert numeric values to ensure they're numbers (not strings)
+        const pointsAmount = Number(data.pointsAmount || 0);
+        const previousBalance = Number(data.previousBalance || 0);
+        const newBalance = Number(data.newBalance || 0);
+        
         // Generate description based on transaction type (money format only)
         let description = '';
-        const commissionAmount = Math.abs(data.pointsAmount || 0);
+        const commissionAmount = Math.abs(pointsAmount);
         const roundedDistance = Math.ceil(distance);
         
         if (data.type === 'debit') {
@@ -591,10 +608,10 @@ class PointsService {
         return {
           id: data.id || doc.id,
           driverId: data.driverId,
-          type: data.type || (data.pointsAmount > 0 ? 'credit' : 'debit'),
-          amount: data.type === 'debit' ? -Math.abs(data.pointsAmount || 0) : Math.abs(data.pointsAmount || 0), // Negative for debit, positive for credit
-          previousBalance: data.previousBalance || 0,
-          newBalance: data.newBalance || 0,
+          type: data.type || (pointsAmount > 0 ? 'credit' : 'debit'),
+          amount: data.type === 'debit' ? -Math.abs(pointsAmount) : Math.abs(pointsAmount), // Negative for debit, positive for credit
+          previousBalance: previousBalance,
+          newBalance: newBalance,
           paymentMethod: tripDetails.paymentMethod || data.paymentMethod || 'points',
           status: data.status || 'completed',
           metadata: {

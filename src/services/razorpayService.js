@@ -41,11 +41,17 @@ class RazorpayService {
       const rzp = this.getInstance();
       const amountInPaise = Math.round(Number(amount) * 100);
 
+      // ✅ FIX: Razorpay Payment Links API requires reference_id max 40 characters
+      // Create short reference: WLT_<timestamp>_<shortId>
+      const timestamp = Date.now();
+      const shortDriverId = driverId.substring(0, 8); // First 8 chars of driver ID
+      const shortReference = `WLT_${timestamp}_${shortDriverId}`.substring(0, 40);
+
       const payload = {
         amount: amountInPaise,
         currency: 'INR',
         accept_partial: false,
-        reference_id: transactionId,
+        reference_id: shortReference,  // ✅ Now guaranteed under 40 chars
         description: `EPickup wallet top-up (${driverId})`,
         notify: {
           sms: Boolean(mobileNumber),
@@ -53,7 +59,8 @@ class RazorpayService {
         },
         reminder_enable: false,
         notes: {
-          transactionId,
+          transactionId,              // ✅ Full ID stored in notes for tracking
+          shortReference,
           driverId,
           purpose: 'driver_wallet_topup'
         }
@@ -76,6 +83,7 @@ class RazorpayService {
           paymentUrl: link.short_url,
           paymentLinkId: link.id,
           merchantTransactionId: transactionId,
+          shortReference: shortReference,
           isSDK: false,
           paymentMode: 'PRODUCTION',
           isTestMode: false,

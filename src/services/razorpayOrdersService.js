@@ -23,14 +23,32 @@ class RazorpayOrdersService {
 
   getInstance() {
     if (!this.isConfigured()) {
-      throw new Error('Razorpay is not configured');
+      // ✅ FIX: Detailed configuration error for debugging
+      const configError = {
+        message: 'Razorpay is not configured',
+        hasKeyId: !!process.env.RAZORPAY_KEY_ID,
+        hasKeySecret: !!process.env.RAZORPAY_KEY_SECRET,
+        keyIdLength: process.env.RAZORPAY_KEY_ID?.length || 0,
+        keySecretLength: process.env.RAZORPAY_KEY_SECRET?.length || 0
+      };
+      console.error('❌ [RAZORPAY_CONFIG] Configuration missing:', configError);
+      throw new Error(`Razorpay configuration incomplete. Check RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET environment variables`);
     }
 
     if (!this.instance) {
-      this.instance = new Razorpay({
-        key_id: process.env.RAZORPAY_KEY_ID,
-        key_secret: process.env.RAZORPAY_KEY_SECRET
-      });
+      try {
+        this.instance = new Razorpay({
+          key_id: process.env.RAZORPAY_KEY_ID,
+          key_secret: process.env.RAZORPAY_KEY_SECRET
+        });
+        console.log('✅ [RAZORPAY] Instance created successfully');
+      } catch (initError) {
+        console.error('❌ [RAZORPAY_INIT] Failed to create Razorpay instance:', {
+          message: initError.message,
+          error: initError
+        });
+        throw initError;
+      }
     }
 
     return this.instance;
@@ -96,24 +114,41 @@ class RazorpayOrdersService {
       console.log('📋 [RAZORPAY_ORDERS] Creating order for wallet top-up');
       console.log('   Amount:', amount, '(', amountInPaise, 'paise)');
       console.log('   Driver:', driverId);
+      console.log('   Transaction:', transactionId);
       console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
 
-      // Create order
-      const order = await rzp.orders.create({
+      // ✅ FIX: Add pre-validation
+      if (!amountInPaise || amountInPaise < 25000) { // Min ₹250
+        throw new Error(`Invalid amount: ${amount} (${amountInPaise} paise). Minimum: ₹250`);
+      }
+
+      const orderPayload = {
         amount: amountInPaise,
         currency: 'INR',
         receipt: transactionId,
-        payment_capture: 1, // Auto-capture enabled
+        payment_capture: 1,
         notes: {
           transactionId,
           driverId,
           purpose: 'driver_wallet_topup'
         }
-      });
+      };
+
+      console.log('🔧 [RAZORPAY_ORDERS] Order payload:', JSON.stringify(orderPayload, null, 2));
+      console.log('📤 [RAZORPAY_ORDERS] Calling rzp.orders.create()...');
+
+      // ✅ FIX: Add timeout
+      const order = await Promise.race([
+        rzp.orders.create(orderPayload),
+        new Promise((_, reject) => 
+          setTimeout(() => reject(new Error('Razorpay API timeout (30s)')), 30000)
+        )
+      ]);
 
       console.log('✅ [RAZORPAY_ORDERS] Order created successfully');
       console.log('   Order ID:', order.id);
       console.log('   Receipt:', order.receipt);
+      console.log('   Status:', order.status);
 
       return {
         success: true,
@@ -132,10 +167,31 @@ class RazorpayOrdersService {
         }
       };
     } catch (error) {
-      console.error('❌ [RAZORPAY_ORDERS] Order creation failed:', error.message);
+      // ✅ FIX: Log full error object, not just message (message might be undefined)
+      console.error('❌ [RAZORPAY_ORDERS] Order creation failed:', {
+        message: error.message || 'Unknown error',
+        code: error.code,
+        statusCode: error.statusCode,
+        fullError: error,
+        reason: error?.reason || error?.response?.data?.description || 'No reason provided'
+      });
+      
+      // ✅ FIX: Check if it's a configuration issue
+      const isConfigError = !process.env.RAZORPAY_KEY_ID || !process.env.RAZORPAY_KEY_SECRET;
+      if (isConfigError) {
+        console.error('❌ [RAZORPAY_SETUP] CRITICAL: Missing Razorpay environment variables');
+        console.error('   RAZORPAY_KEY_ID:', process.env.RAZORPAY_KEY_ID ? '✅ set' : '❌ NOT SET');
+        console.error('   RAZORPAY_KEY_SECRET:', process.env.RAZORPAY_KEY_SECRET ? '✅ set' : '❌ NOT SET');
+      }
+      
       return {
         success: false,
-        error: error.message || 'Failed to create Razorpay order'
+        error: error.message || error.reason || 'Failed to create Razorpay order',
+        code: error.code || 'ORDER_CREATION_ERROR',
+        debug: {
+          isConfigured: !isConfigError,
+          timestamp: new Date().toISOString()
+        }
       };
     }
   }

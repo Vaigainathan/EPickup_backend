@@ -9379,10 +9379,7 @@ router.post('/wallet/top-up', [
     const orderResult = await razorpayOrdersService.createWalletTopupOrder({
       transactionId,
       driverId: uid,
-      amount,
-      mobileNumber: req.user.phone || null,
-      customerName: req.user.name || 'Driver',
-      customerEmail: req.user.email || null
+      amount
     });
 
     if (!orderResult.success) {
@@ -9424,13 +9421,18 @@ router.post('/wallet/top-up', [
     });
 
   } catch (error) {
-    console.error('Error topping up points wallet:', error);
+    console.error('❌ Error topping up points wallet:', {
+      message: error.message,
+      stack: error.stack,
+      code: error.code,
+      fullError: error
+    });
     res.status(500).json({
       success: false,
       error: {
         code: 'POINTS_TOPUP_ERROR',
         message: 'Failed to top-up points wallet',
-        details: 'An error occurred while topping up points wallet'
+        details: error.message || 'An error occurred while topping up points wallet'
       },
       timestamp: new Date().toISOString()
     });

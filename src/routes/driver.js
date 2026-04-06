@@ -9369,6 +9369,22 @@ router.post('/wallet/top-up', [
     }
     console.log('✅ [IDEMPOTENCY] No duplicate found, proceeding with new transaction');
     
+    // ✅ FETCH DRIVER DETAILS for Razorpay customer info
+    let driverName = 'Driver';
+    let driverPhone = undefined;
+    try {
+      const driverDoc = await db.collection('drivers').doc(uid).get();
+      if (driverDoc.exists) {
+        const driverData = driverDoc.data();
+        driverName = driverData.name || driverData.fullName || 'Driver';
+        driverPhone = driverData.phone || driverData.phoneNumber || undefined;
+        console.log('✅ [DRIVER_DETAILS] Fetched driver info:', { name: driverName, hasPhone: !!driverPhone });
+      }
+    } catch (fetchError) {
+      console.warn('⚠️ [DRIVER_DETAILS] Could not fetch driver details:', fetchError.message);
+      // Continue anyway - we have the UID
+    }
+    
     const walletTransactionRef = db.collection('driverTopUps').doc(transactionId);
     
     // ✅ CRITICAL FIX: Use Firestore Timestamp for consistent date handling
@@ -9393,13 +9409,14 @@ router.post('/wallet/top-up', [
 
 
     // ✅ RAZORPAY PAYMENT LINKS API - Create payment link for WebView
+    // Pass real customer details for SMS notifications and payment records
     const paymentResult = await razorpayService.createWalletTopupPayment({
       transactionId,
       driverId: uid,
       amount,
-      mobileNumber: sanitizedPaymentDetails.driverId,
-      customerName: sanitizedPaymentDetails.driverId,
-      customerEmail: sanitizedPaymentDetails.driverId
+      mobileNumber: driverPhone,       // ✅ Real phone number for SMS
+      customerName: driverName,         // ✅ Real driver name
+      customerEmail: undefined          // ✅ Skip email - we don't have validated email
     });
 
     if (!paymentResult.success) {

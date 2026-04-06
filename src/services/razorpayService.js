@@ -53,10 +53,6 @@ class RazorpayService {
         accept_partial: false,
         reference_id: shortReference,  // ✅ Now guaranteed under 40 chars
         description: `EPickup wallet top-up (${driverId})`,
-        notify: {
-          sms: Boolean(mobileNumber),
-          email: Boolean(customerEmail)
-        },
         reminder_enable: false,
         notes: {
           transactionId,              // ✅ Full ID stored in notes for tracking
@@ -66,12 +62,23 @@ class RazorpayService {
         }
       };
 
-      const contact = this.normalizeIndianContact(mobileNumber);
-      if (contact || customerName || customerEmail) {
-        payload.customer = {
-          name: customerName || 'Driver',
-          contact,
-          email: customerEmail || undefined
+      // ✅ FIX: Only add customer details if they're valid
+      const validContact = this.normalizeIndianContact(mobileNumber);
+      const validEmail = customerEmail && customerEmail.includes('@') ? customerEmail : undefined;
+      const validName = customerName && customerName.length > 0 ? customerName : undefined;
+
+      if (validContact || validName || validEmail) {
+        payload.customer = {};
+        if (validName) payload.customer.name = validName;
+        if (validContact) payload.customer.contact = validContact;
+        if (validEmail) payload.customer.email = validEmail;
+      }
+
+      // ✅ Only add notification settings if contact/email exist
+      if (validContact || validEmail) {
+        payload.notify = {
+          sms: Boolean(validContact),
+          email: Boolean(validEmail)
         };
       }
 

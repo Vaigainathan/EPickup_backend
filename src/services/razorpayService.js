@@ -285,8 +285,18 @@ class RazorpayService {
 
   async handlePaymentCallback(body, signature) {
     try {
+      console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+      console.log('🔍 [RAZORPAY_WEBHOOK_HANDLER] Processing webhook callback');
+      console.log('   Event:', body?.event);
+      console.log('   Has signature:', !!signature);
+      console.log('   Has payload:', !!body?.payload);
+      console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+
       const hasWebhookSecret = Boolean(process.env.RAZORPAY_WEBHOOK_SECRET);
+      console.log('🔐 [RAZORPAY_WEBHOOK] Webhook secret configured:', hasWebhookSecret);
+      
       if (hasWebhookSecret && !this.verifyWebhookSignature(body, signature)) {
+        console.error('❌ [RAZORPAY_WEBHOOK] Invalid webhook signature');
         return { success: false, error: 'Invalid webhook signature' };
       }
 
@@ -294,28 +304,40 @@ class RazorpayService {
       const paymentEntity = body?.payload?.payment?.entity || {};
       const paymentLinkEntity = body?.payload?.payment_link?.entity || {};
 
+      console.log('📋 [RAZORPAY_WEBHOOK] Parsed entities:');
+      console.log('   Payment entity keys:', Object.keys(paymentEntity));
+      console.log('   Payment Link entity keys:', Object.keys(paymentLinkEntity));
+      console.log('   Payment notes:', paymentEntity.notes);
+      console.log('   Payment Link reference_id:', paymentLinkEntity.reference_id);
+
       const transactionId =
         paymentLinkEntity.reference_id ||
         paymentEntity.notes?.transactionId ||
         paymentEntity.notes?.merchantTransactionId ||
         paymentLinkEntity.notes?.transactionId;
 
+      console.log('🔍 [RAZORPAY_WEBHOOK] Extracted transactionId:', transactionId);
+
       if (!transactionId) {
+        console.warn('⚠️ [RAZORPAY_WEBHOOK] No transaction reference found in webhook');
         return { success: true, message: 'Webhook ignored: no transaction reference' };
       }
 
       if (event === 'payment_link.paid' || event === 'payment.captured') {
+        console.log('✅ [RAZORPAY_WEBHOOK] Payment successful event detected:', event);
         const processed = await this.processWalletTopupPayment(transactionId, {
           razorpayPaymentId: paymentEntity.id || null,
           razorpayPaymentLinkId: paymentLinkEntity.id || null
         });
 
+        console.log('📊 [RAZORPAY_WEBHOOK] Payment processing result:', processed);
         return processed.success
           ? { success: true, message: 'Top-up processed' }
           : { success: false, error: processed.error || 'Top-up processing failed' };
       }
 
       if (event === 'payment.failed' || event === 'payment_link.cancelled' || event === 'payment_link.expired') {
+        console.log('❌ [RAZORPAY_WEBHOOK] Payment failed/cancelled event:', event);
         const doc = await this.findTopupByTransactionId(transactionId);
         if (doc && doc.exists) {
           await doc.ref.update({
@@ -330,9 +352,14 @@ class RazorpayService {
         return { success: true, message: 'Failure webhook processed' };
       }
 
+      console.log('⊘ [RAZORPAY_WEBHOOK] Webhook ignored for event:', event);
       return { success: true, message: `Webhook ignored for event: ${event}` };
     } catch (error) {
-      console.error('❌ [RAZORPAY] handlePaymentCallback failed:', error);
+      console.error('❌ [RAZORPAY] handlePaymentCallback failed:', {
+        message: error.message,
+        stack: error.stack,
+        fullError: error
+      });
       return { success: false, error: error.message || 'Webhook handling failed' };
     }
   }

@@ -13129,23 +13129,29 @@ router.get('/documents/download-all', requireDriver, async (req, res) => {
  */
 router.post('/webhooks/razorpay-payment', async (req, res) => {
   try {
+    // ✅ Log ALL webhook requests for debugging
+    const signature = req.headers['x-razorpay-signature'];
+    const event = req.body?.event;
+    const referenceId = req.body?.payload?.payment_link?.entity?.reference_id || req.body?.payload?.payment?.entity?.notes?.transactionId;
+
+    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+    console.log('📩 [RAZORPAY_WEBHOOK] ⚠️ WEBHOOK RECEIVED');
+    console.log('   Event:', event);
+    console.log('   Signature present:', !!signature);
+    console.log('   Reference ID:', referenceId || 'not found');
+    console.log('   Full headers:', JSON.stringify(req.headers, null, 2));
+    console.log('   Full body keys:', Object.keys(req.body || {}));
+    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+
     // ✅ Use razorpayService which handles BOTH Orders API and Payment Links webhooks
     const razorpayService = require('../services/razorpayService');
 
-    // Razorpay sends signature in headers
-    const signature = req.headers['x-razorpay-signature'];
-    
-    console.log('📩 [RAZORPAY_WEBHOOK] Received webhook');
-    console.log('   Event:', req.body.event);
-    console.log('   Has signature:', !!signature);
-    console.log('   Signature:', signature || 'none');
-
     // Get event type and payload
-    const event = req.body.event;
+    const eventType = req.body.event;
     const payload = req.body.payload;
 
-    if (!event || !payload) {
-      console.warn('⚠️ [RAZORPAY_WEBHOOK] Invalid webhook format');
+    if (!eventType || !payload) {
+      console.warn('⚠️ [RAZORPAY_WEBHOOK] Invalid webhook format - missing event or payload');
       return res.status(400).json({
         success: false,
         error: { code: 'INVALID_WEBHOOK', message: 'Invalid webhook format' }
@@ -13158,16 +13164,20 @@ router.post('/webhooks/razorpay-payment', async (req, res) => {
     if (result.success) {
       console.log('✅ [RAZORPAY_WEBHOOK] Webhook processed successfully');
       console.log('   Message:', result.message);
-      return res.status(200).json({ success: true });
+      return res.status(200).json({ success: true, message: result.message });
     } else {
       console.warn('⚠️ [RAZORPAY_WEBHOOK] Webhook processing failed:', result.error);
-      return res.status(200).json({ success: true }); // Return 200 anyway (Razorpay doesn't retry on 200+)
+      return res.status(200).json({ success: true, message: 'Webhook acknowledged but processing failed' }); // Return 200 anyway
     }
 
   } catch (error) {
-    console.error('❌ [RAZORPAY_WEBHOOK] Webhook error:', error);
+    console.error('❌ [RAZORPAY_WEBHOOK] Webhook error:', {
+      message: error.message,
+      stack: error.stack,
+      fullError: error
+    });
     // Return 200 to prevent Razorpay from retrying and spamming logs
-    res.status(200).json({ success: true });
+    res.status(200).json({ success: true, message: 'Webhook received and acknowledged' });
   }
 });
 

@@ -9172,7 +9172,8 @@ router.get('/wallet', requireDriver, async (req, res) => {
     if (cached) {
       console.log(`✅ [POINTS_WALLET_API] Cache hit for wallet data: ${uid}`, {
         cacheKey,
-        cachedBalance: cached.wallet?.pointsBalance
+        cachedBalance: cached.data?.pointsBalance,
+        cacheStructure: Object.keys(cached)
       });
       return res.status(200).json(cached);
     }
@@ -9394,8 +9395,8 @@ router.post('/wallet/top-up', [
     }
     
     console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-    console.log('💳 [WALLET_TOP_UP] Payment Gateway: Razorpay (Native Checkout SDK)');
-    console.log('🔧 [WALLET_TOP_UP] Processing wallet top-up via Razorpay Orders API');
+    console.log('💳 [WALLET_TOP_UP] Payment Gateway: Razorpay (Payment Links API)');
+    console.log('🔧 [WALLET_TOP_UP] Processing wallet top-up via Payment Links - WebView redirect');
     console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
     
     const transactionId = `WALLET_${uid}_${Date.now()}`;

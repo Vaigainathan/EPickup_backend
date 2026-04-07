@@ -240,7 +240,8 @@ class PointsService {
 
       console.info(`[WALLET_SERVICE] Points added successfully: ${pointsToAdd} points for ₹${realMoneyAmount}`);
 
-      // Emit real-time wallet update event
+      // ✅ CRITICAL FIX: Emit real-time wallet update event
+      console.log('📡 [WALLET_SERVICE] About to emit socket events for wallet update');
       try {
         const socketService = require('./socket');
         const walletData = {
@@ -256,8 +257,18 @@ class PointsService {
             createdAt: new Date().toISOString()
           }]
         };
-        socketService.emitWalletUpdate(driverId, walletData);
+        
+        console.log('📡 [WALLET_SERVICE] Socket data prepared:', {
+          driverId,
+          newBalance: newPointsBalance,
+          pointsAdded: pointsToAdd
+        });
+        
+        const emitResult = socketService.emitWalletUpdate(driverId, walletData);
+        console.log(`✅ [WALLET_SERVICE] Socket emit wallet update result: ${emitResult}`);
+        
         socketService.emitTransactionEvent(driverId, walletData.transactions[0]);
+        console.log('✅ [WALLET_SERVICE] Transaction event emitted');
         
         // Emit revenue update to admin
         socketService.emitRevenueUpdate({
@@ -265,8 +276,13 @@ class PointsService {
           driverId,
           source: 'driver_topup'
         });
+        console.log('✅ [WALLET_SERVICE] Revenue event emitted');
       } catch (socketError) {
-        console.warn('⚠️ [WALLET_SERVICE] Failed to emit wallet update event:', socketError.message);
+        console.error('❌ [WALLET_SERVICE] CRITICAL: Failed to emit wallet update event:', {
+          error: socketError.message,
+          stack: socketError.stack,
+          driverId
+        });
       }
       
       return {

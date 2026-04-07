@@ -2525,6 +2525,10 @@ router.put('/status', [
     .optional()
     .isBoolean()
     .withMessage('isAvailable must be a boolean'),
+  body('lastStatusUpdate')
+    .optional()
+    .isISO8601()
+    .withMessage('lastStatusUpdate must be a valid ISO 8601 timestamp'),
   body('currentLocation')
     .optional()
     .custom((value) => {
@@ -2573,7 +2577,7 @@ router.put('/status', [
     }
 
     const { uid } = req.user;
-    const { isOnline, isAvailable, currentLocation, workingHours, workingDays, restoreFromAppRestart } = req.body;
+    const { isOnline, isAvailable, currentLocation, workingHours, workingDays, restoreFromAppRestart, lastStatusUpdate } = req.body;
     const db = getFirestore();
     
     // ✅ CRITICAL FIX: Prevent going offline if driver has active booking
@@ -2973,6 +2977,7 @@ router.put('/status', [
         const selectedSlots = slots.filter(slot => slot.isSelected === true);
         const now = new Date();
         
+        // ✅ FIX: Categorize slots for restore validation
         const activeSlots = selectedSlots.filter(slot => {
           const startTime = slot.startTime?.toDate ? slot.startTime.toDate() : new Date(slot.startTime);
           const endTime = slot.endTime?.toDate ? slot.endTime.toDate() : new Date(slot.endTime);
@@ -2986,6 +2991,9 @@ router.put('/status', [
           );
         });
 
+        // ✅ FIX: Also check for UPCOMING slots (not just active)
+        // On app restore, we allow restoration if driver has upcoming shifts
+        // This handles gaps between shifts or app crashes between shifts
         const upcomingSlots = selectedSlots
           .map(slot => {
             const startTime = slot.startTime?.toDate ? slot.startTime.toDate() : new Date(slot.startTime);
@@ -2996,9 +3004,31 @@ router.put('/status', [
           })
           .filter(({ startTime }) => startTime instanceof Date && !isNaN(startTime.getTime()) && now < startTime);
         
-        if (activeSlots.length === 0 && selectedSlots.length > 0) {
-          // Driver has selected slots but all are expired
-          const expiredSlotLabels = selectedSlots.map(slot => {
+        // ✅ FIX: Check for expired slots
+        const expiredSlots = selectedSlots.filter(slot => {
+          const endTime = slot.endTime?.toDate ? slot.endTime.toDate() : new Date(slot.endTime);
+          return (
+            endTime instanceof Date &&
+            !isNaN(endTime.getTime()) &&
+            now > endTime
+          );
+        });
+
+        console.log('✅ [STATUS_UPDATE] App restore slot validation:', {
+          activeSlots: activeSlots.length,
+          upcomingSlots: upcomingSlots.length,
+          expiredSlots: expiredSlots.length,
+          selectedSlots: selectedSlots.length,
+          hasValidSlots: activeSlots.length > 0 || upcomingSlots.length > 0
+        });
+
+        // ✅ FIX: Allow restore if driver has ACTIVE or UPCOMING slots (not just active)
+        // This prevents gaps between shifts from causing problems
+        const hasValidSlots = activeSlots.length > 0 || upcomingSlots.length > 0;
+        
+        if (!hasValidSlots && selectedSlots.length > 0) {
+          // Driver has selected slots but ALL are expired
+          const expiredSlotLabels = expiredSlots.map(slot => {
             const startTime = slot.startTime?.toDate ? slot.startTime.toDate() : new Date(slot.startTime);
             const endTime = slot.endTime?.toDate ? slot.endTime.toDate() : new Date(slot.endTime);
             return `${startTime.toLocaleTimeString()} - ${endTime.toLocaleTimeString()}`;
@@ -3008,20 +3038,19 @@ router.put('/status', [
             .slice()
             .sort((a, b) => a.startTime.getTime() - b.startTime.getTime())[0];
           
-          console.warn('⚠️ [STATUS_UPDATE] Cannot restore online status - no active slots:', {
+          console.warn('⚠️ [STATUS_UPDATE] Cannot restore online status - no active or upcoming slots:', {
             expiredSlots: expiredSlotLabels,
             selectedCount: selectedSlots.length,
+            expiredCount: expiredSlots.length,
             upcomingCount: upcomingSlots.length
           });
           
           return res.status(400).json({
             success: false,
             error: {
-              code: nextSlot ? 'NOT_IN_SLOT_TIME' : 'ALL_SLOTS_EXPIRED',
+              code: 'ALL_SLOTS_EXPIRED',
               message: 'Cannot restore online status',
-              details: nextSlot
-                ? `You can restore online status only during your active slot time. Next slot (${nextSlot.slot.label || 'upcoming slot'}) starts at ${nextSlot.startTime.toLocaleTimeString()}.`
-                : `All your selected slots have ended: ${expiredSlotLabels}. Please select current or future slots to go online.`
+              details: `All your selected slots have ended: ${expiredSlotLabels}. Please select current or future slots to go online.`
             },
             timestamp: new Date().toISOString()
           });
@@ -3128,7 +3157,29 @@ router.put('/status', [
         }
         
         // ✅ CRITICAL: Add lastStatusUpdate timestamp for conflict detection
-        updateData['driver.lastStatusUpdate'] = now;
+        // ✅ FIX: If frontend provides lastStatusUpdate (app restore), use it to preserve grace period
+        // Otherwise use current time for regular status changes
+        if (lastStatusUpdate) {
+          try {
+            const clientLastStatusUpdate = new Date(lastStatusUpdate);
+            if (!isNaN(clientLastStatusUpdate.getTime())) {
+              updateData['driver.lastStatusUpdate'] = clientLastStatusUpdate;
+              console.log('✅ [STATUS_UPDATE] Using client-provided lastStatusUpdate for grace period preservation:', {
+                clientTime: lastStatusUpdate,
+                serverTime: now.toISOString(),
+                timeDiff: now.getTime() - clientLastStatusUpdate.getTime() + 'ms'
+              });
+            } else {
+              updateData['driver.lastStatusUpdate'] = now;
+            }
+          } catch (parseError) {
+            console.warn('⚠️ [STATUS_UPDATE] Failed to parse client lastStatusUpdate, using server time:', parseError);
+            updateData['driver.lastStatusUpdate'] = now;
+          }
+        } else {
+          // Regular status change (not app restore) - use current time
+          updateData['driver.lastStatusUpdate'] = now;
+        }
         updateData['driver.statusUpdatedBy'] = uid; // Track who updated (for multi-device scenarios)
         
         // Update within transaction (atomic operation)
@@ -9119,9 +9170,16 @@ router.get('/wallet', requireDriver, async (req, res) => {
     const cached = await cachingService.get(cacheKey, 'memory');
     
     if (cached) {
-      console.log(`✅ [POINTS_WALLET_API] Cache hit for wallet data: ${uid}`);
+      console.log(`✅ [POINTS_WALLET_API] Cache hit for wallet data: ${uid}`, {
+        cacheKey,
+        cachedBalance: cached.wallet?.pointsBalance
+      });
       return res.status(200).json(cached);
     }
+    
+    console.log(`🔍 [POINTS_WALLET_API] Cache miss for wallet data: ${uid}, fetching from DB`, {
+      cacheKey
+    });
     
     // Get points wallet balance (with caching enabled)
     let balanceResult = await pointsService.getPointsBalance(uid, true);
@@ -9205,9 +9263,18 @@ router.get('/wallet', requireDriver, async (req, res) => {
       timestamp: new Date().toISOString()
     };
     
+    // ✅ CRITICAL FIX: Log the balance being returned to client
+    console.log(`📤 [POINTS_WALLET_API] Returning wallet balance to driver ${uid}:`, {
+      pointsBalance: responseData.pointsBalance,
+      totalPointsEarned: responseData.totalPointsEarned,
+      transactionCount: responseData.transactions?.length || 0,
+      lastUpdated: responseData.lastUpdated
+    });
+    
     // ✅ CRITICAL FIX: Cache the response for 30 seconds (short TTL for balance accuracy)
     // Cache key includes limit/offset to handle pagination correctly
     await cachingService.set(cacheKey, response, 30, 'memory');
+    console.log(`💾 [POINTS_WALLET_API] Cached wallet response at key: ${cacheKey}`);
     
     const queryTime = Date.now() - startTime;
     console.log(`✅ [POINTS_WALLET_API] Wallet data retrieved in ${queryTime}ms for driver: ${uid}`);

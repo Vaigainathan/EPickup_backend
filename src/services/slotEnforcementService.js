@@ -128,20 +128,20 @@ class SlotEnforcementService {
 
       // ✅ CRITICAL FIX: Check if driver manually set status recently - respect manual online status
       // This prevents slot enforcement from overriding driver's manual online choice
-      // Grace period: 30 minutes after manual status update (enough time for app restart scenarios)
+      // ✅ INCREASED: Grace period from 30 to 60 minutes (better for app restart scenarios)
       const lastStatusUpdate = driverData.driver?.lastStatusUpdate;
       const isManuallyOnline = (() => {
         if (!lastStatusUpdate || !driverData.driver?.isOnline) return false;
         const lastUpdateTime = lastStatusUpdate?.toDate ? lastStatusUpdate.toDate() : new Date(lastStatusUpdate);
         const timeSinceLastUpdate = currentTime - lastUpdateTime;
-        const gracePeriodMs = 30 * 60 * 1000; // 30 minutes grace period (covers app restart scenarios)
+        const gracePeriodMs = 60 * 60 * 1000; // 60 minutes grace period (increased from 30) - covers app restart + slot gaps
         return timeSinceLastUpdate < gracePeriodMs;
       })();
 
       if (isManuallyOnline) {
         const lastUpdateTime = lastStatusUpdate?.toDate ? lastStatusUpdate.toDate() : new Date(lastStatusUpdate);
         const timeSinceLastUpdate = currentTime - lastUpdateTime;
-        console.log(`✅ [SLOT_ENFORCEMENT] Driver ${driverId} manually went online recently (${Math.round(timeSinceLastUpdate / 60000)}m ago) - respecting manual status (grace period: 30m)`);
+        console.log(`✅ [SLOT_ENFORCEMENT] Driver ${driverId} manually went online recently (${Math.round(timeSinceLastUpdate / 60000)}m ago) - respecting manual status (grace period: 60m)`);
         return {
           driverId,
           success: true,

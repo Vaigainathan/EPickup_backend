@@ -5,8 +5,11 @@
 
 const express = require('express');
 const { requireRole } = require('../middleware/auth');
-const { getDb } = require('../utils/firebaseUtils');
+const { getFirestore } = require('../services/firebase');
 const router = express.Router();
+
+// Lazy database initialization
+const getDb = () => getFirestore();
 
 /**
  * @route   GET /api/version

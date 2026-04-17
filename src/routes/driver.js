@@ -2577,7 +2577,7 @@ router.put('/status', [
     }
 
     const { uid } = req.user;
-    const { isOnline, isAvailable, currentLocation, workingHours, workingDays, restoreFromAppRestart, lastStatusUpdate } = req.body;
+    const { isOnline, isAvailable, currentLocation, workingHours, workingDays, restoreFromAppRestart } = req.body;
     const db = getFirestore();
     
     // ✅ CRITICAL FIX: Prevent going offline if driver has active booking
@@ -3034,10 +3034,6 @@ router.put('/status', [
             return `${startTime.toLocaleTimeString()} - ${endTime.toLocaleTimeString()}`;
           }).join(', ');
 
-          const nextSlot = upcomingSlots
-            .slice()
-            .sort((a, b) => a.startTime.getTime() - b.startTime.getTime())[0];
-          
           console.warn('⚠️ [STATUS_UPDATE] Cannot restore online status - no active or upcoming slots:', {
             expiredSlots: expiredSlotLabels,
             selectedCount: selectedSlots.length,

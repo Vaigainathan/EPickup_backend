@@ -936,12 +936,12 @@ router.get('/contact', async (req, res) => {
     } else {
       // Fallback to static data
       contactInfo = {
-        phone: '+91-1800-123-4567',
-        email: 'support@epickup.com',
-        whatsapp: '+91-98765-43210',
+        phone: '+91 86108 66061',
+        email: 'epickupofficial@gmail.com',
+        whatsapp: '+91 80121 61017',
         address: 'EPickup Support, Bangalore, Karnataka, India',
         workingHours: '24/7',
-        emergency: '+91-98765-43211',
+        emergency: '+91 80121 61017',
         socialMedia: {
           facebook: 'https://facebook.com/epickup',
           twitter: 'https://twitter.com/epickup',
@@ -949,23 +949,23 @@ router.get('/contact', async (req, res) => {
         },
         departments: {
           general: {
-            phone: '+91-1800-123-4567',
-            email: 'support@epickup.com',
-            hours: '6:00 AM - 10:00 PM'
+            phone: '+91 86108 66061',
+            email: 'epickupofficial@gmail.com',
+            hours: '24/7'
           },
           technical: {
-            phone: '+91-1800-123-4568',
-            email: 'tech@epickup.com',
-            hours: '8:00 AM - 8:00 PM'
+            phone: '+91 86108 66061',
+            email: 'epickupofficial@gmail.com',
+            hours: '24/7'
           },
           billing: {
-            phone: '+91-1800-123-4569',
-            email: 'billing@epickup.com',
-            hours: '9:00 AM - 6:00 PM'
+            phone: '+91 86108 66061',
+            email: 'epickupofficial@gmail.com',
+            hours: '24/7'
           },
           emergency: {
-            phone: '+91-98765-43211',
-            email: 'emergency@epickup.com',
+            phone: '+91 80121 61017',
+            email: 'epickupofficial@gmail.com',
             hours: '24/7'
           }
         },

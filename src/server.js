@@ -131,6 +131,7 @@ const fileUploadRoutes = require('./routes/fileUpload');
 const supportRoutes = require('./routes/support');
 const chatRoutes = require('./routes/chat');
 const googleMapsRoutes = require('./routes/googleMaps');
+const versionRoutes = require('./routes/version');
 const realtimeRoutes = require('./routes/realtime');
 const fcmTokenRoutes = require('./routes/fcmTokens');
 const emergencyRoutes = require('./routes/emergency');
@@ -574,6 +575,8 @@ app.use('/api/chat', appCheckMiddleware.optionalMiddleware(), authMiddleware, ch
 // app.use('/api/chat', appCheckMiddleware.middleware(), authMiddleware, chatRoutes); // Production mode
 
 app.use('/api/google-maps', googleMapsRoutes); // No auth required for Google Maps API
+
+app.use('/api', versionRoutes); // Version endpoint - public access for app update checks
 
 app.use('/api/realtime', appCheckMiddleware.optionalMiddleware(), authMiddleware, realtimeRoutes);
 // app.use('/api/realtime', appCheckMiddleware.middleware(), authMiddleware, realtimeRoutes); // Production mode

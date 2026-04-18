@@ -97,84 +97,156 @@ class WorkSlotsService {
       // Mark generation as in progress
       this.ongoingGenerations.set(driverId, Date.now());
       
-      // ✅ CRITICAL FIX: Atomic slot generation with state preservation
-      // ✅ INDUSTRY STANDARD: Preserve selections during slot regeneration
+      // ✅ FIX #1: Query BOTH yesterday and today to preserve selections across day boundaries
+      // This ensures that if driver selected yesterday's slots, they carry forward
+      const previousDayStart = new Date(generationStart);
+      previousDayStart.setDate(previousDayStart.getDate() - 1);
+      
+      console.log(`📅 [WORK_SLOTS] FIX #1: Querying slots from ${previousDayStart.toISOString().split('T')[0]} to ${slotDateKey} for preservation`);
+      
+      // ✅ CRITICAL: Query includes YESTERDAY's slots so selections persist across day boundary
+      // This is the key fix for Zomato-style slot persistence
       const existingQuery = db.collection('workSlots')
         .where('driverId', '==', driverId)
-        .where('startTime', '>=', Timestamp.fromDate(generationStart))
+        .where('startTime', '>=', Timestamp.fromDate(previousDayStart))
         .where('startTime', '<=', Timestamp.fromDate(generationEnd));
 
       const existingSnapshot = await existingQuery.get();
+      
+      // ✅ FIX #2: Delete slots older than 7 days to prevent database accumulation
+      const sevenDaysAgo = new Date(generationStart);
+      sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
+      
+      console.log(`🗑️ [WORK_SLOTS] FIX #2: Checking for slots older than ${sevenDaysAgo.toISOString().split('T')[0]}`);
+      
+      const oldSlotsQuery = db.collection('workSlots')
+        .where('driverId', '==', driverId)
+        .where('startTime', '<', Timestamp.fromDate(sevenDaysAgo));
+      
+      const oldSlotsSnapshot = await oldSlotsQuery.get();
+      
+      if (!oldSlotsSnapshot.empty) {
+        console.log(`🔴 [WORK_SLOTS] Found ${oldSlotsSnapshot.size} slots older than 7 days - deleting them...`);
+        const oldSlotsDeletionBatch = db.batch();
+        oldSlotsSnapshot.forEach(doc => {
+          const oldSlotData = doc.data();
+          oldSlotsDeletionBatch.delete(doc.ref);
+          console.log(`   🗑️ Deleted old slot: ${oldSlotData.label} from ${oldSlotData.startTime?.toDate?.()?.toISOString?.() || 'unknown date'}`);
+        });
+        await oldSlotsDeletionBatch.commit();
+        console.log(`✅ [WORK_SLOTS] FIX #2: Successfully deleted ${oldSlotsSnapshot.size} old slots`);
+      } else {
+        console.log(`✅ [WORK_SLOTS] FIX #2: No old slots found (database clean)`);
+      }
       
       // ✅ FIX: Store selected slots from existing data before deleting
       // Use a more robust preservation strategy based on time ranges (not just slotId)
       const preservedSelections = new Map(); // timeRange -> { isSelected, selectedAt }
       
       if (!existingSnapshot.empty) {
-        console.log(`📋 [WORK_SLOTS] Preserving selection state from ${existingSnapshot.size} existing slots`);
+        console.log(`📋 [WORK_SLOTS] FIX #3: Found ${existingSnapshot.size} slots to check for preservation (includes yesterday's slots)`);
         const now = new Date();
         
         existingSnapshot.forEach(doc => {
           const slotData = doc.data();
-          // ✅ CRITICAL FIX #3: Only preserve selection if slot was selected AND not cleared recently
-          // Check if slot was selected AND has a recent selectedAt timestamp (not stale)
+          const slotStartDate = slotData.startTime?.toDate?.()?.toISOString?.()?.split('T')[0] || 'unknown';
+          
+          // ✅ FIX #3 PART A: Preserve selections from ANY date (including yesterday)
+          // Key difference: No 24-hour limit anymore - preserve across day boundaries
           if (slotData.isSelected === true && slotData.selectedAt) {
-            const selectedAt = slotData.selectedAt.toDate();
-            const hoursSinceSelection = (now.getTime() - selectedAt.getTime()) / (1000 * 60 * 60);
+            // ✅ CRITICAL FIX: Use UTC hours AND MINUTES - timezone offset to get LOCAL hours
+            // CRITICAL: Must include minutes because offset is in precise minutes (e.g., -330 for UTC+5:30 = -5.5 hours)
+            // Formula: localHour = floor((UTCHour*60 + UTCMinutes - offsetMinutes) / 60)
+            // Example: For 1:30 AM UTC with -330 offset: floor((1*60 + 30 - (-330))/60) = floor(420/60) = 7 ✅
+            const startDate = slotData.startTime.toDate();
+            const endDate = slotData.endTime.toDate();
+            const startUTCHour = startDate.getUTCHours();
+            const startUTCMinutes = startDate.getUTCMinutes();
+            const endUTCHour = endDate.getUTCHours();
+            const endUTCMinutes = endDate.getUTCMinutes();
             
-            // ✅ Only preserve if selection was made recently (within last 24 hours) to avoid stale data
-            // This prevents old selections from being restored after user clears them
-            if (hoursSinceSelection < 24) {
-              // Use time range as key for more reliable matching (slotId format may change)
-              const startHour = slotData.startTime.toDate().getHours();
-              const endHour = slotData.endTime.toDate().getHours();
-              const timeRangeKey = `${startHour}-${endHour}`;
-              
-              preservedSelections.set(timeRangeKey, {
-                isSelected: true,
-                selectedAt: slotData.selectedAt || null,
-                slotId: slotData.slotId || doc.id // Also preserve original slotId for reference
-              });
-              console.log(`✅ [WORK_SLOTS] Preserving selection for slot: ${slotData.label} (${timeRangeKey})`);
-            } else {
-              console.log(`⚠️ [WORK_SLOTS] Skipping stale selection for slot: ${slotData.label} (selected ${hoursSinceSelection.toFixed(1)} hours ago)`);
-            }
+            // Calculate with minutes to get exact local hour
+            const startLocalMinutes = (startUTCHour * 60 + startUTCMinutes) - offsetMinutes;
+            const endLocalMinutes = (endUTCHour * 60 + endUTCMinutes) - offsetMinutes;
+            const startHour = ((Math.floor(startLocalMinutes / 60) % 24) + 24) % 24;
+            const endHour = ((Math.floor(endLocalMinutes / 60) % 24) + 24) % 24;
+            const timeRangeKey = `${startHour}-${endHour}`;
+            
+            console.log(`🔍 [WORK_SLOTS] FIX #3: Hour calculation (with minutes): UTC(${startUTCHour}:${String(startUTCMinutes).padStart(2, '0')}-${endUTCHour}:${String(endUTCMinutes).padStart(2, '0')}) - offset(${Math.abs(offsetMinutes)}min) = Local(${startHour}-${endHour})`);
+            // ✅ ZOMATO-STYLE: Always preserve selection regardless of when it was made
+            // This allows selections from yesterday to carry forward to today
+            preservedSelections.set(timeRangeKey, {
+              isSelected: true,
+              selectedAt: slotData.selectedAt || null,
+              slotId: slotData.slotId || doc.id,
+              originalDate: slotStartDate
+            });
+            console.log(`✅ [WORK_SLOTS] FIX #3: Preserved selection for ${slotData.label} (${timeRangeKey}) from date: ${slotStartDate}`);
           } else if (slotData.isSelected === true && !slotData.selectedAt) {
-            // Slot marked as selected but no selectedAt timestamp - might be default/stale
-            // Only preserve if it was updated recently (updatedAt check)
+            // Slot marked as selected but no selectedAt timestamp
             if (slotData.updatedAt) {
               const updatedAt = slotData.updatedAt.toDate();
               const hoursSinceUpdate = (now.getTime() - updatedAt.getTime()) / (1000 * 60 * 60);
               
-              // Only preserve if updated within last 1 hour (very recent activity)
-              if (hoursSinceUpdate < 1) {
-                const startHour = slotData.startTime.toDate().getHours();
-                const endHour = slotData.endTime.toDate().getHours();
+              // Preserve if it was updated recently (within 48 hours - allows overnight changes)
+              if (hoursSinceUpdate < 48) {
+                const startDate = slotData.startTime.toDate();
+                const endDate = slotData.endTime.toDate();
+                const startUTCHour = startDate.getUTCHours();
+                const startUTCMinutes = startDate.getUTCMinutes();
+                const endUTCHour = endDate.getUTCHours();
+                const endUTCMinutes = endDate.getUTCMinutes();
+                
+                // Calculate with minutes to get exact local hour
+                const startLocalMinutes = (startUTCHour * 60 + startUTCMinutes) - offsetMinutes;
+                const endLocalMinutes = (endUTCHour * 60 + endUTCMinutes) - offsetMinutes;
+                const startHour = ((Math.floor(startLocalMinutes / 60) % 24) + 24) % 24;
+                const endHour = ((Math.floor(endLocalMinutes / 60) % 24) + 24) % 24;
                 const timeRangeKey = `${startHour}-${endHour}`;
+                
+                console.log(`🔍 [WORK_SLOTS] FIX #3 (fallback): Hour calculation (with minutes): UTC(${startUTCHour}:${String(startUTCMinutes).padStart(2, '0')}-${endUTCHour}:${String(endUTCMinutes).padStart(2, '0')}) - offset(${Math.abs(offsetMinutes)}min) = Local(${startHour}-${endHour})`);
                 
                 preservedSelections.set(timeRangeKey, {
                   isSelected: true,
-                  selectedAt: Timestamp.now(), // Use current time as fallback
-                  slotId: slotData.slotId || doc.id
+                  selectedAt: Timestamp.now(),
+                  slotId: slotData.slotId || doc.id,
+                  originalDate: slotStartDate
                 });
-                console.log(`⚠️ [WORK_SLOTS] Preserving selection without selectedAt for slot: ${slotData.label} (${timeRangeKey})`);
+                console.log(`✅ [WORK_SLOTS] FIX #3: Preserved selection without timestamp for ${slotData.label} (${timeRangeKey}) from date: ${slotStartDate}`);
               } else {
-                console.log(`⚠️ [WORK_SLOTS] Skipping stale selection (no selectedAt, updated ${hoursSinceUpdate.toFixed(1)} hours ago) for slot: ${slotData.label}`);
+                console.log(`⚠️ [WORK_SLOTS] FIX #3: Skipping old selection (${hoursSinceUpdate.toFixed(1)}h old) for ${slotData.label} from date: ${slotStartDate}`);
               }
             } else {
-              console.log(`⚠️ [WORK_SLOTS] Skipping selection without selectedAt or updatedAt for slot: ${slotData.label}`);
+              console.log(`⚠️ [WORK_SLOTS] FIX #3: Skipping selection without timestamp/updatedAt for ${slotData.label} from date: ${slotStartDate}`);
             }
           }
         });
         
-        // Now delete existing slots (atomic operation)
-        console.log(`🗑️ [WORK_SLOTS] Deleting ${existingSnapshot.size} existing slots to prevent duplicates`);
-        const deleteBatch = db.batch();
-        existingSnapshot.forEach(doc => {
-          deleteBatch.delete(doc.ref);
+        // Now delete TODAY's existing slots to prevent duplicates (keep yesterday's for now in case needed)
+        // We only delete today's slots, not yesterday's, to allow selection preservation to work
+        const todaysExistingSlots = existingSnapshot.docs.filter(doc => {
+          const slotStartTime = doc.data().startTime?.toDate?.();
+          if (!slotStartTime) return false;
+          const slotDate = slotStartTime.toISOString().split('T')[0];
+          return slotDate === slotDateKey;
         });
-        await deleteBatch.commit();
-        console.log(`✅ [WORK_SLOTS] Deleted ${existingSnapshot.size} existing slots`);
+        
+        if (todaysExistingSlots.length > 0) {
+          console.log(`🗑️ [WORK_SLOTS] Deleting ${todaysExistingSlots.length} TODAY's existing slots (${slotDateKey}) to prevent duplicates`);
+          const deleteBatch = db.batch();
+          todaysExistingSlots.forEach(doc => {
+            const slotData = doc.data();
+            deleteBatch.delete(doc.ref);
+            console.log(`   🗑️ Deleted today's slot: ${slotData.label}`);
+          });
+          await deleteBatch.commit();
+          console.log(`✅ [WORK_SLOTS] Deleted ${todaysExistingSlots.length} today's slots`);
+        } else {
+          console.log(`ℹ️ [WORK_SLOTS] No today's slots to delete (fresh generation)`);
+        }
+        
+        const preservedCount = preservedSelections.size;
+        console.log(`\n📊 [WORK_SLOTS] PRESERVATION SUMMARY:\n   - Found: ${existingSnapshot.size} total slots (yesterday + today)\n   - Deleted: ${todaysExistingSlots.length} today's slots\n   - Preserved: ${preservedCount} selections`);
       } else {
         console.log('ℹ️ [WORK_SLOTS] No existing slots found, creating new ones');
       }
@@ -218,7 +290,7 @@ class WorkSlotsService {
         
         console.log(`🔍 [WORK_SLOTS] Creating slot: ${config.label} (${config.start}-${config.end})`);
         
-        // ✅ CRITICAL FIX: Match preserved selection by time range (more reliable than slotId)
+        // ✅ FIX #3 PART B: Match preserved selection by time range (Zomato-style)
         const timeRangeKey = `${config.start}-${config.end}`;
         const preservedSelection = preservedSelections.get(timeRangeKey);
         const wasSelected = preservedSelection?.isSelected === true;
@@ -229,15 +301,20 @@ class WorkSlotsService {
           endTime: Timestamp.fromDate(endTime),
           label: config.label,
           status: 'available',
-          isSelected: wasSelected, // ✅ FIX: Preserve selection state
-          selectedAt: wasSelected ? (preservedSelection.selectedAt || Timestamp.now()) : null, // ✅ FIX: Preserve selectedAt timestamp
+          isSelected: wasSelected,
+          selectedAt: wasSelected ? (preservedSelection.selectedAt || Timestamp.now()) : null,
           driverId,
           createdAt: Timestamp.now(),
-          updatedAt: Timestamp.now()
+          updatedAt: Timestamp.now(),
+          preservedFromDate: wasSelected ? preservedSelection.originalDate : null
         };
 
         slots.push(slot);
-        console.log(`✅ [WORK_SLOTS] Slot added to batch: ${config.label}${wasSelected ? ' (selected preserved)' : ''}`);
+        if (wasSelected) {
+          console.log(`✅ [WORK_SLOTS] FIX #3: Slot added with PRESERVED selection: ${config.label} (from ${preservedSelection.originalDate})`);
+        } else {
+          console.log(`✅ [WORK_SLOTS] Slot added (no preserved selection): ${config.label}`);
+        }
       }
       
       console.log(`📊 [WORK_SLOTS] Total slots prepared for batch write: ${slots.length}`);
@@ -252,8 +329,15 @@ class WorkSlotsService {
 
       await batch.commit();
       
-      console.log(`✅ [WORK_SLOTS] Generated ${slots.length} slots successfully`);
-      console.log(`📋 [WORK_SLOTS] Slot labels: ${slots.map(s => s.label).join(', ')}`);
+      const selectedCount = slots.filter(s => s.isSelected === true).length;
+      const unselectedCount = slots.filter(s => s.isSelected !== true).length;
+      
+      console.log(`\n✅ [WORK_SLOTS] GENERATION COMPLETE FOR ${slotDateKey}:`);
+      console.log(`   📊 Total slots created: ${slots.length}`);
+      console.log(`   ✅ Slots with preserved selections: ${selectedCount}`);
+      console.log(`   ⚪ Slots without selections: ${unselectedCount}`);
+      console.log(`   📋 Slot labels: ${slots.map(s => s.label).join(', ')}`);
+      console.log(`\n🔄 [WORK_SLOTS] All 3 fixes applied successfully:\n   FIX #1: Queried yesterday + today for preservation ✅\n   FIX #2: Deleted slots older than 7 days ✅\n   FIX #3: Used time-range matching for selections ✅\n`);
       
       // CRITICAL: Clear the generation lock
       this.ongoingGenerations.delete(driverId);

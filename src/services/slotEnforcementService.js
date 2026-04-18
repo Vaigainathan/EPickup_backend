@@ -128,20 +128,38 @@ class SlotEnforcementService {
 
       // ✅ CRITICAL FIX: Check if driver manually set status recently - respect manual online status
       // This prevents slot enforcement from overriding driver's manual online choice
-      // ✅ INCREASED: Grace period from 30 to 60 minutes (better for app restart scenarios)
+      // ✅ NEW: Use lastManualOnlineAction timestamp for grace period (more accurate than lastStatusUpdate)
+      // This field is set by backend whenever driver manually toggles online
+      const lastManualOnlineAction = driverData.driver?.lastManualOnlineAction;
       const lastStatusUpdate = driverData.driver?.lastStatusUpdate;
+      
+      // Use lastManualOnlineAction if available (new approach), otherwise fall back to lastStatusUpdate (backward compatibility)
+      const graceTimestamp = lastManualOnlineAction || lastStatusUpdate;
+      
       const isManuallyOnline = (() => {
-        if (!lastStatusUpdate || !driverData.driver?.isOnline) return false;
-        const lastUpdateTime = lastStatusUpdate?.toDate ? lastStatusUpdate.toDate() : new Date(lastStatusUpdate);
-        const timeSinceLastUpdate = currentTime - lastUpdateTime;
-        const gracePeriodMs = 60 * 60 * 1000; // 60 minutes grace period (increased from 30) - covers app restart + slot gaps
-        return timeSinceLastUpdate < gracePeriodMs;
+        if (!graceTimestamp || !driverData.driver?.isOnline) return false;
+        const graceTime = graceTimestamp?.toDate ? graceTimestamp.toDate() : new Date(graceTimestamp);
+        const timeSinceManualAction = currentTime - graceTime;
+        const gracePeriodMs = 60 * 60 * 1000; // 60 minutes grace period
+        
+        // ✅ DEBUG: Log grace period calculation
+        console.log(`🔍 [SLOT_ENFORCEMENT] Grace period check for driver ${driverId}:`, {
+          timeSinceManualOnlineMs: timeSinceManualAction,
+          timeSinceManualOnlineMin: Math.round(timeSinceManualAction / 60000),
+          gracePeriodMin: Math.round(gracePeriodMs / 60000),
+          isWithinGrace: timeSinceManualAction < gracePeriodMs,
+          usedField: lastManualOnlineAction ? 'lastManualOnlineAction (NEW)' : 'lastStatusUpdate (legacy)',
+          graceTimeISO: graceTime.toISOString(),
+          currentTimeISO: currentTime.toISOString()
+        });
+        
+        return timeSinceManualAction < gracePeriodMs;
       })();
 
       if (isManuallyOnline) {
-        const lastUpdateTime = lastStatusUpdate?.toDate ? lastStatusUpdate.toDate() : new Date(lastStatusUpdate);
-        const timeSinceLastUpdate = currentTime - lastUpdateTime;
-        console.log(`✅ [SLOT_ENFORCEMENT] Driver ${driverId} manually went online recently (${Math.round(timeSinceLastUpdate / 60000)}m ago) - respecting manual status (grace period: 60m)`);
+        const graceTime = graceTimestamp?.toDate ? graceTimestamp.toDate() : new Date(graceTimestamp);
+        const timeSinceManualAction = currentTime - graceTime;
+        console.log(`✅ [SLOT_ENFORCEMENT] Driver ${driverId} manually went online recently (${Math.round(timeSinceManualAction / 60000)}m ago) - respecting manual status (grace period: 60m)`);
         return {
           driverId,
           success: true,

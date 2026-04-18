@@ -6296,6 +6296,25 @@ router.get('/drivers/:driverId/work-slots', async (req, res) => {
     const { driverId } = req.params;
     const { date, limit = 50 } = req.query;
     const db = getFirestore();
+
+    const toDateValue = (value) => {
+      if (!value) return null;
+      if (value?.toDate) return value.toDate();
+      const parsed = new Date(value);
+      return Number.isNaN(parsed.getTime()) ? null : parsed;
+    };
+
+    const getBookingReferenceTime = (bookingData) => {
+      return (
+        toDateValue(bookingData?.timing?.assignedAt) ||
+        toDateValue(bookingData?.assignedAt) ||
+        toDateValue(bookingData?.timing?.driverEnrouteAt) ||
+        toDateValue(bookingData?.timing?.pickedUpAt) ||
+        toDateValue(bookingData?.timing?.deliveredAt) ||
+        toDateValue(bookingData?.createdAt) ||
+        toDateValue(bookingData?.updatedAt)
+      );
+    };
     
     console.log(`🔍 [ADMIN] Fetching work slots for driver: ${driverId}`);
     
@@ -6323,15 +6342,102 @@ router.get('/drivers/:driverId/work-slots', async (req, res) => {
     const slots = [];
     slotsSnapshot.forEach(doc => {
       const slotData = doc.data();
+      const startTime = slotData.startTime?.toDate?.() || slotData.startTime;
+      const endTime = slotData.endTime?.toDate?.() || slotData.endTime;
       slots.push({
         id: doc.id,
         ...slotData,
-        startTime: slotData.startTime?.toDate?.() || slotData.startTime,
-        endTime: slotData.endTime?.toDate?.() || slotData.endTime,
+        startTime,
+        endTime,
+        selectedAt: slotData.selectedAt?.toDate?.() || slotData.selectedAt || null,
+        preservedFromDate: slotData.preservedFromDate?.toDate?.() || slotData.preservedFromDate || null,
         createdAt: slotData.createdAt?.toDate?.() || slotData.createdAt,
         updatedAt: slotData.updatedAt?.toDate?.() || slotData.updatedAt
       });
     });
+
+    const slotRangeStart = slots.reduce((earliest, slot) => {
+      if (!slot.startTime) return earliest;
+      return !earliest || slot.startTime < earliest ? slot.startTime : earliest;
+    }, null);
+
+    const slotRangeEnd = slots.reduce((latest, slot) => {
+      if (!slot.endTime) return latest;
+      return !latest || slot.endTime > latest ? slot.endTime : latest;
+    }, null);
+
+    let bookingsSnapshot = null;
+    try {
+      let bookingQuery = db.collection('bookings').where('driverId', '==', driverId);
+
+      if (slotRangeStart && slotRangeEnd) {
+        // Fetch the driver bookings for the slot window and summarize them in memory.
+        // We still keep the query broad enough to avoid depending on a single timestamp field.
+        bookingQuery = bookingQuery.orderBy('createdAt', 'desc');
+      }
+
+      bookingsSnapshot = await bookingQuery.get();
+    } catch (bookingError) {
+      console.warn(`⚠️ [ADMIN] Could not fetch driver bookings for slot summary: ${bookingError.message}`);
+    }
+
+    const bookings = [];
+    if (bookingsSnapshot) {
+      bookingsSnapshot.forEach(doc => {
+        const bookingData = doc.data();
+        const referenceTime = getBookingReferenceTime(bookingData);
+        bookings.push({
+          id: doc.id,
+          status: bookingData.status || 'unknown',
+          customerId: bookingData.customerId || null,
+          customerName: bookingData.customer?.name || bookingData.customerName || 'Unknown',
+          referenceTime,
+          createdAt: toDateValue(bookingData.createdAt),
+          updatedAt: toDateValue(bookingData.updatedAt)
+        });
+      });
+    }
+
+    const summarizeBookingsForSlot = (slotStartTime, slotEndTime) => {
+      if (!slotStartTime || !slotEndTime || bookings.length === 0) {
+        return {
+          totalBookings: 0,
+          completedBookings: 0,
+          activeBookings: 0,
+          cancelledBookings: 0,
+          sampleBookings: []
+        };
+      }
+
+      const slotBookings = bookings.filter(booking => {
+        if (!booking.referenceTime) return false;
+        return booking.referenceTime >= slotStartTime && booking.referenceTime <= slotEndTime;
+      });
+
+      const completedStatuses = new Set(['delivered', 'completed']);
+      const activeStatuses = new Set(['driver_assigned', 'accepted', 'driver_enroute', 'driver_arrived', 'picked_up', 'in_transit', 'at_dropoff', 'delivered', 'money_collection']);
+      const cancelledStatuses = new Set(['cancelled', 'rejected']);
+
+      return {
+        totalBookings: slotBookings.length,
+        completedBookings: slotBookings.filter(booking => completedStatuses.has(booking.status)).length,
+        activeBookings: slotBookings.filter(booking => activeStatuses.has(booking.status)).length,
+        cancelledBookings: slotBookings.filter(booking => cancelledStatuses.has(booking.status)).length,
+        sampleBookings: slotBookings.slice(0, 5).map(booking => ({
+          id: booking.id,
+          status: booking.status,
+          customerName: booking.customerName,
+          referenceTime: booking.referenceTime,
+          createdAt: booking.createdAt,
+          updatedAt: booking.updatedAt
+        }))
+      };
+    };
+
+    const slotsWithSummary = slots.map(slot => ({
+      ...slot,
+      bookingSummary: summarizeBookingsForSlot(slot.startTime, slot.endTime)
+    }));
     
     console.log(`✅ [ADMIN] Retrieved ${slots.length} work slots for driver ${driverId}`);
     
@@ -6339,8 +6445,8 @@ router.get('/drivers/:driverId/work-slots', async (req, res) => {
       success: true,
       data: {
         driverId,
-        slots,
-        count: slots.length
+        slots: slotsWithSummary,
+        count: slotsWithSummary.length
       },
       timestamp: new Date().toISOString()
     });
@@ -6900,15 +7006,21 @@ router.get('/drivers/:driverId/wallet', async (req, res) => {
       .filter(t => t.status === 'completed')
       .reduce((sum, t) => sum + (t.amount || 0), 0);
 
+    const pointsBalance = Number(walletData.pointsBalance || 0);
+    const walletStatus = walletData.status || 'active';
+    // Derive runtime flags from current balance/status to avoid stale persisted booleans.
+    const computedRequiresTopUp = pointsBalance <= 0;
+    const computedCanWork = walletStatus !== 'suspended';
+
     res.json({
       success: true,
       data: {
         wallet: {
-          balance: walletData.pointsBalance || 0,
+          balance: pointsBalance,
           totalEarned: walletData.totalPointsEarned || 0,
           totalSpent: walletData.totalPointsSpent || 0,
-          requiresTopUp: walletData.requiresTopUp || false,
-          canWork: walletData.canWork || false,
+          requiresTopUp: computedRequiresTopUp,
+          canWork: computedCanWork,
           lastUpdated: normalizeTimestamp(walletData.lastUpdated)
         },
         transactions: transactions,

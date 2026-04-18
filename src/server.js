@@ -152,6 +152,7 @@ console.log('✅ All routes imported successfully');
 console.log('📦 Importing middleware after Firebase initialization...');
 const AppCheckMiddleware = require('./middleware/appCheckAuth');
 const appCheckMiddleware = new AppCheckMiddleware();
+const { versionEnforcer } = require('./middleware/versionEnforcer');
 console.log('✅ All middleware imported successfully');
 
 // Create HTTP server
@@ -221,7 +222,7 @@ app.use(cors({
   },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept', 'Origin'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept', 'Origin', 'X-App-Type', 'X-App-Version'],
   exposedHeaders: ['X-Total-Count', 'X-Page-Count'],
   maxAge: 86400, // 24 hours
   preflightContinue: false,
@@ -460,14 +461,16 @@ app.use('/api/user', appCheckMiddleware.optionalMiddleware(), userRoutes); // Us
 // 2. Uncomment all lines with middleware() 
 // 3. Update frontend to send real App Check tokens instead of null
 // =============================================================================
-app.use('/api/customer', appCheckMiddleware.optionalMiddleware(), authMiddleware, customerRoutes);
-// app.use('/api/customer', appCheckMiddleware.middleware(), authMiddleware, customerRoutes); // Production mode
+// ✅ Version Enforcement: Checks X-App-Type and X-App-Version headers
+// Blocks versions below minimum or mandatory versions below current
+app.use('/api/customer', versionEnforcer, appCheckMiddleware.optionalMiddleware(), authMiddleware, customerRoutes);
+// app.use('/api/customer', versionEnforcer, appCheckMiddleware.middleware(), authMiddleware, customerRoutes); // Production mode
 
-app.use('/api/driver', appCheckMiddleware.optionalMiddleware(), authMiddleware, driverRoutes);
-// app.use('/api/driver', appCheckMiddleware.middleware(), authMiddleware, driverRoutes); // Production mode
+app.use('/api/driver', versionEnforcer, appCheckMiddleware.optionalMiddleware(), authMiddleware, driverRoutes);
+// app.use('/api/driver', versionEnforcer, appCheckMiddleware.middleware(), authMiddleware, driverRoutes); // Production mode
 
-app.use('/api/bookings', appCheckMiddleware.optionalMiddleware(), authMiddleware, bookingRoutes);
-// app.use('/api/bookings', appCheckMiddleware.middleware(), authMiddleware, bookingRoutes); // Production mode
+app.use('/api/bookings', versionEnforcer, appCheckMiddleware.optionalMiddleware(), authMiddleware, bookingRoutes);
+// app.use('/api/bookings', versionEnforcer, appCheckMiddleware.middleware(), authMiddleware, bookingRoutes); // Production mode
 
 // ✅ PAYMENT WEBHOOKS MUST BE PUBLIC (no auth middleware)
 // Payment gateway webhooks don't have user tokens - they use signature verification

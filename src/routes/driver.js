@@ -786,6 +786,8 @@ router.get('/profile', requireDriver, async (req, res) => {
           },
           pointsWallet: pointsWalletData,
           currentLocation: normalizedDriver.currentLocation || null,
+          lastStatusUpdate: normalizedDriver.lastStatusUpdate || null,
+          lastManualOnlineAction: normalizedDriver.lastManualOnlineAction || null,
           requiresTopUp: pointsWalletData?.requiresTopUp ?? true,
           canWork: pointsWalletData?.canWork ?? false
         }
@@ -3120,6 +3122,13 @@ router.put('/status', [
 
     if (workingDays) {
       updateData['driver.availability.workingDays'] = workingDays;
+    }
+
+    // ✅ NEW: Track manual online action for slot enforcement grace period
+    // Only set this for manual online actions, not app-restart restoration sync.
+    if (isOnline === true && !restoreFromAppRestart) {
+      updateData['driver.lastManualOnlineAction'] = new Date();
+      console.log('✅ [STATUS_UPDATE] Recording lastManualOnlineAction (driver manually going online)');
     }
 
     console.log('📤 [STATUS_UPDATE] Updating Firestore with:', updateData);

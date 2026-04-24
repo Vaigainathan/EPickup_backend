@@ -2270,7 +2270,7 @@ class WebSocketEventHandler {
         const result = await this.expoPushService.sendToTokens(tokens, notification, {
           priority: 'high',
           sound: 'new_order.wav', // Custom sound when driver app has assets/sounds/new_order.wav; else falls back to default
-          channelId: 'new_order'  // Android: use "new order" channel (high importance, custom sound)
+          channelId: 'new_order_v2'  // Android: versioned channel to avoid stale channel config on upgraded installs
         });
         
         console.log(`✅ [PUSH_NOTIFICATION] Push notifications sent: ${result.successCount} success, ${result.failureCount} failed`);

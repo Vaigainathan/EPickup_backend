@@ -6342,17 +6342,24 @@ router.get('/drivers/:driverId/work-slots', async (req, res) => {
     const slots = [];
     slotsSnapshot.forEach(doc => {
       const slotData = doc.data();
-      const startTime = slotData.startTime?.toDate?.() || slotData.startTime;
-      const endTime = slotData.endTime?.toDate?.() || slotData.endTime;
+      const startTime = toDateValue(slotData.startTime) || slotData.startTime;
+      const endTime = toDateValue(slotData.endTime) || slotData.endTime;
+      const createdAt = toDateValue(slotData.createdAt) || slotData.createdAt;
+      const updatedAt = toDateValue(slotData.updatedAt) || slotData.updatedAt;
+      const selectedAt = toDateValue(slotData.selectedAt) || (slotData.isSelected ? (updatedAt || createdAt) : null);
+      const normalizedDate = slotData.date || (startTime ? new Date(startTime).toISOString().split('T')[0] : null);
+
       slots.push({
         id: doc.id,
         ...slotData,
         startTime,
         endTime,
-        selectedAt: slotData.selectedAt?.toDate?.() || slotData.selectedAt || null,
-        preservedFromDate: slotData.preservedFromDate?.toDate?.() || slotData.preservedFromDate || null,
-        createdAt: slotData.createdAt?.toDate?.() || slotData.createdAt,
-        updatedAt: slotData.updatedAt?.toDate?.() || slotData.updatedAt
+        date: normalizedDate,
+        label: slotData.label || slotData.slotId || 'Unknown slot',
+        selectedAt,
+        preservedFromDate: toDateValue(slotData.preservedFromDate) || slotData.preservedFromDate || null,
+        createdAt,
+        updatedAt
       });
     });
 

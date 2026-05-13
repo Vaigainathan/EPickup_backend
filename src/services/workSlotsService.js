@@ -29,7 +29,7 @@ class WorkSlotsService {
 
   /**
    * Generate daily work slots for a driver
-   * Creates 8 slots: 7-9 AM, 9-11 AM, 11-1 PM, 1-3 PM, 3-5 PM, 5-7 PM, 7-9 PM, 9-11 PM
+   * Creates 7 slots: 7-9 AM, 9-11 AM, 11-1 PM, 1-3 PM, 3-5 PM, 5-7 PM, 7-9 PM
    */
   async generateDailySlots(driverId, date = new Date(), options = {}) {
     try {
@@ -259,8 +259,7 @@ class WorkSlotsService {
         { start: 13, end: 15, label: '1–3 PM' },
         { start: 15, end: 17, label: '3–5 PM' },
         { start: 17, end: 19, label: '5–7 PM' },
-        { start: 19, end: 21, label: '7–9 PM' },
-        { start: 21, end: 23, label: '9–11 PM' }
+        { start: 19, end: 21, label: '7–9 PM' }
       ];
 
       for (const config of slotConfigs) {

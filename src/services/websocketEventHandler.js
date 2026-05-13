@@ -13,6 +13,9 @@ class WebSocketEventHandler {
     this.realTimeService = null;
     this.io = null;
     this.expoPushService = expoPushService;
+    
+    // ✅ DEDUP: Track sent push notifications per booking per driver (60 second TTL)
+    this.sentPushNotifications = new Map(); // key: `${bookingId}:${driverId}`, value: timestamp
   }
 
   /**
@@ -35,6 +38,30 @@ class WebSocketEventHandler {
         console.log('⚠️  RealTimeService not available for WebSocket handler, continuing without it...');
         this.realTimeService = null;
       }
+
+      // Start online watchdog (Phase 4 safeguards)
+      try {
+        const onlineWatchdog = require('./onlineWatchdogService');
+        onlineWatchdog.init(this.db);
+        onlineWatchdog.start();
+      } catch (wdErr) {
+        console.warn('⚠️ [WEBSOCKET] Failed to start online watchdog:', wdErr && wdErr.message);
+      }
+      
+      // ✅ DEDUP CLEANUP: Periodically remove old entries (every 2 minutes)
+      setInterval(() => {
+        const now = Date.now();
+        let cleaned = 0;
+        for (const [key, timestamp] of this.sentPushNotifications.entries()) {
+          if (now - timestamp > 120000) { // Remove entries older than 2 minutes
+            this.sentPushNotifications.delete(key);
+            cleaned++;
+          }
+        }
+        if (cleaned > 0) {
+          console.log(`🧹 [DEDUP_CLEANUP] Cleaned ${cleaned} expired push dedup entries`);
+        }
+      }, 120000); // Run every 2 minutes
       
       console.log('✅ WebSocket event handler initialized successfully');
     } catch (error) {
@@ -121,6 +148,69 @@ class WebSocketEventHandler {
 
       // ✅ CRITICAL FIX: Re-join rooms from database persistence
       await this.rejoinBookingRooms(socket, userId, userType);
+
+      // ✅ PHASE 3: Auto-restore driver online status on reconnect (guarded by feature flag)
+      try {
+        const autoRestoreEnabled = process.env.FEATURE_ENABLE_AUTO_RESTORE_ON_RECONNECT !== 'false';
+        if (autoRestoreEnabled && userType === 'driver' && this.db) {
+          try {
+            const userDocRef = this.db.collection('users').doc(userId);
+            const userDoc = await userDocRef.get();
+            const userData = userDoc.exists ? userDoc.data() : {};
+
+            const prevOnline = !!(userData && userData.driver && userData.driver.isOnline);
+            // Prefer driver.lastStatusUpdate or updatedAt as the timestamp to compare
+            const lastStatusTs = (userData && (userData.driver?.lastStatusUpdate || userData.updatedAt)) || null;
+
+            if (prevOnline && lastStatusTs) {
+              const lastTs = new Date(lastStatusTs).getTime();
+              const now = Date.now();
+              const windowMs = parseInt(process.env.AUTO_RESTORE_WINDOW_MS, 10) || (15 * 60 * 1000); // default 15 minutes
+              const age = now - lastTs;
+
+              if (age <= windowMs) {
+                console.log(`🔁 [AUTO_RESTORE] Restoring online for driver ${userId} (age=${age}ms <= window=${windowMs}ms)`);
+
+                // Atomic restore: merge to avoid clobbering unrelated fields
+                await userDocRef.set({
+                  'driver.isOnline': true,
+                  'driver.lastRestoredAt': new Date(),
+                  updatedAt: new Date()
+                }, { merge: true });
+
+                // Write audit record
+                try {
+                  await this.db.collection('onlineStatusAudit').add({
+                    driverId: userId,
+                    context: 'autoRestoreOnReconnect',
+                    result: 'RESTORED',
+                    details: { ageMs: age, windowMs },
+                    timestamp: new Date()
+                  });
+                } catch (auditErr) {
+                  console.warn('⚠️ [AUTO_RESTORE] Failed to write audit record:', auditErr && auditErr.message);
+                }
+
+                // Schedule async validation to ensure slots still valid (non-blocking)
+                try {
+                  const restoreValidator = require('./restoreValidatorService');
+                  restoreValidator.scheduleRestoreValidation(userId, { delayMs: 10000, context: 'autoRestoreOnReconnect' });
+                } catch (svErr) {
+                  console.warn('⚠️ [AUTO_RESTORE] Failed to schedule restore validation:', svErr && svErr.message);
+                }
+              } else {
+                console.log(`ℹ️ [AUTO_RESTORE] Skipping auto-restore for driver ${userId} - last status too old (${age}ms)`);
+              }
+            } else {
+              console.log(`ℹ️ [AUTO_RESTORE] No previous online status to restore for driver ${userId}`);
+            }
+          } catch (innerErr) {
+            console.warn('⚠️ [AUTO_RESTORE] Error while attempting auto-restore:', innerErr && innerErr.message);
+          }
+        }
+      } catch (err) {
+        console.warn('⚠️ [AUTO_RESTORE] Auto-restore feature check failed:', err && err.message);
+      }
 
       // Send user's active trips if any
       await this.sendActiveTrips(socket, userId);
@@ -2221,6 +2311,20 @@ class WebSocketEventHandler {
         );
         if (distanceToPickup <= driverToPickupMaxMeters) {
           driversWithinRange++;
+          
+          // ✅ DEDUP CHECK: Prevent sending duplicate push for same booking + driver within 60 seconds
+          const dedupKey = `${bookingData.id}:${driverId}`;
+          const now = Date.now();
+          const lastSentTime = this.sentPushNotifications.get(dedupKey);
+          
+          if (lastSentTime && (now - lastSentTime < 60000)) {
+            console.log(`⏭️ [PUSH_DEDUP] Skipping duplicate notification for booking ${bookingData.id}, driver ${driverId} (sent ${Math.round((now - lastSentTime)/1000)}s ago)`);
+            return;
+          }
+          
+          // ✅ Track this send
+          this.sentPushNotifications.set(dedupKey, now);
+          
           tokens.push(pushToken);
           driverIds.push(driverId);
           console.log(`✅ [PUSH_DEBUG] Driver ${driverId} will receive notification (${Math.round(distanceToPickup/1000)}km from pickup)`);

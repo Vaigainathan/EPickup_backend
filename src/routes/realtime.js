@@ -37,6 +37,115 @@ router.get('/status', async (req, res) => {
 });
 
 /**
+ * @route   GET /api/realtime/booking/:bookingId/driver-location
+ * @desc    Get driver's current live location for a booking
+ * @access  Private (Customer)
+ */
+router.get('/booking/:bookingId/driver-location', [
+  requireRole(['customer']),
+], async (req, res) => {
+  try {
+    const { bookingId } = req.params;
+    const { getFirestore } = require('../services/firebase');
+    const db = getFirestore();
+
+    // Get booking to verify customer owns it and get driverId
+    const bookingDoc = await db.collection('bookings').doc(bookingId).get();
+    if (!bookingDoc.exists) {
+      return res.status(404).json({
+        success: false,
+        error: {
+          code: 'BOOKING_NOT_FOUND',
+          message: 'Booking not found'
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    const booking = bookingDoc.data();
+    
+    // Verify customer owns this booking
+    if (booking.customerId !== req.user.uid) {
+      return res.status(403).json({
+        success: false,
+        error: {
+          code: 'ACCESS_DENIED',
+          message: 'Access denied'
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    // Get driver's current location from tripTracking or driverLocations
+    let driverLocation = null;
+    let lastUpdate = null;
+
+    // First try: Get from tripTracking (most up-to-date during active trip)
+    if (booking.driverId) {
+      const tripTrackingDoc = await db.collection('tripTracking').doc(bookingId).get();
+      if (tripTrackingDoc.exists) {
+        const tripTracking = tripTrackingDoc.data();
+        if (tripTracking.currentLocation) {
+          driverLocation = tripTracking.currentLocation;
+          lastUpdate = tripTracking.lastUpdated || tripTracking.updatedAt;
+        }
+      }
+
+      // Fallback: Get from driverLocations if not in tripTracking
+      if (!driverLocation) {
+        const driverLocDoc = await db.collection('driverLocations').doc(booking.driverId).get();
+        if (driverLocDoc.exists) {
+          const driverLoc = driverLocDoc.data();
+          if (driverLoc.currentLocation) {
+            driverLocation = driverLoc.currentLocation;
+            lastUpdate = driverLoc.lastUpdated;
+          }
+        }
+      }
+    }
+
+    if (!driverLocation) {
+      return res.status(404).json({
+        success: false,
+        error: {
+          code: 'DRIVER_LOCATION_NOT_AVAILABLE',
+          message: 'Driver location not available'
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    res.status(200).json({
+      success: true,
+      data: {
+        bookingId,
+        driverId: booking.driverId,
+        location: {
+          latitude: driverLocation.latitude,
+          longitude: driverLocation.longitude,
+          accuracy: driverLocation.accuracy || null,
+          speed: driverLocation.speed || null,
+          heading: driverLocation.heading || null,
+          timestamp: driverLocation.timestamp ? new Date(driverLocation.timestamp).toISOString() : null
+        },
+        lastUpdated: lastUpdate ? new Date(lastUpdate).toISOString() : null
+      },
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('Get driver location error:', error);
+    res.status(500).json({
+      success: false,
+      error: {
+        code: 'DRIVER_LOCATION_ERROR',
+        message: 'Failed to get driver location'
+      },
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+/**
  * @route   POST /api/realtime/drivers/nearby
  * @desc    Find nearby available drivers
  * @access  Private (Customer)

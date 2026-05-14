@@ -2933,7 +2933,8 @@ router.put('/status', [
           lastStatusUpdateToCheck = clientLastStatusUpdateRaw instanceof Date
             ? clientLastStatusUpdateRaw
             : new Date(clientLastStatusUpdateRaw);
-        } catch (e) {
+        } catch {
+          // Ignore parse errors and fall back to null
           lastStatusUpdateToCheck = null;
         }
       }

@@ -2924,15 +2924,32 @@ router.put('/status', [
       console.log('✅ [STATUS_UPDATE] Restoring online status from app restart - validating slots with relaxed rules');
       const userDoc = await userRef.get();
       const existingData = userDoc.data();
-      
+
+      // Prefer client-provided lastStatusUpdate when available (preserve grace period on app restore)
+      const clientLastStatusUpdateRaw = req.body.lastStatusUpdate;
+      let lastStatusUpdateToCheck = null;
+      if (clientLastStatusUpdateRaw) {
+        try {
+          lastStatusUpdateToCheck = clientLastStatusUpdateRaw instanceof Date
+            ? clientLastStatusUpdateRaw
+            : new Date(clientLastStatusUpdateRaw);
+        } catch (e) {
+          lastStatusUpdateToCheck = null;
+        }
+      }
+
+      // Fallback to server-stored lastStatusUpdate if client didn't provide one
+      if (!lastStatusUpdateToCheck) {
+        const serverLast = existingData.driver?.lastStatusUpdate;
+        lastStatusUpdateToCheck = serverLast ? (serverLast.toDate ? serverLast.toDate() : new Date(serverLast)) : null;
+      }
+
       // ✅ CRITICAL: Check if driver was online recently (within last 2 hours)
-      const lastStatusUpdate = existingData.driver?.lastStatusUpdate;
-      
-      if (lastStatusUpdate) {
-        const lastUpdateTime = lastStatusUpdate?.toDate ? lastStatusUpdate.toDate() : new Date(lastStatusUpdate);
+      if (lastStatusUpdateToCheck) {
+        const lastUpdateTime = lastStatusUpdateToCheck;
         const timeSinceLastUpdate = Date.now() - lastUpdateTime.getTime();
         const maxRestoreWindow = 2 * 60 * 60 * 1000; // 2 hours
-        
+
         if (timeSinceLastUpdate > maxRestoreWindow) {
           console.warn('⚠️ [STATUS_UPDATE] Cannot restore online status - last update was too long ago:', {
             timeSinceLastUpdate: Math.round(timeSinceLastUpdate / 60000) + ' minutes',
@@ -2948,9 +2965,9 @@ router.put('/status', [
             timestamp: new Date().toISOString()
           });
         }
-        
-        console.log('✅ [STATUS_UPDATE] Restore window valid:', {
-          timeSinceLastUpdate: Math.round(timeSinceLastUpdate / 60000) + ' minutes',
+
+        console.log('✅ [STATUS_UPDATE] Restore window valid (using client/server timestamp):', {
+          timeSinceLastUpdate: Math.round((Date.now() - lastUpdateTime.getTime()) / 60000) + ' minutes',
           lastUpdateTime: lastUpdateTime.toISOString()
         });
       }

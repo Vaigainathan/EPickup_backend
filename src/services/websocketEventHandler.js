@@ -516,13 +516,15 @@ class WebSocketEventHandler {
    */
   async handleChatMessage(socket, data) {
     try {
-      const { tripId, message, recipientId } = data;
+      const tripId = data.tripId || data.bookingId;
+      const message = typeof data.message === 'string' ? data.message : '';
+      let { recipientId } = data;
       const { userId, userType } = socket;
 
-      if (!tripId || !message || !recipientId) {
+      if (!tripId || !message) {
         socket.emit('error', {
           code: 'INVALID_MESSAGE_DATA',
-          message: 'Trip ID, message, and recipient ID are required'
+          message: 'Trip/booking ID and message are required'
         });
         return;
       }
@@ -546,16 +548,69 @@ class WebSocketEventHandler {
         return;
       }
 
-      console.log(`💬 Chat message from ${userId} to ${recipientId} for trip ${tripId}`);
+      // Resolve booking participants so we can infer recipient when client omits it.
+      const bookingDoc = this.db
+        ? await this.db.collection('bookings').doc(tripId).get()
+        : null;
+      const bookingData = bookingDoc && bookingDoc.exists ? bookingDoc.data() : null;
 
-      // Send chat message via real-time service
-      const messageId = await this.realTimeService.sendChatMessage(
-        tripId, 
-        userId, 
-        userType, 
-        message, 
-        { recipientId }
-      );
+      if (!recipientId && bookingData) {
+        recipientId = userType === 'driver' ? bookingData.customerId : bookingData.driverId;
+      }
+
+      const normalizedMessage = message.trim();
+      console.log(`💬 Chat message from ${userId} to ${recipientId || 'unknown'} for trip ${tripId}`);
+
+      const messageId = `msg_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+      const messageTimestamp = data.timestamp ? new Date(data.timestamp) : new Date();
+
+      // Persist using the same collection/schema as /api/chat/send.
+      if (this.db) {
+        await this.db.collection('chat_messages').add({
+          id: messageId,
+          bookingId: tripId,
+          senderId: userId,
+          senderType: userType,
+          message: normalizedMessage,
+          messageType: data.messageType || 'text',
+          timestamp: messageTimestamp,
+          createdAt: new Date(),
+          read: false,
+        });
+
+        if (bookingDoc && bookingDoc.exists) {
+          await this.db.collection('bookings').doc(tripId).set({
+            lastMessage: {
+              senderId: userId,
+              senderType: userType,
+              message: normalizedMessage,
+              timestamp: messageTimestamp,
+            },
+            updatedAt: new Date(),
+          }, { merge: true });
+        }
+      }
+
+      // Broadcast to all relevant channels.
+      const chatEvent = {
+        id: messageId,
+        tripId,
+        bookingId: tripId,
+        senderId: userId,
+        senderType: userType,
+        message: normalizedMessage,
+        messageType: data.messageType || 'text',
+        timestamp: messageTimestamp.toISOString(),
+      };
+
+      if (this.io) {
+        this.io.to(`trip:${tripId}`).emit('chat_message', chatEvent);
+        this.io.to(`booking:${tripId}`).emit('chat_message', chatEvent);
+        this.io.to(`user:${userId}`).emit('chat_message', chatEvent);
+        if (recipientId) {
+          this.io.to(`user:${recipientId}`).emit('chat_message', chatEvent);
+        }
+      }
 
       if (messageId) {
         // Confirm message sent
@@ -564,7 +619,7 @@ class WebSocketEventHandler {
           message: 'Message sent successfully',
           data: {
             messageId,
-            timestamp: new Date().toISOString()
+            timestamp: messageTimestamp.toISOString()
           }
         });
       } else {
@@ -588,10 +643,10 @@ class WebSocketEventHandler {
    */
   async handleTypingIndicator(socket, data, isTyping) {
     try {
-      const { tripId, recipientId } = data;
+      const tripId = data.tripId || data.bookingId;
       const { userId, userType } = socket;
 
-      if (!tripId || !recipientId) {
+      if (!tripId) {
         return;
       }
 
@@ -601,7 +656,7 @@ class WebSocketEventHandler {
         return;
       }
 
-      // Send typing indicator via real-time service
+      // Send typing indicator via real-time service (trip + booking rooms)
       await this.realTimeService.sendTypingIndicator(tripId, userId, userType, isTyping);
 
     } catch (error) {

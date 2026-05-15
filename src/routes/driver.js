@@ -1289,46 +1289,53 @@ router.post('/earnings/report', requireDriver, async (req, res) => {
     if (format === 'pdf') {
       try {
         const PDFDocument = require('pdfkit');
+        const os = require('os');
+        const path = require('path');
+        const { getStorage } = require('firebase-admin/storage');
+
+        // Create a temp file for the PDF
+        const tmpDir = os.tmpdir();
+        const fileName = `earnings-report-${uid}-${period}-${Date.now()}.pdf`;
+        const tmpPath = path.join(tmpDir, fileName);
+
         const doc = new PDFDocument();
-        
-        res.setHeader('Content-Type', 'application/pdf');
-        res.setHeader('Content-Disposition', `attachment; filename="earnings-report-${period}-${Date.now()}.pdf"`);
-        
-        doc.pipe(res);
-        
+        const fs = require('fs');
+        const writeStream = fs.createWriteStream(tmpPath);
+        doc.pipe(writeStream);
+
         // Header
         doc.fontSize(20).text('EPickup Driver Earnings Report', 50, 50);
         doc.fontSize(12).text(`Driver: ${driverName}`, 50, 80);
         doc.text(`Period: ${period} (${startDate.toLocaleDateString()} - ${endDate.toLocaleDateString()})`, 50, 100);
         doc.text(`Generated: ${new Date().toLocaleString()}`, 50, 120);
-        
+
         // Calculate total commission
         let totalCommission = 0;
-        bookingsSnapshot.forEach(doc => {
-          const data = doc.data();
+        bookingsSnapshot.forEach(docSnap => {
+          const data = docSnap.data();
           const exactDistance = data.distance?.total || 0;
           const fareCalculationService = require('../services/fareCalculationService');
           const fareBreakdown = fareCalculationService.calculateFare(exactDistance);
           totalCommission += fareBreakdown.commission;
         });
-        
+
         // Summary
         doc.text('Summary:', 50, 160);
         doc.text(`Total Trips: ${totalTrips}`, 70, 180);
         doc.text(`Total Earnings: ₹${totalEarnings.toFixed(2)}`, 70, 200);
         doc.text(`Driver Earnings (Full Fare): ₹${totalEarnings.toFixed(2)}`, 70, 220);
         doc.text(`Commission Deducted: ₹${totalCommission.toFixed(2)} (Points)`, 70, 240);
-        
+
         // Trip Details
         doc.text('Trip Details:', 50, 280);
         let yPosition = 300;
-        
+
         tripDetails.forEach((trip, index) => {
           if (yPosition > 700) {
             doc.addPage();
             yPosition = 50;
           }
-          
+
           doc.text(`Trip ${index + 1}:`, 70, yPosition);
           doc.text(`  Customer: ${trip.customerName}`, 90, yPosition + 15);
           doc.text(`  From: ${trip.pickupLocation}`, 90, yPosition + 30);
@@ -1336,17 +1343,54 @@ router.post('/earnings/report', requireDriver, async (req, res) => {
           doc.text(`  Fare: ₹${trip.fare.toFixed(2)}`, 90, yPosition + 60);
           doc.text(`  Earnings: ₹${trip.driverEarnings.toFixed(2)}`, 90, yPosition + 75);
           doc.text(`  Date: ${new Date(trip.completedAt).toLocaleString()}`, 90, yPosition + 90);
-          
+
           yPosition += 120;
         });
-        
+
         doc.text('Thank you for using EPickup!', 50, yPosition + 20);
-        
+
         doc.end();
-        
-        console.log(`✅ Generated PDF earnings report for driver ${uid}`);
+
+        // Wait for the file to finish writing
+        await new Promise((resolve, reject) => {
+          writeStream.on('finish', resolve);
+          writeStream.on('error', reject);
+        });
+
+        // Upload to Firebase Storage
+        const bucket = getStorage().bucket();
+        const destPath = `driver-reports/${uid}/${fileName}`;
+
+        await bucket.upload(tmpPath, {
+          destination: destPath,
+          metadata: {
+            contentType: 'application/pdf'
+          }
+        });
+
+        // Get signed URL (valid for 24 hours)
+        const file = bucket.file(destPath);
+        const [signedUrl] = await file.getSignedUrl({
+          action: 'read',
+          expires: Date.now() + 24 * 60 * 60 * 1000 // 24 hours
+        });
+
+        // Clean up temp file
+        try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
+
+        // Return JSON with downloadUrl so client can download safely
+        res.status(200).json({
+          success: true,
+          data: {
+            downloadUrl: signedUrl,
+            generatedAt: new Date().toISOString()
+          },
+          message: 'PDF earnings report generated successfully'
+        });
+
+        console.log(`✅ Generated PDF earnings report and uploaded for driver ${uid}`);
         return;
-        
+
       } catch (error) {
         console.error('❌ Error generating PDF report:', error);
       }

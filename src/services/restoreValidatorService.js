@@ -38,14 +38,72 @@ class RestoreValidatorService {
         const selected = slots.filter(s => s.isSelected === true);
 
         if (!selected || selected.length === 0) {
+          // Before forcing offline, ensure driver does not have an active booking
+          try {
+            const activeBookingStatuses = ['driver_assigned', 'accepted', 'driver_enroute', 'driver_arrived', 'picked_up', 'in_transit', 'at_dropoff', 'delivered', 'money_collection'];
+            const activeBookingQuery = await db.collection('bookings')
+              .where('driverId', '==', driverId)
+              .where('status', 'in', activeBookingStatuses)
+              .limit(1)
+              .get();
+
+            if (!activeBookingQuery.empty) {
+              console.log(`🔔 [RESTORE_VALIDATOR] Active booking present for ${driverId} - skipping forced offline`);
+              await this._writeAudit(driverId, context, 'SKIPPED_ACTIVE_BOOKING');
+              return;
+            }
+          } catch (bookingCheckErr) {
+            console.warn('⚠️ [RESTORE_VALIDATOR] Failed to check active bookings:', bookingCheckErr && bookingCheckErr.message);
+            // If check fails, conservatively skip forcing offline to avoid disrupting deliveries
+            await this._writeAudit(driverId, context, 'BOOKING_CHECK_FAILED');
+            return;
+          }
+
+          // Don't force offline if driver just reconnected (killed and reopened app)
+          try {
+            const userDoc = await db.collection('users').doc(driverId).get();
+            const userData = userDoc.exists ? userDoc.data() : null;
+            const lastSeenRaw = userData?.driver?.lastSeen;
+            let lastSeenDate = null;
+            if (lastSeenRaw) {
+              lastSeenDate = lastSeenRaw.toDate ? lastSeenRaw.toDate() : new Date(lastSeenRaw);
+            }
+            const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000);
+            if (lastSeenDate && lastSeenDate > fiveMinutesAgo) {
+              console.log(`🔔 [RESTORE_VALIDATOR] Recent lastSeen detected for ${driverId} (${lastSeenDate.toISOString()}) - skipping forced offline`);
+              await this._writeAudit(driverId, context, 'SKIPPED_RECENT_RECONNECT');
+              return;
+            }
+          } catch (recentCheckErr) {
+            console.warn('⚠️ [RESTORE_VALIDATOR] Failed to check recent lastSeen (non-critical):', recentCheckErr && recentCheckErr.message);
+            // If this check fails, be conservative and skip forcing offline to avoid disrupting deliveries
+            await this._writeAudit(driverId, context, 'RECENT_SEEN_CHECK_FAILED');
+            return;
+          }
+
           console.log('🔔 [RESTORE_VALIDATOR] No selected slots found - forcing driver offline');
           await db.collection('users').doc(driverId).update({
             'driver.isOnline': false,
             'driver.isAvailable': false,
             updatedAt: new Date()
           });
+          
+          // ✅ NEW: Emit force_offline event to frontend
+          try {
+            const socketService = require('./socket');
+            const io = socketService.getSocketIO();
+            io.to(`driver:${driverId}`).emit('force_offline', {
+              reason: 'restore_validation_failed',
+              message: 'Your offline status was restored but you have no active work slots. Please select slots to go online.',
+              timestamp: new Date().toISOString(),
+              details: 'NO_SELECTED_SLOTS'
+            });
+            console.log(`📡 [RESTORE_VALIDATOR] Emitted force_offline to driver ${driverId}`);
+          } catch (socketErr) {
+            console.warn('⚠️ [RESTORE_VALIDATOR] Failed to emit force_offline event (non-critical):', socketErr && socketErr.message);
+          }
+          
           await this._writeAudit(driverId, context, 'NO_SELECTED_SLOTS');
-          // Optionally emit websocket event here via websocketEventHandler (not imported to avoid circular deps)
           return;
         }
 

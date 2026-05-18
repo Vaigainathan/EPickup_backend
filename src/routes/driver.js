@@ -22,7 +22,6 @@ const upload = multer({
 });
 
 const fareCalculationService = require('../services/fareCalculationService');
-const COMMISSION_RATE_PER_KM = 2;
 
 /**
  * Alias endpoint for driver location updates to avoid 404 on legacy clients
@@ -289,105 +288,51 @@ function computeBookingEarnings(bookingData = {}) {
   const isCancelled = bookingStatus === 'cancelled' || 
                      bookingStatus === 'rejected' || 
                      bookingStatus === 'customer_cancelled';
-  
-  // ✅ CRITICAL FIX: Return zero earnings for cancelled bookings
+
   if (isCancelled) {
     return {
       grossFare: 0,
-      commissionAmount: 0,
       netEarnings: 0,
-      commissionRatePerKm: COMMISSION_RATE_PER_KM,
-      commissionRecorded: false,
+      commissionAmount: 0,
+      commissionOutstanding: 0,
       commissionStatus: 'not_applicable',
-      commissionTransactionId: null,
-      commissionDeductedAt: null,
-      exactDistanceKm: null,
-      roundedDistanceKm: null,
-      commissionOutstanding: 0
+      roundedDistanceKm: 0,
+      exactDistanceKm: 0
     };
   }
-  
-  const grossFare = toNumber(
-    bookingData.earnings?.grossFare ??
-    bookingData.pricing?.totalFare ??
-    bookingData.pricing?.total ??
-    bookingData.fare?.totalFare ??
-    bookingData.fare?.total ??
-    bookingData.totalFare ??
-    bookingData.totalAmount ??
-    bookingData.paymentAmount ??
-    0,
-    0
-  );
-
-  const commissionRecord = bookingData.commissionDeducted || bookingData.earnings?.commissionRecord || null;
-  let commissionAmount = toNumber(
-    commissionRecord?.amount ??
-    bookingData.earnings?.commission ??
-    bookingData.pricing?.commission ??
-    bookingData.payment?.commission ??
-    0,
-    0
-  );
 
   const exactDistanceKm = resolveExactDistance(bookingData);
-  let roundedDistanceKm = resolveRoundedDistance(bookingData, commissionRecord, exactDistanceKm);
+  const roundedDistanceKm = resolveRoundedDistance(bookingData, bookingData.commissionRecord, exactDistanceKm);
 
-  const shouldCalculateFare =
-    (exactDistanceKm > 0 && (commissionAmount === 0 || roundedDistanceKm === 0)) ||
-    (exactDistanceKm === 0 && commissionAmount === 0 && roundedDistanceKm === 0);
+  const fareBreakdown = fareCalculationService.calculateFare(
+    exactDistanceKm > 0 ? exactDistanceKm : (roundedDistanceKm > 0 ? roundedDistanceKm : 0.5)
+  );
 
-  if (shouldCalculateFare) {
-    try {
-      const fareBreakdown = fareCalculationService.calculateFare(exactDistanceKm > 0 ? exactDistanceKm : 0.5);
-      if (!roundedDistanceKm && fareBreakdown?.roundedDistanceKm) {
-        roundedDistanceKm = toNumber(fareBreakdown.roundedDistanceKm, roundedDistanceKm);
-      }
-      if (commissionAmount === 0 && fareBreakdown?.commission) {
-        commissionAmount = toNumber(fareBreakdown.commission, commissionAmount);
-      }
-    } catch (fareError) {
-      console.warn('⚠️ [EARNINGS_UTIL] Failed to calculate fare breakdown for booking earnings:', fareError?.message || fareError);
-    }
-  }
-
-  if (commissionAmount === 0 && roundedDistanceKm > 0) {
-    commissionAmount = roundedDistanceKm * COMMISSION_RATE_PER_KM;
-  }
-
-  if (roundedDistanceKm === 0 && commissionAmount > 0) {
-    roundedDistanceKm = Math.max(Math.round(commissionAmount / COMMISSION_RATE_PER_KM), 0);
-  }
-
-  let commissionStatus = 'not_applicable';
-  if (commissionRecord?.status) {
-    commissionStatus = commissionRecord.status;
-  } else if (commissionRecord) {
-    commissionStatus = 'deducted';
-  } else if (commissionAmount > 0) {
-    commissionStatus = 'pending';
-  }
-
-  const netRaw = grossFare - commissionAmount;
-  const netEarnings = roundCurrency(netRaw < 0 ? 0 : netRaw);
+  const grossFare = roundCurrency(
+    toNumber(bookingData.fare?.grossFare ?? bookingData.fare?.total ?? fareBreakdown.fare, fareBreakdown.fare)
+  );
+  const commissionAmount = roundCurrency(
+    toNumber(bookingData.commissionAmount ?? fareBreakdown.commission, fareBreakdown.commission)
+  );
+  const netEarnings = roundCurrency(
+    toNumber(bookingData.netEarnings ?? bookingData.fare?.net ?? (grossFare - commissionAmount), grossFare - commissionAmount)
+  );
+  const commissionOutstanding = roundCurrency(
+    toNumber(bookingData.commissionOutstanding ?? Math.max(commissionAmount - toNumber(bookingData.commissionPaid, 0), 0), 0)
+  );
 
   return {
-    grossFare: roundCurrency(grossFare),
-    commissionAmount: roundCurrency(Math.max(commissionAmount, 0)),
+    grossFare,
     netEarnings,
-    commissionRatePerKm: COMMISSION_RATE_PER_KM,
-    commissionRecorded: Boolean(commissionRecord),
-    commissionStatus,
-    commissionTransactionId: commissionRecord?.transactionId || null,
-    commissionDeductedAt: toIsoString(commissionRecord?.deductedAt),
-    exactDistanceKm: exactDistanceKm > 0 ? roundDistance(exactDistanceKm) : null,
-    roundedDistanceKm: roundedDistanceKm > 0 ? roundedDistanceKm : (exactDistanceKm > 0 ? Math.ceil(exactDistanceKm) : null),
-    commissionOutstanding: commissionStatus !== 'deducted' ? roundCurrency(Math.max(commissionAmount, 0)) : 0
+    commissionAmount,
+    commissionOutstanding,
+    commissionStatus: commissionOutstanding > 0 ? 'outstanding' : 'paid',
+    roundedDistanceKm: roundDistance(roundedDistanceKm || fareBreakdown.roundedDistanceKm || Math.ceil(exactDistanceKm || 0)),
+    exactDistanceKm: roundDistance(exactDistanceKm || fareBreakdown.exactDistanceKm || 0)
   };
 }
 
 /**
- * @route   GET /api/driver/
  * @desc    Get driver data (root endpoint)
  * @access  Private (Driver only)
  */

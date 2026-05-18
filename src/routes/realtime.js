@@ -343,8 +343,8 @@ router.post('/location/update', [
         bookingId,
         driverId,
         location: {
-          latitude: location.lat,
-          longitude: location.lng,
+          latitude: Number(location.lat),
+          longitude: Number(location.lng),
           timestamp: new Date().toISOString()
         },
         estimatedArrival,
@@ -370,7 +370,11 @@ router.post('/location/update', [
       // ✅ CRITICAL FIX: Use consistent event name (driver_location_update with underscore)
       socketService.sendToBooking(bookingId, 'driver_location_update', {
         driverId,
-        location,
+        location: {
+          latitude: Number(location.lat),
+          longitude: Number(location.lng),
+          timestamp: new Date().toISOString()
+        },
         estimatedArrival,
         timestamp: new Date().toISOString()
       });

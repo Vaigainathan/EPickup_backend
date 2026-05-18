@@ -3,13 +3,18 @@ const { getFirestore, Timestamp } = require('./firebase');
 class OnlineWatchdogService {
   constructor() {
     this.db = null;
+    this.io = null; // ✅ Socket.io instance for emitting events
     this.intervalId = null;
     this.DEFAULT_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
     this.DEFAULT_LASTSEEN_THRESHOLD_MS = 30 * 60 * 1000; // 30 minutes
   }
 
-  init(dbInstance) {
+  init(dbInstance, ioInstance = null) {
     this.db = dbInstance || getFirestore();
+    this.io = ioInstance; // ✅ Accept socket.io instance
+    if (!this.io) {
+      console.warn('⚠️ [WATCHDOG] Socket.io instance not provided - force_offline events will not be emitted');
+    }
   }
 
   start(options = {}) {
@@ -37,6 +42,24 @@ class OnlineWatchdogService {
       clearInterval(this.intervalId);
       this.intervalId = null;
       console.log('✅ [WATCHDOG] Online watchdog stopped');
+    }
+  }
+
+  /**
+   * Reset watchdog for a specific driver by updating lastSeen
+   * This effectively cancels immediate forced-offline decisions for that driver
+   */
+  async resetWatchdog(driverId) {
+    try {
+      if (!driverId) return;
+      if (!this.db) this.db = getFirestore();
+      await this.db.collection('users').doc(driverId).set({
+        'driver.lastSeen': new Date(),
+        updatedAt: new Date()
+      }, { merge: true });
+      console.log(`🔁 [WATCHDOG] Reset watchdog (updated lastSeen) for driver ${driverId}`);
+    } catch (err) {
+      console.warn('⚠️ [WATCHDOG] Failed to reset watchdog for driver', driverId, err && err.message);
     }
   }
 
@@ -101,6 +124,20 @@ class OnlineWatchdogService {
       if (audits.length > 0) {
         // Commit batch updates
         await batch.commit();
+
+        // ✅ NEW: Emit force_offline socket events to drivers
+        // This notifies the frontend immediately when watchdog forces them offline
+        for (const audit of audits) {
+          if (this.io) {
+            this.io.to(`driver:${audit.driverId}`).emit('force_offline', {
+              reason: 'watchdog_timeout',
+              message: 'You were taken offline due to inactivity. Please reconnect when ready.',
+              timestamp: new Date().toISOString(),
+              details: audit.reason
+            });
+            console.log(`📡 [WATCHDOG] Emitted force_offline to driver ${audit.driverId}`);
+          }
+        }
 
         // Write audit entries
         const auditBatch = this.db.batch();

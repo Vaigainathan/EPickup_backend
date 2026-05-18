@@ -339,6 +339,14 @@ class SlotEnforcementService {
           reason: reason,
           timestamp: new Date().toISOString()
         });
+        
+        // ✅ NEW: Also emit force_offline event so frontend listener can update toggle
+        io.to(`driver:${driverId}`).emit('force_offline', {
+          reason: 'slot_enforcement',
+          message: 'You were taken offline due to slot enforcement.',
+          timestamp: new Date().toISOString(),
+          details: reason
+        });
         console.log(`📡 [SLOT_ENFORCEMENT] Sent offline notification to driver ${driverId}`);
       } catch (notificationError) {
         console.error('❌ [SLOT_ENFORCEMENT] Failed to send notification:', notificationError);

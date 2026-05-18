@@ -42,7 +42,7 @@ class WebSocketEventHandler {
       // Start online watchdog (Phase 4 safeguards)
       try {
         const onlineWatchdog = require('./onlineWatchdogService');
-        onlineWatchdog.init(this.db);
+        onlineWatchdog.init(this.db, this.io); // ✅ Pass socket.io instance for force_offline events
         onlineWatchdog.start();
       } catch (wdErr) {
         console.warn('⚠️ [WEBSOCKET] Failed to start online watchdog:', wdErr && wdErr.message);
@@ -145,6 +145,19 @@ class WebSocketEventHandler {
 
       // Update user online status
       await this.updateUserOnlineStatus(userId, true);
+
+      // Reset online watchdog for drivers so they are not auto-forced offline immediately after reconnect
+      try {
+        if (userType === 'driver') {
+          const onlineWatchdog = require('./onlineWatchdogService');
+          if (onlineWatchdog && typeof onlineWatchdog.resetWatchdog === 'function') {
+            await onlineWatchdog.resetWatchdog(userId);
+            console.log(`🔁 [WEBSOCKET] Watchdog reset for driver ${userId} on reconnect`);
+          }
+        }
+      } catch (wdErr) {
+        console.warn('⚠️ [WEBSOCKET] Failed to reset watchdog on reconnect:', wdErr && wdErr.message);
+      }
 
       // ✅ CRITICAL FIX: Re-join rooms from database persistence
       await this.rejoinBookingRooms(socket, userId, userType);

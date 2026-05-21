@@ -2420,32 +2420,53 @@ class WebSocketEventHandler {
 
       console.log(`🔔 [PUSH_NOTIFICATION] Sending push notifications to ${tokens.length} drivers for booking ${bookingData.id}`);
 
-      // Create notification payload
-      const notification = {
-        title: '🚗 New Booking Available!',
-        body: `Pickup: ${bookingData.pickup?.address || 'Location'}`,
-        type: 'new_booking',
-        bookingId: bookingData.id,
-        data: {
+      // Notification payloads are constructed below (data-only and display notifications)
+
+      // Send two pushes: (1) data-only to trigger headless JS (play ringtone), (2) display notification for status bar
+      try {
+        // Thing 1: Data-only push to wake headless task (no title/body/sound)
+        const dataOnlyNotification = {
+          // no title/body
           type: 'new_booking',
           bookingId: bookingData.id,
-          variables: {
-            pickupAddress: bookingData.pickup?.address || 'Pickup location',
-            dropoffAddress: bookingData.dropoff?.address || 'Dropoff location',
-            fare: bookingData.fare?.totalFare || bookingData.pricing?.totalFare || 0
+          data: {
+            type: 'new_booking',
+            bookingId: bookingData.id,
+            action: 'play_ringtone'
           }
-        }
-      };
+        };
 
-      // Send push notifications via Expo – custom sound for "new order" only (Zomato-style)
-      try {
-        const result = await this.expoPushService.sendToTokens(tokens, notification, {
+        const dataOnlyResult = await this.expoPushService.sendToTokens(tokens, dataOnlyNotification, {
           priority: 'high',
-          sound: 'new_order.wav', // Custom sound when driver app has assets/sounds/new_order.wav; else falls back to default
-          channelId: 'new_order_v2'  // Android: versioned channel to avoid stale channel config on upgraded installs
+          dataOnly: true
         });
-        
-        console.log(`✅ [PUSH_NOTIFICATION] Push notifications sent: ${result.successCount} success, ${result.failureCount} failed`);
+
+        console.log(`✅ [PUSH_NOTIFICATION] Data-only pushes sent: ${dataOnlyResult.successCount} success, ${dataOnlyResult.failureCount} failed`);
+
+        // Thing 2: Normal display notification for the status bar/banner
+        const displayNotification = {
+          title: '🚗 New Booking Available!',
+          body: `Pickup: ${bookingData.pickup?.address || 'Location'}`,
+          type: 'new_booking_display',
+          bookingId: bookingData.id,
+          data: {
+            type: 'new_booking_display',
+            bookingId: bookingData.id,
+            variables: {
+              pickupAddress: bookingData.pickup?.address || 'Pickup location',
+              dropoffAddress: bookingData.dropoff?.address || 'Dropoff location',
+              fare: bookingData.fare?.totalFare || bookingData.pricing?.totalFare || 0
+            }
+          }
+        };
+
+        const displayResult = await this.expoPushService.sendToTokens(tokens, displayNotification, {
+          priority: 'high',
+          sound: 'new_order.wav',
+          channelId: 'new_order_v2'
+        });
+
+        console.log(`✅ [PUSH_NOTIFICATION] Display pushes sent: ${displayResult.successCount} success, ${displayResult.failureCount} failed`);
       } catch (pushError) {
         console.error('❌ [PUSH_NOTIFICATION] Failed to send push notifications:', pushError);
         // Don't throw - WebSocket notification already sent

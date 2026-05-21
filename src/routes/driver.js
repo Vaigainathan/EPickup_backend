@@ -1733,7 +1733,7 @@ router.get('/earnings/today', requireDriver, async (req, res) => {
     });
     
     const result = {
-      todayEarnings: roundCurrency(todayNetEarnings),
+      todayEarnings: roundCurrency(todayGrossEarnings),
       todayNetEarnings: roundCurrency(todayNetEarnings),
       todayGrossEarnings: roundCurrency(todayGrossEarnings),
       todayCommission: roundCurrency(todayCommissionTotal),
@@ -5093,16 +5093,16 @@ router.post('/bookings/:id/accept', idempotencyKeyMiddleware, requireDriver, asy
       const io = getSocketIO();
       
       if (io) {
-        // Broadcast to ALL clients that this booking is no longer available
-        io.emit('booking_taken', {
+        // Broadcast to all online drivers so they can remove the booking instantly
+        io.to('type:driver').emit('booking_taken', {
           bookingId: id,
-          takenBy: uid,
+          acceptedBy: uid,
           action: 'remove_from_available',
           reason: 'Driver accepted this booking',
-          timestamp: new Date().toISOString()
+          timestamp: Date.now()
         });
-        
-        console.log(`📢 [ACCEPT_BOOKING] Broadcast 'booking_taken' event for booking ${id} to all drivers`);
+
+        console.log(`📢 [ACCEPT_BOOKING] Broadcast 'booking_taken' event for booking ${id} to type:driver room`);
       }
     } catch (broadcastError) {
       console.error('⚠️ [ACCEPT_BOOKING] Failed to broadcast booking_taken event:', broadcastError);

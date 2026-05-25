@@ -234,6 +234,25 @@ function roundDistance(value) {
   return Math.round((numeric + Number.EPSILON) * 100) / 100;
 }
 
+function resolveDriverTotalEarnings(driverData = {}) {
+  if (typeof driverData.totalEarnings === 'number' && Number.isFinite(driverData.totalEarnings)) {
+    return driverData.totalEarnings;
+  }
+
+  const legacyEarnings = driverData.earnings;
+  if (legacyEarnings && typeof legacyEarnings === 'object') {
+    return toNumber(
+      legacyEarnings.total ??
+        legacyEarnings.thisMonth ??
+        legacyEarnings.thisWeek ??
+        0,
+      0
+    );
+  }
+
+  return toNumber(legacyEarnings, 0);
+}
+
 function resolveExactDistance(bookingData = {}) {
   const candidates = [
     bookingData.distance?.total,
@@ -360,6 +379,8 @@ router.get('/', requireDriver, async (req, res) => {
     const driverName = userData.name || userData.fullName || userData.displayName || 'Driver';
     const driverEmail = userData.email || userData.contactEmail || (userData.contact && userData.contact.email) || '';
     const driverPhone = userData.phone || userData.contactNumber || (userData.contact && userData.contact.phone) || '';
+    const normalizedDriver = userData.driver || {};
+    const resolvedTotalEarnings = resolveDriverTotalEarnings(normalizedDriver);
 
     if (!userData.id) {
       try {
@@ -373,6 +394,21 @@ router.get('/', requireDriver, async (req, res) => {
       }
     }
 
+    if (normalizedDriver.totalEarnings === undefined && normalizedDriver.earnings !== undefined) {
+      try {
+        await db.collection('users').doc(uid).set({
+          driver: {
+            totalEarnings: resolvedTotalEarnings
+          },
+          updatedAt: new Date()
+        }, { merge: true });
+        normalizedDriver.totalEarnings = resolvedTotalEarnings;
+        console.log('✅ [PROFILE] Backfilled driver.totalEarnings from legacy driver.earnings');
+      } catch (earningsBackfillError) {
+        console.warn('⚠️ [PROFILE] Failed to backfill driver.totalEarnings:', earningsBackfillError.message);
+      }
+    }
+
     res.status(200).json({
       success: true,
       message: 'Driver data retrieved successfully',
@@ -382,7 +418,10 @@ router.get('/', requireDriver, async (req, res) => {
         email: driverEmail,
         phone: driverPhone,
         profilePicture: userData.profilePicture || null,
-        driver: userData.driver || {}
+        driver: {
+          ...normalizedDriver,
+          totalEarnings: resolvedTotalEarnings
+        }
       },
       timestamp: new Date().toISOString()
     });
@@ -524,7 +563,6 @@ router.get('/profile', requireDriver, async (req, res) => {
     const driverName = userData.name || userData.fullName || userData.displayName || 'Driver';
     const driverEmail = userData.email || userData.contactEmail || (userData.contact && userData.contact.email) || '';
     const driverPhone = userData.phone || userData.contactNumber || (userData.contact && userData.contact.phone) || '';
-
     if (!userData.id) {
       try {
         await db.collection('users').doc(uid).set({
@@ -670,6 +708,22 @@ router.get('/profile', requireDriver, async (req, res) => {
       requiresTopUp: pointsWalletData?.requiresTopUp ?? true,
       canWork: pointsWalletData?.canWork ?? false
     };
+
+    const resolvedTotalEarnings = resolveDriverTotalEarnings(normalizedDriver);
+    if (normalizedDriver.totalEarnings === undefined && normalizedDriver.earnings !== undefined) {
+      try {
+        await db.collection('users').doc(uid).set({
+          driver: {
+            totalEarnings: resolvedTotalEarnings
+          },
+          updatedAt: new Date()
+        }, { merge: true });
+        normalizedDriver.totalEarnings = resolvedTotalEarnings;
+        console.log('✅ [PROFILE] Backfilled driver.totalEarnings from legacy driver.earnings');
+      } catch (earningsBackfillError) {
+        console.warn('⚠️ [PROFILE] Failed to backfill driver.totalEarnings:', earningsBackfillError.message);
+      }
+    }
     
     res.status(200).json({
       success: true,
@@ -1626,132 +1680,75 @@ router.get('/earnings/today', requireDriver, async (req, res) => {
   try {
     const { uid } = req.user;
     const db = getFirestore();
-    
-    // Get today's date range
     const today = new Date();
     const startOfDay = new Date(today.getFullYear(), today.getMonth(), today.getDate());
     const endOfDay = new Date(today.getFullYear(), today.getMonth(), today.getDate() + 1);
-    
-    console.log('📊 [EARNINGS_TODAY] Fetching today\'s earnings for driver:', uid);
-    console.log('📊 [EARNINGS_TODAY] Date range:', { startOfDay, endOfDay });
-    
+
+    const parseDate = (value) => {
+      if (!value) return null;
+      if (value instanceof Date) return value;
+      if (typeof value?.toDate === 'function') return value.toDate();
+      if (typeof value === 'object' && typeof value.seconds === 'number') {
+        return new Date(value.seconds * 1000 + (value.nanoseconds || 0) / 1000000);
+      }
+      if (typeof value === 'string') {
+        const parsed = new Date(value);
+        return Number.isNaN(parsed.getTime()) ? null : parsed;
+      }
+      return null;
+    };
+
     let tripsSnapshot;
     try {
-      // Try query with completedAt first (if index exists)
       tripsSnapshot = await db.collection('bookings')
         .where('driverId', '==', uid)
         .where('status', '==', 'completed')
-        .where('completedAt', '>=', startOfDay)
-        .where('completedAt', '<', endOfDay)
+        .where('createdAt', '>=', startOfDay)
+        .where('createdAt', '<', endOfDay)
         .get();
     } catch (indexError) {
-      // ✅ FIX: If index doesn't exist, query without date filter and filter in memory
-      console.warn('⚠️ [EARNINGS_TODAY] Index error, querying without date filter:', indexError.message);
+      console.warn('⚠️ [EARNINGS_TODAY] Falling back to in-memory date filtering:', indexError.message);
       tripsSnapshot = await db.collection('bookings')
         .where('driverId', '==', uid)
         .where('status', '==', 'completed')
         .get();
     }
-    
-    let todayGrossEarnings = 0;
-    let todayNetEarnings = 0;
-    let todayCommissionTotal = 0;
-    let todayTrips = 0;
-    const tripDetails = [];
-    
-    // ✅ CRITICAL FIX: Helper function to parse date from various formats
-    const parseDate = (dateValue) => {
-      if (!dateValue) return null;
-      if (dateValue instanceof Date) return dateValue;
-      if (typeof dateValue?.toDate === 'function') return dateValue.toDate();
-      if (typeof dateValue === 'object' && dateValue.seconds) {
-        return new Date(dateValue.seconds * 1000 + (dateValue.nanoseconds || 0) / 1000000);
-      }
-      if (typeof dateValue === 'string') {
-        const parsed = new Date(dateValue);
-        return isNaN(parsed.getTime()) ? null : parsed;
-      }
-      return null;
-    };
-    
+
+    let totalSum = 0;
+    let totalTrips = 0;
+
     tripsSnapshot.forEach((doc) => {
       const trip = doc.data();
-      
-      // ✅ CRITICAL FIX: Check if booking was completed today using multiple date fields
-      const completedAt = parseDate(trip.completedAt) || 
-                         parseDate(trip.timing?.completedAt) || 
-                         parseDate(trip.updatedAt);
-      
-      // Filter by date if query didn't include date filter (fallback case)
-      if (completedAt) {
-        if (completedAt < startOfDay || completedAt >= endOfDay) {
-          return; // Skip bookings not completed today
-        }
-      } else {
-        // ✅ FIX: If no completedAt date, check if status is completed and updatedAt is today
-        const updatedAt = parseDate(trip.updatedAt);
-        if (!updatedAt || updatedAt < startOfDay || updatedAt >= endOfDay) {
-          return; // Skip if not updated today
-        }
-      }
-      
-      const earnings = computeBookingEarnings(trip);
+      const createdAt = parseDate(trip.createdAt);
 
-      todayGrossEarnings += earnings.grossFare;
-      todayNetEarnings += earnings.netEarnings;
-      todayCommissionTotal += earnings.commissionAmount;
-      todayTrips += 1;
-      
-      tripDetails.push({
-        id: doc.id,
-        fare: earnings.grossFare,
-        fareGross: earnings.grossFare,
-        netEarnings: earnings.netEarnings,
-        commission: earnings.commissionAmount,
-        commissionStatus: earnings.commissionStatus,
-        commissionOutstanding: earnings.commissionOutstanding,
-        roundedDistanceKm: earnings.roundedDistanceKm,
-        exactDistanceKm: earnings.exactDistanceKm,
-        completedAt: trip.completedAt?.toDate?.()?.toISOString() || null,
-        pickupLocation: trip.pickup?.address || 'Unknown',
-        dropoffLocation: trip.dropoff?.address || 'Unknown'
-      });
+      if (!createdAt || createdAt < startOfDay || createdAt >= endOfDay) {
+        return;
+      }
+
+      const commissionDeductedValue = Number(
+        trip.commissionDeducted?.amount ??
+        trip.commissionDeducted ??
+        0
+      );
+      const tripEarnings = Number(
+        trip.driverEarnings ??
+        trip.earnings?.netEarnings ??
+        (trip.fare?.total ? (trip.fare.total - commissionDeductedValue) : 0)
+      );
+
+      totalSum += Number.isFinite(tripEarnings) ? tripEarnings : 0;
+      totalTrips += 1;
     });
-    
-    // Get today's payments
-    const paymentsSnapshot = await db.collection('payments')
-      .where('driverId', '==', uid)
-      .where('status', '==', 'completed')
-      .where('createdAt', '>=', startOfDay)
-      .where('createdAt', '<', endOfDay)
-      .get();
-    
-    let todayPayments = 0;
-    paymentsSnapshot.forEach((doc) => {
-      const payment = doc.data();
-      todayPayments += payment.amount || 0;
-    });
-    
-    const result = {
-      todayEarnings: roundCurrency(todayGrossEarnings),
-      todayNetEarnings: roundCurrency(todayNetEarnings),
-      todayGrossEarnings: roundCurrency(todayGrossEarnings),
-      todayCommission: roundCurrency(todayCommissionTotal),
-      todayTrips: todayTrips,
-      todayPayments: todayPayments,
-      averageNetEarningsPerTrip: todayTrips > 0 ? roundCurrency(todayNetEarnings / todayTrips) : 0,
-      averageEarningsPerTrip: todayTrips > 0 ? roundCurrency(todayGrossEarnings / todayTrips) : 0,
-      tripDetails: tripDetails,
-      date: today.toISOString().split('T')[0], // YYYY-MM-DD format
-      lastUpdated: new Date().toISOString()
-    };
-    
-    console.log('✅ [EARNINGS_TODAY] Today\'s earnings calculated:', result);
-    
+
+    const normalizedTotal = roundCurrency(totalSum);
+
     res.status(200).json({
       success: true,
-      message: 'Today\'s earnings retrieved successfully',
-      data: result,
+      todayEarnings: normalizedTotal,
+      grossEarnings: normalizedTotal,
+      netEarnings: normalizedTotal,
+      todayTrips: totalTrips,
+      totalTrips,
       timestamp: new Date().toISOString()
     });
     
@@ -2062,7 +2059,6 @@ router.get('/bookings/history', requireDriver, async (req, res) => {
           netTotal: 0,
           commissionTotal: 0
         },
-        timestamp: new Date().toISOString(),
         warning: 'Unable to fetch booking history at this time. Please try again later.'
       });
     }
@@ -6438,7 +6434,7 @@ router.post('/bookings/:id/confirm-payment', [
     
     const bookingData = bookingDoc.data();
     const bookingStateMachine = require('../services/bookingStateMachine');
-    const paymentAmount = parseFloat(amount);
+    let paymentAmount = Number(amount);
     const statusBeforePayment = bookingData.status || 'unknown';
     const paymentStateBefore = bookingData.paymentStatus || 'unknown';
     const fallbackStatuses = new Set(['payment_pending', 'payment_collection', 'collecting_payment', 'payment_in_progress']);
@@ -6573,11 +6569,29 @@ router.post('/bookings/:id/confirm-payment', [
       });
     }
     
-    // ✅ CRITICAL FIX: Validate payment amount matches booking fare
-    const bookingFare = bookingData.pricing?.totalFare || bookingData.fare?.total || 0;
-    if (bookingFare > 0 && Math.abs(bookingFare - paymentAmount) > 1) { // Allow 1 rupee difference for rounding
-      console.warn(`⚠️ [PAYMENT_CONFIRM] Payment amount mismatch: received ₹${paymentAmount}, expected ₹${bookingFare}`);
-      // Don't fail, but log the discrepancy
+    const resolvedBookingFare = Number(
+      bookingData.pricing?.totalFare ??
+      bookingData.pricing?.total ??
+      bookingData.fare?.total ??
+      bookingData.fare?.grossFare ??
+      0
+    );
+    if (!Number.isFinite(paymentAmount) || paymentAmount <= 0) {
+      paymentAmount = resolvedBookingFare;
+    }
+    if (!Number.isFinite(paymentAmount) || paymentAmount <= 0) {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'INVALID_FARE_AMOUNT',
+          message: 'Unable to resolve a valid fare for payment confirmation',
+          details: 'The request amount was missing or zero and no fare could be resolved from the booking document'
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+    if (resolvedBookingFare > 0 && Math.abs(resolvedBookingFare - paymentAmount) > 1) {
+      console.warn(`⚠️ [PAYMENT_CONFIRM] Payment amount mismatch: received ₹${paymentAmount}, expected ₹${resolvedBookingFare}`);
     }
     
     // Create payment record
@@ -6595,7 +6609,7 @@ router.post('/bookings/:id/confirm-payment', [
     };
     
     console.log(`📝 [PAYMENT_CONFIRM] Creating payment record:`, paymentRecord);
-    await db.collection('payments').add(paymentRecord);
+    const paymentRef = db.collection('payments').doc();
     
     // ✅ CRITICAL FIX: Use state machine to transition from money_collection to completed
     
@@ -6826,317 +6840,233 @@ router.post('/bookings/:id/confirm-payment', [
       // Don't fail the payment confirmation if notifications fail
     }
 
-    // ✅ CRITICAL FIX: Update driver earnings and deduct commission - ALL IN ONE TRANSACTION
+    // ✅ CRITICAL FIX: Update driver earnings and deduct commission in one atomic transaction
     let commissionDeducted = false;
     let commissionAmount = 0;
     let commissionTransactionId = null;
     let newPointsBalance = 0;
     let driverEarnings = 0;
     let currentEarnings = 0;
-    let currentBalance = 0;
-    
-    // ✅ CRITICAL FIX: Initialize pointsService for wallet operations
+
     const walletService = require('../services/walletService');
     const walletServiceInstance =
       typeof walletService.getPointsService === 'function'
         ? walletService.getPointsService()
         : walletService;
-    
+
     try {
-      // ✅ INDUSTRY STANDARD: Use transaction for atomic payment operations
+      const { FieldValue } = require('firebase-admin/firestore');
+      const fareCalculationService = require('../services/fareCalculationService');
+
       await db.runTransaction(async (transaction) => {
         const driverRef = db.collection('users').doc(uid);
-        const driverDoc = await transaction.get(driverRef);
-        
-        if (!driverDoc.exists) {
+        const walletRef = db.collection('driverPointsWallets').doc(uid);
+        const bookingSnap = await transaction.get(bookingRef);
+
+        if (!bookingSnap.exists) {
+          throw new Error('BOOKING_NOT_FOUND');
+        }
+
+        const bookingDataTx = bookingSnap.data();
+        const driverSnap = await transaction.get(driverRef);
+
+        if (!driverSnap.exists) {
           throw new Error('DRIVER_NOT_FOUND');
         }
-        
-        const driverData = driverDoc.data();
-        currentEarnings = driverData.totalEarnings || 0;
-        currentBalance = driverData.wallet?.balance || 0;
-        
-        // CORRECT: Driver gets full fare amount, commission deducted from points wallet
-        driverEarnings = paymentAmount; // Full amount
-        
-        // ✅ CRITICAL FIX: Deduct commission from points wallet (atomic within transaction)
-        const fareCalculationService = require('../services/fareCalculationService');
-        
-        // ✅ CRITICAL FIX: Check if commission was already deducted to prevent duplicate deductions
-        const alreadyDeducted = bookingData.commissionDeducted?.amount || bookingData.commissionDeducted || false;
-        if (alreadyDeducted) {
-          console.log(`⚠️ [PAYMENT_CONFIRM] Commission already deducted for booking ${id}. Skipping duplicate deduction.`);
-          commissionAmount = bookingData.commissionDeducted?.amount || 0;
+
+        const driverData = driverSnap.data();
+        currentEarnings = resolveDriverTotalEarnings(driverData);
+
+        const requestedFare = Number(amount);
+        const bookingFareFallback = Number(
+          bookingDataTx.pricing?.totalFare ??
+          bookingDataTx.pricing?.total ??
+          bookingDataTx.fare?.total ??
+          bookingDataTx.fare?.grossFare ??
+          0
+        );
+        const calculatedFare = Number.isFinite(requestedFare) && requestedFare > 0
+          ? requestedFare
+          : bookingFareFallback;
+
+        if (!Number.isFinite(calculatedFare) || calculatedFare <= 0) {
+          throw new Error('INVALID_FARE_AMOUNT');
+        }
+
+        paymentAmount = calculatedFare;
+
+        const existingCommission = bookingDataTx.commissionDeducted?.amount ?? bookingDataTx.commissionDeducted ?? null;
+        if (existingCommission) {
+          commissionAmount = Number(bookingDataTx.commissionDeducted?.amount ?? bookingDataTx.commissionDeducted ?? 0);
           commissionDeducted = true;
-          commissionTransactionId = bookingData.commissionDeducted?.transactionId || null;
-          
-          // Get current points balance
-          const walletDoc = await transaction.get(db.collection('driverPointsWallets').doc(uid));
-          if (walletDoc.exists) {
-            newPointsBalance = walletDoc.data().pointsBalance || 0;
-          }
+          commissionTransactionId = bookingDataTx.commissionDeducted?.transactionId || null;
+          const walletSnap = await transaction.get(walletRef);
+          newPointsBalance = walletSnap.exists ? Number(walletSnap.data().pointsBalance || 0) : 0;
         } else {
-          // ✅ CRITICAL FIX: Get distance from booking for commission calculation
-          // Use rounded distance for commission (as per business logic: 8.4km → 9km → ₹18 commission)
-          const exactDistanceKm = bookingData.distance?.total || bookingData.exactDistance || bookingData.pricing?.distance || 0;
-          
-          // ✅ CRITICAL FIX: Always calculate fare using fareCalculationService (handles rounding: 0.5km → 1km, 8.4km → 9km)
-          // This ensures commission is based on ROUNDED distance (₹2 per rounded km)
+          const exactDistanceKm = Number(
+            bookingDataTx.distance?.total ??
+            bookingDataTx.exactDistance ??
+            bookingDataTx.pricing?.distance ??
+            0
+          );
+
           let fareBreakdown;
-          let roundedDistanceKm;
-          
           if (exactDistanceKm > 0) {
             fareBreakdown = fareCalculationService.calculateFare(exactDistanceKm);
-            roundedDistanceKm = fareBreakdown.roundedDistanceKm; // Rounded distance (e.g., 8.4km → 9km)
-            commissionAmount = fareBreakdown.commission; // Commission based on rounded distance (e.g., 9km × ₹2 = ₹18)
-            
-            console.log(`💵 [PAYMENT_CONFIRM] Calculating commission:`, {
-              exactDistanceKm: exactDistanceKm.toFixed(2),
-              roundedDistanceKm: roundedDistanceKm,
-              commissionAmount: commissionAmount,
-              calculation: `${roundedDistanceKm}km × ₹2/km = ₹${commissionAmount}`
-            });
-            
-            console.log(`💵 [PAYMENT_CONFIRM] Attempting to deduct commission: ₹${commissionAmount} (${roundedDistanceKm}km × ₹2/km) from driver ${uid}`);
-            
-            // ✅ CRITICAL FIX: Ensure wallet exists before deducting
-            const walletRef = db.collection('driverPointsWallets').doc(uid);
-            const walletDoc = await transaction.get(walletRef);
-            
-            if (!walletDoc.exists) {
-              // Create wallet in transaction
-              transaction.set(walletRef, {
-                driverId: uid,
-                pointsBalance: 0,
-                totalPointsEarned: 0,
-                totalPointsSpent: 0,
-                status: 'active',
-                requiresTopUp: true,
-                createdAt: new Date(),
-                lastUpdated: new Date()
-              });
-              console.log(`🔧 [PAYMENT_CONFIRM] Created wallet for driver ${uid} in transaction`);
-            }
-            
-            const walletData = walletDoc.exists ? walletDoc.data() : { pointsBalance: 0, totalPointsSpent: 0 };
-            const currentPointsBalance = walletData.pointsBalance || 0;
-            
-            // Check if sufficient balance
-            if (currentPointsBalance < commissionAmount) {
-              console.error(`❌ [PAYMENT_CONFIRM] Insufficient points balance: ${currentPointsBalance} < ${commissionAmount}`);
-              // ✅ CRITICAL FIX: Still create transaction record even if deduction fails (for tracking)
-              const { v4: uuidv4 } = require('uuid');
-              commissionTransactionId = uuidv4();
-              const transactionRef = db.collection('pointsTransactions').doc(commissionTransactionId);
-              transaction.set(transactionRef, {
-                id: commissionTransactionId,
-                driverId: uid,
-                type: 'debit',
-                pointsAmount: commissionAmount,
-                previousBalance: currentPointsBalance,
-                newBalance: currentPointsBalance, // Balance unchanged (deduction failed)
-                tripId: id,
-                distanceKm: roundedDistanceKm, // ✅ Store rounded distance
-                exactDistanceKm: exactDistanceKm, // ✅ Also store exact distance for reference
-                tripDetails: {
-                  bookingId: id,
-                  fare: paymentAmount,
-                  distance: roundedDistanceKm, // ✅ Use rounded distance
-                  exactDistance: exactDistanceKm,
-                  paymentMethod: paymentMethod
-                },
-                status: 'failed',
-                failureReason: 'Insufficient balance',
-                createdAt: new Date()
-              });
-              console.warn(`⚠️ [PAYMENT_CONFIRM] Commission transaction recorded as failed (insufficient balance)`);
-              commissionDeducted = false;
-            } else {
-              // Deduct commission atomically within transaction
-              const newPointsBalanceAfter = currentPointsBalance - commissionAmount;
-              const newTotalSpent = (walletData.totalPointsSpent || 0) + commissionAmount;
-              
-              // Update points wallet in transaction
-              transaction.update(walletRef, {
-                pointsBalance: newPointsBalanceAfter,
-                totalPointsSpent: newTotalSpent,
-                lastUpdated: new Date()
-              });
-              
-              // Create commission transaction record in transaction
-              const { v4: uuidv4 } = require('uuid');
-              commissionTransactionId = uuidv4();
-              const transactionRef = db.collection('pointsTransactions').doc(commissionTransactionId);
-              transaction.set(transactionRef, {
-                id: commissionTransactionId,
-                driverId: uid,
-                type: 'debit',
-                pointsAmount: commissionAmount,
-                previousBalance: currentPointsBalance,
-                newBalance: newPointsBalanceAfter,
-                tripId: id,
-                distanceKm: roundedDistanceKm, // ✅ Store rounded distance
-                exactDistanceKm: exactDistanceKm, // ✅ Also store exact distance for reference
-                tripDetails: {
-                  bookingId: id,
-                  fare: paymentAmount,
-                  distance: roundedDistanceKm, // ✅ Use rounded distance
-                  exactDistance: exactDistanceKm,
-                  paymentMethod: paymentMethod
-                },
-                status: 'completed',
-                createdAt: new Date()
-              });
-              
-              commissionDeducted = true;
-              newPointsBalance = newPointsBalanceAfter;
-              console.log(`✅ [PAYMENT_CONFIRM] Commission deducted atomically: ₹${commissionAmount} (${roundedDistanceKm}km × ₹2/km, exact: ${exactDistanceKm.toFixed(2)}km)`);
-            }
           } else {
-            // ✅ CRITICAL FIX: Even if distance is 0 or missing, use fareCalculationService to calculate minimum commission
-            // This ensures proper rounding: 0.5km → 1km = ₹2, 0km → 1km = ₹2
-            console.warn(`⚠️ [PAYMENT_CONFIRM] No distance data (${exactDistanceKm}km), calculating minimum commission using fareCalculationService`);
-            
-            // Use minimum distance (0.5km) which rounds to 1km = ₹2 commission
-            fareBreakdown = fareCalculationService.calculateFare(0.5); // 0.5km rounds to 1km
-            roundedDistanceKm = fareBreakdown.roundedDistanceKm; // Will be 1km
-            commissionAmount = fareBreakdown.commission; // Will be ₹2 (1km × ₹2/km)
-            
-            const walletRef = db.collection('driverPointsWallets').doc(uid);
-            const walletDoc = await transaction.get(walletRef);
-            
-            if (!walletDoc.exists) {
-              transaction.set(walletRef, {
-                driverId: uid,
-                pointsBalance: 0,
-                totalPointsEarned: 0,
-                totalPointsSpent: 0,
-                status: 'active',
-                requiresTopUp: true,
-                createdAt: new Date(),
-                lastUpdated: new Date()
-              });
-            }
-            
-            const walletData = walletDoc.exists ? walletDoc.data() : { pointsBalance: 0, totalPointsSpent: 0 };
-            const currentPointsBalance = walletData.pointsBalance || 0;
-            
-            if (currentPointsBalance < commissionAmount) {
-              console.error(`❌ [PAYMENT_CONFIRM] Insufficient points balance for minimum commission: ${currentPointsBalance} < ${commissionAmount}`);
-              commissionDeducted = false;
-            } else {
-              const newPointsBalanceAfter = currentPointsBalance - commissionAmount;
-              const newTotalSpent = (walletData.totalPointsSpent || 0) + commissionAmount;
-              
-              transaction.update(walletRef, {
-                pointsBalance: newPointsBalanceAfter,
-                totalPointsSpent: newTotalSpent,
-                lastUpdated: new Date()
-              });
-              
-              const { v4: uuidv4 } = require('uuid');
-              commissionTransactionId = uuidv4();
-              const transactionRef = db.collection('pointsTransactions').doc(commissionTransactionId);
-              transaction.set(transactionRef, {
-                id: commissionTransactionId,
-                driverId: uid,
-                type: 'debit',
-                pointsAmount: commissionAmount,
-                previousBalance: currentPointsBalance,
-                newBalance: newPointsBalanceAfter,
-                tripId: id,
-                distanceKm: roundedDistanceKm, // ✅ Store rounded distance (1km)
-                exactDistanceKm: exactDistanceKm, // ✅ Store exact distance (0 or missing)
-                tripDetails: {
-                  bookingId: id,
-                  fare: paymentAmount,
-                  distance: roundedDistanceKm, // ✅ Use rounded distance
-                  exactDistance: exactDistanceKm,
-                  paymentMethod: paymentMethod,
-                  note: 'Minimum commission (distance data unavailable, using 0.5km → 1km rounding)'
-                },
-                status: 'completed',
-                createdAt: new Date()
-              });
-              
-              commissionDeducted = true;
-              newPointsBalance = newPointsBalanceAfter;
-              console.log(`✅ [PAYMENT_CONFIRM] Minimum commission deducted: ₹${commissionAmount} (${roundedDistanceKm}km × ₹2/km, exact: ${exactDistanceKm}km)`);
-            }
+            fareBreakdown = fareCalculationService.calculateFare(0.5);
+          }
+
+          commissionAmount = Number(fareBreakdown.commission || 0);
+
+          const walletSnap = await transaction.get(walletRef);
+          const walletData = walletSnap.exists ? walletSnap.data() : null;
+          const currentPointsBalance = Number(walletData?.pointsBalance || 0);
+
+          if (!walletSnap.exists) {
+            transaction.set(walletRef, {
+              driverId: uid,
+              pointsBalance: 0,
+              totalPointsEarned: 0,
+              totalPointsSpent: 0,
+              status: 'active',
+              requiresTopUp: true,
+              createdAt: new Date(),
+              lastUpdated: new Date()
+            });
+          }
+
+          const { v4: uuidv4 } = require('uuid');
+          commissionTransactionId = uuidv4();
+          const commissionTxRef = db.collection('pointsTransactions').doc(commissionTransactionId);
+
+          if (currentPointsBalance < commissionAmount) {
+            transaction.set(commissionTxRef, {
+              id: commissionTransactionId,
+              driverId: uid,
+              type: 'debit',
+              pointsAmount: commissionAmount,
+              previousBalance: currentPointsBalance,
+              newBalance: currentPointsBalance,
+              tripId: id,
+              status: 'failed',
+              failureReason: 'Insufficient balance',
+              createdAt: new Date()
+            });
+            commissionDeducted = false;
+            newPointsBalance = currentPointsBalance;
+          } else {
+            const newBalance = currentPointsBalance - commissionAmount;
+            transaction.update(walletRef, {
+              pointsBalance: newBalance,
+              totalPointsSpent: Number(walletData?.totalPointsSpent || 0) + commissionAmount,
+              lastUpdated: new Date()
+            });
+
+            transaction.set(commissionTxRef, {
+              id: commissionTransactionId,
+              driverId: uid,
+              type: 'debit',
+              pointsAmount: commissionAmount,
+              previousBalance: currentPointsBalance,
+              newBalance,
+              tripId: id,
+              distanceKm: Number(fareBreakdown.roundedDistanceKm || Math.ceil(exactDistanceKm || 0)),
+              exactDistanceKm,
+              tripDetails: {
+                bookingId: id,
+                fare: calculatedFare,
+                distance: Number(fareBreakdown.roundedDistanceKm || Math.ceil(exactDistanceKm || 0)),
+                exactDistance: exactDistanceKm,
+                paymentMethod: paymentMethod
+              },
+              status: 'completed',
+              createdAt: new Date()
+            });
+
+            commissionDeducted = true;
+            newPointsBalance = newBalance;
           }
         }
-        
-        // ✅ CRITICAL FIX: Update driver earnings and wallet balance atomically
-        console.log(`💵 [PAYMENT_CONFIRM] Updating driver earnings atomically: +₹${driverEarnings}`);
+
+        const finalDriverEarnings = roundCurrency(calculatedFare - commissionAmount);
+        driverEarnings = finalDriverEarnings;
+
         transaction.update(driverRef, {
-          totalEarnings: currentEarnings + driverEarnings,
-          'wallet.balance': currentBalance + driverEarnings,
-          'wallet.lastUpdated': new Date(),
+          totalEarnings: FieldValue.increment(finalDriverEarnings),
           updatedAt: new Date()
         });
-        
-        // ✅ CRITICAL FIX: Mark booking as commission deducted atomically AND update earnings field
-        const bookingEarningsUpdate = {
+
+        transaction.update(bookingRef, {
+          status: 'completed',
+          paymentStatus: 'paid',
+          completedAt: new Date(),
+          paymentConfirmed: true,
+          paymentConfirmedAt: new Date(),
+          payment: {
+            ...paymentRecord,
+            amount: calculatedFare,
+            status: 'completed',
+            confirmed: true,
+            confirmedBy: uid
+          },
+          driverEarnings: finalDriverEarnings,
+          totalEarnings: finalDriverEarnings,
+          earnings: {
+            netEarnings: finalDriverEarnings,
+            grossFare: calculatedFare,
+            commissionAmount,
+            commissionStatus: commissionDeducted ? 'deducted' : 'pending',
+            commissionTransactionId: commissionTransactionId || null,
+            calculatedAt: new Date()
+          },
           commissionDeducted: commissionDeducted && commissionTransactionId ? {
             amount: commissionAmount,
             deductedAt: new Date(),
             transactionId: commissionTransactionId,
             deductedBy: uid,
             status: 'deducted'
-          } : null
-        };
-        
-        // ✅ CRITICAL FIX: Also update booking.earnings field for consistency
-        // This ensures computeBookingEarnings() can read earnings directly from booking document
-        bookingEarningsUpdate.earnings = {
-          grossFare: roundCurrency(paymentAmount),
-          commissionAmount: roundCurrency(commissionAmount),
-          netEarnings: roundCurrency(driverEarnings),
-          commissionStatus: commissionDeducted ? 'deducted' : 'pending',
-          commissionTransactionId: commissionTransactionId || null,
-          calculatedAt: new Date()
-        };
-        
-        transaction.update(bookingRef, bookingEarningsUpdate);
-        
-        // ✅ CRITICAL FIX: Create earnings record atomically
+          } : null,
+          updatedAt: new Date()
+        });
+
+        transaction.set(paymentRef, {
+          ...paymentRecord,
+          amount: calculatedFare,
+          status: 'completed',
+          collectedAt: new Date(),
+          confirmedAt: new Date()
+        });
+
         const earningsRef = db.collection('driver_earnings').doc();
         transaction.set(earningsRef, {
           id: earningsRef.id,
           bookingId: id,
           driverId: uid,
-          amount: driverEarnings,
+          amount: finalDriverEarnings,
           commission: commissionAmount,
-          commissionDeducted: commissionDeducted,
-          totalFare: paymentAmount,
+          totalFare: calculatedFare,
           earnedAt: new Date(),
           status: 'completed',
           paymentMethod: paymentMethod,
           transactionId: transactionId
         });
-        
-        // ✅ CRITICAL FIX: Update admin revenue tracking atomically
-        const exactDistanceKm = bookingData.distance?.total || bookingData.exactDistance || bookingData.pricing?.distance || 0;
-        const fareBreakdown = fareCalculationService.calculateFare(exactDistanceKm);
-        const commissionPoints = fareBreakdown.commission; // ₹2 per km
-        
+
         const revenueRef = db.collection('adminRevenue').doc();
         transaction.set(revenueRef, {
           id: revenueRef.id,
           bookingId: id,
           customerId: bookingData.customerId,
           driverId: uid,
-          totalFare: paymentAmount,
-          driverEarnings: driverEarnings,
-          platformCommission: commissionPoints,
+          totalFare: calculatedFare,
+          driverEarnings: finalDriverEarnings,
+          platformCommission: commissionAmount,
           paymentMethod: paymentMethod,
           confirmedAt: new Date(),
           status: 'completed'
         });
-        
-        console.log(`✅ [PAYMENT_CONFIRM] All payment operations committed atomically`);
       });
-      
+
       console.log(`💰 [PAYMENT_CONFIRM] Driver earnings updated: ₹${driverEarnings}, Commission: ₹${commissionAmount} ${commissionDeducted ? '(deducted from points)' : '(not deducted - may need manual adjustment)'}`);
       
       // ✅ CRITICAL FIX: Always emit wallet update event (even if commission deduction failed)
@@ -11900,18 +11830,12 @@ router.post('/bookings/:id/payment', [
     
     if (driverDoc.exists) {
       const driverData = driverDoc.data();
-      const currentEarnings = driverData.driver?.earnings || { total: 0, thisMonth: 0, thisWeek: 0 };
+      const currentEarnings = resolveDriverTotalEarnings(driverData.driver || {});
       // CORRECT: Driver gets full fare, commission deducted from points wallet
       const tripEarnings = parseFloat(amount); // Full fare amount
-      
-      const newEarnings = {
-        total: currentEarnings.total + tripEarnings,
-        thisMonth: currentEarnings.thisMonth + tripEarnings,
-        thisWeek: currentEarnings.thisWeek + tripEarnings
-      };
 
       await driverRef.update({
-        'driver.earnings': newEarnings,
+        'driver.totalEarnings': currentEarnings + tripEarnings,
         'driver.totalTrips': (driverData.driver?.totalTrips || 0) + 1,
         updatedAt: currentTime
       });

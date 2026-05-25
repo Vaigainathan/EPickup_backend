@@ -13,7 +13,7 @@ const { env } = require('./config');
 
 // Import security middleware
 const { sanitizeInput } = require('./middleware/validation');
-const { generalLimiter, adminLimiter, speedLimiter } = require('./middleware/rateLimit');
+const { generalLimiter, adminLimiter, speedLimiter, fileUploadLimiter } = require('./middleware/rateLimit');
 const { securityHeaders } = require('./middleware/security');
 
 // Routes will be imported after Firebase initialization
@@ -568,7 +568,7 @@ app.use('/api/tracking', appCheckMiddleware.optionalMiddleware(), authMiddleware
 app.use('/api/notifications', appCheckMiddleware.optionalMiddleware(), authMiddleware, notificationRoutes);
 // app.use('/api/notifications', appCheckMiddleware.middleware(), authMiddleware, notificationRoutes); // Production mode
 
-app.use('/api/file-upload', appCheckMiddleware.optionalMiddleware(), authMiddleware, fileUploadRoutes);
+app.use('/api/file-upload', appCheckMiddleware.optionalMiddleware(), authMiddleware, fileUploadLimiter, fileUploadRoutes);
 // app.use('/api/file-upload', appCheckMiddleware.middleware(), authMiddleware, fileUploadRoutes); // Production mode
 
 app.use('/api/support', appCheckMiddleware.optionalMiddleware(), authMiddleware, supportRoutes);

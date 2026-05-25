@@ -38,6 +38,37 @@ const generalLimiter = rateLimit({
   }
 });
 
+// More generous limiter for file upload routes
+const fileUploadLimiter = rateLimit({
+  windowMs: 1 * 60 * 1000, // 1 minute
+  max: process.env.NODE_ENV === 'development' ? 300 : 30, // Allow batched document uploads
+  message: {
+    success: false,
+    error: {
+      code: 'FILE_UPLOAD_RATE_LIMIT_EXCEEDED',
+      message: 'Too many file upload requests, please try again shortly'
+    },
+    timestamp: new Date().toISOString()
+  },
+  standardHeaders: true,
+  legacyHeaders: false,
+  skip: (req) => {
+    const isDevelopment = process.env.NODE_ENV === 'development';
+    const isLocalhost = req.ip === '::1' || req.ip === '127.0.0.1' || req.ip === '::ffff:127.0.0.1';
+    return isDevelopment && isLocalhost;
+  },
+  handler: (req, res) => {
+    res.status(429).json({
+      success: false,
+      error: {
+        code: 'FILE_UPLOAD_RATE_LIMIT_EXCEEDED',
+        message: 'Too many file upload requests, please try again shortly'
+      },
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
 // Strict rate limiter for authentication endpoints
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
@@ -243,6 +274,7 @@ const trackingDataLimiter = rateLimit({
 
 module.exports = {
   generalLimiter,
+  fileUploadLimiter,
   authLimiter,
   adminLimiter,
   speedLimiter,

@@ -295,6 +295,47 @@ const initializeSocketIO = async (server) => {
         eventHandler.handleTrackingSubscription(socket, data);
       });
 
+      // Handle explicit booking room joins from customer trip-progress bootstrap
+      socket.on('join_booking_room', (data) => {
+        try {
+          if (!socket || typeof socket.join !== 'function') {
+            socket.emit('error', {
+              code: 'INVALID_SOCKET',
+              message: 'Socket instance is not available for room join',
+              timestamp: new Date().toISOString()
+            });
+            return;
+          }
+
+          const bookingId = typeof data === 'string' ? data : data?.bookingId || data?.tripId;
+          if (!bookingId || typeof bookingId !== 'string' || !bookingId.trim()) {
+            socket.emit('error', {
+              code: 'INVALID_DATA',
+              message: 'Booking ID is required to join booking room',
+              timestamp: new Date().toISOString()
+            });
+            return;
+          }
+
+          const roomName = `booking:${bookingId.trim()}`;
+          socket.join(roomName);
+
+          socket.emit('booking-room-joined', {
+            success: true,
+            bookingId: bookingId.trim(),
+            room: roomName,
+            timestamp: new Date().toISOString()
+          });
+        } catch (error) {
+          console.error('❌ [SOCKET] Failed to join booking room:', error);
+          socket.emit('error', {
+            code: 'ROOM_JOIN_ERROR',
+            message: 'Failed to join booking room',
+            timestamp: new Date().toISOString()
+          });
+        }
+      });
+
       // Handle tracking unsubscription
       socket.on('unsubscribe_tracking', (data) => {
         eventHandler.handleTrackingUnsubscription(socket, data);

@@ -1702,15 +1702,13 @@ router.get('/earnings/today', requireDriver, async (req, res) => {
     try {
       tripsSnapshot = await db.collection('bookings')
         .where('driverId', '==', uid)
-        .where('status', '==', 'completed')
-        .where('createdAt', '>=', startOfDay)
-        .where('createdAt', '<', endOfDay)
+        .where('status', 'in', ['completed', 'delivered'])
         .get();
     } catch (indexError) {
       console.warn('⚠️ [EARNINGS_TODAY] Falling back to in-memory date filtering:', indexError.message);
       tripsSnapshot = await db.collection('bookings')
         .where('driverId', '==', uid)
-        .where('status', '==', 'completed')
+        .where('status', 'in', ['completed', 'delivered'])
         .get();
     }
 
@@ -1719,21 +1717,22 @@ router.get('/earnings/today', requireDriver, async (req, res) => {
 
     tripsSnapshot.forEach((doc) => {
       const trip = doc.data();
-      const createdAt = parseDate(trip.createdAt);
+      const completedAt = parseDate(trip.completedAt) || parseDate(trip.timing?.completedAt) || parseDate(trip.updatedAt) || parseDate(trip.createdAt);
 
-      if (!createdAt || createdAt < startOfDay || createdAt >= endOfDay) {
+      if (!completedAt || completedAt < startOfDay || completedAt >= endOfDay) {
         return;
       }
 
-      const commissionDeductedValue = Number(
-        trip.commissionDeducted?.amount ??
-        trip.commissionDeducted ??
-        0
-      );
       const tripEarnings = Number(
         trip.driverEarnings ??
-        trip.earnings?.netEarnings ??
-        (trip.fare?.total ? (trip.fare.total - commissionDeductedValue) : 0)
+        trip.earnings?.grossFare ??
+        trip.earnings?.totalCollected ??
+        trip.payment?.amount ??
+        trip.pricing?.totalAmount ??
+        trip.pricing?.total ??
+        trip.fare?.total ??
+        trip.fare?.grossFare ??
+        0
       );
 
       totalSum += Number.isFinite(tripEarnings) ? tripEarnings : 0;
@@ -3001,8 +3000,22 @@ router.put('/status', [
     };
 
     if (isAvailable !== undefined) {
-      updateData['driver.isAvailable'] = isAvailable;
-      console.log('✅ [STATUS_UPDATE] Setting isAvailable to:', isAvailable);
+      const { isManualAvailabilityOverrideActive, driverAvailabilityMetadataFields } = require('../utils/driverAvailabilityMetadata');
+
+      if (
+        restoreFromAppRestart &&
+        isAvailable === true &&
+        isManualAvailabilityOverrideActive(existingData.driver) &&
+        existingData.driver?.isAvailable === false
+      ) {
+        console.log('✅ [STATUS_UPDATE] Preserving manual unavailable during app-restart restore');
+      } else {
+        updateData['driver.isAvailable'] = isAvailable;
+        if (!restoreFromAppRestart) {
+          Object.assign(updateData, driverAvailabilityMetadataFields('driver'));
+        }
+        console.log('✅ [STATUS_UPDATE] Setting isAvailable to:', isAvailable);
+      }
     }
 
     if (currentLocation) {
@@ -3497,6 +3510,8 @@ router.post('/register-availability', [
       });
     }
 
+    const { driverAvailabilityMetadataFields } = require('../utils/driverAvailabilityMetadata');
+
     const updateData = {
       'driver.isOnline': true,
       'driver.isAvailable': true,
@@ -3508,7 +3523,8 @@ router.post('/register-availability', [
       },
       'driver.lastSeen': new Date(),
       'driver.vehicleType': vehicleType,
-      updatedAt: new Date()
+      updatedAt: new Date(),
+      ...driverAvailabilityMetadataFields('driver')
     };
 
     await driverRef.update(updateData);
@@ -3699,11 +3715,13 @@ router.post('/set-availability', [
     const { uid } = req.user;
     const { isAvailable, reason } = req.body;
     const db = getFirestore();
+    const { driverAvailabilityMetadataFields } = require('../utils/driverAvailabilityMetadata');
 
     const updateData = {
       'driver.isAvailable': isAvailable,
       'driver.lastSeen': new Date(),
-      updatedAt: new Date()
+      updatedAt: new Date(),
+      ...driverAvailabilityMetadataFields('driver')
     };
 
     if (reason) {
@@ -5105,6 +5123,61 @@ router.post('/bookings/:id/accept', idempotencyKeyMiddleware, requireDriver, asy
       // Don't fail the request if broadcast fails
     }
 
+    // ✅ CRITICAL FIX: Also send a push stop signal to drivers who were notified.
+    // WebSocket-only stop misses drivers whose socket is disconnected.
+    try {
+      const notifiedDrivers = Array.isArray(updatedBookingData?.notifiedDrivers)
+        ? [...new Set(updatedBookingData.notifiedDrivers)]
+        : [];
+
+      if (notifiedDrivers.length > 0) {
+        const expoPushService = require('../services/expoPushService');
+        const stopTokens = [];
+
+        for (const driverId of notifiedDrivers) {
+          const notifiedDriverDoc = await db.collection('users').doc(driverId).get();
+          if (!notifiedDriverDoc.exists) {
+            console.warn(`⚠️ [ACCEPT_BOOKING] Notified driver ${driverId} not found while sending booking_taken push`);
+            continue;
+          }
+
+          const notifiedDriverData = notifiedDriverDoc.data();
+          const pushToken = notifiedDriverData.expoPushToken || notifiedDriverData.fcmToken;
+          if (!pushToken) {
+            console.warn(`⚠️ [ACCEPT_BOOKING] Notified driver ${driverId} has no push token for booking_taken stop signal`);
+            continue;
+          }
+
+          stopTokens.push(pushToken);
+        }
+
+        if (stopTokens.length > 0) {
+          const stopNotification = {
+            type: 'booking_taken',
+            bookingId: id,
+            data: {
+              type: 'booking_taken',
+              bookingId: id,
+              action: 'stop_ringtone',
+              acceptedBy: uid
+            }
+          };
+
+          const stopResult = await expoPushService.sendToTokens(stopTokens, stopNotification, {
+            priority: 'high',
+            dataOnly: true
+          });
+
+          console.log(`📢 [ACCEPT_BOOKING] booking_taken push stop sent to ${stopTokens.length} notified driver(s): ${stopResult.successCount} success, ${stopResult.failureCount} failed`);
+        }
+      } else {
+        console.log(`ℹ️ [ACCEPT_BOOKING] No notifiedDrivers recorded for booking ${id}; skipping booking_taken push stop`);
+      }
+    } catch (stopPushError) {
+      console.error('⚠️ [ACCEPT_BOOKING] Failed to send booking_taken push stop signal:', stopPushError);
+      // Don't fail the accept request if stop push fails.
+    }
+
     res.status(200).json({
       success: true,
       message: 'Booking accepted successfully',
@@ -6004,8 +6077,9 @@ router.post('/bookings/:id/cancel-at-pickup', [
 
       // Free driver (set isAvailable=true, currentBookingId=null)
       const driverRef = db.collection('users').doc(uid);
+      const { buildSystemAvailabilityUpdate } = require('../utils/driverAvailabilityMetadata');
       transaction.update(driverRef, {
-        'driver.isAvailable': true,
+        ...buildSystemAvailabilityUpdate(true),
         'driver.currentBookingId': null,
         updatedAt: new Date()
       });
@@ -6648,8 +6722,9 @@ router.post('/bookings/:id/confirm-payment', [
         // ✅ FIX: Manually release driver in fallback case
         try {
           const driverRef = db.collection('users').doc(uid);
+          const { buildSystemAvailabilityUpdate } = require('../utils/driverAvailabilityMetadata');
           await driverRef.update({
-            'driver.isAvailable': true,
+            ...buildSystemAvailabilityUpdate(true),
             'driver.currentBookingId': null,
             'driver.status': 'available',
             updatedAt: new Date()
@@ -6722,8 +6797,9 @@ router.post('/bookings/:id/confirm-payment', [
         // ✅ FIX: Manually release driver in fallback case
         try {
           const driverRef = db.collection('users').doc(uid);
+          const { buildSystemAvailabilityUpdate } = require('../utils/driverAvailabilityMetadata');
           await driverRef.update({
-            'driver.isAvailable': true,
+            ...buildSystemAvailabilityUpdate(true),
             'driver.currentBookingId': null,
             'driver.status': 'available',
             updatedAt: new Date()
@@ -6894,6 +6970,13 @@ router.post('/bookings/:id/confirm-payment', [
         }
 
         paymentAmount = calculatedFare;
+        const existingDriverEarnings = Number(
+          bookingDataTx.driverEarnings ??
+          bookingDataTx.earnings?.grossFare ??
+          bookingDataTx.earnings?.totalCollected ??
+          bookingDataTx.payment?.amount ??
+          0
+        );
 
         const existingCommission = bookingDataTx.commissionDeducted?.amount ?? bookingDataTx.commissionDeducted ?? null;
         if (existingCommission) {
@@ -6989,13 +7072,19 @@ router.post('/bookings/:id/confirm-payment', [
           }
         }
 
-        const finalDriverEarnings = roundCurrency(calculatedFare - commissionAmount);
+        const finalDriverEarnings = roundCurrency(
+          Number.isFinite(existingDriverEarnings) && existingDriverEarnings > 0
+            ? existingDriverEarnings
+            : calculatedFare
+        );
         driverEarnings = finalDriverEarnings;
 
-        transaction.update(driverRef, {
-          totalEarnings: FieldValue.increment(finalDriverEarnings),
-          updatedAt: new Date()
-        });
+        if (!Number.isFinite(existingDriverEarnings) || existingDriverEarnings <= 0) {
+          transaction.update(driverRef, {
+            totalEarnings: FieldValue.increment(finalDriverEarnings),
+            updatedAt: new Date()
+          });
+        }
 
         transaction.update(bookingRef, {
           status: 'completed',
@@ -7693,6 +7782,15 @@ router.post('/bookings/:id/complete-delivery', [
       .where('bookingId', '==', id)
       .where('status', '==', 'completed')
       .get();
+
+    const bookingData = bookingDoc.data();
+    const grossOrderAmount = Number(
+      bookingData.pricing?.totalAmount ??
+      bookingData.pricing?.total ??
+      bookingData.payment?.amount ??
+      bookingData.fare?.total ??
+      driverEarnings
+    );
     
     if (existingEarningsSnapshot.size > 0) {
       console.log(`⚠️ [COMPLETE_DELIVERY] Earnings record already exists for booking ${id}. Skipping duplicate creation.`);
@@ -7712,10 +7810,11 @@ router.post('/bookings/:id/complete-delivery', [
       status: 'completed',
       completedAt: new Date(),
       completedBy: uid,
+      driverEarnings: grossOrderAmount,
       earnings: {
-        driverEarnings,
+        driverEarnings: grossOrderAmount,
         commission,
-        totalAmount: driverEarnings + commission
+        totalAmount: grossOrderAmount
       },
       updatedAt: new Date()
     });
@@ -7730,8 +7829,8 @@ router.post('/bookings/:id/complete-delivery', [
       const currentBalance = driverData.wallet?.balance || 0;
       
       await driverRef.update({
-        totalEarnings: currentEarnings + driverEarnings,
-        'wallet.balance': currentBalance + driverEarnings,
+        totalEarnings: currentEarnings + grossOrderAmount,
+        'wallet.balance': currentBalance + grossOrderAmount,
         'wallet.lastUpdated': new Date(),
         updatedAt: new Date()
       });
@@ -7741,9 +7840,9 @@ router.post('/bookings/:id/complete-delivery', [
     await db.collection('driver_earnings').add({
       bookingId: id,
       driverId: uid,
-      amount: driverEarnings,
+      amount: grossOrderAmount,
       commission,
-      totalFare: driverEarnings + commission,
+      totalFare: grossOrderAmount,
       earnedAt: new Date(),
       status: 'completed'
     });
@@ -7752,9 +7851,9 @@ router.post('/bookings/:id/complete-delivery', [
       success: true,
       data: {
         message: 'Delivery completed successfully',
-        driverEarnings,
+        driverEarnings: grossOrderAmount,
         commission,
-        totalFare: driverEarnings + commission
+        totalFare: grossOrderAmount
       }
     });
     
@@ -8636,6 +8735,15 @@ router.post('/complete-delivery', [
       source: 'driver_app'
     });
     const actualDuration = statusResult.booking?.timing?.actualDuration || null;
+    const bookingData = statusResult.booking || {};
+    const grossOrderAmount = Number(
+      bookingData.pricing?.totalAmount ??
+      bookingData.pricing?.total ??
+      bookingData.payment?.amount ??
+      bookingData.fare?.total ??
+      bookingData.fare?.grossFare ??
+      0
+    );
 
     // ✅ CRITICAL FIX: Notify customer about delivery via WebSocket
     const liveTrackingService = require('../services/liveTrackingService');
@@ -8718,6 +8826,26 @@ router.post('/complete-delivery', [
       }, { merge: true });
     } catch (trackingError) {
       console.warn('⚠️ [COMPLETE_DELIVERY] Failed to update trip tracking:', trackingError);
+    }
+
+    try {
+      const { FieldValue } = require('firebase-admin/firestore');
+      await db.collection('bookings').doc(bookingId).update({
+        status: 'completed',
+        driverEarnings: grossOrderAmount,
+        completedAt: statusResult.eventTimestamp || new Date(),
+        paymentStatus: 'paid',
+        paymentConfirmed: true,
+        paymentConfirmedAt: statusResult.eventTimestamp || new Date(),
+        updatedAt: new Date()
+      });
+
+      await db.collection('users').doc(uid).update({
+        totalEarnings: FieldValue.increment(grossOrderAmount),
+        updatedAt: new Date()
+      });
+    } catch (earningsUpdateError) {
+      console.error('❌ [COMPLETE_DELIVERY] Failed to write gross earnings:', earningsUpdateError);
     }
 
     // ✅ CRITICAL FIX: Commission deduction and earnings updates are handled during payment confirmation

@@ -1300,7 +1300,7 @@ router.post('/:id/complete-trip', [
     const { location, notes } = req.body;
 
     // Update booking status to delivered
-    const result = await bookingService.updateBookingStatus(id, 'delivered', uid, {
+    const result = await bookingService.updateBookingStatus(id, 'completed', uid, {
       'driver.currentLocation': {
         ...location,
         timestamp: new Date()

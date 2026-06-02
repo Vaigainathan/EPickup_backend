@@ -1,5 +1,9 @@
 const { getFirestore } = require('./firebase');
 const crypto = require('crypto');
+const {
+  shouldAutoRepairAvailabilityOnLogin,
+  driverAvailabilityMetadataFields
+} = require('../utils/driverAvailabilityMetadata');
 
 /**
  * Authentication Service
@@ -71,10 +75,28 @@ class AuthService {
         };
         
         // Update last login time for existing user (use set with merge for safety)
-        await this.db.collection('users').doc(userDoc.id).set({
+        const loginUpdate = {
           lastLoginAt: new Date(),
           updatedAt: new Date()
-        }, { merge: true });
+        };
+
+        if (userType === 'driver' && shouldAutoRepairAvailabilityOnLogin(user.driver)) {
+          loginUpdate['driver.isAvailable'] = true;
+          Object.assign(loginUpdate, driverAvailabilityMetadataFields('system'));
+          console.log('✅ [AUTH_SERVICE] Login auto-repair: stale isAvailable=false → true (no manual override)');
+        } else if (userType === 'driver' && user.driver?.isOnline === true && !user.driver?.currentBookingId && user.driver?.isAvailable === false) {
+          console.log('✅ [AUTH_SERVICE] Login skipped isAvailable auto-repair (manual driver/admin choice preserved)');
+        }
+
+        await this.db.collection('users').doc(userDoc.id).set(loginUpdate, { merge: true });
+
+        if (loginUpdate['driver.isAvailable'] === true) {
+          await this.db.collection('driverLocations').doc(userDoc.id).set({
+            isAvailable: true,
+            currentTripId: null,
+            lastUpdated: new Date()
+          }, { merge: true });
+        }
         
         console.log(`✅ Existing user found: ${user.id} (${normalizedPhone}) - Type: ${user.userType}`);
       } else {

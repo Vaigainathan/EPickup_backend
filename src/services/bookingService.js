@@ -937,6 +937,121 @@ class BookingService {
           updateData.commissionError = commissionError.message;
         }
         break;
+      case 'completed': {
+        updateData['timing.deliveredAt'] = updateData['timing.deliveredAt'] || new Date();
+
+        const bookingData = bookingDoc.data();
+        const grossOrderAmount = Number(
+          bookingData.pricing?.totalAmount ??
+          bookingData.pricing?.total ??
+          bookingData.payment?.amount ??
+          bookingData.fare?.total ??
+          bookingData.fare?.grossFare ??
+          0
+        );
+
+        try {
+          const driverId = bookingData.driverId;
+          const alreadyDeducted = bookingData.commissionDeducted?.amount || bookingData.commissionDeducted || false;
+
+          if (alreadyDeducted) {
+            console.log(`⚠️ [BOOKING_SERVICE] Commission already deducted for booking ${bookingId}. Skipping duplicate deduction.`);
+            updateData.commissionDeducted = bookingData.commissionDeducted;
+          } else if (driverId) {
+            const tripFare = bookingData.fare?.totalFare || bookingData.fare?.total || bookingData.fare || 0;
+            const exactDistanceKm = bookingData.distance?.total || bookingData.exactDistance || bookingData.pricing?.distance || 0;
+
+            const fareCalculationService = require('./fareCalculationService');
+            let fareBreakdown;
+            let roundedDistanceKm;
+            let commissionAmount;
+
+            if (exactDistanceKm > 0) {
+              fareBreakdown = fareCalculationService.calculateFare(exactDistanceKm);
+              roundedDistanceKm = fareBreakdown.roundedDistanceKm;
+              commissionAmount = fareBreakdown.commission;
+            } else {
+              fareBreakdown = fareCalculationService.calculateFare(0.5);
+              roundedDistanceKm = fareBreakdown.roundedDistanceKm;
+              commissionAmount = fareBreakdown.commission;
+            }
+
+            console.log(`💰 [BOOKING_SERVICE] Deducting commission for trip ${bookingId}:`, {
+              exactDistanceKm: exactDistanceKm.toFixed ? exactDistanceKm.toFixed(2) : exactDistanceKm,
+              roundedDistanceKm: roundedDistanceKm,
+              commissionAmount: commissionAmount,
+              tripFare: tripFare,
+              calculation: `${roundedDistanceKm}km × ₹2/km = ₹${commissionAmount}`
+            });
+
+            const tripDetails = {
+              bookingId: bookingId,
+              pickupLocation: bookingData.pickup || {},
+              dropoffLocation: bookingData.dropoff || {},
+              tripFare: tripFare,
+              distance: roundedDistanceKm,
+              exactDistance: exactDistanceKm,
+              paymentMethod: 'cash'
+            };
+
+            const commissionResult = await walletService.deductPoints(
+              driverId,
+              bookingId,
+              roundedDistanceKm,
+              commissionAmount,
+              tripDetails
+            );
+
+            if (commissionResult.success) {
+              console.log(`✅ [BOOKING_SERVICE] Commission deducted: ₹${commissionAmount} (${roundedDistanceKm}km × ₹2/km, fare: ₹${tripFare})`);
+              updateData.commissionDeducted = {
+                amount: commissionAmount,
+                roundedDistanceKm: roundedDistanceKm,
+                exactDistanceKm: exactDistanceKm,
+                tripFare: tripFare,
+                transactionId: commissionResult.data?.transactionId || commissionResult.transactionId,
+                deductedAt: new Date(),
+                deductedBy: driverId
+              };
+            } else {
+              console.error('❌ [BOOKING_SERVICE] Commission deduction failed:', commissionResult.error);
+              updateData.commissionDeducted = {
+                amount: commissionAmount,
+                roundedDistanceKm: roundedDistanceKm,
+                exactDistanceKm: exactDistanceKm,
+                status: 'failed',
+                failureReason: commissionResult.error,
+                deductedAt: new Date(),
+                deductedBy: driverId
+              };
+              updateData.commissionError = commissionResult.error;
+            }
+          }
+        } catch (commissionError) {
+          console.error('❌ [BOOKING_SERVICE] Error processing commission:', commissionError);
+          updateData.commissionError = commissionError.message;
+        }
+
+        updateData.completedAt = new Date();
+        updateData.paymentStatus = 'paid';
+        updateData.paymentConfirmed = true;
+        updateData.paymentConfirmedAt = new Date();
+        updateData.driverEarnings = grossOrderAmount;
+        updateData.totalEarnings = grossOrderAmount;
+        updateData.earnings = {
+          grossFare: grossOrderAmount,
+          netEarnings: grossOrderAmount,
+          totalCollected: grossOrderAmount,
+          commissionAmount: Number(bookingData.commissionDeducted?.amount ?? bookingData.commissionDeducted ?? 0),
+          commissionStatus: bookingData.commissionDeducted ? 'deducted' : 'not_applicable',
+          calculatedAt: new Date()
+        };
+
+        if (bookingData.commissionDeducted) {
+          updateData.commissionDeducted = bookingData.commissionDeducted;
+        }
+        break;
+      }
     }
 
     await bookingRef.update(updateData);

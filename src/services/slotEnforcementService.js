@@ -365,22 +365,31 @@ class SlotEnforcementService {
    */
   async setDriverOnline(driverId) {
     try {
+      const { isManualAvailabilityOverrideActive, buildSystemAvailabilityUpdate } = require('../utils/driverAvailabilityMetadata');
+      const driverDoc = await this.db.collection('users').doc(driverId).get();
+      const driverData = driverDoc.exists ? driverDoc.data()?.driver : null;
+      const preserveManualUnavailable =
+        isManualAvailabilityOverrideActive(driverData) && driverData?.isAvailable === false;
+
       const batch = this.db.batch();
 
       // Update driver status
       const driverRef = this.db.collection('users').doc(driverId);
-      batch.update(driverRef, {
+      const driverUserUpdate = {
         'driver.isOnline': true,
-        'driver.isAvailable': true,
         'driver.lastSeen': new Date(),
         updatedAt: new Date()
-      });
+      };
+      if (!preserveManualUnavailable) {
+        Object.assign(driverUserUpdate, buildSystemAvailabilityUpdate(true));
+      }
+      batch.update(driverRef, driverUserUpdate);
 
       // Update driver location
       const driverLocationRef = this.db.collection('driverLocations').doc(driverId);
       batch.update(driverLocationRef, {
         isOnline: true,
-        isAvailable: true,
+        isAvailable: preserveManualUnavailable ? false : true,
         lastUpdated: new Date()
       });
 
@@ -392,7 +401,7 @@ class SlotEnforcementService {
         const io = socketService.getSocketIO();
         io.to(`user:${driverId}`).emit('driver_status_changed', {
           isOnline: true,
-          isAvailable: true,
+          isAvailable: preserveManualUnavailable ? false : true,
           reason: 'In active work slot time',
           timestamp: new Date().toISOString()
         });

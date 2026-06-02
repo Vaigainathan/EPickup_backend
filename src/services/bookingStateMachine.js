@@ -1,4 +1,5 @@
 const { getFirestore } = require('./firebase');
+const { buildSystemAvailabilityUpdate } = require('../utils/driverAvailabilityMetadata');
 const errorHandlingService = require('./errorHandlingService');
 
 /**
@@ -254,7 +255,7 @@ class BookingStateMachine {
         if (context.driverId) {
           const driverRef = this.db.collection('users').doc(context.driverId);
           transaction.update(driverRef, {
-            'driver.isAvailable': false,
+            ...buildSystemAvailabilityUpdate(false),
             'driver.currentBookingId': bookingId,
             updatedAt: new Date()
           });
@@ -297,7 +298,7 @@ class BookingStateMachine {
           // Slot automation will handle offline if needed, but driver might want to stay online
           // Only update availability and clear booking reference
           transaction.update(driverRef, {
-            'driver.isAvailable': true, // ✅ Driver is now available for new bookings
+            ...buildSystemAvailabilityUpdate(true), // ✅ Driver is now available for new bookings
             'driver.currentBookingId': null, // ✅ Clear active booking reference
             'driver.status': 'available', // ✅ Set status to available
             // ✅ NOTE: Don't change isOnline - let slot automation handle it
@@ -322,7 +323,7 @@ class BookingStateMachine {
         if (context.driverId) {
           const driverRef = this.db.collection('users').doc(context.driverId);
           transaction.update(driverRef, {
-            'driver.isAvailable': true,
+            ...buildSystemAvailabilityUpdate(true),
             'driver.currentBookingId': null,
             updatedAt: new Date()
           });

@@ -108,7 +108,7 @@ router.post('/driver-document', requireDriver, upload.single('document'), async 
     const fileName = `${timestamp}_${normalizedDocType}.jpg`;
     const filePath = `drivers/${finalDriverId}/documents/${normalizedDocType}/${fileName}`;
     
-    console.log('📤 [BACKEND PROXY] File path:', filePath);
+    console.log('📤 [BACKEND PROXY] File path generated:', { documentType, hasFilePath: !!filePath });
     
     // Create file reference
     const fileRef = bucket.file(filePath);
@@ -466,7 +466,7 @@ router.post('/customer-document', upload.single('document'), async (req, res) =>
     const fileName = `${timestamp}_${documentType}.jpg`;
     const filePath = `customers/${customerId}/documents/${documentType}/${fileName}`;
     
-    console.log('📤 [BACKEND PROXY] File path:', filePath);
+    console.log('📤 [BACKEND PROXY] Customer file path generated:', { documentType, hasFilePath: !!filePath });
     
     // Create file reference
     const fileRef = bucket.file(filePath);

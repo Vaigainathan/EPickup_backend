@@ -160,6 +160,7 @@ const server = require('http').createServer(app);
 
 // Sentry is initialized in instrument.js
 const Sentry = require('../instrument.js');
+const { sanitizeErrorForLog, sanitizeForLog } = require('./utils/logSanitizer');
 
 // Security middleware
 app.use(securityHeaders);
@@ -919,7 +920,7 @@ gracefulShutdown(server, {
 
 // ✅ CRITICAL FIX: Handle uncaught exceptions gracefully
 process.on('uncaughtException', (error) => {
-  console.error('❌ [SERVER] Uncaught Exception:', error);
+  console.error('❌ [SERVER] Uncaught Exception:', sanitizeErrorForLog(error));
   // Log to Sentry if available
   if (typeof Sentry !== 'undefined' && Sentry.captureException) {
     Sentry.captureException(error);
@@ -937,9 +938,9 @@ process.on('unhandledRejection', (reason, promise) => {
   // ✅ REMOVED: Redis-specific error handling (Redis is no longer used)
   
   // For other unhandled rejections, log and potentially exit
-  console.error('❌ [SERVER] Unhandled Rejection at:', promise);
-  console.error('❌ [SERVER] Reason:', reason);
-  console.error('❌ [SERVER] Stack:', errorStack);
+  console.error('❌ [SERVER] Unhandled Rejection at:', sanitizeForLog(promise));
+  console.error('❌ [SERVER] Reason:', sanitizeForLog(reason));
+  console.error('❌ [SERVER] Stack:', sanitizeForLog(errorStack));
   
   // Log to Sentry if available
   if (typeof Sentry !== 'undefined' && Sentry.captureException) {

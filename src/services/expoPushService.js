@@ -207,7 +207,7 @@ class ExpoPushService {
       const invalidTokens = tokens.filter(token => !Expo.isExpoPushToken(token));
 
       if (invalidTokens.length > 0) {
-        console.warn('Invalid Expo push tokens:', invalidTokens);
+        console.warn('Invalid Expo push tokens:', { count: invalidTokens.length });
       }
 
       if (validTokens.length === 0) {

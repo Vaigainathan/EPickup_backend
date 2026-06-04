@@ -45,38 +45,121 @@ router.post('/tracking/update', [
         }
       });
     }
-    const { bookingId, location, estimatedArrival } = req.body;
+    const { bookingId, location, estimatedArrival, speed, heading, status } = req.body;
     const driverId = req.user.uid;
 
     const { getFirestore } = require('../services/firebase');
     const db = getFirestore();
+    const currentTime = new Date();
+
+    const locationUpdate = {
+      latitude: Number(location.latitude ?? location.lat),
+      longitude: Number(location.longitude ?? location.lng),
+      accuracy: Number(location.accuracy || 0),
+      speed: Number(speed ?? location.speed ?? 0),
+      heading: Number(heading ?? location.heading ?? 0),
+      timestamp: currentTime
+    };
 
     // Persist latest location for driver (compatible with existing shape)
     await db.collection('driverLocations').doc(driverId).set({
-      currentLocation: {
-        latitude: Number(location.latitude ?? location.lat),
-        longitude: Number(location.longitude ?? location.lng),
-        accuracy: Number(location.accuracy || 0),
-        speed: Number(location.speed || 0),
-        heading: Number(location.heading || 0),
-        timestamp: new Date()
-      },
-      lastUpdated: new Date(),
-      bookingId
+      currentLocation: locationUpdate,
+      lastUpdated: currentTime,
+      bookingId,
+      currentTripId: bookingId
     }, { merge: true });
 
     // ✅ ROOT CAUSE FIX: Emit to customer and booking rooms
     // Always attempt to emit even if booking lookup fails (defensive programming)
-    const bookingDoc = await db.collection('bookings').doc(bookingId).get();
+    const bookingRef = db.collection('bookings').doc(bookingId);
+    const bookingDoc = await bookingRef.get();
     let customerId = null;
-    
+    let bookingData = null;
+
     if (bookingDoc.exists) {
-      const bookingData = bookingDoc.data();
+      bookingData = bookingDoc.data();
       customerId = bookingData.customerId;
+
+      // Maintain tripTracking + booking.tracking for API/Firestore fallbacks
+      const tripTrackingRef = db.collection('tripTracking').doc(bookingId);
+      const tripTrackingDoc = await tripTrackingRef.get();
+      let tripTrackingData = tripTrackingDoc.exists ? tripTrackingDoc.data() : null;
+
+      if (!tripTrackingDoc.exists) {
+        if (bookingData.driverId !== driverId) {
+          return res.status(403).json({
+            success: false,
+            error: { code: 'ACCESS_DENIED', message: 'Access denied', details: 'You can only update tracking for your own trips' }
+          });
+        }
+        tripTrackingData = {
+          tripId: bookingId,
+          bookingId,
+          driverId,
+          customerId: bookingData.customerId,
+          currentStatus: bookingData.status || 'driver_assigned',
+          currentLocation: locationUpdate,
+          route: {
+            pickup: bookingData.pickup?.coordinates,
+            dropoff: bookingData.dropoff?.coordinates,
+            currentRoute: null,
+            distance: null,
+            duration: null
+          },
+          trackingHistory: [{ location: locationUpdate, status: bookingData.status || 'driver_assigned', timestamp: currentTime }],
+          isActive: true,
+          startedAt: currentTime,
+          lastUpdated: currentTime,
+          createdAt: currentTime,
+          updatedAt: currentTime
+        };
+        await tripTrackingRef.set(tripTrackingData);
+      } else {
+        if (tripTrackingData.driverId !== driverId) {
+          return res.status(403).json({
+            success: false,
+            error: { code: 'ACCESS_DENIED', message: 'Access denied', details: 'You can only update tracking for your own trips' }
+          });
+        }
+        if (!tripTrackingData.isActive) {
+          return res.status(400).json({
+            success: false,
+            error: { code: 'TRIP_NOT_ACTIVE', message: 'Trip not active', details: 'Trip tracking is not active for this booking' }
+          });
+        }
+
+        const trackingHistory = tripTrackingData.trackingHistory || [];
+        trackingHistory.push({
+          location: locationUpdate,
+          status: status || tripTrackingData.currentStatus,
+          timestamp: currentTime
+        });
+        if (trackingHistory.length > 100) {
+          trackingHistory.splice(0, trackingHistory.length - 100);
+        }
+
+        const tripUpdateData = {
+          currentLocation: locationUpdate,
+          lastUpdated: currentTime,
+          updatedAt: currentTime,
+          trackingHistory
+        };
+        if (status) {
+          tripUpdateData.currentStatus = status;
+        }
+        await tripTrackingRef.update(tripUpdateData);
+      }
+
+      await bookingRef.update({
+        'tracking.isActive': true,
+        'tracking.currentLocation': locationUpdate,
+        'driver.currentLocation': locationUpdate,
+        updatedAt: currentTime
+      });
     } else {
       console.warn(`⚠️ [DRIVER_TRACKING] Booking ${bookingId} not found in database, attempting to emit to booking room only`);
     }
-    
+
     // ✅ ROOT CAUSE FIX: Always emit to booking room (even if customerId is missing)
     // This ensures location updates are delivered if customer is in booking room
     const bookingRoom = `booking:${bookingId}`;
@@ -84,16 +167,12 @@ router.post('/tracking/update', [
       bookingId,
       driverId,
       location: {
-        latitude: Number(location.latitude ?? location.lat),
-        longitude: Number(location.longitude ?? location.lng),
-        accuracy: Number(location.accuracy || 0),
-        speed: Number(location.speed || 0),
-        heading: Number(location.heading || 0),
-        timestamp: new Date().toISOString()
+        ...locationUpdate,
+        timestamp: locationUpdate.timestamp.toISOString()
       },
       estimatedArrival,
       // Top-level timestamp for consumers that expect it outside the location object
-      timestamp: new Date().toISOString()
+      timestamp: currentTime.toISOString()
     };
     
     try {
@@ -328,14 +407,30 @@ function computeBookingEarnings(bookingData = {}) {
   );
 
   const grossFare = roundCurrency(
-    toNumber(bookingData.fare?.grossFare ?? bookingData.fare?.total ?? fareBreakdown.fare, fareBreakdown.fare)
+    toNumber(
+      bookingData.driverEarnings ??
+        bookingData.earnings?.grossFare ??
+        bookingData.earnings?.totalCollected ??
+        bookingData.pricing?.totalAmount ??
+        bookingData.pricing?.total ??
+        bookingData.pricing?.totalFare ??
+        bookingData.fare?.grossFare ??
+        bookingData.fare?.total ??
+        fareBreakdown.fare,
+      fareBreakdown.fare
+    )
   );
   const commissionAmount = roundCurrency(
-    toNumber(bookingData.commissionAmount ?? fareBreakdown.commission, fareBreakdown.commission)
+    toNumber(
+      bookingData.earnings?.commissionAmount ??
+        bookingData.commissionDeducted?.amount ??
+        bookingData.commissionAmount ??
+        fareBreakdown.commission,
+      fareBreakdown.commission
+    )
   );
-  const netEarnings = roundCurrency(
-    toNumber(bookingData.netEarnings ?? bookingData.fare?.net ?? (grossFare - commissionAmount), grossFare - commissionAmount)
-  );
+  // Driver earnings = gross collected; commission is wallet-only, not subtracted here
+  const netEarnings = grossFare;
   const commissionOutstanding = roundCurrency(
     toNumber(bookingData.commissionOutstanding ?? Math.max(commissionAmount - toNumber(bookingData.commissionPaid, 0), 0), 0)
   );
@@ -1726,12 +1821,10 @@ router.get('/earnings/today', requireDriver, async (req, res) => {
       const tripEarnings = Number(
         trip.driverEarnings ??
         trip.earnings?.grossFare ??
-        trip.earnings?.totalCollected ??
-        trip.payment?.amount ??
         trip.pricing?.totalAmount ??
+        trip.pricing?.totalFare ??
         trip.pricing?.total ??
         trip.fare?.total ??
-        trip.fare?.grossFare ??
         0
       );
 
@@ -5728,7 +5821,7 @@ router.post('/bookings/:id/photo-verification/upload', [
     console.log(`✅ [PHOTO_UPLOAD] Photo verification uploaded successfully (traceId: ${traceId || 'none'}):`, {
       bookingId: id,
       photoType: safeType,
-      photoUrl: downloadURL,
+      hasPhotoUrl: !!downloadURL,
       photoId: photoId,
       status: photoStatus
     });
@@ -6469,7 +6562,7 @@ router.post('/bookings/:id/confirm-payment', [
       amount, 
       paymentMethod, 
       transactionId,
-      idempotencyKey
+      hasIdempotencyKey: !!idempotencyKey
     });
     
     const db = getFirestore();
@@ -6481,7 +6574,7 @@ router.post('/bookings/:id/confirm-payment', [
       
       if (idempotencyDoc.exists) {
         const idempotencyData = idempotencyDoc.data();
-        console.log(`ℹ️ [PAYMENT_CONFIRM] Idempotency key found: ${idempotencyKey}. Returning cached result.`);
+        console.log('ℹ️ [PAYMENT_CONFIRM] Idempotency key found. Returning cached result.');
         return res.status(200).json({
           success: true,
           data: idempotencyData.response,
@@ -7281,7 +7374,7 @@ router.post('/bookings/:id/confirm-payment', [
           createdAt: new Date(),
           expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000) // Expire after 24 hours
         });
-        console.log(`✅ [PAYMENT_CONFIRM] Idempotency key stored: ${idempotencyKey}`);
+        console.log('✅ [PAYMENT_CONFIRM] Idempotency key stored');
       } catch (idempotencyError) {
         console.warn('⚠️ [PAYMENT_CONFIRM] Failed to store idempotency key:', idempotencyError);
         // Don't fail payment if idempotency storage fails
@@ -7922,7 +8015,7 @@ router.post('/bookings/:id/reject', [
         error: {
           code: 'INVALID_BOOKING_STATUS',
           message: 'Cannot reject booking',
-          details: 'Booking is not in a rejectable state'
+          details: 'Booking is not in a rejectable state. It may have already been accepted, completed, or cancelled.'
         },
         timestamp: new Date().toISOString()
       });
@@ -7940,7 +8033,7 @@ router.post('/bookings/:id/reject', [
         error: {
           code: 'ACCESS_DENIED',
           message: 'Access denied',
-          details: 'You can only reject bookings assigned to you or available bookings'
+          details: 'You can only reject bookings assigned to you or available bookings. This booking may have been accepted by another driver.'
         },
         timestamp: new Date().toISOString()
       });
@@ -7959,11 +8052,11 @@ router.post('/bookings/:id/reject', [
         updatedAt: new Date()
       });
       
-      // Remove current trip from driver location
-      await db.collection('driverLocations').doc(uid).update({
+      // Remove current trip from driver location (merge: true — doc may not exist for new drivers)
+      await db.collection('driverLocations').doc(uid).set({
         currentTripId: null,
         lastUpdated: new Date()
-      });
+      }, { merge: true });
       
       console.log(`✅ [BOOKING_REJECTION] Driver ${uid} rejected assigned booking ${id}, made available again`);
     } else {
@@ -9298,8 +9391,8 @@ router.post('/wallet/top-up', [
     console.log('   Driver ID:', uid);
     console.log('   Amount:', amount, '(type:', typeof amount + ')');
     console.log('   Payment Method:', paymentMethod);
-    console.log('   Idempotency Key:', idempotencyKey);
-    console.log('   Request Body:', JSON.stringify(req.body, null, 2));
+    console.log('   Idempotency Key Provided:', !!idempotencyKey);
+    console.log('   Request Body Keys:', Object.keys(req.body || {}));
     console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
     
     const errors = validationResult(req);
@@ -9308,7 +9401,7 @@ router.post('/wallet/top-up', [
       console.error('   Errors:', JSON.stringify(errors.array(), null, 2));
       console.error('   Received amount:', amount, '(type:', typeof amount + ')');
       console.error('   Received paymentMethod:', paymentMethod);
-      console.error('   Received idempotencyKey:', idempotencyKey);
+      console.error('   Received idempotencyKey:', !!idempotencyKey);
       
       return res.status(400).json({
         success: false,
@@ -9370,7 +9463,7 @@ router.post('/wallet/top-up', [
     const db = getFirestore();
     
     // ✅ IDEMPOTENCY CHECK - Prevent duplicate top-ups
-    console.log('🔍 [IDEMPOTENCY] Checking for existing transaction with key:', idempotencyKey);
+    console.log('🔍 [IDEMPOTENCY] Checking for existing transaction with provided key');
     const existingTopUp = await db.collection('driverTopUps')
       .where('driverId', '==', uid)
       .where('idempotencyKey', '==', idempotencyKey)
@@ -9549,8 +9642,8 @@ router.post('/wallet/verify-payment', requireDriver, async (req, res) => {
     console.log('✅ [PAYMENT_VERIFY] Verifying Razorpay payment (User Isolation Check)');
     console.log('   Driver ID:', uid);
     console.log('   Transaction:', transactionId);
-    console.log('   Payment ID:', razorpayPaymentId || 'not provided');
-    console.log('   Order ID:', razorpayOrderId || 'not provided');
+    console.log('   Payment ID provided:', !!razorpayPaymentId);
+    console.log('   Order ID provided:', !!razorpayOrderId);
     console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
     
     const { getFirestore } = require('../services/firebase');
@@ -10641,9 +10734,9 @@ router.get('/documents/status', requireDriver, documentStatusRateLimit, document
     const firestoreDocs = userData.driver?.documents || userData.documents || {};
     const comprehensiveDocs = comprehensiveVerificationData?.documents || {};
     
-    console.log('📋 [DOC_STATUS] Firestore documents data:', JSON.stringify(firestoreDocs, null, 2));
+    console.log('📋 [DOC_STATUS] Firestore documents count:', Object.keys(firestoreDocs).length);
     console.log('📋 [DOC_STATUS] Firestore documents keys:', Object.keys(firestoreDocs));
-    console.log('📋 [DOC_STATUS] Comprehensive documents data:', JSON.stringify(comprehensiveDocs, null, 2));
+    console.log('📋 [DOC_STATUS] Comprehensive documents count:', Object.keys(comprehensiveDocs).length);
     console.log('📋 [DOC_STATUS] Comprehensive documents keys:', Object.keys(comprehensiveDocs));
     
     // Helper function to get verification status from Firestore
@@ -10721,7 +10814,10 @@ router.get('/documents/status', requireDriver, documentStatusRateLimit, document
       };
     });
     
-    console.log('📊 [DOC_STATUS] Processed Firebase Storage documents:', JSON.stringify(finalDocuments, null, 2));
+    console.log('📊 [DOC_STATUS] Processed Firebase Storage documents:', {
+      documentTypes: Object.keys(finalDocuments),
+      uploadedCount: Object.values(finalDocuments).filter((doc) => !!doc?.url).length
+    });
 
     // Calculate document completion status with enhanced data
     const uploadedDocuments = requiredDocuments.filter(doc => finalDocuments[doc]?.url);
@@ -11475,211 +11571,6 @@ router.post('/tracking/start', [
 });
 
 /**
- * @route   POST /api/driver/tracking/update
- * @desc    Update real-time location during trip
- * @access  Private (Driver only)
- */
-router.post('/tracking/update', [
-  requireDriver,
-  body('bookingId')
-    .notEmpty()
-    .withMessage('Booking ID is required'),
-  body('location')
-    .isObject()
-    .withMessage('Location is required'),
-  body('location.latitude')
-    .isFloat({ min: -90, max: 90 })
-    .withMessage('Latitude must be between -90 and 90'),
-  body('location.longitude')
-    .isFloat({ min: -180, max: 180 })
-    .withMessage('Longitude must be between -180 and 180'),
-  body('location.accuracy')
-    .optional()
-    .isFloat({ min: 0 })
-    .withMessage('Accuracy must be a positive number'),
-  body('status')
-    .optional()
-    .isString()
-    .withMessage('Status must be a string'),
-  body('speed')
-    .optional()
-    .isFloat({ min: 0 })
-    .withMessage('Speed must be a positive number'),
-  body('heading')
-    .optional()
-    .isFloat({ min: 0, max: 360 })
-    .withMessage('Heading must be between 0 and 360 degrees')
-], async (req, res) => {
-  try {
-    const errors = validationResult(req);
-    if (!errors.isEmpty()) {
-      return res.status(400).json({
-        success: false,
-        error: {
-          code: 'VALIDATION_ERROR',
-          message: 'Validation failed',
-          details: errors.array()
-        },
-        timestamp: new Date().toISOString()
-      });
-    }
-
-    const { uid } = req.user;
-    const { bookingId, location, status, speed, heading } = req.body;
-    const db = getFirestore();
-    const currentTime = new Date();
-
-    // Verify trip tracking exists; if not, create it (upsert) so first location update enables live tracking
-    const tripTrackingRef = db.collection('tripTracking').doc(bookingId);
-    const tripTrackingDoc = await tripTrackingRef.get();
-    let tripTrackingData = tripTrackingDoc.exists ? tripTrackingDoc.data() : null;
-
-    if (!tripTrackingDoc.exists) {
-      // Fetch booking to verify driver and get customerId for broadcast
-      const bookingRef = db.collection('bookings').doc(bookingId);
-      const bookingDoc = await bookingRef.get();
-      if (!bookingDoc.exists) {
-        return res.status(404).json({
-          success: false,
-          error: { code: 'BOOKING_NOT_FOUND', message: 'Booking not found', details: 'Booking does not exist' },
-          timestamp: new Date().toISOString()
-        });
-      }
-      const bookingData = bookingDoc.data();
-      if (bookingData.driverId !== uid) {
-        return res.status(403).json({
-          success: false,
-          error: { code: 'ACCESS_DENIED', message: 'Access denied', details: 'You can only update tracking for your own trips' },
-          timestamp: new Date().toISOString()
-        });
-      }
-      // Create trip tracking doc (same shape as tracking/start) so updates and broadcast work
-      const locationUpdateInitial = { ...location, timestamp: currentTime, speed: speed || null, heading: heading || null };
-      tripTrackingData = {
-        tripId: bookingId,
-        bookingId,
-        driverId: uid,
-        customerId: bookingData.customerId,
-        currentStatus: bookingData.status || 'driver_assigned',
-        currentLocation: locationUpdateInitial,
-        route: { pickup: bookingData.pickup?.coordinates, dropoff: bookingData.dropoff?.coordinates, currentRoute: null, distance: null, duration: null },
-        trackingHistory: [{ location: locationUpdateInitial, status: bookingData.status || 'driver_assigned', timestamp: currentTime }],
-        isActive: true,
-        startedAt: currentTime,
-        lastUpdated: currentTime,
-        createdAt: currentTime,
-        updatedAt: currentTime
-      };
-      await tripTrackingRef.set(tripTrackingData);
-      await db.collection('driverLocations').doc(uid).set({ driverId: uid, currentLocation: locationUpdateInitial, currentTripId: bookingId, lastUpdated: currentTime }, { merge: true });
-      await bookingRef.update({ 'tracking.isActive': true, 'tracking.startedAt': currentTime, 'tracking.currentLocation': locationUpdateInitial, 'driver.currentLocation': locationUpdateInitial, updatedAt: currentTime });
-      console.log(`📍 [DRIVER_TRACKING] Created tripTracking for booking ${bookingId} (first location update)`);
-    } else {
-      if (tripTrackingData.driverId !== uid) {
-        return res.status(403).json({
-          success: false,
-          error: { code: 'ACCESS_DENIED', message: 'Access denied', details: 'You can only update tracking for your own trips' },
-          timestamp: new Date().toISOString()
-        });
-      }
-      if (!tripTrackingData.isActive) {
-        return res.status(400).json({
-          success: false,
-          error: { code: 'TRIP_NOT_ACTIVE', message: 'Trip not active', details: 'Trip tracking is not active for this booking' },
-          timestamp: new Date().toISOString()
-        });
-      }
-    }
-
-    const locationUpdate = {
-      ...location,
-      timestamp: currentTime,
-      speed: speed || null,
-      heading: heading || null
-    };
-
-    // Update trip tracking
-    const updateData = {
-      currentLocation: locationUpdate,
-      lastUpdated: currentTime,
-      updatedAt: currentTime
-    };
-
-    if (status) {
-      updateData.currentStatus = status;
-    }
-
-    // Add to tracking history (keep last 100 entries)
-    const trackingHistory = tripTrackingData.trackingHistory || [];
-    trackingHistory.push({
-      location: locationUpdate,
-      status: status || tripTrackingData.currentStatus,
-      timestamp: currentTime
-    });
-
-    // Keep only last 100 entries
-    if (trackingHistory.length > 100) {
-      trackingHistory.splice(0, trackingHistory.length - 100);
-    }
-
-    updateData.trackingHistory = trackingHistory;
-
-    await tripTrackingRef.update(updateData);
-
-    // Update driver location
-    await db.collection('driverLocations').doc(uid).update({
-      currentLocation: locationUpdate,
-      lastUpdated: currentTime
-    });
-
-    // Update booking with current location
-    await db.collection('bookings').doc(bookingId).update({
-      'tracking.currentLocation': locationUpdate,
-      'driver.currentLocation': locationUpdate,
-      updatedAt: currentTime
-    });
-
-    // ✅ CRITICAL FIX: Broadcast real-time driver location to customer and booking rooms
-    try {
-      const liveTrackingService = require('../services/liveTrackingService');
-      await liveTrackingService.updateDriverLocation(uid, {
-        latitude: location.latitude,
-        longitude: location.longitude,
-        accuracy: location.accuracy,
-        speed: speed || null,
-        heading: heading || null
-      }, bookingId);
-    } catch (broadcastError) {
-      console.error('⚠️ [TRACKING_UPDATE] Failed to broadcast driver location (non-critical):', broadcastError);
-    }
-
-    res.status(200).json({
-      success: true,
-      message: 'Location updated successfully',
-      data: {
-        tripId: bookingId,
-        location: locationUpdate,
-        status: status || tripTrackingData.currentStatus,
-        timestamp: currentTime
-      },
-      timestamp: currentTime.toISOString()
-    });
-
-  } catch (error) {
-    console.error('Error updating trip tracking:', error);
-    res.status(500).json({
-      success: false,
-      error: {
-        code: 'TRACKING_UPDATE_ERROR',
-        message: 'Failed to update trip tracking',
-        details: 'An error occurred while updating trip tracking'
-      },
-      timestamp: new Date().toISOString()
-    });
-  }
-});
-
-/**
  * @route   POST /api/driver/tracking/stop
  * @desc    Stop real-time tracking for a trip
  * @access  Private (Driver only)
@@ -12064,81 +11955,7 @@ router.get('/availability', requireDriver, async (req, res) => {
 
 // ❌ REMOVED: Duplicate accept booking route (replaced by comprehensive version at line 2600)
 // The comprehensive version includes proper validation, transaction handling, and webhook notifications
-
-/**
- * @route   POST /api/driver/bookings/:id/reject
- * @desc    Reject a booking request
- * @access  Private (Driver only)
- */
-router.post('/bookings/:id/reject', requireDriver, async (req, res) => {
-  try {
-    const { id } = req.params;
-    const { reason } = req.body;
-    const { uid } = req.user;
-    const db = getFirestore();
-    
-    const bookingRef = db.collection('bookings').doc(id);
-    const bookingDoc = await bookingRef.get();
-    
-    if (!bookingDoc.exists) {
-      return res.status(404).json({
-        success: false,
-        error: {
-          code: 'BOOKING_NOT_FOUND',
-          message: 'Booking not found'
-        },
-        timestamp: new Date().toISOString()
-      });
-    }
-
-    const bookingData = bookingDoc.data();
-    
-    // Check if booking is still pending
-    if (bookingData.status !== 'pending') {
-      return res.status(400).json({
-        success: false,
-        error: {
-          code: 'BOOKING_NOT_AVAILABLE',
-          message: 'Booking is no longer available'
-        },
-        timestamp: new Date().toISOString()
-      });
-    }
-
-    // Update booking status
-    await bookingRef.update({
-      status: 'rejected',
-      rejectedBy: uid,
-      rejectionReason: reason || 'No reason provided',
-      rejectedAt: new Date(),
-      updatedAt: new Date()
-    });
-
-    res.status(200).json({
-      success: true,
-      message: 'Booking rejected successfully',
-      data: {
-        bookingId: id,
-        status: 'rejected',
-        rejectedAt: new Date(),
-        reason: reason || 'No reason provided'
-      },
-      timestamp: new Date().toISOString()
-    });
-
-  } catch (error) {
-    console.error('Error rejecting booking:', error);
-    res.status(500).json({
-      success: false,
-      error: {
-        code: 'REJECT_BOOKING_ERROR',
-        message: 'Failed to reject booking',
-        details: error.message
-      },
-      timestamp: new Date().toISOString()
-    });
-  }
-});
+// ❌ REMOVED: Duplicate POST /bookings/:id/reject (was ~12087) — set status 'rejected' globally; use handler at ~7888 only
 
 /**
  * @route   POST /api/driver/trips/track
@@ -13165,7 +12982,7 @@ router.post('/webhooks/razorpay-payment', async (req, res) => {
     console.log('   Event:', event);
     console.log('   Signature present:', !!signature);
     console.log('   Reference ID:', referenceId || 'not found');
-    console.log('   Full headers:', JSON.stringify(req.headers, null, 2));
+    console.log('   Header keys:', Object.keys(req.headers || {}));
     console.log('   Full body keys:', Object.keys(req.body || {}));
     console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
 

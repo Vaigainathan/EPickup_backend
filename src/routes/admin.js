@@ -15,6 +15,42 @@ router.use(sanitizeInput);
 // This middleware validates backend JWT tokens and sets req.user with user data
 // Admin routes are protected by standard JWT authentication
 
+/** Gross cash collected on a booking (matches driver app / payment confirm). */
+function resolveBookingGrossCollected(booking = {}) {
+  const fare = booking.fare;
+  const fareTotal =
+    typeof fare === 'number'
+      ? fare
+      : fare && typeof fare === 'object'
+        ? Number(fare.total ?? fare.grossFare ?? fare.totalFare ?? 0)
+        : 0;
+
+  const gross = Number(
+    booking.driverEarnings ??
+      booking.earnings?.grossFare ??
+      booking.earnings?.totalCollected ??
+      booking.pricing?.totalFare ??
+      booking.pricing?.totalAmount ??
+      booking.pricing?.total ??
+      fareTotal ??
+      booking.payment?.amount ??
+      0
+  );
+
+  return Number.isFinite(gross) ? gross : 0;
+}
+
+/** Wallet commission deducted for a trip (points = ₹). */
+function resolveBookingWalletCommission(booking = {}) {
+  const commission = Number(
+    booking.earnings?.commissionAmount ??
+      booking.commissionDeducted?.amount ??
+      booking.commissionAmount ??
+      0
+  );
+  return Number.isFinite(commission) ? commission : 0;
+}
+
 const normalizeTimestamp = (value) => {
   if (!value) return null;
   if (typeof value.toDate === 'function') {
@@ -954,8 +990,10 @@ router.get('/drivers', async (req, res) => {
       const driverId = driverIds[index];
       const earningsData = {
         total: 0,
+        commission: 0,
         thisMonth: 0,
         lastMonth: 0,
+        commissionThisMonth: 0,
         trips: 0
       };
       
@@ -966,8 +1004,10 @@ router.get('/drivers', async (req, res) => {
       
       earningsSnapshot.forEach(earningsDoc => {
         const earningsRecord = earningsDoc.data();
-        const amount = earningsRecord.amount || 0;
+        const amount = Number(earningsRecord.amount || 0);
+        const commission = Number(earningsRecord.commission || 0);
         earningsData.total += amount;
+        earningsData.commission += commission;
         earningsData.trips++;
         
         // Check if earnings are from this month
@@ -978,6 +1018,7 @@ router.get('/drivers', async (req, res) => {
         if (earnedAt) {
           if (earnedAt >= startOfThisMonth) {
             earningsData.thisMonth += amount;
+            earningsData.commissionThisMonth += commission;
           } else if (earnedAt >= startOfLastMonth && earnedAt <= endOfLastMonth) {
             earningsData.lastMonth += amount;
           }
@@ -985,7 +1026,7 @@ router.get('/drivers', async (req, res) => {
       });
       
       earningsMap.set(driverId, earningsData);
-      console.log(`💰 [ADMIN] Calculated earnings for driver ${driverId}: Total: ₹${earningsData.total}, This Month: ₹${earningsData.thisMonth}, Trips: ${earningsData.trips}`);
+      console.log(`💰 [ADMIN] Calculated earnings for driver ${driverId}: Gross: ₹${earningsData.total}, Commission: ₹${earningsData.commission}, This Month: ₹${earningsData.thisMonth}, Trips: ${earningsData.trips}`);
     });
     
     // ✅ CRITICAL FIX: Build ratings map for quick lookup (driver isolated - each driver's ratings calculated separately)
@@ -1091,12 +1132,15 @@ router.get('/drivers', async (req, res) => {
       // driverId is declared at line 990 above
       const earningsData = earningsMap.get(driverId) || {
         total: driverData.totalEarnings || driverData.earnings?.total || 0,
+        commission: 0,
         thisMonth: driverData.earnings?.thisMonth || 0,
         lastMonth: driverData.earnings?.lastMonth || 0,
+        commissionThisMonth: 0,
         trips: driverData.totalTrips || 0
       };
       
       const totalEarnings = earningsData.total;
+      const totalCommission = earningsData.commission || 0;
       const earningsThisMonth = earningsData.thisMonth;
       const earningsLastMonth = earningsData.lastMonth;
       const completedTripsCount = earningsData.trips;
@@ -1235,8 +1279,11 @@ router.get('/drivers', async (req, res) => {
         // ✅ CRITICAL FIX: Use calculated earnings from driver_earnings collection
         earnings: {
           total: totalEarnings,
+          commission: totalCommission,
+          net: Math.max(0, totalEarnings - totalCommission),
           thisMonth: earningsThisMonth,
-          lastMonth: earningsLastMonth
+          lastMonth: earningsLastMonth,
+          commissionThisMonth: earningsData.commissionThisMonth || 0
         },
         // ✅ CRITICAL FIX: Include normalized documents for status display
         documents: normalizedDocuments,
@@ -5912,20 +5959,6 @@ router.get('/email-verification/:uid', async (req, res) => {
       });
     }
 
-    // Check if verification link exists
-    if (adminData.emailVerificationLink) {
-      return res.json({
-        success: true,
-        message: 'Email verification link retrieved',
-        data: {
-          verificationLink: adminData.emailVerificationLink,
-          sentAt: adminData.emailVerificationSentAt,
-          isVerified: false
-        },
-        timestamp: new Date().toISOString()
-      });
-    }
-
     // Generate new verification link
     try {
       const admin = require('firebase-admin');
@@ -5936,14 +5969,13 @@ router.get('/email-verification/:uid', async (req, res) => {
         handleCodeInApp: false,
       };
       
-      const emailVerificationLink = await admin.auth().generateEmailVerificationLink(
+      await admin.auth().generateEmailVerificationLink(
         userRecord.email,
         actionCodeSettings
       );
       
-      // Store the verification link
       await db.collection('adminUsers').doc(uid).update({
-        emailVerificationLink: emailVerificationLink,
+        emailVerificationLink: admin.firestore.FieldValue.delete(),
         emailVerificationSent: true,
         emailVerificationSentAt: new Date().toISOString()
       });
@@ -5952,9 +5984,9 @@ router.get('/email-verification/:uid', async (req, res) => {
       
       res.json({
         success: true,
-        message: 'Email verification link generated',
+        message: 'Email verification link generated for delivery',
         data: {
-          verificationLink: emailVerificationLink,
+          verificationLinkGenerated: true,
           sentAt: new Date().toISOString(),
           isVerified: false
         },
@@ -7136,10 +7168,10 @@ router.get('/drivers/:driverId/earnings', async (req, res) => {
     
     bookingsSnapshot.forEach(doc => {
       const booking = doc.data();
-      const fare = booking.fare || booking.totalFare || 0;
-      const commission = booking.commission || 0;
+      const grossCollected = resolveBookingGrossCollected(booking);
+      const commission = resolveBookingWalletCommission(booking);
       
-      totalEarnings += fare;
+      totalEarnings += grossCollected;
       totalCommission += commission;
 
       // Group by period if requested
@@ -7166,32 +7198,39 @@ router.get('/drivers/:driverId/earnings', async (req, res) => {
               trips: 0
             };
           }
-          earningsByPeriod[periodKey].earnings += fare;
+          earningsByPeriod[periodKey].earnings += grossCollected;
           earningsByPeriod[periodKey].commission += commission;
           earningsByPeriod[periodKey].trips += 1;
         }
       }
     });
 
-    // Get commission from wallet transactions
-    const transactionsQuery = db.collection('pointsTransactions')
-      .where('driverId', '==', driverId)
-      .where('type', '==', 'debit');
-    
-    const transactionsSnapshot = await transactionsQuery.get();
+    // Fallback: trip-linked wallet debits only (exclude non-trip debits)
     let walletCommission = 0;
-    transactionsSnapshot.forEach(doc => {
-      const transaction = doc.data();
-      walletCommission += Math.abs(transaction.pointsAmount || 0);
-    });
+    if (totalCommission <= 0) {
+      const transactionsSnapshot = await db.collection('pointsTransactions')
+        .where('driverId', '==', driverId)
+        .where('type', '==', 'debit')
+        .get();
 
-    const netEarnings = totalEarnings - totalCommission;
+      transactionsSnapshot.forEach(doc => {
+        const transaction = doc.data();
+        const isTripCommission = !!(transaction.tripId || transaction.bookingId);
+        if (isTripCommission && transaction.status !== 'failed') {
+          walletCommission += Math.abs(transaction.pointsAmount || 0);
+        }
+      });
+    }
+
+    const resolvedCommission = totalCommission > 0 ? totalCommission : walletCommission;
+    const netEarnings = totalEarnings - resolvedCommission;
 
     res.json({
       success: true,
       data: {
         totalEarnings,
-        totalCommission: totalCommission || walletCommission,
+        grossEarnings: totalEarnings,
+        totalCommission: resolvedCommission,
         netEarnings,
         tripCount: bookingsSnapshot.size,
         averageEarningsPerTrip: bookingsSnapshot.size > 0 ? totalEarnings / bookingsSnapshot.size : 0,

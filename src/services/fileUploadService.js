@@ -483,7 +483,7 @@ class FileUploadService {
             uploadedAt: documentData.metadata.uploadedAt || new Date(),
             verified: false
           };
-          console.log(`📋 Updated ${normalizedType} document with new URL:`, documentData.uploadDetails.downloadURL);
+          console.log(`📋 Updated ${normalizedType} document with new URL:`, { hasDownloadURL: !!documentData.uploadDetails.downloadURL });
         }
       }
 
@@ -599,7 +599,7 @@ class FileUploadService {
               
               // Get download URL
               downloadURL = `https://storage.googleapis.com/${bucket.name}/${filePath}`;
-              console.log(`✅ Document uploaded to Firebase Storage: ${downloadURL}`);
+              console.log('✅ Document uploaded to Firebase Storage:', { hasDownloadURL: !!downloadURL });
               
             } catch (storageError) {
               console.error('❌ Firebase Storage upload failed:', storageError);
@@ -756,7 +756,7 @@ class FileUploadService {
       // Set to 'pending_verification' if documents are uploaded but not verified
       await this.checkDriverVerificationStatus(driverId);
       
-      console.log(`User driver documents updated: ${driverId} - ${frontendDocType} - ${downloadURL}`);
+      console.log('User driver documents updated:', { driverId, documentType: frontendDocType, hasDownloadURL: !!downloadURL });
     } catch (error) {
       console.error('Failed to update user driver documents:', error);
       // Don't throw error as this is not critical for upload success

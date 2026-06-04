@@ -26,7 +26,7 @@ router.post('/check-phone', async (req, res) => {
       });
     }
 
-    console.log('🔍 [AUTH] Checking phone number:', phoneNumber, 'for userType:', userType || 'any');
+    console.log('🔍 [AUTH] Checking phone number:', phoneNumber ? `***${phoneNumber.slice(-4)}` : undefined, 'for userType:', userType || 'any');
 
     // Import Firebase Admin SDK service
     const firebaseAuthService = require('../services/firebaseAuthService');

@@ -157,21 +157,17 @@ router.post('/', async (req, res) => {
           handleCodeInApp: false,
         };
         
-        const emailVerificationLink = await admin.auth().generateEmailVerificationLink(
+        await admin.auth().generateEmailVerificationLink(
           userRecord.email,
           actionCodeSettings
         );
         
         console.log('✅ Email verification link generated');
         
-        // In a real application, you would send this link via email service
-        // For now, we'll just log it (in production, use SendGrid, AWS SES, etc.)
-        console.log('📧 Email verification link:', emailVerificationLink);
+        console.log('📧 Email verification link generated for delivery');
         
         // TODO: Implement actual email sending service
-        // For now, we'll store the verification link in the admin document
         await db.collection('adminUsers').doc(decodedToken.uid).update({
-          emailVerificationLink: emailVerificationLink,
           emailVerificationSent: true,
           emailVerificationSentAt: new Date().toISOString()
         });

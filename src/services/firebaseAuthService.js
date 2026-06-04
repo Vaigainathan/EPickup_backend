@@ -161,7 +161,7 @@ class FirebaseAuthService {
     } catch (error) {
       // If user not found, return null instead of throwing
       if (error.code === 'auth/user-not-found') {
-        console.log('ℹ️ No user found with phone number:', phoneNumber);
+        console.log('ℹ️ No user found with phone number:', phoneNumber ? `***${phoneNumber.slice(-4)}` : undefined);
         return null;
       }
       

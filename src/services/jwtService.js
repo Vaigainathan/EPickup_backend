@@ -100,7 +100,7 @@ class JWTService {
         console.error('Malformed JWT token - invalid format:', {
           tokenLength: token.length,
           parts: tokenParts.length,
-          tokenPreview: token.substring(0, 20) + '...'
+          hasToken: !!token
         });
         throw new Error('Invalid token format');
       }
@@ -133,7 +133,7 @@ class JWTService {
       } else if (error.name === 'JsonWebTokenError') {
         console.error('JWT verification failed:', {
           error: error.message,
-          tokenPreview: token ? token.substring(0, 20) + '...' : 'null',
+          hasToken: !!token,
           tokenLength: token ? token.length : 0
         });
         throw new Error('Invalid token');

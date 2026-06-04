@@ -40,7 +40,7 @@ router.post('/register', [
 
     console.log(`🔔 [PUSH_TOKEN] Registering push token for user: ${userId} (role-based UID)`);
     console.log(`🔔 [PUSH_TOKEN] Token type: ${isExpoToken ? 'Expo' : isFCMToken ? 'FCM' : 'Unknown'}`);
-    console.log(`🔔 [PUSH_TOKEN] Token data:`, { token: fcmToken?.substring(0, 20) + '...', deviceId, platform, userType });
+    console.log(`🔔 [PUSH_TOKEN] Token data:`, { hasToken: !!fcmToken, deviceId, platform, userType });
     
     // Build update data
     const updateData = {

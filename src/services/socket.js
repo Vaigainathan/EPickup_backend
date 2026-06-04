@@ -152,7 +152,7 @@ const initializeSocketIO = async (server) => {
         // Debug token format (only log on error)
         const tokenInfo = {
           tokenLength: token.length,
-          tokenPreview: token.substring(0, 20) + '...',
+          hasToken: !!token,
           hasAuthToken: !!socket.handshake.auth.token,
           hasAuthHeader: !!socket.handshake.headers.authorization
         };

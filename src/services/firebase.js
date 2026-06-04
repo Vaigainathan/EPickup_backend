@@ -18,7 +18,7 @@ function initializeFirebase() {
     console.log('🔧 Initializing Firebase Admin SDK...');
     console.log('🔍 Checking environment variables:');
     console.log('   FIREBASE_PROJECT_ID:', process.env.FIREBASE_PROJECT_ID ? '✅ Set' : '❌ Missing');
-    console.log('   FIREBASE_PRIVATE_KEY:', process.env.FIREBASE_PRIVATE_KEY ? '✅ Set (length: ' + process.env.FIREBASE_PRIVATE_KEY.length + ')' : '❌ Missing');
+    console.log('   FIREBASE_PRIVATE_KEY:', process.env.FIREBASE_PRIVATE_KEY ? '✅ Set' : '❌ Missing');
     console.log('   FIREBASE_CLIENT_EMAIL:', process.env.FIREBASE_CLIENT_EMAIL ? '✅ Set' : '❌ Missing');
     console.log('   FIREBASE_PRIVATE_KEY_ID:', process.env.FIREBASE_PRIVATE_KEY_ID ? '✅ Set' : '❌ Missing');
 
@@ -30,9 +30,7 @@ function initializeFirebase() {
         // Handle private key formatting - it might be base64 encoded or have escaped newlines
         let privateKey = process.env.FIREBASE_PRIVATE_KEY;
         
-        console.log('🔍 Private key format check:');
-        console.log('   Has BEGIN marker:', privateKey.includes('-----BEGIN PRIVATE KEY-----'));
-        console.log('   Length:', privateKey.length);
+        console.log('🔍 Private key format check complete');
         
         // If it's base64 encoded, decode it
         if (!privateKey.includes('-----BEGIN PRIVATE KEY-----')) {
@@ -51,10 +49,7 @@ function initializeFirebase() {
           privateKey = privateKey.replace(/\\n/g, '\n');
         }
 
-        console.log('🔍 Final private key check:');
-        console.log('   Has BEGIN marker:', privateKey.includes('-----BEGIN PRIVATE KEY-----'));
-        console.log('   Has END marker:', privateKey.includes('-----END PRIVATE KEY-----'));
-        console.log('   Has newlines:', privateKey.includes('\n'));
+        console.log('🔍 Final private key normalization complete');
 
         const serviceAccount = {
           type: "service_account",
@@ -178,7 +173,7 @@ const uploadFile = async (fileBuffer, fileName, contentType, folder = 'uploads')
     await file.makePublic();
 
     const downloadURL = `https://storage.googleapis.com/${bucket.name}/${filePath}`;
-    console.log('File uploaded successfully:', downloadURL);
+    console.log('File uploaded successfully:', { hasDownloadURL: !!downloadURL });
     
     return downloadURL;
   } catch (error) {

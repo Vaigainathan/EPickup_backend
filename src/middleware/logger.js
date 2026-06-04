@@ -4,6 +4,7 @@
  */
 
 const winston = require('winston');
+const { getSafeRequestContext, maskEmail, sanitizeErrorForLog, sanitizeForLog } = require('../utils/logSanitizer');
 
 // Create logger instance
 const logger = winston.createLogger({
@@ -80,17 +81,8 @@ const requestLogger = (req, res, next) => {
 // Error logging middleware
 const errorLogger = (error, req, res, next) => {
   logger.error('Request error', {
-    error: {
-      message: error.message,
-      stack: error.stack,
-      code: error.code
-    },
-    method: req.method,
-    url: req.url,
-    ip: req.ip,
-    userId: req.user?.uid || 'anonymous',
-    userType: req.user?.userType || 'unknown',
-    requestId: req.id || 'unknown'
+    error: sanitizeErrorForLog(error),
+    request: getSafeRequestContext(req)
   });
   
   next(error);
@@ -105,7 +97,7 @@ const securityLogger = {
       reason,
       ip: req.ip,
       userAgent: req.get('User-Agent'),
-      email: req.body?.email || 'unknown'
+      email: req.body?.email ? maskEmail(req.body.email) : 'unknown'
     });
   },
   
@@ -134,7 +126,7 @@ const performanceLogger = {
   slowQuery: (query, duration) => {
     logger.warn('Slow query detected', {
       event: 'slow_query',
-      query: query.substring(0, 100) + '...',
+      query: String(sanitizeForLog(query)).substring(0, 100) + '...',
       duration: `${duration}ms`
     });
   },

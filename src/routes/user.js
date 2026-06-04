@@ -79,7 +79,7 @@ router.post('/profile-picture', authenticateToken, upload.single('profilePicture
     // Get public URL
     const downloadURL = `https://storage.googleapis.com/${bucket.name}/${filePath}`;
 
-    console.log('✅ [PROFILE_PICTURE] Public URL generated:', downloadURL);
+    console.log('✅ [PROFILE_PICTURE] Public URL generated:', { hasDownloadURL: !!downloadURL });
 
     // Update user document in Firestore
     try {

@@ -326,12 +326,10 @@ class RevenueService {
 
         commissionTransactionsSnapshot.forEach(doc => {
           const data = doc.data();
-          // Commission transactions have a tripId field (they're linked to a booking/trip)
           const isCommission = !!data.tripId || !!data.bookingId;
-          
-          if (isCommission) {
+
+          if (isCommission && data.status !== 'failed') {
             const pointsAmount = data.pointsAmount || 0;
-            // Points = Rupees in this system (1 point = ₹1)
             totalCommissionsDeducted += pointsAmount;
             commissionTransactionCount++;
           }
@@ -358,10 +356,11 @@ class RevenueService {
           thisMonthRevenue,
           lastMonthRevenue,
           monthOverMonthGrowth,
-          // ✅ NEW: Commission tracking
-          totalCommissionsDeducted, // Total commissions deducted from driver virtual wallets
-          commissionTransactionCount, // Number of commission deductions
-          netRevenue: totalRevenue // Net revenue (company keeps all top-up money)
+          // Commission tracking (wallet points debited per trip; 1 point = ₹1)
+          totalCommissionsDeducted,
+          commissionTransactionCount,
+          // companyRevenue = driver wallet top-ups (real money in)
+          netRevenue: totalRevenue
         }
       };
     } catch (error) {
@@ -472,17 +471,32 @@ class RevenueService {
         totalTopUps++;
       });
 
-      // Get driver earnings (from bookings) - Money drivers receive
+      // Completed trips — gross collected by drivers (for admin reporting only)
       const bookingsSnapshot = await db.collection('bookings')
         .where('status', '==', 'completed')
-        .where('paymentStatus', '==', 'PAID')
         .get();
 
       let totalDriverEarnings = 0;
       bookingsSnapshot.forEach(doc => {
         const data = doc.data();
-        const earnings = data.driverEarnings || data.fare?.driverEarnings || 0;
-        totalDriverEarnings += earnings;
+        const fare = data.fare;
+        const fareTotal =
+          typeof fare === 'number'
+            ? fare
+            : fare && typeof fare === 'object'
+              ? Number(fare.total ?? fare.grossFare ?? fare.totalFare ?? 0)
+              : 0;
+        const gross = Number(
+          data.driverEarnings ??
+            data.earnings?.grossFare ??
+            data.pricing?.totalFare ??
+            data.pricing?.totalAmount ??
+            fareTotal ??
+            0
+        );
+        if (Number.isFinite(gross)) {
+          totalDriverEarnings += gross;
+        }
       });
 
       // ✅ NEW: Get total commissions deducted from driver virtual wallets
@@ -501,7 +515,7 @@ class RevenueService {
         // This distinguishes commission deductions from other debit transactions
         const isCommission = !!data.tripId || !!data.bookingId;
         
-        if (isCommission) {
+        if (isCommission && data.status !== 'failed') {
           const pointsAmount = data.pointsAmount || 0;
           // Commission is in points, but represents real value (₹2 per km = 2 points)
           // Points = Rupees in this system (1 point = ₹1)
@@ -509,6 +523,18 @@ class RevenueService {
           commissionTransactionCount++;
         }
       });
+
+      let platformCommissionRecorded = 0;
+      try {
+        const adminRevenueSnapshot = await db.collection('adminRevenue')
+          .where('status', '==', 'completed')
+          .get();
+        adminRevenueSnapshot.forEach((doc) => {
+          platformCommissionRecorded += Number(doc.data().platformCommission || 0);
+        });
+      } catch (adminRevenueError) {
+        console.warn('⚠️ [REVENUE_SERVICE] Could not read adminRevenue:', adminRevenueError.message);
+      }
 
       // Net Revenue = Real Money from Top-ups (company receives this)
       // Note: Commissions are already "earned" when deducted from virtual wallets
@@ -522,6 +548,7 @@ class RevenueService {
         totalDriverEarnings, // Total money drivers earned from bookings
         totalCommissionsDeducted, // Total commissions deducted from driver virtual wallets
         commissionTransactionCount, // Number of commission deductions
+        platformCommissionRecorded, // Sum from adminRevenue (per-trip platform commission)
         netRevenue, // Net revenue (same as totalRealMoney in this model)
         currency: 'INR'
       };

@@ -88,8 +88,8 @@ class RazorpayOrdersService {
         console.log('✅ [RAZORPAY] Signature verified successfully');
       } else {
         console.warn('⚠️ [RAZORPAY] Signature verification failed (tokens might be tampered)');
-        console.warn('   Expected:', expectedSignature);
-        console.warn('   Received:', signature);
+        console.warn('   Expected signature present:', !!expectedSignature);
+        console.warn('   Received signature present:', !!signature);
       }
 
       return isValid;

@@ -80,9 +80,11 @@ class PhonePeService {
       // OAuth endpoint is at the same base URL, just append /v1/oauth/token
       const oauthUrl = `${baseUrl.replace(/\/$/, '')}/v1/oauth/token`;
 
-      console.log('🔐 [PHONEPE SDK] Requesting OAuth token from:', oauthUrl);
-      console.log('🔐 [PHONEPE SDK] Client ID:', this.config.clientId ? `${this.config.clientId.substring(0, 10)}...` : 'NOT SET');
-      console.log('🔐 [PHONEPE SDK] Client Secret:', this.config.clientSecret ? 'SET' : 'NOT SET');
+      console.log('🔐 [PHONEPE SDK] Requesting OAuth token:', {
+        hasOAuthUrl: !!oauthUrl,
+        hasClientId: !!this.config.clientId,
+        hasClientSecret: !!this.config.clientSecret
+      });
       console.log('🔐 [PHONEPE SDK] Client Version:', this.config.clientVersion || 'NOT SET');
 
       // PhonePe expects client_id, client_secret, client_version, and grant_type in form body
@@ -110,7 +112,7 @@ class PhonePeService {
     } catch (error) {
       console.error('❌ [PHONEPE SDK] OAuth token generation failed:', {
         message: error.message,
-        response: error.response?.data,
+        responseKeys: error.response?.data ? Object.keys(error.response.data) : [],
         status: error.response?.status
       });
       throw new Error(`Failed to obtain OAuth token: ${error.message}`);
@@ -192,11 +194,11 @@ class PhonePeService {
         'Content-Type': 'application/json'
       };
       
-      console.log('🔍 [PHONEPE SDK DEBUG] Full request details:', {
+      console.log('🔍 [PHONEPE SDK DEBUG] Request details:', {
         url: sdkOrderUrl,
         method: 'POST',
         headers: {
-          'Authorization': `${requestHeaders.Authorization.substring(0, 30)}...`,
+          'Authorization': requestHeaders.Authorization ? '[REDACTED]' : undefined,
           'Content-Type': requestHeaders['Content-Type']
         },
         payload: orderPayload
@@ -211,16 +213,13 @@ class PhonePeService {
         }
       );
       
-      // Log the FULL response to understand the structure
-      console.log('🔍 [PHONEPE SDK DEBUG] Full response received:', {
+      console.log('🔍 [PHONEPE SDK DEBUG] Response received:', {
         status: response.status,
         statusText: response.statusText,
-        headers: response.headers,
-        data: response.data,
         dataKeys: response.data ? Object.keys(response.data) : [],
         dataType: typeof response.data,
         hasOrderToken: !!response.data?.orderToken,
-        orderTokenValue: response.data?.orderToken
+        hasToken: !!response.data?.token
       });
 
       // PhonePe SDK API returns the token in the "token" field (not "orderToken")
@@ -242,25 +241,27 @@ class PhonePeService {
         };
       } else {
         // Log what we actually got to help debug
-        console.error('❌ [PHONEPE SDK] Response structure:', JSON.stringify(response.data, null, 2));
-        throw new Error(`Invalid SDK order response: missing token. Response structure: ${JSON.stringify(response.data)}`);
+        console.error('❌ [PHONEPE SDK] Response missing token:', {
+          dataKeys: response.data ? Object.keys(response.data) : [],
+        });
+        throw new Error('Invalid SDK order response: missing token');
       }
     } catch (error) {
       const errorDetails = {
         message: error.message,
-        response: error.response?.data,
+        responseKeys: error.response?.data ? Object.keys(error.response.data) : [],
         status: error.response?.status,
         code: error.code
       };
       
       console.error('❌ [PHONEPE SDK] SDK order creation failed:', errorDetails);
       console.error('❌ [PHONEPE SDK] Request payload sent:', {
-        merchantOrderId: transactionId,
+        hasMerchantOrderId: !!transactionId,
         amountRupees: `₹${amount}`,
         amountPaise: Math.round(amount * 100),
-        merchantUserId: customerId,
-        mobileNumber: customerPhone || '+919999999999',
-        callbackUrl: phonepeConfig.getCallbackUrl()
+        hasMerchantUserId: !!customerId,
+        hasMobileNumber: !!customerPhone,
+        hasCallbackUrl: !!phonepeConfig.getCallbackUrl()
       });
       
       // Provide more specific error messages
@@ -273,7 +274,7 @@ class PhonePeService {
         console.error('❌ [PHONEPE SDK] PhonePe API error details:', {
           errorCode,
           message: errorMsg,
-          fullResponse: error.response?.data
+          responseKeys: error.response?.data ? Object.keys(error.response.data) : []
         });
         
         throw new Error(`PhonePe API Error (${errorCode}): ${errorMsg}`);
@@ -446,7 +447,7 @@ class PhonePeService {
       console.log('  Callback URL:', phonepeConfig.getCallbackUrl());
       console.log('  Checksum:', checksum.substring(0, 20) + '...');
       if (this.isTestMode) {
-        console.log('  Client ID:', this.config.clientId ? `${this.config.clientId.substring(0, 10)}...` : 'Not set');
+        console.log('  Client ID configured:', !!this.config.clientId);
       }
 
       // Make API call to PhonePe

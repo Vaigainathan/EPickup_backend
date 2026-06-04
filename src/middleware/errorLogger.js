@@ -1,4 +1,5 @@
 const winston = require('winston');
+const { getSafeRequestContext, sanitizeErrorForLog } = require('../utils/logSanitizer');
 
 // Create logger instance
 const logger = winston.createLogger({
@@ -20,14 +21,9 @@ const logger = winston.createLogger({
 
 // Error logging middleware
 const errorLogger = (err, req, res) => {
-  // Log error details
   logger.error({
-    message: err.message,
-    stack: err.stack,
-    url: req.url,
-    method: req.method,
-    ip: req.ip,
-    userAgent: req.get('User-Agent'),
+    error: sanitizeErrorForLog(err),
+    request: getSafeRequestContext(req),
     timestamp: new Date().toISOString()
   });
 

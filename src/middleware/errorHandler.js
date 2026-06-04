@@ -3,28 +3,12 @@
  * Provides consistent error response format across all endpoints
  */
 
+const { getSafeRequestContext, sanitizeErrorForLog } = require('../utils/logSanitizer');
+
 const errorHandler = (error, req, res) => {
-  // Enhanced error logging with more context
   const errorContext = {
-    message: error.message,
-    stack: error.stack,
-    url: req.url,
-    method: req.method,
-    ip: req.ip,
-    userAgent: req.get('User-Agent'),
-    timestamp: new Date().toISOString(),
-    userId: req.user?.uid || req.user?.userId || 'anonymous',
-    userType: req.user?.userType || 'unknown',
-    requestId: req.id || 'unknown',
-    body: req.method !== 'GET' ? req.body : undefined,
-    query: req.query,
-    params: req.params,
-    headers: {
-      'content-type': req.get('Content-Type'),
-      'authorization': req.get('Authorization') ? 'Bearer [REDACTED]' : undefined,
-      'x-forwarded-for': req.get('X-Forwarded-For'),
-      'x-real-ip': req.get('X-Real-IP')
-    }
+    error: sanitizeErrorForLog(error),
+    request: getSafeRequestContext(req)
   };
 
   console.error('Error occurred:', errorContext);

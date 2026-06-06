@@ -77,7 +77,19 @@ class BookingService {
 
       // Calculate distance and pricing
       const distance = await this.calculateDistance(pickup.coordinates, dropoff.coordinates);
-      const pricing = await this.calculatePricing(distance, packageInfo.weight, vehicle.type);
+      const calculatedPricing = await this.calculatePricing(distance, packageInfo.weight, vehicle.type);
+      const pricing = {
+        ...calculatedPricing,
+        totalAmount: calculatedPricing.total,
+        grandTotal: calculatedPricing.total,
+      };
+      const fare = {
+        total: pricing.total,
+        base: pricing.baseFare || 0,
+        distance: pricing.distanceCharge || 0,
+        grandTotal: pricing.total,
+        currency: 'INR',
+      };
 
       // Use atomic transaction for booking creation
       const result = await this.db.runTransaction(async (transaction) => {
@@ -108,9 +120,11 @@ class BookingService {
           paymentMethod,
           status: 'pending', // Initial status - waiting for driver acceptance
           pricing,
+          fare,
           distance: {
             value: distance,
-            text: `${distance} km`
+            total: distance,
+            text: `${distance} km`,
           },
           estimatedPickupTime: estimatedPickupTime ? new Date(estimatedPickupTime) : null,
           estimatedDeliveryTime: estimatedDeliveryTime ? new Date(estimatedDeliveryTime) : null,

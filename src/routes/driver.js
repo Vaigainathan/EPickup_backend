@@ -313,6 +313,40 @@ function roundDistance(value) {
   return Math.round((numeric + Number.EPSILON) * 100) / 100;
 }
 
+function resolveGrossOrderAmount(bookingData = {}) {
+  return toNumber(
+    bookingData.pricing?.totalAmount ??
+      bookingData.pricing?.total ??
+      bookingData.pricing?.fare ??
+      bookingData.pricing?.grandTotal ??
+      bookingData.pricing?.totalFare ??
+      bookingData.payment?.amount ??
+      bookingData.payment?.total ??
+      bookingData.fare?.total ??
+      bookingData.fare?.grossFare ??
+      bookingData.fare?.amount ??
+      bookingData.driverEarnings ??
+      bookingData.earnings?.grossFare ??
+      bookingData.earnings?.totalCollected ??
+      bookingData.totalAmount ??
+      bookingData.amount ??
+      bookingData.price ??
+      0,
+    0
+  );
+}
+
+function getISTDayBounds() {
+  const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
+  const istNow = new Date(Date.now() + IST_OFFSET_MS);
+  const year = istNow.getUTCFullYear();
+  const month = istNow.getUTCMonth();
+  const day = istNow.getUTCDate();
+  const startOfDay = new Date(Date.UTC(year, month, day) - IST_OFFSET_MS);
+  const endOfDay = new Date(startOfDay.getTime() + 24 * 60 * 60 * 1000);
+  return { startOfDay, endOfDay };
+}
+
 function resolveDriverTotalEarnings(driverData = {}) {
   if (typeof driverData.totalEarnings === 'number' && Number.isFinite(driverData.totalEarnings)) {
     return driverData.totalEarnings;
@@ -1775,9 +1809,7 @@ router.get('/earnings/today', requireDriver, async (req, res) => {
   try {
     const { uid } = req.user;
     const db = getFirestore();
-    const today = new Date();
-    const startOfDay = new Date(today.getFullYear(), today.getMonth(), today.getDate());
-    const endOfDay = new Date(today.getFullYear(), today.getMonth(), today.getDate() + 1);
+    const { startOfDay, endOfDay } = getISTDayBounds();
 
     const parseDate = (value) => {
       if (!value) return null;
@@ -1812,21 +1844,19 @@ router.get('/earnings/today', requireDriver, async (req, res) => {
 
     tripsSnapshot.forEach((doc) => {
       const trip = doc.data();
-      const completedAt = parseDate(trip.completedAt) || parseDate(trip.timing?.completedAt) || parseDate(trip.updatedAt) || parseDate(trip.createdAt);
+      const completedAt =
+        parseDate(trip.completedAt) ||
+        parseDate(trip.timing?.completedAt) ||
+        parseDate(trip.timing?.deliveredAt) ||
+        parseDate(trip.paymentConfirmedAt) ||
+        parseDate(trip.updatedAt) ||
+        parseDate(trip.createdAt);
 
       if (!completedAt || completedAt < startOfDay || completedAt >= endOfDay) {
         return;
       }
 
-      const tripEarnings = Number(
-        trip.driverEarnings ??
-        trip.earnings?.grossFare ??
-        trip.pricing?.totalAmount ??
-        trip.pricing?.totalFare ??
-        trip.pricing?.total ??
-        trip.fare?.total ??
-        0
-      );
+      const tripEarnings = resolveGrossOrderAmount(trip);
 
       totalSum += Number.isFinite(tripEarnings) ? tripEarnings : 0;
       totalTrips += 1;
@@ -6736,13 +6766,7 @@ router.post('/bookings/:id/confirm-payment', [
       });
     }
     
-    const resolvedBookingFare = Number(
-      bookingData.pricing?.totalFare ??
-      bookingData.pricing?.total ??
-      bookingData.fare?.total ??
-      bookingData.fare?.grossFare ??
-      0
-    );
+    const resolvedBookingFare = resolveGrossOrderAmount(bookingData);
     if (!Number.isFinite(paymentAmount) || paymentAmount <= 0) {
       paymentAmount = resolvedBookingFare;
     }
@@ -7047,13 +7071,7 @@ router.post('/bookings/:id/confirm-payment', [
         currentEarnings = resolveDriverTotalEarnings(driverData);
 
         const requestedFare = Number(amount);
-        const bookingFareFallback = Number(
-          bookingDataTx.pricing?.totalFare ??
-          bookingDataTx.pricing?.total ??
-          bookingDataTx.fare?.total ??
-          bookingDataTx.fare?.grossFare ??
-          0
-        );
+        const bookingFareFallback = resolveGrossOrderAmount(bookingDataTx);
         const calculatedFare = Number.isFinite(requestedFare) && requestedFare > 0
           ? requestedFare
           : bookingFareFallback;
@@ -7063,13 +7081,11 @@ router.post('/bookings/:id/confirm-payment', [
         }
 
         paymentAmount = calculatedFare;
-        const existingDriverEarnings = Number(
-          bookingDataTx.driverEarnings ??
-          bookingDataTx.earnings?.grossFare ??
-          bookingDataTx.earnings?.totalCollected ??
-          bookingDataTx.payment?.amount ??
-          0
-        );
+        const existingDriverEarnings = resolveGrossOrderAmount({
+          ...bookingDataTx,
+          driverEarnings: bookingDataTx.driverEarnings,
+        });
+        const earningsAlreadyRecorded = existingDriverEarnings > 0;
 
         const existingCommission = bookingDataTx.commissionDeducted?.amount ?? bookingDataTx.commissionDeducted ?? null;
         if (existingCommission) {
@@ -7166,17 +7182,19 @@ router.post('/bookings/:id/confirm-payment', [
         }
 
         const finalDriverEarnings = roundCurrency(
-          Number.isFinite(existingDriverEarnings) && existingDriverEarnings > 0
-            ? existingDriverEarnings
-            : calculatedFare
+          earningsAlreadyRecorded ? existingDriverEarnings : calculatedFare
         );
         driverEarnings = finalDriverEarnings;
 
-        if (!Number.isFinite(existingDriverEarnings) || existingDriverEarnings <= 0) {
+        if (!earningsAlreadyRecorded) {
           transaction.update(driverRef, {
             totalEarnings: FieldValue.increment(finalDriverEarnings),
             updatedAt: new Date()
           });
+        } else {
+          console.log(
+            `ℹ️ [PAYMENT_CONFIRM] Skipping users.totalEarnings increment — already recorded at complete-delivery: ₹${existingDriverEarnings}`
+          );
         }
 
         transaction.update(bookingRef, {
@@ -8828,15 +8846,43 @@ router.post('/complete-delivery', [
       source: 'driver_app'
     });
     const actualDuration = statusResult.booking?.timing?.actualDuration || null;
-    const bookingData = statusResult.booking || {};
-    const grossOrderAmount = Number(
-      bookingData.pricing?.totalAmount ??
-      bookingData.pricing?.total ??
-      bookingData.payment?.amount ??
-      bookingData.fare?.total ??
-      bookingData.fare?.grossFare ??
-      0
+    let bookingData = statusResult.booking || {};
+
+    console.log(
+      'EARNINGS DEBUG pricing:',
+      JSON.stringify({
+        pricing: bookingData.pricing,
+        fare: bookingData.fare,
+        payment: bookingData.payment,
+      })
     );
+
+    let grossOrderAmount = resolveGrossOrderAmount(bookingData);
+
+    console.log(
+      '💰 [EARNINGS] grossOrderAmount calculated:',
+      grossOrderAmount,
+      'from booking:',
+      bookingId,
+      'pricing:',
+      JSON.stringify(bookingData.pricing),
+      'fare:',
+      JSON.stringify(bookingData.fare),
+      'payment:',
+      JSON.stringify(bookingData.payment)
+    );
+
+    if (grossOrderAmount === 0) {
+      console.warn('⚠️ [EARNINGS] grossOrderAmount is zero - fetching fresh booking data');
+      const freshBooking = await db.collection('bookings').doc(bookingId).get();
+      const freshData = freshBooking.data() || {};
+      const retryAmount = resolveGrossOrderAmount(freshData);
+      console.log('💰 [EARNINGS] retry amount from fresh fetch:', retryAmount);
+      if (retryAmount > 0) {
+        grossOrderAmount = retryAmount;
+        bookingData = { ...bookingData, ...freshData };
+      }
+    }
 
     // ✅ CRITICAL FIX: Notify customer about delivery via WebSocket
     const liveTrackingService = require('../services/liveTrackingService');
@@ -8923,20 +8969,38 @@ router.post('/complete-delivery', [
 
     try {
       const { FieldValue } = require('firebase-admin/firestore');
-      await db.collection('bookings').doc(bookingId).update({
-        status: 'completed',
-        driverEarnings: grossOrderAmount,
-        completedAt: statusResult.eventTimestamp || new Date(),
-        paymentStatus: 'paid',
-        paymentConfirmed: true,
-        paymentConfirmedAt: statusResult.eventTimestamp || new Date(),
-        updatedAt: new Date()
-      });
+      const earningsTimestamp = statusResult.eventTimestamp || new Date();
 
-      await db.collection('users').doc(uid).update({
-        totalEarnings: FieldValue.increment(grossOrderAmount),
-        updatedAt: new Date()
-      });
+      if (grossOrderAmount > 0) {
+        await db.collection('bookings').doc(bookingId).update({
+          status: 'completed',
+          driverEarnings: grossOrderAmount,
+          totalEarnings: grossOrderAmount,
+          earnings: {
+            grossFare: grossOrderAmount,
+            netEarnings: grossOrderAmount,
+            totalCollected: grossOrderAmount,
+            calculatedAt: earningsTimestamp,
+          },
+          completedAt: earningsTimestamp,
+          paymentStatus: 'paid',
+          paymentConfirmed: true,
+          paymentConfirmedAt: earningsTimestamp,
+          updatedAt: new Date(),
+        });
+
+        await db.collection('users').doc(uid).update({
+          totalEarnings: FieldValue.increment(grossOrderAmount),
+          updatedAt: new Date(),
+        });
+      } else {
+        console.error('❌ [EARNINGS] grossOrderAmount still zero after retry — skipping earnings write for booking:', bookingId);
+        await db.collection('bookings').doc(bookingId).update({
+          status: statusResult.status || 'delivered',
+          'timing.deliveredAt': earningsTimestamp,
+          updatedAt: new Date(),
+        });
+      }
     } catch (earningsUpdateError) {
       console.error('❌ [COMPLETE_DELIVERY] Failed to write gross earnings:', earningsUpdateError);
     }

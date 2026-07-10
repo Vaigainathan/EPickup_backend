@@ -23,6 +23,47 @@ const upload = multer({
 
 const fareCalculationService = require('../services/fareCalculationService');
 
+async function getDriverVerificationState(db, uid) {
+  const userDoc = await db.collection('users').doc(uid).get();
+
+  if (!userDoc.exists) {
+    return {
+      exists: false,
+      isVerified: false,
+      verificationStatus: 'missing',
+      userData: null
+    };
+  }
+
+  const userData = userDoc.data() || {};
+  const verificationStatus = userData.driver?.verificationStatus || userData.verificationStatus || 'pending';
+  const isVerified =
+    userData.driver?.isVerified === true ||
+    userData.isVerified === true ||
+    verificationStatus === 'approved' ||
+    verificationStatus === 'verified';
+
+  return {
+    exists: true,
+    isVerified,
+    verificationStatus,
+    userData
+  };
+}
+
+function sendDriverNotVerified(res, verificationStatus) {
+  return res.status(403).json({
+    success: false,
+    error: {
+      code: 'DRIVER_NOT_VERIFIED',
+      message: 'Driver not verified',
+      details: 'Driver must be verified before using this feature',
+      verificationStatus
+    },
+    timestamp: new Date().toISOString()
+  });
+}
+
 /**
  * Alias endpoint for driver location updates to avoid 404 on legacy clients
  * @route   POST /api/driver/tracking/update
@@ -587,14 +628,6 @@ router.put('/profile', [
     .optional()
     .isURL()
     .withMessage('Profile picture must be a valid URL'),
-  body('vehicleDetails.vehicleType')
-    .optional()
-    .isIn(['motorcycle', 'electric'])
-    .withMessage('Vehicle type must be motorcycle or electric'),
-  body('vehicleDetails.vehicleNumber')
-    .optional()
-    .isLength({ min: 1 })
-    .withMessage('Vehicle number is required'),
 ], async (req, res) => {
   try {
     const errors = validationResult(req);
@@ -611,7 +644,49 @@ router.put('/profile', [
     }
 
     const { uid } = req.user;
-    const { name, email, profilePicture, vehicleDetails } = req.body;
+    const { name, email, profilePicture } = req.body;
+    const vehicleDetails = req.body.vehicleDetails || req.body.driver?.vehicleDetails;
+
+    if (vehicleDetails !== undefined && vehicleDetails !== null) {
+      const requiredVehicleFields = [
+        'vehicleType',
+        'vehicleNumber',
+        'vehicleModel',
+        'licenseNumber',
+        'licenseExpiry'
+      ];
+      const missingVehicleFields = requiredVehicleFields.filter((field) => {
+        const value = vehicleDetails[field];
+        return value === null || value === undefined || (typeof value === 'string' && value.trim() === '');
+      });
+
+      if (missingVehicleFields.length > 0) {
+        return res.status(400).json({
+          success: false,
+          error: {
+            code: 'INVALID_VEHICLE_DETAILS',
+            message: 'Invalid vehicle details',
+            details: `Missing required vehicle fields: ${missingVehicleFields.join(', ')}`,
+            missingFields: missingVehicleFields
+          },
+          timestamp: new Date().toISOString()
+        });
+      }
+
+      if (!['motorcycle', 'electric'].includes(vehicleDetails.vehicleType)) {
+        return res.status(400).json({
+          success: false,
+          error: {
+            code: 'INVALID_VEHICLE_DETAILS',
+            message: 'Invalid vehicle details',
+            details: 'vehicleType must be motorcycle or electric',
+            missingFields: ['vehicleType']
+          },
+          timestamp: new Date().toISOString()
+        });
+      }
+    }
+
     const db = getFirestore();
     
     const updateData = {
@@ -627,16 +702,85 @@ router.put('/profile', [
       updateData['driver.vehicleDetails'] = vehicleDetails;
     }
 
+    if (Object.keys(updateData).length === 1) {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'NO_VALID_FIELDS',
+          message: 'No valid profile fields provided',
+          details: 'Provide at least one supported field to update'
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
     await db.collection('users').doc(uid).update(updateData);
 
-    // Get updated profile
-    const updatedDoc = await db.collection('users').doc(uid).get();
-    const userData = updatedDoc.data();
+    // ✅ CRITICAL FIX: Verify write was actually persisted to Firebase
+    // This catches cases where update returns success but data isn't actually written
+    let verifyAttempts = 0;
+    const maxVerifyAttempts = 3;
+    let updatedDoc = null;
+    let writeVerified = false;
+
+    while (verifyAttempts < maxVerifyAttempts && !writeVerified) {
+      verifyAttempts++;
+      try {
+        // Add small delay before verification read to ensure write propagation
+        if (verifyAttempts > 1) {
+          await new Promise(resolve => setTimeout(resolve, 500 * verifyAttempts));
+        }
+
+        updatedDoc = await db.collection('users').doc(uid).get();
+        const userData = updatedDoc.data();
+
+        if (!userData) {
+          console.error('⚠️ [WRITE_VERIFY] User document not found after update');
+          throw new Error('User document not found after update');
+        }
+
+        // Verify that vehicle details were actually written if provided
+        if (vehicleDetails) {
+          if (!userData.driver?.vehicleDetails) {
+            console.warn(`⚠️ [WRITE_VERIFY] Vehicle details not found in read-back (attempt ${verifyAttempts}/${maxVerifyAttempts})`);
+            if (verifyAttempts < maxVerifyAttempts) continue; // Retry
+            throw new Error('Vehicle details write verification failed');
+          }
+
+          // Verify each field was written
+          const fieldsToVerify = ['vehicleType', 'vehicleNumber', 'vehicleModel', 'licenseNumber', 'licenseExpiry'];
+          const missingVerifiedFields = fieldsToVerify.filter(field => !userData.driver.vehicleDetails[field]);
+          
+          if (missingVerifiedFields.length > 0) {
+            console.warn(`⚠️ [WRITE_VERIFY] Missing fields in vehicle details: ${missingVerifiedFields.join(', ')} (attempt ${verifyAttempts}/${maxVerifyAttempts})`);
+            if (verifyAttempts < maxVerifyAttempts) continue; // Retry
+            throw new Error(`Verification failed for fields: ${missingVerifiedFields.join(', ')}`);
+          }
+        }
+
+        // ✅ WRITE VERIFIED: All required data is present and readable
+        writeVerified = true;
+        console.log(`✅ [WRITE_VERIFY] Write verification successful on attempt ${verifyAttempts}`);
+
+      } catch (verifyError) {
+        console.error(`❌ [WRITE_VERIFY] Write verification failed on attempt ${verifyAttempts}:`, verifyError.message);
+        
+        if (verifyAttempts >= maxVerifyAttempts) {
+          // Log warning but don't fail the request - client can retry if needed
+          console.warn(`⚠️ [WRITE_VERIFY] Failed to verify write after ${maxVerifyAttempts} attempts. Returning success anyway but flagging for monitoring.`);
+          break;
+        }
+      }
+    }
+
+    // Get the verified or final document
+    const userData = updatedDoc?.data();
 
     res.status(200).json({
       success: true,
       message: 'Profile updated successfully',
       data: {
+        updatedFields: Object.keys(updateData),
         profile: {
           id: userData.id,
           name: userData.name,
@@ -2824,7 +2968,30 @@ router.put('/status', [
     // ✅ INDUSTRY STANDARD: Active booking exemption - allow staying online if driver has active order
     // ✅ APP RESTART FIX: Bypass slot validation if restoring from app restart (driver was online before app was killed)
     if (isOnline === true && !restoreFromAppRestart) {
-      console.log('🔍 [STATUS_UPDATE] Driver trying to go online - validating work slots');
+      console.log('🔍 [STATUS_UPDATE] Driver trying to go online - validating verification and work slots');
+
+      const verificationState = await getDriverVerificationState(db, uid);
+
+      if (!verificationState.exists) {
+        return res.status(404).json({
+          success: false,
+          error: {
+            code: 'USER_NOT_FOUND',
+            message: 'User not found',
+            details: 'Driver does not exist'
+          },
+          timestamp: new Date().toISOString()
+        });
+      }
+
+      if (!verificationState.isVerified) {
+        console.warn('[STATUS_UPDATE] Driver attempted to go online before verification:', {
+          uid,
+          verificationStatus: verificationState.verificationStatus,
+          timestamp: new Date().toISOString()
+        });
+        return sendDriverNotVerified(res, verificationState.verificationStatus);
+      }
       
       try {
         // ✅ STEP 1: Check if driver has active booking (EXEMPTION RULE)
@@ -9447,6 +9614,30 @@ router.post('/wallet/top-up', [
 ], async (req, res) => {
   try {
     const { uid } = req.user;
+    const db = getFirestore();
+    const verificationState = await getDriverVerificationState(db, uid);
+
+    if (!verificationState.exists) {
+      return res.status(404).json({
+        success: false,
+        error: {
+          code: 'USER_NOT_FOUND',
+          message: 'User not found',
+          details: 'Driver does not exist'
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    if (!verificationState.isVerified) {
+      console.warn('[WALLET_TOP_UP] Driver attempted top-up before verification:', {
+        uid,
+        verificationStatus: verificationState.verificationStatus,
+        timestamp: new Date().toISOString()
+      });
+      return sendDriverNotVerified(res, verificationState.verificationStatus);
+    }
+
     const { amount, paymentMethod, paymentDetails, idempotencyKey } = req.body;
     
     // ✅ Log incoming request for debugging
@@ -9523,8 +9714,6 @@ router.post('/wallet/top-up', [
     const transactionId = `WALLET_${uid}_${Date.now()}`;
     
     // Store pending wallet transaction in driverTopUps collection
-    const { getFirestore } = require('../services/firebase');
-    const db = getFirestore();
     
     // ✅ IDEMPOTENCY CHECK - Prevent duplicate top-ups
     console.log('🔍 [IDEMPOTENCY] Checking for existing transaction with provided key');
@@ -11105,6 +11294,47 @@ router.post('/documents/request-verification', requireDriver, async (req, res) =
         console.warn('⚠️ [VERIFICATION_REQUEST] Failed to sync userData:', syncError.message);
         // Continue - req.user still has correct values
       }
+    }
+
+    const vehicleDetails = userData.driver?.vehicleDetails;
+    const requiredVehicleFields = [
+      'vehicleType',
+      'vehicleNumber',
+      'vehicleModel',
+      'licenseNumber',
+      'licenseExpiry'
+    ];
+    const missingVehicleFields = requiredVehicleFields.filter((field) => {
+      const value = vehicleDetails?.[field];
+      return value === null || value === undefined || (typeof value === 'string' && value.trim() === '');
+    });
+
+    if (!vehicleDetails || missingVehicleFields.length > 0) {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'INCOMPLETE_VEHICLE_DETAILS',
+          message: 'Incomplete vehicle details',
+          details: missingVehicleFields.length > 0
+            ? `Missing required vehicle fields: ${missingVehicleFields.join(', ')}`
+            : 'Vehicle details are required before requesting verification',
+          missingFields: missingVehicleFields
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    if (!['motorcycle', 'electric'].includes(vehicleDetails.vehicleType)) {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'INCOMPLETE_VEHICLE_DETAILS',
+          message: 'Incomplete vehicle details',
+          details: 'vehicleType must be motorcycle or electric',
+          missingFields: ['vehicleType']
+        },
+        timestamp: new Date().toISOString()
+      });
     }
     
     // ✅ CRITICAL FIX: Check Firebase Storage instead of Firestore

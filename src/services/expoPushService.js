@@ -1,6 +1,7 @@
 const { Expo } = require('expo-server-sdk');
 const { getFirestore } = require('./firebase');
 const firestoreSessionService = require('./firestoreSessionService');
+const { NEW_ORDER_CHANNEL_ID } = require('../constants/notifications');
 
 /**
  * Expo Push Notification Service for EPickup
@@ -264,7 +265,7 @@ class ExpoPushService {
             priority: 'high',
             sound: options.sound || 'default',
             vibrate: [0, 500, 200, 500], // ✅ Long vibration pattern: 0ms delay, 500ms vibrate, 200ms pause, 500ms vibrate
-            channelId: options.channelId || 'new_order', // ✅ FIXED: Use 'new_order' channel (matches frontend)
+            channelId: options.channelId || NEW_ORDER_CHANNEL_ID, // ✅ FIXED: Use consistent channel ID from constants
             notification: {
               sound: options.sound || 'default',
               vibrate: [0, 500, 200, 500],

@@ -249,6 +249,37 @@ class BookingService {
           throw new Error(`Driver already has an active booking (ID: ${existingDriverBooking.id}, Status: ${existingDriverBooking.status}). Please complete the current booking before accepting a new one.`);
         }
 
+        // ✅ CRITICAL FIX: Check driver verification status before accepting booking
+        const verificationStatus = driver.driver?.verificationStatus || driver.verificationStatus || 'pending';
+        const isVerified = verificationStatus === 'verified' || verificationStatus === 'approved';
+
+        if (!isVerified) {
+          throw new Error(JSON.stringify({
+            code: 'DRIVER_NOT_VERIFIED',
+            message: 'Driver not verified',
+            details: 'Your documents are still pending verification. Please complete the verification process before accepting bookings.',
+            verificationStatus: verificationStatus
+          }));
+        }
+
+        // ✅ CRITICAL FIX: Check minimum wallet balance (₹250 minimum)
+        const walletDoc = await transaction.get(this.db.collection('driverPointsWallets').doc(driverId));
+        let walletBalance = 0;
+        if (walletDoc.exists) {
+          walletBalance = walletDoc.data().pointsBalance || 0;
+        }
+
+        const MINIMUM_WALLET_BALANCE = 250; // ₹250 minimum
+        if (walletBalance < MINIMUM_WALLET_BALANCE) {
+          throw new Error(JSON.stringify({
+            code: 'INSUFFICIENT_WALLET',
+            message: 'Insufficient wallet balance',
+            details: `You need a minimum wallet balance of ₹${MINIMUM_WALLET_BALANCE}. Current balance: ₹${walletBalance}. Please top up your wallet before accepting bookings.`,
+            currentBalance: walletBalance,
+            requiredBalance: MINIMUM_WALLET_BALANCE
+          }));
+        }
+
         // Update booking with driver acceptance
         const driverVehicleDetails = driver.driver?.vehicleDetails || {};
         const vehicleModel =

@@ -2,6 +2,7 @@ const admin = require('firebase-admin');
 const { getFirestore } = require('./firebase');
 const firestoreSessionService = require('./firestoreSessionService');
 const expoPushService = require('./expoPushService');
+const { NEW_ORDER_CHANNEL_ID } = require('../constants/notifications');
 
 /**
  * WebSocket Event Handler Service
@@ -2470,7 +2471,7 @@ class WebSocketEventHandler {
         const displayResult = await this.expoPushService.sendToTokens(tokens, displayNotification, {
           priority: 'high',
           sound: 'new_order.wav',
-          channelId: 'new_order_v3'
+          channelId: NEW_ORDER_CHANNEL_ID
         });
 
         console.log(`✅ [PUSH_NOTIFICATION] Display pushes sent: ${displayResult.successCount} success, ${displayResult.failureCount} failed`);
@@ -2711,7 +2712,7 @@ class WebSocketEventHandler {
         timestamp: new Date().toISOString()
       };
 
-      this.io.to(`user:${customerId}`).emit('driver_location_update', notificationData);
+      this.io.to(`booking:${bookingId}`).emit('driver_location_update', notificationData);
 
     } catch (error) {
       console.error('Error notifying driver location update:', error);

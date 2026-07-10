@@ -834,8 +834,11 @@ class DriverMatchingService {
 
       const bookingData = bookingDoc.data();
       
-      // Check if booking is still in searching state
-      if (bookingData.status !== 'searching' && bookingData.status !== 'confirmed') {
+      // ✅ B2 FIX: Handle all unassigned statuses including 'pending'
+      // Current manual flow uses 'pending', legacy flows may use 'searching'/'confirmed'
+      const unassignedStatuses = ['pending', 'searching', 'confirmed'];
+      if (!unassignedStatuses.includes(bookingData.status)) {
+        console.log(`ℹ️ [TIMEOUT] Booking ${bookingId} status is '${bookingData.status}' - not unassigned, skipping timeout handling`);
         return { success: true, message: 'Booking already processed' };
       }
 

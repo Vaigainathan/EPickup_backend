@@ -1019,12 +1019,29 @@ router.post('/:id/accept', [
         // Release lock on failure
         await bookingLockService.releaseBookingLock(id, uid);
         
+        // ✅ FIX: Parse JSON error messages if present
+        let errorDetails = result.error || result.message;
+        let errorCode = 'BOOKING_ACCEPTANCE_ERROR';
+        let errorMessage = result.message || 'Failed to accept booking';
+        
+        try {
+          if (typeof result.message === 'string' && result.message.startsWith('{')) {
+            const parsedError = JSON.parse(result.message);
+            errorCode = parsedError.code || errorCode;
+            errorMessage = parsedError.message || errorMessage;
+            errorDetails = parsedError.details || errorDetails;
+          }
+          // eslint-disable-next-line no-unused-vars
+        } catch (_parseError) {
+          // If not JSON, use as-is
+        }
+        
         res.status(400).json({
           success: false,
           error: {
-            code: 'BOOKING_ACCEPTANCE_ERROR',
-            message: result.message,
-            details: result.error
+            code: errorCode,
+            message: errorMessage,
+            details: errorDetails
           },
           timestamp: new Date().toISOString()
         });
@@ -1039,13 +1056,30 @@ router.post('/:id/accept', [
       } catch (lockError) {
         console.error('Error releasing booking lock:', lockError);
       }
+
+      // ✅ FIX: Parse JSON error messages if present
+      let errorCode = 'BOOKING_ACCEPTANCE_ERROR';
+      let errorMessage = 'Failed to accept booking';
+      let errorDetails = error.message;
       
-      res.status(500).json({
+      try {
+        if (typeof error.message === 'string' && error.message.startsWith('{')) {
+          const parsedError = JSON.parse(error.message);
+          errorCode = parsedError.code || errorCode;
+          errorMessage = parsedError.message || errorMessage;
+          errorDetails = parsedError.details || errorDetails;
+        }
+        // eslint-disable-next-line no-unused-vars
+      } catch (parseError) {
+        // If not JSON, use as-is
+      }
+      
+      res.status(400).json({
         success: false,
         error: {
-          code: 'BOOKING_ACCEPTANCE_ERROR',
-          message: 'Failed to accept booking',
-          details: error.message
+          code: errorCode,
+          message: errorMessage,
+          details: errorDetails
         },
         timestamp: new Date().toISOString()
       });

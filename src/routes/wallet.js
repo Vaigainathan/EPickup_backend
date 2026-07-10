@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const pointsService = require('../services/walletService');
 const { authenticateToken } = require('../middleware/auth');
+const { getFirestore } = require('../services/firebase');
 
 /**
  * @route   POST /api/wallet/create
@@ -129,6 +130,37 @@ router.post('/top-up', authenticateToken, async (req, res) => {
       return res.status(400).json({
         success: false,
         error: 'Amount must be greater than 0'
+      });
+    }
+
+    // ✅ CRITICAL FIX: Check driver verification status before allowing top-up
+    const db = getFirestore();
+    const driverDoc = await db.collection('users').doc(driverId).get();
+    
+    if (!driverDoc.exists) {
+      return res.status(404).json({
+        success: false,
+        error: {
+          code: 'DRIVER_NOT_FOUND',
+          message: 'Driver not found',
+          details: 'The driver account does not exist'
+        }
+      });
+    }
+
+    const driverData = driverDoc.data();
+    const verificationStatus = driverData.driver?.verificationStatus || driverData.verificationStatus || 'pending';
+    const isVerified = verificationStatus === 'verified' || verificationStatus === 'approved';
+
+    if (!isVerified) {
+      return res.status(403).json({
+        success: false,
+        error: {
+          code: 'DRIVER_NOT_VERIFIED_FOR_TOPUP',
+          message: 'Verification required',
+          details: 'You must complete document verification before topping up your wallet',
+          verificationStatus: verificationStatus
+        }
       });
     }
     

@@ -118,8 +118,8 @@ class RazorpayOrdersService {
       console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
 
       // ✅ FIX: Add pre-validation
-      if (!amountInPaise || amountInPaise < 25000) { // Min ₹250
-        throw new Error(`Invalid amount: ${amount} (${amountInPaise} paise). Minimum: ₹250`);
+      if (!amountInPaise || amountInPaise < 10000) { // Min ₹100
+        throw new Error(`Invalid amount: ${amount} (${amountInPaise} paise). Minimum: ₹100`);
       }
 
       // ✅ FIX: Razorpay receipt has max length of 40 characters

@@ -21,7 +21,9 @@ router.post('/', [
   body('pickup.name')
     .isLength({ min: 2, max: 50 })
     .withMessage('Pickup name must be between 2 and 50 characters'),
-  // pickup.phone validation removed - sender phone not needed
+  body('pickup.phone')
+    .matches(/^(\+91|91)?[\s]?[6-9]\d{4}[\s]?\d{5}$/)
+    .withMessage('Please provide a valid Indian phone number for pickup'),
   body('pickup.address')
     .isLength({ min: 10, max: 200 })
     .withMessage('Pickup address must be between 10 and 200 characters'),

@@ -7,7 +7,7 @@
  * - Customer Rate: ₹10/km
  * - Rounding: Math.ceil() (round up to next km)
  * - Base Fare: ₹0
- * - Commission: ₹2/km (deducted from driver points wallet)
+ * - Commission: ₹1.15/km (deducted from driver points wallet)
  * 
  * See fareCalculationService.js header for full update checklist.
  */
@@ -17,6 +17,7 @@ const { GeoPoint, FieldValue } = require('firebase-admin/firestore');
 const axios = require('axios');
 const serviceAreaValidation = require('./serviceAreaValidation');
 const walletService = require('./walletService');
+const displayIdService = require('./displayIdService');
 
 /**
  * Booking Service for EPickup delivery platform
@@ -91,6 +92,12 @@ class BookingService {
         currency: 'INR',
       };
 
+      // ✅ Generate unique 5-digit display ID (Counter-Hybrid Randomization)
+      // This is done BEFORE the transaction to atomically increment counter
+      const bookingTimestamp = new Date().getTime();
+      const displayId = await displayIdService.generateDisplayId(bookingTimestamp, customerId);
+      console.log(`✅ Generated displayId ${displayIdService.formatDisplayId(displayId)} for customer ${customerId}`);
+
       // Use atomic transaction for booking creation
       const result = await this.db.runTransaction(async (transaction) => {
         const bookingId = this.db.collection('bookings').doc().id;
@@ -106,6 +113,7 @@ class BookingService {
         // Create booking document
         const booking = {
           id: bookingId,
+          displayId: displayId,  // ✅ NEW: 5-digit unique display ID (Counter-Hybrid Randomization)
           customerId,
           pickup: {
             ...pickup,
@@ -262,14 +270,14 @@ class BookingService {
           }));
         }
 
-        // ✅ CRITICAL FIX: Check minimum wallet balance (₹250 minimum)
+        // ✅ CRITICAL FIX: Check minimum wallet balance (₹100 minimum)
         const walletDoc = await transaction.get(this.db.collection('driverPointsWallets').doc(driverId));
         let walletBalance = 0;
         if (walletDoc.exists) {
           walletBalance = walletDoc.data().pointsBalance || 0;
         }
 
-        const MINIMUM_WALLET_BALANCE = 250; // ₹250 minimum
+        const MINIMUM_WALLET_BALANCE = 100; // ₹100 minimum
         if (walletBalance < MINIMUM_WALLET_BALANCE) {
           throw new Error(JSON.stringify({
             code: 'INSUFFICIENT_WALLET',
@@ -418,16 +426,22 @@ class BookingService {
       const distance = await this.calculateDistance(pickup.coordinates, dropoff.coordinates);
       const pricing = await this.calculatePricing(distance, packageInfo.weight, vehicle.type);
 
+      // ✅ NEW: Generate unique 5-digit display ID (Counter-Hybrid Randomization)
+      const bookingTimestamp = new Date().getTime();
+      const displayId = await displayIdService.generateDisplayId(bookingTimestamp, customerId);
+      console.log(`✅ Generated displayId ${displayIdService.formatDisplayId(displayId)} for customer ${customerId}`);
+
       // Create booking document
       const booking = {
         id: `booking_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+        displayId: displayId,  // ✅ NEW: 5-digit unique display ID
         customerId,
         driverId: null,
         status: 'pending',
         
         pickup: {
           name: pickup.name,
-          // phone removed - sender phone not needed
+          phone: pickup.phone || '', // ✅ RESTORED: Sender phone for customer contact
           address: pickup.address,
           coordinates: pickup.coordinates,
           instructions: pickup.instructions || ''
@@ -650,6 +664,7 @@ class BookingService {
 
   /**
    * Calculate dynamic pricing based on distance, weight, and other factors
+   * Now uses new tiered pricing system from fareCalculationService
    * @param {number} exactDistance - Exact distance in kilometers
    * @param {number} weight - Package weight in kg
    * @param {string} vehicleType - Vehicle type (2_wheeler only)
@@ -662,57 +677,51 @@ class BookingService {
         throw new Error('Only 2-wheeler vehicles are supported');
       }
 
-      const rates = await this.getDefaultRates();
-      
-      // Round up to next km for any fraction
-      // e.g., 6.3km → 7km, 6.1km → 7km, 6.0km → 6km
-      const roundedDistance = Math.ceil(exactDistance);
-      
-      // Base calculation using rounded distance - NO BASE FARE
-      const baseFare = 0; // NO BASE FARE
-      const perKmRate = rates.baseRate; // ₹10 per km
-      const distanceCharge = roundedDistance * perKmRate;
-      
-      // Vehicle type multiplier - only 2-wheeler supported
-      const vehicleMultiplier = 1; // 2-wheeler has no multiplier
-      
-      // SIMPLIFIED PRICING: No weight multiplier, no surge pricing, no base fare
-      // Weight doesn't affect fare - removed weight multiplier
-      const weightMultiplier = 1; // No weight-based charges
-      
-      // Calculate total - SIMPLE: Distance charge ONLY (no base fare)
-      const subtotal = distanceCharge; // Only distance charge
-      
-      // NO SURGE PRICING - removed surge calculation
-      const surgeMultiplier = 1.0; // No surge pricing
-      const totalWithSurge = subtotal; // No surge applied
-      
-      // Round to nearest rupee
-      const finalTotal = Math.round(totalWithSurge);
-      
+      // Use tiered pricing from fareCalculationService (authoritative source)
+      const fareCalculationService = require('./fareCalculationService');
+      const fareBreakdown = fareCalculationService.calculateFare(exactDistance);
+
+      // Map tiered pricing response to bookingService format
+      const fullKmCharge = fareBreakdown.fullKmCharge || 0;
+      const remainderCharge = fareBreakdown.remainderCharge || 0;
+      const totalFare = fareBreakdown.totalFare || fareBreakdown.baseFare;
+      const commission = fareBreakdown.commission;
+
       return {
-        exactDistance: parseFloat(exactDistance.toFixed(2)), // Show exact distance
-        roundedDistance: roundedDistance, // Distance used for pricing
-        baseFare,
-        distanceCharge,
-        vehicleMultiplier,
-        weightMultiplier,
-        surgeMultiplier,
-        subtotal,
-        total: finalTotal,
-        totalAmount: finalTotal, // Alias for backward compatibility
+        exactDistance: fareBreakdown.exactDistanceKm,
+        fullKm: fareBreakdown.fullKm,
+        remainderKm: fareBreakdown.remainderKm,
+        baseFare: totalFare, // For backward compatibility
+        distanceCharge: totalFare,
+        vehicleMultiplier: 1, // No vehicle multiplier
+        weightMultiplier: 1, // No weight multiplier
+        surgeMultiplier: 1.0, // No surge
+        subtotal: totalFare,
+        total: totalFare,
+        totalAmount: totalFare,
         currency: 'INR',
-        ratePerKm: perKmRate, // ₹10 per km
-        timeCharge: 0, // No time-based charges
+        ratePerKm: 10, // ₹10 per km
+        timeCharge: 0,
+        commission: commission, // ₹1.15 per km (or rounded up per full km)
+        driverNet: totalFare,
+        companyRevenue: commission,
         breakdown: {
-          exactDistance: parseFloat(exactDistance.toFixed(2)),
-          roundedDistance: roundedDistance,
+          exactDistance: fareBreakdown.exactDistanceKm,
+          fullKm: fareBreakdown.fullKm,
+          remainderKm: fareBreakdown.remainderKm,
+          fullKmCharge: fullKmCharge,
+          remainderCharge: remainderCharge,
           baseFare: 0, // No base fare
-          distanceCharge,
-          vehicleCharge: 0, // No additional charge for 2-wheeler
-          weightCharge: 0, // No weight-based charges
-          surgeCharge: 0, // No surge pricing
-          total: finalTotal
+          distanceCharge: totalFare,
+          vehicleCharge: 0,
+          weightCharge: 0,
+          surgeCharge: 0,
+          total: totalFare,
+          perKmRate: 10,
+          remainderRate: 5,
+          commissionRate: 1.15,
+          calculationMethod: fareBreakdown.breakdown.calculationMethod,
+          pricingVersion: fareBreakdown.breakdown.pricingVersion
         }
       };
     } catch (error) {
@@ -920,7 +929,7 @@ class BookingService {
               // ✅ CRITICAL FIX: Even if distance is 0, use fareCalculationService for minimum commission
               fareBreakdown = fareCalculationService.calculateFare(0.5); // 0.5km rounds to 1km
               roundedDistanceKm = fareBreakdown.roundedDistanceKm; // Will be 1km
-              commissionAmount = fareBreakdown.commission; // Will be ₹2 (1km × ₹2/km)
+              commissionAmount = fareBreakdown.commission; // Will be ₹1.15 (1km × ₹1.15/km)
             }
             
             console.log(`💰 [BOOKING_SERVICE] Deducting commission for trip ${bookingId}:`, {
@@ -928,7 +937,7 @@ class BookingService {
               roundedDistanceKm: roundedDistanceKm,
               commissionAmount: commissionAmount,
               tripFare: tripFare,
-              calculation: `${roundedDistanceKm}km × ₹2/km = ₹${commissionAmount}`
+              calculation: `${roundedDistanceKm}km × ₹1.15/km = ₹${commissionAmount}`
             });
             
             // Prepare trip details for commission transaction
@@ -952,7 +961,7 @@ class BookingService {
             );
             
             if (commissionResult.success) {
-              console.log(`✅ [BOOKING_SERVICE] Commission deducted: ₹${commissionAmount} (${roundedDistanceKm}km × ₹2/km, fare: ₹${tripFare})`);
+              console.log(`✅ [BOOKING_SERVICE] Commission deducted: ₹${commissionAmount} (${roundedDistanceKm}km × ₹1.15/km, fare: ₹${tripFare})`);
               updateData.commissionDeducted = {
                 amount: commissionAmount,
                 roundedDistanceKm: roundedDistanceKm,
@@ -1026,7 +1035,7 @@ class BookingService {
               roundedDistanceKm: roundedDistanceKm,
               commissionAmount: commissionAmount,
               tripFare: tripFare,
-              calculation: `${roundedDistanceKm}km × ₹2/km = ₹${commissionAmount}`
+              calculation: `${roundedDistanceKm}km × ₹1.15/km = ₹${commissionAmount}`
             });
 
             const tripDetails = {
@@ -1048,7 +1057,7 @@ class BookingService {
             );
 
             if (commissionResult.success) {
-              console.log(`✅ [BOOKING_SERVICE] Commission deducted: ₹${commissionAmount} (${roundedDistanceKm}km × ₹2/km, fare: ₹${tripFare})`);
+              console.log(`✅ [BOOKING_SERVICE] Commission deducted: ₹${commissionAmount} (${roundedDistanceKm}km × ₹1.15/km, fare: ₹${tripFare})`);
               updateData.commissionDeducted = {
                 amount: commissionAmount,
                 roundedDistanceKm: roundedDistanceKm,

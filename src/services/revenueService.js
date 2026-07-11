@@ -517,7 +517,7 @@ class RevenueService {
         
         if (isCommission && data.status !== 'failed') {
           const pointsAmount = data.pointsAmount || 0;
-          // Commission is in points, but represents real value (₹2 per km = 2 points)
+          // Commission is in points, but represents real value (₹1.15 per km = 1.15 points)
           // Points = Rupees in this system (1 point = ₹1)
           totalCommissionsDeducted += pointsAmount;
           commissionTransactionCount++;

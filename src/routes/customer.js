@@ -793,6 +793,22 @@ router.post('/bookings', authenticateToken, async (req, res) => {
       });
     }
 
+    // ✅ NEW: Generate unique 5-digit display ID (Counter-Hybrid Randomization)
+    try {
+      const displayIdService = require('../services/displayIdService');
+      const bookingTimestamp = new Date().getTime();
+      const displayId = await displayIdService.generateDisplayId(bookingTimestamp, userId);
+      newBooking.displayId = displayId;  // Add displayId to booking
+      console.log(`✅ Generated displayId ${displayIdService.formatDisplayId(displayId)} for customer booking`);
+    } catch (displayIdError) {
+      console.error('❌ Error generating display ID:', displayIdError);
+      return res.status(500).json({
+        success: false,
+        error: 'Failed to generate booking ID',
+        details: displayIdError.message
+      });
+    }
+
     // Create booking in Firestore
     try {
       const bookingRef = await db.collection('bookings').add(newBooking);
@@ -823,6 +839,7 @@ router.post('/bookings', authenticateToken, async (req, res) => {
         data: {
           booking: {
             id: bookingId,
+            displayId: newBooking.displayId,  // ✅ NEW: Include display ID in response
             ...newBooking
           }
         },
@@ -2362,8 +2379,8 @@ router.get('/invoice/:bookingId', authenticateToken, async (req, res) => {
       // Booking details
       pickup: {
         address: bookingData.pickup?.address || 'Pickup address',
-        name: bookingData.pickup?.name || 'Sender'
-        // phone removed - sender phone not needed
+        name: bookingData.pickup?.name || 'Sender',
+        phone: bookingData.pickup?.phone || '' // ✅ RESTORED: Sender phone for customer contact
       },
       
       dropoff: {

@@ -8,7 +8,7 @@
  * - Customer Rate: ₹10/km
  * - Rounding: Math.ceil() (round up to next km, e.g. 8.4km → 9km = ₹90)
  * - Base Fare: ₹0 (removed completely)
- * - Commission: ₹2/km (deducted from driver points wallet)
+ * - Commission: ₹1.15/km (deducted from driver points wallet)
  * - Driver Earnings: Full fare collected from customer
  * - Company Revenue: Points deducted from driver wallet
  * 
@@ -25,9 +25,94 @@ const axios = require('axios');
 class FareCalculationService {
     constructor() {
         this.BASE_FARE_PER_KM = 10; // ₹10 per km (updated from previous rate)
-        this.COMMISSION_PER_KM = 2; // 2 points per km commission (increased from 1)
+        this.COMMISSION_PER_KM = 1.15; // 1.15 points per km commission (updated from 2)
         this.MINIMUM_FARE = 0; // NO MINIMUM FARE - removed to match customer app pricing
         this.GOOGLE_MAPS_API_KEY = process.env.GOOGLE_MAPS_API_KEY;
+        
+        // Tiered pricing constants
+        this.TIERED_PRICING_ENABLED = true; // Enable new tiered pricing system
+        this.FULL_KM_RATE = 10; // ₹10 per full km
+        this.REMAINDER_RATE = 5; // ₹5 for 100-500m remainder
+        this.MIN_REMAINDER_KM = 0.1; // 100m minimum
+        this.MAX_REMAINDER_KM = 0.5; // 500m maximum
+    }
+
+    /**
+     * Calculate fare with new tiered pricing system
+     * Tier 1: 0-0.1km (0-100m) → ₹5 minimum
+     * Tier 2: 0.1-0.5km (100-500m) → ₹5 (single charge)
+     * Tier 3: >0.5km remainder → Round up to next km at ₹10/km
+     * 
+     * Examples:
+     * - 8.2km → 8km (₹80) + 0.2km (₹5) = ₹85
+     * - 5.7km → Rounds to 6km = ₹60
+     * - 5.4km → 5km (₹50) + 0.4km (₹5) = ₹55
+     * - 0.05km (50m) → ₹5 minimum
+     * 
+     * @param {number} exactDistanceKm - Exact distance in kilometers
+     * @returns {Object} Fare breakdown with tiered calculation
+     */
+    calculateFareWithTieredPricing(exactDistanceKm) {
+        // Handle edge cases
+        if (exactDistanceKm < 0) {
+            throw new Error('Distance cannot be negative');
+        }
+
+        const fullKm = Math.floor(exactDistanceKm);
+        const remainderKm = exactDistanceKm - fullKm;
+
+        let fullKmCharge = 0;
+        let remainderCharge = 0;
+        const calculationMethod = 'tiered_v2';
+
+        // Calculate charge for full kilometers
+        fullKmCharge = fullKm * this.FULL_KM_RATE;
+
+        // Calculate charge for remainder
+        if (remainderKm === 0) {
+            // No remainder, no extra charge
+            remainderCharge = 0;
+        } else if (remainderKm < this.MIN_REMAINDER_KM) {
+            // Less than 100m: Apply minimum charge
+            remainderCharge = this.REMAINDER_RATE;
+        } else if (remainderKm <= this.MAX_REMAINDER_KM) {
+            // 100m to 500m: Single flat charge
+            remainderCharge = this.REMAINDER_RATE;
+        } else {
+            // More than 500m: Round up to next km and add to full km charge
+            fullKmCharge += this.FULL_KM_RATE;
+            remainderCharge = 0;
+        }
+
+        const totalFare = fullKmCharge + remainderCharge;
+        const commission = (fullKm + (remainderKm > this.MAX_REMAINDER_KM ? 1 : 0)) * this.COMMISSION_PER_KM;
+        const driverNet = totalFare;
+        const companyRevenue = commission;
+
+        return {
+            exactDistanceKm: parseFloat(exactDistanceKm.toFixed(2)),
+            fullKm: fullKm,
+            remainderKm: parseFloat(remainderKm.toFixed(2)),
+            fullKmCharge: Math.round(fullKmCharge),
+            remainderCharge: Math.round(remainderCharge),
+            totalFare: Math.round(totalFare),
+            baseFare: Math.round(totalFare), // Keep for backward compatibility
+            commission: Math.round(commission),
+            driverNet: Math.round(driverNet),
+            companyRevenue: Math.round(companyRevenue),
+            breakdown: {
+                perKmRate: this.FULL_KM_RATE,
+                remainderRate: this.REMAINDER_RATE,
+                commissionRate: this.COMMISSION_PER_KM,
+                calculationMethod: calculationMethod,
+                exactDistance: parseFloat(exactDistanceKm.toFixed(2)),
+                fullKm: fullKm,
+                remainderKm: parseFloat(remainderKm.toFixed(2)),
+                fullKmCharge: Math.round(fullKmCharge),
+                remainderCharge: Math.round(remainderCharge),
+                pricingVersion: 2 // New tiered pricing version
+            }
+        };
     }
 
     /**
@@ -36,19 +121,21 @@ class FareCalculationService {
      * @returns {Object} Fare breakdown
      */
     calculateFare(exactDistanceKm) {
-        // Round up to next km for any fraction
-        // e.g., 6.3km → 7km, 6.1km → 7km, 6.0km → 6km
-        const roundedDistanceKm = Math.ceil(exactDistanceKm);
+        // Use new tiered pricing system
+        if (this.TIERED_PRICING_ENABLED) {
+            return this.calculateFareWithTieredPricing(exactDistanceKm);
+        }
         
-        // Calculate fare using rounded distance - NO MINIMUM FARE
+        // Fallback to old calculation (for backward compatibility)
+        const roundedDistanceKm = Math.ceil(exactDistanceKm);
         const baseFare = roundedDistanceKm * this.BASE_FARE_PER_KM;
         const commission = roundedDistanceKm * this.COMMISSION_PER_KM;
-        const driverNet = baseFare; // Driver gets full amount from customer
-        const companyRevenue = commission; // Company gets commission from wallet
+        const driverNet = baseFare;
+        const companyRevenue = commission;
 
         return {
-            exactDistanceKm: parseFloat(exactDistanceKm.toFixed(2)), // Show exact distance
-            roundedDistanceKm: roundedDistanceKm, // Distance used for pricing
+            exactDistanceKm: parseFloat(exactDistanceKm.toFixed(2)),
+            roundedDistanceKm: roundedDistanceKm,
             baseFare: Math.round(baseFare),
             commission: Math.round(commission),
             driverNet: Math.round(driverNet),
@@ -58,7 +145,8 @@ class FareCalculationService {
                 commissionRate: this.COMMISSION_PER_KM,
                 minimumFare: this.MINIMUM_FARE,
                 exactDistance: parseFloat(exactDistanceKm.toFixed(2)),
-                roundedDistance: roundedDistanceKm
+                roundedDistance: roundedDistanceKm,
+                pricingVersion: 1
             }
         };
     }
@@ -297,12 +385,24 @@ class FareCalculationService {
      * @returns {boolean} Validation result
      */
     validateFareCalculation(fareDetails) {
-        const { distanceKm, baseFare, commission, driverNet } = fareDetails;
+        if (!fareDetails) return false;
+
+        // For tiered pricing (v2)
+        if (fareDetails.breakdown?.pricingVersion === 2) {
+            const { exactDistanceKm, fullKmCharge, remainderCharge, driverNet, breakdown } = fareDetails;
+            
+            if (!exactDistanceKm || exactDistanceKm < 0) return false;
+            if (fullKmCharge === undefined || remainderCharge === undefined) return false;
+            if (driverNet !== (fullKmCharge + remainderCharge)) return false;
+            if (breakdown?.calculationMethod !== 'tiered_v2') return false;
+            
+            return true;
+        }
+
+        // For old pricing (v1) - backward compatibility
+        const { distanceKm, baseFare, driverNet } = fareDetails;
         
-        // Basic validation
-        if (distanceKm <= 0) return false;
-        // Removed MINIMUM_FARE check - no minimum fare requirement
-        if (commission !== distanceKm * this.COMMISSION_PER_KM) return false;
+        if (!distanceKm || distanceKm < 0) return false;
         if (driverNet !== baseFare) return false;
         
         return true;

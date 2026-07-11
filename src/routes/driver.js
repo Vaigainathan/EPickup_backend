@@ -1532,11 +1532,11 @@ router.post('/earnings/report', requireDriver, async (req, res) => {
       totalEarnings += earnings;
       totalTrips++;
 
-      // Calculate commission based on distance (₹2 per km)
+      // Calculate commission based on distance (₹1.15 per km)
       const exactDistance = data.distance?.total || 0;
       const fareCalculationService = require('../services/fareCalculationService');
       const fareBreakdown = fareCalculationService.calculateFare(exactDistance);
-      const commissionPoints = fareBreakdown.commission; // ₹2 per km
+      const commissionPoints = fareBreakdown.commission; // ₹1.15 per km
       
       tripDetails.push({
         id: doc.id,
@@ -1780,7 +1780,7 @@ router.get('/earnings/detailed', requireDriver, async (req, res) => {
       totalTrips++;
     });
 
-    // Calculate commission correctly: Drivers get full fare, commission is ₹2 per km deducted from points wallet
+    // Calculate commission correctly: Drivers get full fare, commission is ₹1.15 per km deducted from points wallet
     // commission field here represents points deducted, not money
     const fareCalculationService = require('../services/fareCalculationService');
     let totalCommissionPoints = 0;
@@ -5153,14 +5153,14 @@ router.post('/bookings/:id/accept', idempotencyKeyMiddleware, requireDriver, asy
         // Note: fareCalculationService already declared above at line 3567
         const fareBreakdown = fareCalculationService.calculateFare(estimatedDistanceKm);
         const roundedDistance = fareBreakdown.roundedDistanceKm; // Rounded distance (e.g., 8.4km → 9km)
-        const estimatedCommission = fareBreakdown.commission; // Commission based on rounded distance (e.g., 9km × ₹2 = ₹18)
+        const estimatedCommission = fareBreakdown.commission; // Commission based on rounded distance (e.g., 9km × ₹1.15 = ₹10.35)
         
         console.log(`💰 [ACCEPT_BOOKING] Checking wallet balance for commission:`, {
           driverId: uid,
           exactDistanceKm: estimatedDistanceKm,
           roundedDistanceKm: roundedDistance,
           estimatedCommission: estimatedCommission,
-          calculation: `${roundedDistance}km × ₹2/km = ₹${estimatedCommission}`
+          calculation: `${roundedDistance}km × ₹1.15/km = ₹${estimatedCommission}`
         });
         
         // Check wallet balance
@@ -5551,7 +5551,7 @@ router.post('/bookings/:id/accept', idempotencyKeyMiddleware, requireDriver, asy
           const fareBreakdown = fareCalculationService.calculateFare(distance);
           const roundedDistance = fareBreakdown.roundedDistanceKm;
           const estimatedCommission = fareBreakdown.commission;
-          commissionMessage = `Insufficient wallet balance. Required: ₹${estimatedCommission} (${roundedDistance}km × ₹2/km, exact: ${distance.toFixed(2)}km). Please recharge your wallet to accept this booking.`;
+          commissionMessage = `Insufficient wallet balance. Required: ₹${estimatedCommission} (${roundedDistance}km × ₹1.15/km, exact: ${distance.toFixed(2)}km). Please recharge your wallet to accept this booking.`;
         }
       } catch {
         // Ignore errors in error message generation
@@ -9595,8 +9595,8 @@ router.post('/wallet/top-up', [
   body('amount')
     .trim()
     .notEmpty().withMessage('Amount is required')
-    .isFloat({ min: 250, max: 50000 })
-    .withMessage('Amount must be between 250 and 50,000'),
+    .isFloat({ min: 100, max: 50000 })
+    .withMessage('Amount must be between 100 and 50,000'),
   body('paymentMethod')
     .trim()
     .notEmpty().withMessage('Payment method is required')

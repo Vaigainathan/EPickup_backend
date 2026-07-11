@@ -4,7 +4,7 @@
  * AUTHORITATIVE SOURCE: backend/src/services/fareCalculationService.js
  * 
  * CURRENT RATES:
- * - Commission: ₹2/km (deducted from driver points wallet)
+ * - Commission: ₹1.15/km (deducted from driver points wallet)
  * 
  * This model is LEGACY - use PointsService instead.
  * Kept for backward compatibility with old driverWallets collection.
@@ -33,9 +33,9 @@ class DriverWallet {
   }
 
   // Get remaining trips based on current balance
-  // UPDATED: Commission is now ₹2/km (was ₹1/km)
+  // UPDATED: Commission is now ₹1.15/km (was ₹2/km)
   getRemainingTrips() {
-    const commissionPerKm = 2; // ₹2 per km (UPDATED from 1)
+    const commissionPerKm = 1.15; // ₹1.15 per km (UPDATED from 2)
     return Math.floor(this.currentBalance / commissionPerKm);
   }
 

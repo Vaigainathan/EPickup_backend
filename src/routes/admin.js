@@ -3634,7 +3634,7 @@ router.get('/analytics', async (req, res) => {
         averageTopUpAmount: totalTopUps > 0 ? (realMoneyRevenue / totalTopUps).toFixed(2) : 0,
         driverEarnings: totalDriverEarnings,
         realMoneyRevenue: realMoneyRevenue,
-        commissionPerKm: 2, // ₹2 per km commission rate (in points)
+        commissionPerKm: 1.15, // ₹1.15 per km commission rate (in points)
         revenueSource: 'prepaid_points_system'
       },
       timestamp: new Date().toISOString()

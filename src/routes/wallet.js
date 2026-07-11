@@ -305,7 +305,7 @@ router.get('/can-work/:driverId', authenticateToken, async (req, res) => {
 router.get('/remaining-trips/:driverId', authenticateToken, async (req, res) => {
   try {
     const { driverId } = req.params;
-    const { commissionPerTrip = 2 } = req.query; // Default 2 points per km
+    const { commissionPerTrip = 1.15 } = req.query; // Default 1.15 points per km
     
     const result = await pointsService.getPointsBalance(driverId);
     

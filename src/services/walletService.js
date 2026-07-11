@@ -610,7 +610,7 @@ class PointsService {
         if (data.type === 'debit') {
           if (tripDetails.bookingId || data.tripId) {
             // Commission deduction with breakdown
-            description = `Commission: ₹${commissionAmount} (${roundedDistance}km × ₹2/km)`;
+            description = `Commission: ₹${commissionAmount} (${roundedDistance}km × ₹1.15/km)`;
           } else {
             description = `Commission: ₹${commissionAmount}`;
           }
@@ -719,10 +719,10 @@ class PointsService {
   /**
    * Get remaining trips possible
    * @param {number} pointsBalance - Current points balance
-   * @param {number} commissionPerKm - Commission per km (default: 2 points)
+   * @param {number} commissionPerKm - Commission per km (default: 1.15 points)
    * @returns {number} Number of trips possible
    */
-  getRemainingTrips(pointsBalance, commissionPerKm = 2) {
+  getRemainingTrips(pointsBalance, commissionPerKm = 1.15) {
     return Math.floor(pointsBalance / commissionPerKm);
   }
 

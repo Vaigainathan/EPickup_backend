@@ -88,9 +88,14 @@ class FareCalculationService {
         const commission = (fullKm + (remainderKm > this.MAX_REMAINDER_KM ? 1 : 0)) * this.COMMISSION_PER_KM;
         const driverNet = totalFare;
         const companyRevenue = commission;
+        
+        // ✅ CRITICAL FIX: Calculate rounded distance for booking storage
+        // If remainder > 0.5km, round up; otherwise use full kilometers
+        const roundedDistanceKm = remainderKm > this.MAX_REMAINDER_KM ? fullKm + 1 : fullKm;
 
         return {
             exactDistanceKm: parseFloat(exactDistanceKm.toFixed(2)),
+            roundedDistanceKm: roundedDistanceKm, // ✅ CRITICAL: Required for booking document
             fullKm: fullKm,
             remainderKm: parseFloat(remainderKm.toFixed(2)),
             fullKmCharge: Math.round(fullKmCharge),

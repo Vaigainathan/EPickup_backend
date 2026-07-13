@@ -763,7 +763,7 @@ router.post('/bookings', authenticateToken, async (req, res) => {
       },
       distance: distance,
       exactDistance: fareDetails.exactDistanceKm,
-      roundedDistance: fareDetails.roundedDistanceKm,
+      roundedDistance: fareDetails.roundedDistanceKm || Math.ceil(distance || 0), // ✅ DEFENSIVE: Fallback if missing
       fareBreakdown: fareDetails.breakdown,
       createdAt: new Date(),
       updatedAt: new Date()

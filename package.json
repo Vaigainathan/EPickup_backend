@@ -1,6 +1,6 @@
 {
   "name": "epickup-backend",
-  "version": "4.0.0",
+  "version": "4.0.1",
   "private": true,
   "description": "Backend API server for EPickup delivery service platform",
   "main": "src/server.js",

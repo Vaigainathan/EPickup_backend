@@ -4766,7 +4766,7 @@ router.get('/bookings/available', requireDriver, async (req, res) => {
                 longitude: bookingData.dropoff?.coordinates?._longitude || bookingData.dropoff?.coordinates?.longitude
               }
             },
-            distanceFromDriver: Math.round(distance / 1000 * 100) / 100, // Convert to km with 2 decimal places
+            distanceFromDriver: Math.round(distance * 100) / 100, // ✅ FIXED: distance already in km, just round to 2 decimals
             estimatedPickupTime: bookingData.estimatedPickupTime || new Date(Date.now() + 15 * 60 * 1000).toISOString()
           };
           allBookings.push(normalizedBooking);

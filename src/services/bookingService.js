@@ -270,23 +270,40 @@ class BookingService {
           }));
         }
 
-        // ✅ CRITICAL FIX: Check minimum wallet balance (₹100 minimum)
+        // ✅ CRITICAL FIX: Check wallet has enough for THIS TRIP'S COMMISSION (dynamic check)
+        // Get wallet balance
         const walletDoc = await transaction.get(this.db.collection('driverPointsWallets').doc(driverId));
         let walletBalance = 0;
         if (walletDoc.exists) {
           walletBalance = walletDoc.data().pointsBalance || 0;
         }
 
-        const MINIMUM_WALLET_BALANCE = 100; // ₹100 minimum
-        if (walletBalance < MINIMUM_WALLET_BALANCE) {
+        // ✅ DYNAMIC COMMISSION CHECK: Calculate commission for THIS SPECIFIC TRIP
+        const tripDistance = booking.distance?.value || booking.distance?.total || 0;
+        const fareCalculationService = require('../services/fareCalculationService');
+        const fareBreakdown = fareCalculationService.calculateFareWithTieredPricing(tripDistance);
+        const estimatedCommission = fareBreakdown.commission;
+
+        // Check if driver has enough wallet balance for this trip's commission
+        if (walletBalance < estimatedCommission) {
+          const shortfall = estimatedCommission - walletBalance;
           throw new Error(JSON.stringify({
             code: 'INSUFFICIENT_WALLET',
-            message: 'Insufficient wallet balance',
-            details: `You need a minimum wallet balance of ₹${MINIMUM_WALLET_BALANCE}. Current balance: ₹${walletBalance}. Please top up your wallet before accepting bookings.`,
-            currentBalance: walletBalance,
-            requiredBalance: MINIMUM_WALLET_BALANCE
+            message: 'Insufficient wallet for this trip',
+            details: `This trip requires ₹${estimatedCommission.toFixed(2)} commission. Your current wallet: ₹${walletBalance.toFixed(2)}. You need ₹${shortfall.toFixed(2)} more to accept this order. Please top up your wallet.`,
+            requiredCommission: parseFloat(estimatedCommission.toFixed(2)),
+            currentBalance: parseFloat(walletBalance.toFixed(2)),
+            shortfall: parseFloat(shortfall.toFixed(2)),
+            tripDistance: tripDistance
           }));
         }
+
+        console.log(`✅ [BOOKING_ACCEPTANCE] Wallet validation passed for driver ${driverId}:`, {
+          tripDistance: tripDistance.toFixed(2),
+          estimatedCommission: estimatedCommission.toFixed(2),
+          walletBalance: walletBalance.toFixed(2),
+          sufficient: true
+        });
 
         // Update booking with driver acceptance
         const driverVehicleDetails = driver.driver?.vehicleDetails || {};

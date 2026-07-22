@@ -161,15 +161,28 @@ class EnvironmentConfig {
       url: process.env.DATABASE_URL
     };
 
+    const defaultAllowedOrigins = [
+      'http://localhost:3000',  // Admin dashboard
+      'http://localhost:3001',  // Customer app
+      'http://localhost:8081',  // Driver app (Expo)
+      'https://epickup-app.web.app',
+      'https://epickup-app.firebaseapp.com'
+    ];
+
+    const parsedAllowedOrigins = process.env.ALLOWED_ORIGINS
+      ? process.env.ALLOWED_ORIGINS.split(',').map(origin => origin.trim()).filter(Boolean)
+      : defaultAllowedOrigins;
+
+    const additionalOrigins = [
+      process.env.ADMIN_DASHBOARD_URL,
+      process.env.FRONTEND_URL,
+      process.env.CUSTOMER_APP_URL,
+      process.env.DRIVER_APP_URL
+    ].filter(Boolean);
+
     // CORS Configuration
     this.config.cors = {
-      allowedOrigins: process.env.ALLOWED_ORIGINS?.split(',') || [
-        'http://localhost:3000',  // Admin dashboard
-        'http://localhost:3001',  // Customer app
-        'http://localhost:8081',  // Driver app (Expo)
-        'https://epickup-app.web.app',
-        'https://epickup-app.firebaseapp.com'
-      ]
+      allowedOrigins: [...new Set([...parsedAllowedOrigins, ...additionalOrigins])]
     };
 
     // URL Configuration

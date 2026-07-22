@@ -71,7 +71,9 @@ class RevenueService {
         };
       }
       
-      let query = db.collection('companyRevenue');
+      let query = db.collection('pointsTransactions')
+        .where('type', '==', 'credit')
+        .where('transactionType', '==', 'wallet_topup');
 
       // Apply filters
       if (filters.startDate) {
@@ -84,10 +86,21 @@ class RevenueService {
         query = query.where('driverId', '==', filters.driverId);
       }
       if (filters.paymentMethod) {
-        query = query.where('paymentMethod', '==', filters.paymentMethod);
+        query = query.where('method', '==', filters.paymentMethod);
       }
 
       const snapshot = await query.get();
+      
+      // ✅ FALLBACK: If no wallet top-ups found, try companyRevenue collection
+      let fallbackSnapshot = null;
+      if (snapshot.size === 0) {
+        console.warn('⚠️ [REVENUE_SERVICE] No wallet top-ups found, checking companyRevenue...');
+        try {
+          fallbackSnapshot = await db.collection('companyRevenue').get();
+        } catch {
+          console.warn('⚠️ [REVENUE_SERVICE] companyRevenue collection not available');
+        }
+      }
       
       let totalRevenue = 0;
       let transactionCount = 0;
@@ -97,6 +110,15 @@ class RevenueService {
         totalRevenue += data.amount || 0;
         transactionCount++;
       });
+      
+      // ✅ FALLBACK: Add companyRevenue data if snapshot was empty
+      if (fallbackSnapshot && fallbackSnapshot.size > 0) {
+        fallbackSnapshot.forEach(doc => {
+          const data = doc.data();
+          totalRevenue += data.amount || 0;
+          transactionCount++;
+        });
+      }
 
       return {
         success: true,
@@ -207,13 +229,28 @@ class RevenueService {
         };
       }
       
-      let query = db.collection('companyRevenue');
+      let query = db.collection('pointsTransactions')
+        .where('type', '==', 'credit')
+        .where('transactionType', '==', 'wallet_topup');
 
       if (driverId) {
         query = query.where('driverId', '==', driverId);
       }
 
       const snapshot = await query.get();
+      
+      // ✅ FALLBACK: If no wallet top-ups, try companyRevenue
+      let fallbackSnapshot = null;
+      if (snapshot.size === 0) {
+        console.warn('⚠️ [REVENUE_SERVICE] No wallet top-ups found for driver, checking companyRevenue...');
+        try {
+          fallbackSnapshot = await db.collection('companyRevenue')
+            .where(driverId ? 'driverId' : 'unused', driverId ? '==' : '!=', driverId || 'x')
+            .get();
+        } catch {
+          console.warn('⚠️ [REVENUE_SERVICE] companyRevenue collection not available');
+        }
+      }
 
       const revenueByDriver = {};
       
@@ -232,6 +269,26 @@ class RevenueService {
         revenueByDriver[driverIdKey].revenue += data.amount || 0;
         revenueByDriver[driverIdKey].transactionCount++;
       });
+      
+      // ✅ FALLBACK: Add fallback data if wallet top-ups were empty
+      if (fallbackSnapshot && fallbackSnapshot.size > 0) {
+        console.log('📊 [REVENUE_SERVICE] Adding companyRevenue fallback data...');
+        fallbackSnapshot.forEach(doc => {
+          const data = doc.data();
+          const driverIdKey = data.driverId || 'unknown';
+
+          if (!revenueByDriver[driverIdKey]) {
+            revenueByDriver[driverIdKey] = {
+              driverId: driverIdKey,
+              revenue: 0,
+              transactionCount: 0
+            };
+          }
+
+          revenueByDriver[driverIdKey].revenue += data.amount || 0;
+          revenueByDriver[driverIdKey].transactionCount++;
+        });
+      }
 
       const drivers = Object.values(revenueByDriver).sort((a, b) => b.revenue - a.revenue);
 
@@ -271,21 +328,39 @@ class RevenueService {
       
       console.log('📊 [REVENUE_SERVICE] Starting getRevenueStats...');
       
-      // ✅ DEBUG: Check total document count in companyRevenue collection
-      const allRevenueCount = await db.collection('companyRevenue').get();
-      console.log(`📊 [REVENUE_SERVICE] Total documents in companyRevenue collection: ${allRevenueCount.size}`);
+      // ✅ FIX: Query pointsTransactions for wallet top-ups (CREDIT transactions)
+      // Driver wallet top-ups are stored as CREDIT transactions in pointsTransactions collection
+      console.log('📊 [REVENUE_SERVICE] Querying pointsTransactions for wallet top-ups...');
+      const walletTopUpsSnapshot = await db.collection('pointsTransactions')
+        .where('type', '==', 'credit')
+        .where('transactionType', '==', 'wallet_topup')
+        .get();
       
-      if (allRevenueCount.size > 0) {
-        console.log('📋 [REVENUE_SERVICE] First 5 companyRevenue documents:');
-        allRevenueCount.docs.slice(0, 5).forEach(doc => {
+      console.log(`📊 [REVENUE_SERVICE] Found ${walletTopUpsSnapshot.size} wallet top-up transactions`);
+      
+      if (walletTopUpsSnapshot.size > 0) {
+        console.log('📋 [REVENUE_SERVICE] First 5 wallet top-up transactions:');
+        walletTopUpsSnapshot.docs.slice(0, 5).forEach(doc => {
           const data = doc.data();
-          console.log(`  - ID: ${doc.id}, Amount: ${data.amount}, PaymentMethod: ${data.paymentMethod}, CreatedAt: ${data.createdAt}`);
+          console.log(`  - ID: ${doc.id}, Amount: ${data.amount}, DriverID: ${data.driverId}, CreatedAt: ${data.createdAt}`);
         });
       } else {
-        console.warn('⚠️ [REVENUE_SERVICE] companyRevenue collection is EMPTY');
+        console.warn('⚠️ [REVENUE_SERVICE] No wallet top-up transactions found. Checking alternative sources...');
       }
 
-      const snapshot = await db.collection('companyRevenue').get();
+      // ✅ FALLBACK: Also check companyRevenue collection in case it's populated
+      let companyRevenueSnapshot = null;
+      try {
+        companyRevenueSnapshot = await db.collection('companyRevenue').get();
+        if (companyRevenueSnapshot.size > 0) {
+          console.log(`📊 [REVENUE_SERVICE] Found ${companyRevenueSnapshot.size} documents in companyRevenue collection (backup source)`);
+        }
+      } catch {
+        console.warn('⚠️ [REVENUE_SERVICE] companyRevenue collection query failed or collection does not exist');
+      }
+
+      // Merge both sources: wallet top-ups (primary) + companyRevenue (fallback)
+      const snapshot = walletTopUpsSnapshot;
 
       let totalRevenue = 0;
       let transactionCount = 0;
@@ -297,14 +372,15 @@ class RevenueService {
       let thisMonthRevenue = 0;
       let lastMonthRevenue = 0;
 
+      // ✅ CRITICAL: Process wallet top-up transactions
       snapshot.forEach(doc => {
         const data = doc.data();
         const amount = data.amount || 0;
         totalRevenue += amount;
         transactionCount++;
 
-        // Revenue by payment method
-        const paymentMethod = data.paymentMethod || 'unknown';
+        // Revenue by payment method (or use transaction method)
+        const paymentMethod = data.paymentMethod || data.method || 'wallet';
         if (!revenueByPaymentMethod[paymentMethod]) {
           revenueByPaymentMethod[paymentMethod] = 0;
         }
@@ -326,6 +402,37 @@ class RevenueService {
           lastMonthRevenue += amount;
         }
       });
+      
+      // ✅ FALLBACK: Also aggregate from companyRevenue if it has documents
+      if (companyRevenueSnapshot && companyRevenueSnapshot.size > 0) {
+        console.log('📊 [REVENUE_SERVICE] Adding companyRevenue collection data to total...');
+        companyRevenueSnapshot.forEach(doc => {
+          const data = doc.data();
+          const amount = data.amount || 0;
+          totalRevenue += amount;
+          transactionCount++;
+
+          const paymentMethod = data.paymentMethod || 'company_revenue';
+          if (!revenueByPaymentMethod[paymentMethod]) {
+            revenueByPaymentMethod[paymentMethod] = 0;
+          }
+          revenueByPaymentMethod[paymentMethod] += amount;
+
+          const createdAt = data.createdAt?.toDate ? data.createdAt.toDate() : new Date(data.createdAt);
+          const monthKey = `${createdAt.getFullYear()}-${String(createdAt.getMonth() + 1).padStart(2, '0')}`;
+          if (!revenueByMonth[monthKey]) {
+            revenueByMonth[monthKey] = 0;
+          }
+          revenueByMonth[monthKey] += amount;
+
+          if (createdAt >= thisMonth) {
+            thisMonthRevenue += amount;
+          }
+          if (createdAt >= lastMonth && createdAt < thisMonth) {
+            lastMonthRevenue += amount;
+          }
+        });
+      }
 
       console.log(`✅ [REVENUE_SERVICE] Revenue calculated - Total: ₹${totalRevenue}, Transactions: ${transactionCount}`);
 

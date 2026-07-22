@@ -151,7 +151,17 @@ router.get('/driver', authenticateToken, requireAdmin, async (req, res) => {
  */
 router.get('/stats', authenticateToken, requireAdmin, async (req, res) => {
   try {
+    console.log('📊 [REVENUE_ROUTE] GET /api/admin/revenue/stats called');
+    console.log('📊 [REVENUE_ROUTE] Admin user:', req.user?.uid);
+    
     const result = await revenueService.getRevenueStats();
+    
+    console.log('📊 [REVENUE_ROUTE] Service returned:', {
+      success: result.success,
+      error: result.error || null,
+      statsTotal: result.stats?.totalRevenue || null,
+      statsTransactions: result.stats?.transactionCount || null
+    });
     
     if (result.success) {
       res.status(200).json(result);
@@ -159,7 +169,7 @@ router.get('/stats', authenticateToken, requireAdmin, async (req, res) => {
       res.status(400).json(result);
     }
   } catch (error) {
-    console.error('Error getting revenue stats:', error);
+    console.error('❌ [REVENUE_ROUTE] Error getting revenue stats:', error);
     res.status(500).json({
       success: false,
       error: 'Internal server error',

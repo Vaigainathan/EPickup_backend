@@ -651,9 +651,7 @@ router.put('/profile', [
       const requiredVehicleFields = [
         'vehicleType',
         'vehicleNumber',
-        'vehicleModel',
-        'licenseNumber',
-        'licenseExpiry'
+        'vehicleModel'
       ];
       const missingVehicleFields = requiredVehicleFields.filter((field) => {
         const value = vehicleDetails[field];
@@ -748,7 +746,7 @@ router.put('/profile', [
           }
 
           // Verify each field was written
-          const fieldsToVerify = ['vehicleType', 'vehicleNumber', 'vehicleModel', 'licenseNumber', 'licenseExpiry'];
+          const fieldsToVerify = ['vehicleType', 'vehicleNumber', 'vehicleModel'];
           const missingVerifiedFields = fieldsToVerify.filter(field => !userData.driver.vehicleDetails[field]);
           
           if (missingVerifiedFields.length > 0) {
@@ -1031,9 +1029,7 @@ router.get('/profile', requireDriver, async (req, res) => {
               return {
                 vehicleType: 'motorcycle',
                 vehicleModel: '',
-                vehicleNumber: '',
-                licenseNumber: '',
-                licenseExpiry: ''
+                vehicleNumber: ''
               };
             }
             
@@ -1041,9 +1037,7 @@ router.get('/profile', requireDriver, async (req, res) => {
             return {
               vehicleType: vd.vehicleType || vd.type || 'motorcycle',
               vehicleModel: vd.vehicleModel || vd.model || '',
-              vehicleNumber: vd.vehicleNumber || vd.number || '',
-              licenseNumber: vd.licenseNumber || '',
-              licenseExpiry: vd.licenseExpiry || ''
+              vehicleNumber: vd.vehicleNumber || vd.number || ''
             };
           })(),
           verificationStatus: finalVerificationStatus,
@@ -11300,9 +11294,7 @@ router.post('/documents/request-verification', requireDriver, async (req, res) =
     const requiredVehicleFields = [
       'vehicleType',
       'vehicleNumber',
-      'vehicleModel',
-      'licenseNumber',
-      'licenseExpiry'
+      'vehicleModel'
     ];
     const missingVehicleFields = requiredVehicleFields.filter((field) => {
       const value = vehicleDetails?.[field];

@@ -120,26 +120,16 @@ service cloud.firestore {
       return vehicleNumber is string && vehicleNumber.size() > 0;
     }
     
-    function isValidLicenseNumber(licenseNumber) {
-      return licenseNumber is string && licenseNumber.matches('^[A-Z]{2}[0-9]{2}[0-9]{4}[0-9]{7}$');
-    }
-    
     // Removed RC/Insurance validators; those fields are no longer enforced
-    
-    function isValidDate(dateString) {
-      return dateString is string && dateString.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$');
-    }
     
     function isValidDriverVerificationStatus(status) {
       return status in ['pending_verification', 'approved', 'rejected'];
     }
     
     function isValidVehicleDetails(vehicleDetails) {
-      return vehicleDetails.keys().hasAll(['vehicleType', 'vehicleNumber', 'vehicleModel', 'licenseNumber', 'licenseExpiry']) &&
+      return vehicleDetails.keys().hasAll(['vehicleType', 'vehicleNumber', 'vehicleModel']) &&
              isValidVehicleType(vehicleDetails.vehicleType) &&
-             isValidVehicleNumber(vehicleDetails.vehicleNumber) &&
-             isValidLicenseNumber(vehicleDetails.licenseNumber) &&
-             isValidDate(vehicleDetails.licenseExpiry);
+             isValidVehicleNumber(vehicleDetails.vehicleNumber);
     }
 
     // Users collection - enhanced security with field validation

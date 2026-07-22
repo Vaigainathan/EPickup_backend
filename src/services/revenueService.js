@@ -269,6 +269,22 @@ class RevenueService {
         };
       }
       
+      console.log('📊 [REVENUE_SERVICE] Starting getRevenueStats...');
+      
+      // ✅ DEBUG: Check total document count in companyRevenue collection
+      const allRevenueCount = await db.collection('companyRevenue').get();
+      console.log(`📊 [REVENUE_SERVICE] Total documents in companyRevenue collection: ${allRevenueCount.size}`);
+      
+      if (allRevenueCount.size > 0) {
+        console.log('📋 [REVENUE_SERVICE] First 5 companyRevenue documents:');
+        allRevenueCount.docs.slice(0, 5).forEach(doc => {
+          const data = doc.data();
+          console.log(`  - ID: ${doc.id}, Amount: ${data.amount}, PaymentMethod: ${data.paymentMethod}, CreatedAt: ${data.createdAt}`);
+        });
+      } else {
+        console.warn('⚠️ [REVENUE_SERVICE] companyRevenue collection is EMPTY');
+      }
+
       const snapshot = await db.collection('companyRevenue').get();
 
       let totalRevenue = 0;
@@ -311,6 +327,8 @@ class RevenueService {
         }
       });
 
+      console.log(`✅ [REVENUE_SERVICE] Revenue calculated - Total: ₹${totalRevenue}, Transactions: ${transactionCount}`);
+
       const monthOverMonthGrowth = lastMonthRevenue > 0 
         ? ((thisMonthRevenue - lastMonthRevenue) / lastMonthRevenue) * 100 
         : 0;
@@ -320,9 +338,12 @@ class RevenueService {
       let commissionTransactionCount = 0;
       
       try {
+        console.log('📊 [REVENUE_SERVICE] Querying pointsTransactions for commission data...');
         const commissionTransactionsSnapshot = await db.collection('pointsTransactions')
           .where('type', '==', 'debit')
           .get();
+
+        console.log(`📊 [REVENUE_SERVICE] Found ${commissionTransactionsSnapshot.size} debit transactions`);
 
         commissionTransactionsSnapshot.forEach(doc => {
           const data = doc.data();
@@ -334,6 +355,8 @@ class RevenueService {
             commissionTransactionCount++;
           }
         });
+        
+        console.log(`✅ [REVENUE_SERVICE] Commission data calculated - Total: ₹${totalCommissionsDeducted}, Count: ${commissionTransactionCount}`);
       } catch (commissionError) {
         console.warn('⚠️ [REVENUE_SERVICE] Error fetching commission data:', commissionError.message);
         // Continue without commission data

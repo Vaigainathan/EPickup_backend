@@ -1261,9 +1261,7 @@ router.get('/drivers', async (req, res) => {
             return {
               vehicleType: 'motorcycle',
               vehicleModel: '',
-              vehicleNumber: '',
-              licenseNumber: '',
-              licenseExpiry: ''
+              vehicleNumber: ''
             };
           }
           
@@ -1271,9 +1269,7 @@ router.get('/drivers', async (req, res) => {
           return {
             vehicleType: vd.vehicleType || vd.type || 'motorcycle',
             vehicleModel: vd.vehicleModel || vd.model || '',
-            vehicleNumber: vd.vehicleNumber || vd.number || '',
-            licenseNumber: vd.licenseNumber || '',
-            licenseExpiry: vd.licenseExpiry || ''
+            vehicleNumber: vd.vehicleNumber || vd.number || ''
           };
         })(),
         // ✅ CRITICAL FIX: Use calculated earnings from driver_earnings collection
@@ -1663,6 +1659,7 @@ router.get('/bookings', async (req, res) => {
         estimatedDuration: data.estimatedDuration,
         actualDuration: data.actualDuration,
         distance: data.distance,
+        displayId: data.displayId,  // ✅ NEW: Include 5-digit numeric display ID
         createdAt: normalizeTimestamp(data.createdAt) || data.createdAt,
         updatedAt: normalizeTimestamp(data.updatedAt) || data.updatedAt,
         pickupVerification,
@@ -5023,6 +5020,20 @@ router.get('/customers', async (req, res) => {
     const validatedLimit = Math.max(1, Math.min(100, parseInt(limit) || 20));
     const validatedOffset = Math.max(0, parseInt(offset) || 0);
 
+    // ✅ CRITICAL FIX: Get total count of matching customers (across all pages)
+    // This is separate from the paginated query and used for pagination UI
+    let totalCount = 0;
+    try {
+      const countQuery = db.collection('users').where('userType', '==', 'customer');
+      const countQueryWithStatus = status ? countQuery.where('accountStatus', '==', status) : countQuery;
+      const countSnapshot = await countQueryWithStatus.get();
+      totalCount = countSnapshot.size;
+      console.log(`📊 [ADMIN_CUSTOMERS] Total customers matching filters: ${totalCount}`);
+    } catch (countError) {
+      console.warn('⚠️ [ADMIN_CUSTOMERS] Failed to get total customer count:', countError.message);
+      // Continue anyway - totalCount will be 0, which is safe
+    }
+
     // ✅ CRITICAL FIX: Try indexed query first, fallback to simple query if it fails
     let snapshot;
     try {
@@ -5229,9 +5240,10 @@ router.get('/customers', async (req, res) => {
       success: true,
       data: customers,
       pagination: {
-        limit: Math.max(1, Math.min(100, parseInt(limit) || 20)),
-        offset: Math.max(0, parseInt(offset) || 0),
-        total: customers.length
+        limit: validatedLimit,
+        offset: validatedOffset,
+        total: customers.length,
+        totalCount: totalCount  // ✅ Total count across all pages (for pagination UI)
       }
     });
 

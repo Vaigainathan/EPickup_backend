@@ -242,9 +242,7 @@ class RoleBasedAuthService {
           vehicleDetails: {
             vehicleType: 'motorcycle', // ✅ Use vehicleType (matches profile endpoint)
             vehicleModel: '',          // ✅ Use vehicleModel (matches profile endpoint)
-            vehicleNumber: '',         // ✅ Use vehicleNumber (matches profile endpoint)
-            licenseNumber: '',         // ✅ Include license fields (matches profile endpoint)
-            licenseExpiry: ''          // ✅ Include license expiry (matches profile endpoint)
+            vehicleNumber: ''          // ✅ Use vehicleNumber (matches profile endpoint)
           },
           verificationStatus: 'pending',
           isOnline: false,

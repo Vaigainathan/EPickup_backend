@@ -4,23 +4,32 @@
  * This is the ONLY authoritative source for pricing logic.
  * All other files (customer app, driver app, bookingService.js) should match this.
  * 
- * PRICING STRUCTURE (UPDATED):
- * - Base rate (first 2km): ₹20 flat
- * - After 2km: ₹10/km + ₹5 for 100-500m remainder
- * - Rounding: >500m remainder rounds up to next km at ₹10
+ * PRICING STRUCTURE v2 (2026-07-24 UPDATE - THREE-TIER):
+ * - Tier 1 (0-500m): ₹5
+ * - Tier 2 (500m-1km): ₹10 (rounds up to 1km)
+ * - Tier 3 (>1km): ₹10/km additional
+ * - Remainder handling: 0-500m = ₹5, 500m-1km = ₹10 (rounds to next km)
  * 
- * COMMISSION STRUCTURE (UPDATED):
- * - Base commission (first 2km): ₹2.30 fixed
- * - Additional full km: ₹1.15/km
- * - Remainder (100-500m): ₹0 (NO commission)
- * - Remainder >500m: ₹1.15 for rounded km
+ * COMMISSION STRUCTURE v2 (2026-07-24 UPDATE - FLOOR + SMART REMAINDER):
+ * - Flat: ₹1.15/km
+ * - Rounding: FLOOR distance, then smart remainder
+ *   - Remainder <500m: drop it (don't count)
+ *   - Remainder ≥500m: round UP (count as full km)
  * 
- * Examples:
- * - 1.8km → Price ₹20, Commission ₹2.30
- * - 2km → Price ₹20, Commission ₹2.30
- * - 2.5km → Price ₹25 (₹20 + ₹5), Commission ₹2.30 (no commission for 0.5km remainder)
- * - 3.2km → Price ₹35 (₹20 + ₹10 + ₹5), Commission ₹3.45 (₹2.30 + ₹1.15)
- * - 8.2km → Price ₹105 (₹20 + ₹80 + ₹5), Commission ₹9.20 (₹2.30 + 6×₹1.15)
+ * Examples (PRICING):
+ * - 0.3km → ₹5 (tier 1)
+ * - 0.7km → ₹10 (tier 2, rounds to 1km)
+ * - 1.3km → ₹10 + ₹5 = ₹15 (1km + 0.3km remainder tier 1)
+ * - 1.6km → ₹10 + ₹10 = ₹20 (1km + 0.6km remainder tier 2, rounds up)
+ * - 2.3km → ₹10 + ₹10 + ₹5 = ₹25
+ * - 5.0km → ₹50
+ * 
+ * Examples (COMMISSION):
+ * - 0.3km → floor=0, <500m → min=1km → ₹1.15
+ * - 0.6km → floor=0, ≥500m → round UP to 1km → ₹1.15
+ * - 1.3km → floor=1, <500m → 1km → ₹1.15
+ * - 1.6km → floor=1, ≥500m → round UP to 2km → ₹2.30
+ * - 2.6km → floor=2, ≥500m → round UP to 3km → ₹3.45
  * 
  * WHEN CHANGING RATES, UPDATE ALL:
  * 1. backend/src/services/fareCalculationService.js (THIS FILE)
@@ -28,174 +37,140 @@
  * 3. customer-app/services/chargeCalculation.ts
  * 4. customer-app/services/routeCalculationService.ts
  * 5. customer-app/services/fareCalculationService.ts
+ * 6. driver-app/services/fareCalculationService.ts
  */
 
 const axios = require('axios');
 
 class FareCalculationService {
     constructor() {
-        // ✅ NEW PRICING STRUCTURE: Base rate for first 2km
-        this.BASE_RATE_FIRST_2KM = 20; // ₹20 for any distance ≤ 2km
-        this.BASE_RATE_DISTANCE = 2; // First 2km get base rate
-        this.FULL_KM_RATE_AFTER_BASE = 10; // ₹10 per km after first 2km
+        // ✅ NEW PRICING STRUCTURE v2 (2026-07-24): BASE ₹10/KM MINIMUM
+        this.BASE_RATE = 10;           // 0-1km = ₹10 (flat minimum)
+        this.BASE_DISTANCE = 1.0;      // 1km is the base unit
+        this.FULL_KM_RATE = 10;        // Each km after 1km = ₹10
+        this.REMAINDER_RATE_TIER1 = 5; // <500m remainder = ₹5
+        this.REMAINDER_RATE_TIER2 = 10; // ≥500m remainder = ₹10 (rounds up)
+        this.REMAINDER_THRESHOLD = 0.5; // 500m threshold for tier 2
         
-        // ✅ NEW COMMISSION STRUCTURE: Separated base and per-km
-        this.BASE_COMMISSION = 2.30; // ₹2.30 fixed for first 2km
-        this.COMMISSION_PER_KM_ADDITIONAL = 1.15; // ₹1.15 per additional full km only
+        // ✅ NEW COMMISSION STRUCTURE v2 (2026-07-24): FLOOR + SMART REMAINDER
+        this.COMMISSION_RATE_PER_KM = 1.15;  // ₹1.15/km flat
+        this.COMMISSION_THRESHOLD = 0.5;     // 500m threshold for rounding
         
         // Legacy constants (kept for backward compatibility)
         this.BASE_FARE_PER_KM = 10;
-        this.COMMISSION_PER_KM = 1.15;
         this.MINIMUM_FARE = 0;
         this.GOOGLE_MAPS_API_KEY = process.env.GOOGLE_MAPS_API_KEY;
-        
-        // Tiered pricing constants
-        this.TIERED_PRICING_ENABLED = true;
-        this.FULL_KM_RATE = 10;
-        this.REMAINDER_RATE = 5;
-        this.MIN_REMAINDER_KM = 0.1;
-        this.MAX_REMAINDER_KM = 0.5;
     }
 
     /**
-     * Calculate fare with new base rate (first 2km) + tiered pricing system
+     * Calculate fare with NEW v2 pricing (2026-07-24): BASE ₹10/KM MINIMUM
      * 
-     * PRICING:
-     * - ≤2km: ₹20 flat
-     * - >2km: ₹20 (base) + tiered pricing for (distance - 2km)
-     *   - Each full km: ₹10
-     *   - 100-500m remainder: ₹5
-     *   - >500m remainder: rounds to next km at ₹10
+     * PRICING STRUCTURE:
+     * - 0-1km: ₹10 (flat minimum)
+     * - >1km: ₹10 (first 1km) + remainder logic
+     *   - Remainder <500m: +₹5
+     *   - Remainder ≥500m: +₹10 (rounds up)
      * 
-     * COMMISSION:
-     * - ≤2km: ₹2.30 fixed
-     * - >2km: ₹2.30 (base) + ₹1.15 per full km of additional distance only
-     *   - 100-500m remainder: ₹0 (no commission)
-     *   - >500m remainder: ₹1.15 for rounded km
+     * COMMISSION (FLOOR + SMART REMAINDER):
+     * - FLOOR distance, then:
+     *   - Remainder <500m: drop it
+     *   - Remainder ≥500m: round UP to next km
+     * - Minimum: 1km commission
      * 
      * Examples:
-     * - 1.8km → Price ₹20, Commission ₹2.30
-     * - 2km → Price ₹20, Commission ₹2.30
-     * - 2.5km → Price ₹25 (₹20 + ₹5), Commission ₹2.30 (no commission for 0.5km remainder)
-     * - 3.2km → Price ₹35 (₹20 + ₹10 + ₹5), Commission ₹3.45 (₹2.30 + ₹1.15 for 1km)
-     * - 5.7km → Price ₹60 (₹20 + ₹30 + round 0.7→₹10), Commission ₹6.90 (₹2.30 + 3×₹1.15 + ₹1.15 rounded)
-     * - 8.2km → Price ₹105 (₹20 + ₹80 + ₹5), Commission ₹9.20 (₹2.30 + 6×₹1.15)
+     * - 0.3km → ₹10, Commission ₹1.15
+     * - 1.0km → ₹10, Commission ₹1.15
+     * - 1.3km → ₹15, Commission ₹1.15 (1km + 0.3km remainder)
+     * - 1.6km → ₹20, Commission ₹2.30 (1km + 0.6km rounds up)
+     * - 2.3km → ₹25, Commission ₹2.30 (1km + 1km + 0.3km)
+     * - 5.0km → ₹50, Commission ₹5.75
      * 
      * @param {number} exactDistanceKm - Exact distance in kilometers
      * @returns {Object} Fare and commission breakdown
      */
     calculateFareWithTieredPricing(exactDistanceKm) {
-        // Handle edge cases
+        // Validate input
         if (exactDistanceKm < 0) {
             throw new Error('Distance cannot be negative');
         }
 
-        // ✅ NEW LOGIC: Apply base rate for first 2km
-        if (exactDistanceKm <= this.BASE_RATE_DISTANCE) {
-            // Distance ≤ 2km: Flat rate
-            const roundedDistanceKm = Math.ceil(exactDistanceKm);
+        // ===== PRICING CALCULATION =====
+        let totalFare = 0;
+        const pricingBreakdown = [];
 
-            return {
-                exactDistanceKm: parseFloat(exactDistanceKm.toFixed(2)),
-                roundedDistanceKm: roundedDistanceKm,
-                fullKm: Math.floor(exactDistanceKm),
-                remainderKm: parseFloat((exactDistanceKm - Math.floor(exactDistanceKm)).toFixed(2)),
-                fullKmCharge: this.BASE_RATE_FIRST_2KM,
-                remainderCharge: 0,
-                totalFare: this.BASE_RATE_FIRST_2KM,
-                baseFare: this.BASE_RATE_FIRST_2KM,
-                commission: Math.round(this.BASE_COMMISSION * 100) / 100, // Keep 2 decimals
-                driverNet: this.BASE_RATE_FIRST_2KM,
-                companyRevenue: Math.round(this.BASE_COMMISSION * 100) / 100,
-                breakdown: {
-                    perKmRate: this.BASE_RATE_FIRST_2KM / this.BASE_RATE_DISTANCE, // Effective rate
-                    remainderRate: this.REMAINDER_RATE,
-                    commissionRate: this.BASE_COMMISSION,
-                    calculationMethod: 'base_rate',
-                    exactDistance: parseFloat(exactDistanceKm.toFixed(2)),
-                    pricingVersion: 3, // New base rate version
-                    priceBreakdown: `₹${this.BASE_RATE_FIRST_2KM} (base rate for first 2km)`,
-                    commissionBreakdown: `₹${this.BASE_COMMISSION.toFixed(2)} (base commission)`
-                }
-            };
-        }
-
-        // ✅ NEW LOGIC: For distance > 2km, apply tiered pricing to remainder
-        const basePrice = this.BASE_RATE_FIRST_2KM;
-        const baseCommission = this.BASE_COMMISSION;
-        
-        // Distance after base rate
-        const remainingDistance = exactDistanceKm - this.BASE_RATE_DISTANCE;
-        const fullKmRemaining = Math.floor(remainingDistance);
-        const remainderKmRemaining = remainingDistance - fullKmRemaining;
-
-        // Calculate pricing for remaining distance
-        let additionalPrice = fullKmRemaining * this.FULL_KM_RATE_AFTER_BASE;
-        const additionalCommission = fullKmRemaining * this.COMMISSION_PER_KM_ADDITIONAL;
-        let remainderCharge = 0;
-        let roundedKmExtra = 0;
-
-        if (remainderKmRemaining === 0) {
-            // No remainder
-            remainderCharge = 0;
-            roundedKmExtra = 0;
-        } else if (remainderKmRemaining < this.MIN_REMAINDER_KM) {
-            // Less than 100m: Apply minimum charge
-            remainderCharge = this.REMAINDER_RATE;
-            roundedKmExtra = 0; // No commission for remainder < 100m
-        } else if (remainderKmRemaining <= this.MAX_REMAINDER_KM) {
-            // 100m to 500m: Single flat charge
-            remainderCharge = this.REMAINDER_RATE;
-            roundedKmExtra = 0; // No commission for 100-500m remainder
+        if (exactDistanceKm <= this.BASE_DISTANCE) {
+            // 0-1km = ₹10 (flat minimum)
+            totalFare = this.BASE_RATE;
+            pricingBreakdown.push(`0-1km (base): ₹${this.BASE_RATE}`);
         } else {
-            // More than 500m: Round up to next km
-            additionalPrice += this.FULL_KM_RATE_AFTER_BASE;
-            roundedKmExtra = 1; // One more km for commission
-            remainderCharge = 0;
+            // > 1km: ₹10 for first 1km + remainder logic
+            totalFare = this.BASE_RATE; // First 1km = ₹10
+            pricingBreakdown.push(`First 1km: ₹${this.BASE_RATE}`);
+
+            const remainingDistance = exactDistanceKm - this.BASE_DISTANCE;
+            const fullKmsRemaining = Math.floor(remainingDistance);
+            const remainderKm = remainingDistance - fullKmsRemaining;
+
+            // Add charge for full km remaining
+            if (fullKmsRemaining > 0) {
+                const fullKmCharge = fullKmsRemaining * this.FULL_KM_RATE;
+                totalFare += fullKmCharge;
+                pricingBreakdown.push(`${fullKmsRemaining}km × ₹${this.FULL_KM_RATE}: ₹${fullKmCharge}`);
+            }
+
+            // Add charge for remainder km
+            if (remainderKm > 0) {
+                if (remainderKm < this.REMAINDER_THRESHOLD) {
+                    // <500m remainder = ₹5
+                    totalFare += this.REMAINDER_RATE_TIER1;
+                    pricingBreakdown.push(`${(remainderKm * 1000).toFixed(0)}m remainder: ₹${this.REMAINDER_RATE_TIER1}`);
+                } else {
+                    // ≥500m remainder = ₹10 (rounds up)
+                    totalFare += this.REMAINDER_RATE_TIER2;
+                    pricingBreakdown.push(`${(remainderKm * 1000).toFixed(0)}m remainder (rounds): ₹${this.REMAINDER_RATE_TIER2}`);
+                }
+            }
         }
 
-        // Total values
-        const totalPrice = basePrice + additionalPrice + remainderCharge;
-        const totalCommission = baseCommission + additionalCommission + (roundedKmExtra * this.COMMISSION_PER_KM_ADDITIONAL);
-        const driverNet = Math.round(totalPrice);
-        
-        // For booking storage
-        const totalFullKm = this.BASE_RATE_DISTANCE + fullKmRemaining + (remainderKmRemaining > this.MAX_REMAINDER_KM ? 1 : 0);
-        const finalRemainder = remainderKmRemaining > this.MAX_REMAINDER_KM ? 0 : remainderKmRemaining;
+        // ===== COMMISSION CALCULATION (v2 FLOOR + SMART REMAINDER) =====
+        let commissionDistance = Math.floor(exactDistanceKm); // FLOOR
+        const remainder = exactDistanceKm - commissionDistance;
 
+        // Smart remainder handling: if remainder ≥500m, round UP
+        if (remainder >= this.COMMISSION_THRESHOLD) {
+            commissionDistance += 1;
+        }
+
+        // Minimum 1km commission (even for <1km trips)
+        commissionDistance = Math.max(1, commissionDistance);
+
+        const totalCommission = Math.round(commissionDistance * this.COMMISSION_RATE_PER_KM * 100) / 100;
+
+        // ===== RETURN RESULT =====
         return {
             exactDistanceKm: parseFloat(exactDistanceKm.toFixed(2)),
-            roundedDistanceKm: totalFullKm,
-            fullKm: Math.floor(exactDistanceKm),
-            remainderKm: parseFloat(finalRemainder.toFixed(2)),
-            fullKmCharge: Math.round(basePrice + additionalPrice),
-            remainderCharge: Math.round(remainderCharge),
-            totalFare: Math.round(totalPrice),
-            baseFare: Math.round(totalPrice), // Keep for backward compatibility
-            commission: Math.round(totalCommission * 100) / 100,
-            driverNet: Math.round(driverNet),
-            companyRevenue: Math.round(totalCommission * 100) / 100,
+            roundedDistanceKm: Math.ceil(exactDistanceKm),
+            totalFare: Math.round(totalFare * 100) / 100,
+            baseFare: Math.round(totalFare * 100) / 100, // Keep for backward compatibility
+            commission: totalCommission,
+            driverEarnings: Math.round((totalFare - totalCommission) * 100) / 100,
             breakdown: {
-                perKmRate: this.FULL_KM_RATE_AFTER_BASE,
-                remainderRate: this.REMAINDER_RATE,
-                commissionRate: this.COMMISSION_PER_KM_ADDITIONAL,
-                baseRate: this.BASE_RATE_FIRST_2KM,
-                baseCommission: this.BASE_COMMISSION,
-                calculationMethod: 'tiered_with_base_rate',
-                exactDistance: parseFloat(exactDistanceKm.toFixed(2)),
-                pricingVersion: 3, // New base rate version
-                priceBreakdown: `₹${basePrice} (base) + ₹${additionalPrice} (${fullKmRemaining}km) + ₹${remainderCharge} (remainder)`,
-                commissionBreakdown: `₹${baseCommission.toFixed(2)} (base) + ₹${Math.round(additionalCommission * 100) / 100} (${fullKmRemaining}km) + ₹${Math.round(roundedKmExtra * this.COMMISSION_PER_KM_ADDITIONAL * 100) / 100} (rounded)`,
-                details: {
-                    basePrice: this.BASE_RATE_FIRST_2KM,
-                    baseCommission: this.BASE_COMMISSION,
-                    remainingDistance: parseFloat(remainingDistance.toFixed(2)),
-                    fullKmRemaining: fullKmRemaining,
-                    remainderKmRemaining: parseFloat(remainderKmRemaining.toFixed(2)),
-                    additionalPrice: additionalPrice,
-                    additionalCommission: Math.round(additionalCommission * 100) / 100,
-                    roundedKmExtra: roundedKmExtra
-                }
+                pricingVersion: 2, // v2 = new three-tier system
+                commissionVersion: 2, // v2 = new floor + smart remainder
+                distance: parseFloat(exactDistanceKm.toFixed(2)),
+                pricingTier: exactDistanceKm <= this.TIER_1_DISTANCE ? 'tier1' : (exactDistanceKm <= this.TIER_2_DISTANCE ? 'tier2' : 'tier3+'),
+                pricingBreakdown: pricingBreakdown.join(' + '),
+                priceCalculation: `Total: ₹${Math.round(totalFare * 100) / 100}`,
+                
+                commissionDistance: commissionDistance,
+                commissionFloor: Math.floor(exactDistanceKm),
+                commissionRemainder: parseFloat(remainder.toFixed(2)),
+                commissionRemainderHandling: remainder >= this.COMMISSION_THRESHOLD ? 'rounded_up' : 'dropped',
+                commissionCalculation: `${commissionDistance}km × ₹${this.COMMISSION_RATE_PER_KM} = ₹${totalCommission}`,
+                
+                totalFare: Math.round(totalFare * 100) / 100,
+                totalCommission: totalCommission,
+                driverEarnings: Math.round((totalFare - totalCommission) * 100) / 100
             }
         };
     }

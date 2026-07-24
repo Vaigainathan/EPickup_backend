@@ -5381,34 +5381,52 @@ router.post('/bookings/:id/accept', idempotencyKeyMiddleware, requireDriver, asy
       // Don't fail the request if WebSocket fails
     }
 
-    // ✅ FIXED: Release booking lock on success
-    await bookingLockService.releaseBookingLock(id, uid);
-
-    // ✅ CRITICAL FIX: Emit 'booking_taken' event to ALL drivers
-    // This tells other drivers to remove this booking from their available list
+    // ✅ CRITICAL FIX: Emit 'booking_taken' event to ALL drivers BEFORE releasing lock
+    // This ensures maximum reliability and speed of event delivery
     try {
       const { getSocketIO } = require('../services/socket');
       const io = getSocketIO();
       
       if (io) {
-        // Broadcast to all online drivers so they can remove the booking instantly
-        io.to('type:driver').emit('booking_taken', {
+        const eventPayload = {
           bookingId: id,
           acceptedBy: uid,
+          driverId: uid,
+          takenBy: uid,
           action: 'remove_from_available',
           reason: 'Driver accepted this booking',
-          timestamp: Date.now()
-        });
+          timestamp: Date.now(),
+          driverName: driverData.name
+        };
 
-        console.log(`📢 [ACCEPT_BOOKING] Broadcast 'booking_taken' event for booking ${id} to type:driver room`);
+        // 🎯 PRIMARY: Broadcast to all online drivers so they can remove the booking instantly
+        io.to('type:driver').emit('booking_taken', eventPayload);
+        console.log(`📢 [ACCEPT_BOOKING] Primary: Broadcast 'booking_taken' to type:driver room for booking ${id}`);
+
+        // 🎯 SECONDARY: Also emit to specific booking room (for admin/customer listeners)
+        io.to(`booking:${id}`).emit('booking_taken', eventPayload);
+        console.log(`📢 [ACCEPT_BOOKING] Secondary: Broadcast 'booking_taken' to booking:${id} room`);
+
+        // 🎯 TERTIARY: Emit to customer room so they see real-time update
+        if (updatedBookingData.customerId) {
+          io.to(`user:${updatedBookingData.customerId}`).emit('booking_taken', eventPayload);
+          console.log(`📢 [ACCEPT_BOOKING] Tertiary: Broadcast 'booking_taken' to customer user:${updatedBookingData.customerId}`);
+        }
+      } else {
+        console.warn('⚠️ [ACCEPT_BOOKING] Socket.IO not available, broadcast skipped');
       }
     } catch (broadcastError) {
-      console.error('⚠️ [ACCEPT_BOOKING] Failed to broadcast booking_taken event:', broadcastError);
-      // Don't fail the request if broadcast fails
+      console.error('❌ [ACCEPT_BOOKING] Error broadcasting booking_taken event:', broadcastError);
+      // Don't fail the request if broadcast fails - at least booking is accepted
     }
+
+    // ✅ FIXED: Release booking lock on success
+    // Released AFTER broadcast to ensure other drivers can't race ahead
+    await bookingLockService.releaseBookingLock(id, uid);
 
     // ✅ CRITICAL FIX: Also send a push stop signal to drivers who were notified.
     // WebSocket-only stop misses drivers whose socket is disconnected.
+    // This provides a fallback notification mechanism.
     try {
       const notifiedDrivers = Array.isArray(updatedBookingData?.notifiedDrivers)
         ? [...new Set(updatedBookingData.notifiedDrivers)]
@@ -5419,16 +5437,22 @@ router.post('/bookings/:id/accept', idempotencyKeyMiddleware, requireDriver, asy
         const stopTokens = [];
 
         for (const driverId of notifiedDrivers) {
+          // Skip the driver who just accepted the booking
+          if (driverId === uid) {
+            console.log(`ℹ️ [ACCEPT_BOOKING] Skipping stop signal for accepting driver ${driverId}`);
+            continue;
+          }
+
           const notifiedDriverDoc = await db.collection('users').doc(driverId).get();
           if (!notifiedDriverDoc.exists) {
-            console.warn(`⚠️ [ACCEPT_BOOKING] Notified driver ${driverId} not found while sending booking_taken push`);
+            console.warn(`⚠️ [ACCEPT_BOOKING] Notified driver ${driverId} not found`);
             continue;
           }
 
           const notifiedDriverData = notifiedDriverDoc.data();
           const pushToken = notifiedDriverData.expoPushToken || notifiedDriverData.fcmToken;
           if (!pushToken) {
-            console.warn(`⚠️ [ACCEPT_BOOKING] Notified driver ${driverId} has no push token for booking_taken stop signal`);
+            console.warn(`⚠️ [ACCEPT_BOOKING] Driver ${driverId} has no push token (no fallback mechanism)`);
             continue;
           }
 
@@ -5443,7 +5467,8 @@ router.post('/bookings/:id/accept', idempotencyKeyMiddleware, requireDriver, asy
               type: 'booking_taken',
               bookingId: id,
               action: 'stop_ringtone',
-              acceptedBy: uid
+              acceptedBy: uid,
+              driverId: uid
             }
           };
 
@@ -5452,14 +5477,16 @@ router.post('/bookings/:id/accept', idempotencyKeyMiddleware, requireDriver, asy
             dataOnly: true
           });
 
-          console.log(`📢 [ACCEPT_BOOKING] booking_taken push stop sent to ${stopTokens.length} notified driver(s): ${stopResult.successCount} success, ${stopResult.failureCount} failed`);
+          console.log(`📢 [ACCEPT_BOOKING] Stop signal sent to ${stopTokens.length} drivers: ${stopResult.successCount} success, ${stopResult.failureCount} failed`);
+        } else {
+          console.log(`ℹ️ [ACCEPT_BOOKING] No valid push tokens for ${notifiedDrivers.length} notified drivers`);
         }
       } else {
-        console.log(`ℹ️ [ACCEPT_BOOKING] No notifiedDrivers recorded for booking ${id}; skipping booking_taken push stop`);
+        console.log(`ℹ️ [ACCEPT_BOOKING] No notified drivers for booking ${id}`);
       }
     } catch (stopPushError) {
-      console.error('⚠️ [ACCEPT_BOOKING] Failed to send booking_taken push stop signal:', stopPushError);
-      // Don't fail the accept request if stop push fails.
+      console.error('⚠️ [ACCEPT_BOOKING] Push stop signal error:', stopPushError?.message);
+      // Don't fail the accept request if stop push fails
     }
 
     res.status(200).json({

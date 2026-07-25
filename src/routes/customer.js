@@ -746,20 +746,20 @@ router.post('/bookings', authenticateToken, async (req, res) => {
       fare: {
         baseFare: fareDetails.baseFare,
         distanceFare: fareDetails.baseFare, // Simple fare: distance charge only, no minimum fare
-        totalFare: fareDetails.baseFare,
+        totalFare: fareDetails.totalFare,
         currency: 'INR',
         commission: fareDetails.commission,
-        driverNet: fareDetails.driverNet,
-        companyRevenue: fareDetails.companyRevenue
+        driverNet: fareDetails.driverEarnings,
+        companyRevenue: fareDetails.commission
       },
       pricing: {
         baseFare: fareDetails.baseFare,
         distanceFare: fareDetails.baseFare, // Simple fare: distance charge only, no minimum fare
-        totalFare: fareDetails.baseFare,
+        totalFare: fareDetails.totalFare,
         currency: 'INR',
         commission: fareDetails.commission,
-        driverNet: fareDetails.driverNet,
-        companyRevenue: fareDetails.companyRevenue
+        driverNet: fareDetails.driverEarnings,
+        companyRevenue: fareDetails.commission
       },
       distance: distance,
       exactDistance: fareDetails.exactDistanceKm,

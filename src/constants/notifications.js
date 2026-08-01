@@ -6,10 +6,10 @@
 
 /**
  * Android notification channel ID for new order notifications
- * ✅ VERSIONED: Bumped to v4 to force fresh channel creation on all installs
+ * ✅ VERSIONED: Bumped to v5 to force fresh channel creation on all installs
  * Must match the value in driver-app/constants/notifications.ts
  */
-const NEW_ORDER_CHANNEL_ID = 'new_order_v4';
+const NEW_ORDER_CHANNEL_ID = 'new_order_v5';
 
 /**
  * Channel name (displayed to user in Android settings)

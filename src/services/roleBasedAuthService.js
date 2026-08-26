@@ -74,12 +74,12 @@ class RoleBasedAuthService {
    */
   generateRoleSpecificUID(phoneNumber, userType) {
     const normalizedType = (userType || '').toString().trim().toLowerCase();
-    const allowed = new Set(['customer', 'driver', 'admin']);
+    const allowed = new Set(['customer', 'driver', 'admin', 'shop']);
     
     // ✅ CRITICAL FIX: Never default to customer - validate userType
     if (!normalizedType || !allowed.has(normalizedType)) {
       console.error('❌ [ROLE_BASED_AUTH] Invalid or missing userType for UID generation:', userType);
-      throw new Error(`Invalid userType: ${userType}. Must be one of: customer, driver, admin`);
+      throw new Error(`Invalid userType: ${userType}. Must be one of: customer, driver, admin, shop`);
     }
     
     const safeType = normalizedType; // Now guaranteed to be valid
@@ -107,19 +107,23 @@ class RoleBasedAuthService {
     try {
       const phoneNumber = decodedToken.phone_number;
       const normalizedType = (userType || '').toString().trim().toLowerCase();
-      const allowed = new Set(['customer', 'driver', 'admin']);
+      const allowed = new Set(['customer', 'driver', 'admin', 'shop']);
       
       // ✅ CRITICAL FIX: Never default to customer without validation
       // This ensures driver users don't accidentally get customer role
       if (!normalizedType || !allowed.has(normalizedType)) {
         console.error('❌ [ROLE_BASED_AUTH] Invalid or missing userType:', userType);
-        throw new Error(`Invalid userType: ${userType}. Must be one of: customer, driver, admin`);
+        throw new Error(`Invalid userType: ${userType}. Must be one of: customer, driver, admin, shop`);
       }
       
       const safeType = normalizedType; // Now guaranteed to be valid
       const roleSpecificUID = this.generateRoleSpecificUID(phoneNumber, safeType);
       
       console.log(`🔑 Generated role-specific UID for ${safeType}: ${roleSpecificUID}`);
+
+      if (safeType === 'shop') {
+        return await this.getOrCreateShopUserAtomically(decodedToken, roleSpecificUID, additionalData);
+      }
       
       // Check if user with this role-specific UID exists
       const userDoc = await this.db.collection('users').doc(roleSpecificUID).get();
@@ -194,6 +198,161 @@ class RoleBasedAuthService {
   }
 
   /**
+   * Get or create a shop user under a Firestore transaction so concurrent
+   * signups for the same phone cannot both observe a missing doc and overwrite.
+   */
+  async getOrCreateShopUserAtomically(decodedToken, roleSpecificUID, additionalData = {}) {
+    const userRef = this.db.collection('users').doc(roleSpecificUID);
+
+    const result = await this.db.runTransaction(async (transaction) => {
+      const userDoc = await transaction.get(userRef);
+
+      if (userDoc.exists) {
+        const userData = userDoc.data() || {};
+        return {
+          created: false,
+          userData: {
+            ...userData,
+            id: roleSpecificUID,
+            uid: roleSpecificUID,
+            phone: userData.phone || decodedToken.phone_number || null,
+            userType: userData.userType || 'shop'
+          }
+        };
+      }
+
+      const userData = this.buildRoleSpecificUserData(decodedToken, 'shop', roleSpecificUID, additionalData);
+      transaction.set(userRef, userData);
+      return { created: true, userData };
+    });
+
+    if (!result.created) {
+      const userData = result.userData;
+      const needsSync = (!userData.phone && decodedToken.phone_number) ||
+                        !userData.userType ||
+                        !userData.createdAt;
+      if (needsSync) {
+        try {
+          const admin = require('firebase-admin');
+          const updateData = { updatedAt: admin.firestore.FieldValue.serverTimestamp() };
+          if (!userData.phone && decodedToken.phone_number) {
+            updateData.phone = decodedToken.phone_number;
+            userData.phone = decodedToken.phone_number;
+          }
+          if (!userData.userType) {
+            updateData.userType = 'shop';
+            userData.userType = 'shop';
+          }
+          if (!userData.createdAt) {
+            updateData.createdAt = admin.firestore.FieldValue.serverTimestamp();
+          }
+          await userRef.update(updateData);
+        } catch (syncError) {
+          console.warn('⚠️ [ROLE_BASED_AUTH] Failed to sync existing shop user:', syncError.message);
+        }
+      }
+    } else {
+      console.log(`✅ Created shop user with role-specific UID: ${roleSpecificUID}`);
+    }
+
+    return result.userData;
+  }
+
+  /**
+   * Build users/{uid} payload for a role-specific account (no write).
+   */
+  buildRoleSpecificUserData(decodedToken, userType, roleSpecificUID, additionalData = {}) {
+    const phone = decodedToken.phone_number || null;
+    const admin = require('firebase-admin');
+    const now = admin.firestore.FieldValue.serverTimestamp();
+
+    const baseUserData = {
+      id: roleSpecificUID,
+      uid: roleSpecificUID,
+      originalFirebaseUID: decodedToken.uid,
+      email: decodedToken.email || null,
+      phone: phone,
+      name: decodedToken.name || additionalData.name || null,
+      photoURL: decodedToken.picture || null,
+      userType: userType,
+      isVerified: true,
+      isActive: true,
+      accountStatus: 'active',
+      createdAt: now,
+      updatedAt: now,
+      ...additionalData
+    };
+
+    baseUserData.phone = phone;
+    baseUserData.userType = userType;
+
+    if (userType === 'driver') {
+      baseUserData.driver = {
+        vehicleDetails: {
+          vehicleType: 'motorcycle',
+          vehicleModel: '',
+          vehicleNumber: ''
+        },
+        verificationStatus: 'pending',
+        isOnline: false,
+        isAvailable: false,
+        rating: 0,
+        totalTrips: 0,
+        earnings: {
+          total: 0,
+          thisMonth: 0,
+          thisWeek: 0
+        },
+        wallet: {
+          balance: 0,
+          currency: 'INR',
+          lastUpdated: new Date().toISOString(),
+          transactions: []
+        },
+        currentLocation: null,
+        welcomeBonusGiven: false,
+        welcomeBonusAmount: 0,
+        welcomeBonusGivenAt: null,
+        documents: {},
+        verificationRequests: []
+      };
+    } else if (userType === 'customer') {
+      baseUserData.customer = {
+        totalBookings: 0,
+        totalSpent: 0,
+        preferences: {
+          vehicleType: 'motorcycle',
+          notifications: true
+        },
+        wallet: {
+          balance: 0,
+          currency: 'INR',
+          lastUpdated: new Date().toISOString(),
+          transactions: []
+        }
+      };
+    } else if (userType === 'admin') {
+      baseUserData.role = additionalData.role || 'super_admin';
+      baseUserData.permissions = additionalData.permissions || ['all'];
+      baseUserData.isEmailVerified = true;
+      baseUserData.isActive = true;
+      baseUserData.accountStatus = 'active';
+    } else if (userType === 'shop') {
+      baseUserData.hasPassword = false;
+      baseUserData.passwordSetAt = null;
+      baseUserData.shop = {
+        shopName: '',
+        shopType: '',
+        approvalStatus: 'pending',
+        rejectionReason: null,
+        isOpen: false
+      };
+    }
+
+    return baseUserData;
+  }
+
+  /**
    * Create user with role-specific UID
    * @param {Object} decodedToken - Firebase decoded token
    * @param {string} userType - User type (customer, driver, admin)
@@ -203,94 +362,13 @@ class RoleBasedAuthService {
    */
   async createRoleSpecificUser(decodedToken, userType, roleSpecificUID, additionalData = {}) {
     try {
-      // ✅ CRITICAL FIX: Ensure phone is always set (use phone_number from token)
-      // If phone_number is missing from token, log warning but continue
       const phone = decodedToken.phone_number || null;
       if (!phone) {
         console.warn(`⚠️ [ROLE_BASED_AUTH] Creating user without phone number: ${roleSpecificUID}`);
       }
-      
-      // ✅ CRITICAL FIX: Use Firestore Timestamp for createdAt/updatedAt for proper query ordering
-      const admin = require('firebase-admin');
-      const now = admin.firestore.FieldValue.serverTimestamp();
-      
-      const baseUserData = {
-        id: roleSpecificUID,
-        uid: roleSpecificUID,
-        originalFirebaseUID: decodedToken.uid, // Keep original Firebase UID for reference
-        email: decodedToken.email || null,
-        phone: phone, // ✅ Always set phone (can be null, but never undefined)
-        name: decodedToken.name || additionalData.name || null,
-        photoURL: decodedToken.picture || null,
-        userType: userType, // ✅ Always set userType
-        isVerified: true,
-        isActive: true,
-        accountStatus: 'active',
-        createdAt: now, // ✅ Use Firestore serverTimestamp for proper ordering
-        updatedAt: now, // ✅ Use Firestore serverTimestamp for proper ordering
-        ...additionalData
-      };
-      
-      // ✅ CRITICAL FIX: Ensure additionalData doesn't override critical fields
-      // Force phone and userType to be set even if additionalData tries to override
-      baseUserData.phone = phone;
-      baseUserData.userType = userType;
 
-      // Add role-specific fields
-      if (userType === 'driver') {
-        baseUserData.driver = {
-          vehicleDetails: {
-            vehicleType: 'motorcycle', // ✅ Use vehicleType (matches profile endpoint)
-            vehicleModel: '',          // ✅ Use vehicleModel (matches profile endpoint)
-            vehicleNumber: ''          // ✅ Use vehicleNumber (matches profile endpoint)
-          },
-          verificationStatus: 'pending',
-          isOnline: false,
-          isAvailable: false,
-          rating: 0,
-          totalTrips: 0,
-          earnings: {
-            total: 0,
-            thisMonth: 0,
-            thisWeek: 0
-          },
-          wallet: {
-            balance: 0,
-            currency: 'INR',
-            lastUpdated: new Date().toISOString(),
-            transactions: []
-          },
-          currentLocation: null,
-          welcomeBonusGiven: false,
-          welcomeBonusAmount: 0,
-          welcomeBonusGivenAt: null,
-          documents: {},
-          verificationRequests: []
-        };
-      } else if (userType === 'customer') {
-        baseUserData.customer = {
-          totalBookings: 0,
-          totalSpent: 0,
-          preferences: {
-            vehicleType: 'motorcycle',
-            notifications: true
-          },
-          wallet: {
-            balance: 0,
-            currency: 'INR',
-            lastUpdated: new Date().toISOString(),
-            transactions: []
-          }
-        };
-      } else if (userType === 'admin') {
-        baseUserData.role = additionalData.role || 'super_admin';
-        baseUserData.permissions = additionalData.permissions || ['all'];
-        baseUserData.isEmailVerified = true;
-        baseUserData.isActive = true;
-        baseUserData.accountStatus = 'active';
-      }
+      const baseUserData = this.buildRoleSpecificUserData(decodedToken, userType, roleSpecificUID, additionalData);
 
-      // Create user document
       await this.db.collection('users').doc(roleSpecificUID).set(baseUserData);
       
       // Note: Custom claims will be set by the calling code in auth.js

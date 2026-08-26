@@ -146,6 +146,7 @@ const adminSignupRoutes = require('./routes/adminSignup');
 // const adminBookingManagementRoutes = require('./routes/adminBookingManagement'); // Included in adminRoutes
 const locationTrackingRoutes = require('./routes/locationTracking');
 const revenueRoutes = require('./routes/revenue');
+const shopAuthRoutes = require('./routes/shopAuth');
 console.log('✅ All routes imported successfully');
 
 // Import middleware after Firebase initialization
@@ -449,6 +450,7 @@ app.get('/metrics', (req, res) => {
 // General authLimiter was causing 429 errors for legitimate customer logins (only 5 requests/15min in production)
 app.use('/api/auth', authRoutes); // Removed authLimiter - routes have their own user-isolated limiters
 app.use('/api/auth', refreshTokenRoutes); // Add refresh token route
+app.use('/api/shop/auth', shopAuthRoutes);
 app.use('/api/user', appCheckMiddleware.optionalMiddleware(), userRoutes); // User profile routes (includes profile picture upload)
 
 // =============================================================================

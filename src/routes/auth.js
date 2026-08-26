@@ -75,7 +75,8 @@ router.post('/check-phone', async (req, res) => {
               return u.userType === userType || 
                      u.role === userType || 
                      (userType === 'driver' && u.driver) ||
-                     (userType === 'customer' && !u.driver && u.role !== 'admin');
+                     (userType === 'customer' && !u.driver && u.role !== 'admin' && !u.shop) ||
+                     (userType === 'shop' && u.shop);
             });
             
             if (matchingUser) {
@@ -367,7 +368,7 @@ router.post('/firebase/verify-token', firebaseTokenVerifyLimiter, createProgress
     
     // Normalize and validate userType from body
     const normalizedType = (userType || '').toString().trim().toLowerCase();
-    const allowedTypes = new Set(['customer', 'driver', 'admin']);
+    const allowedTypes = new Set(['customer', 'driver', 'admin', 'shop']);
     
     let finalUserType = undefined;
     
@@ -523,7 +524,7 @@ router.post('/firebase/verify-token', firebaseTokenVerifyLimiter, createProgress
 
     // Set Firebase custom claims with role-based UID
     try {
-      const appTypeMap = { customer: 'customer_app', driver: 'driver_app', admin: 'admin_dashboard' };
+      const appTypeMap = { customer: 'customer_app', driver: 'driver_app', admin: 'admin_dashboard', shop: 'shop_app' };
       await firebaseAuthService.setCustomClaims(decodedToken.uid, {
         roleBasedUID: roleBasedUID,
         userType: finalUserType,

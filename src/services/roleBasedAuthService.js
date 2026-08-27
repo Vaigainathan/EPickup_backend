@@ -340,13 +340,14 @@ class RoleBasedAuthService {
     } else if (userType === 'shop') {
       baseUserData.hasPassword = false;
       baseUserData.passwordSetAt = null;
-      baseUserData.shop = {
-        shopName: '',
-        shopType: '',
-        approvalStatus: 'pending',
-        rejectionReason: null,
-        isOpen: false
-      };
+        baseUserData.shop = {
+          shopName: '',
+          shopType: '',
+          approvalStatus: 'pending',
+          rejectionReason: null,
+          isOpen: false,
+          submitted: false
+        };
     }
 
     return baseUserData;

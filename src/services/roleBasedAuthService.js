@@ -345,6 +345,7 @@ class RoleBasedAuthService {
           shopType: '',
           approvalStatus: 'pending',
           rejectionReason: null,
+          rejectedSection: null,
           isOpen: false,
           submitted: false
         };

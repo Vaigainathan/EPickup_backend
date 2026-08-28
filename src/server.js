@@ -148,6 +148,8 @@ const locationTrackingRoutes = require('./routes/locationTracking');
 const revenueRoutes = require('./routes/revenue');
 const shopAuthRoutes = require('./routes/shopAuth');
 const shopOnboardingRoutes = require('./routes/shopOnboarding');
+const shopCategoriesRoutes = require('./routes/shopCategories');
+const shopProductsRoutes = require('./routes/shopProducts');
 console.log('✅ All routes imported successfully');
 
 // Import middleware after Firebase initialization
@@ -453,6 +455,8 @@ app.use('/api/auth', authRoutes); // Removed authLimiter - routes have their own
 app.use('/api/auth', refreshTokenRoutes); // Add refresh token route
 app.use('/api/shop/auth', shopAuthRoutes);
 app.use('/api/shop/onboarding', shopOnboardingRoutes);
+app.use('/api/shop/categories', shopCategoriesRoutes);
+app.use('/api/shop/products', shopProductsRoutes);
 app.use('/api/user', appCheckMiddleware.optionalMiddleware(), userRoutes); // User profile routes (includes profile picture upload)
 
 // =============================================================================

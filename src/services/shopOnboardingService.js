@@ -5,6 +5,7 @@ const { encryptAccountNumber } = require('../utils/shopBankEncryption');
 const UPI_VPA_REGEX = /^[a-zA-Z0-9._-]{2,256}@[a-zA-Z]{2,64}$/;
 const IFSC_REGEX = /^[A-Z]{4}0[A-Z0-9]{6}$/;
 const MAX_DOC_BYTES = 5 * 1024 * 1024;
+const REJECTED_SECTIONS = new Set(['business-details', 'documents', 'bank-details']);
 
 function isAllowedDocumentType(contentType, originalName = '') {
   const mime = (contentType || '').toLowerCase();
@@ -96,6 +97,10 @@ function digitsOnly(value) {
   return typeof value === 'string' ? value.replace(/\D/g, '') : '';
 }
 
+function normalizeRejectedSection(value) {
+  return REJECTED_SECTIONS.has(value) ? value : null;
+}
+
 class ShopOnboardingService {
   getDb() {
     return getFirestore();
@@ -149,6 +154,9 @@ class ShopOnboardingService {
     const ctx = await this.loadShopContext(userId);
     const approvalStatus = ctx.shop.approvalStatus || 'pending';
     const rejectionReason = ctx.shop.rejectionReason ?? null;
+    const rejectedSection = normalizeRejectedSection(
+      ctx.shop.rejectedSection ?? ctx.shopProfile.rejectedSection
+    );
     const submitted = ctx.shop.submitted === true || ctx.shopProfile.submitted === true;
 
     if (ctx.shop.submitted === undefined) {
@@ -158,6 +166,7 @@ class ShopOnboardingService {
     return await this.formatStatus(ctx.shop, ctx.shopProfile, {
       approvalStatus,
       rejectionReason,
+      rejectedSection,
       submitted
     });
   }
@@ -195,6 +204,7 @@ class ShopOnboardingService {
     return {
       approvalStatus: extras.approvalStatus,
       rejectionReason: extras.rejectionReason,
+      rejectedSection: extras.rejectedSection,
       submitted: extras.submitted,
       steps: inferSteps(shop, shopProfile),
       documents: {
@@ -504,10 +514,12 @@ class ShopOnboardingService {
         'shop.submitted': true,
         'shop.approvalStatus': 'pending',
         'shop.rejectionReason': null,
+        'shop.rejectedSection': null,
         updatedAt: now
       }),
       ctx.shopRef.set({
         submitted: true,
+        rejectedSection: null,
         updatedAt: now,
         ...(ctx.shopExists ? {} : { createdAt: now })
       }, { merge: true })

@@ -104,13 +104,14 @@ function presentUnitType(value) {
   return PRODUCT_UNIT_TYPE_BY_KEY.get(String(value).trim().toLowerCase()) || DEFAULT_UNIT_TYPE;
 }
 
-function normalizeVariants(raw, hasVariants) {
+function normalizeVariants(raw, hasVariants, productUnitType) {
   if (!hasVariants) {
     return [];
   }
   if (!Array.isArray(raw)) {
     return [];
   }
+  const fallbackUnitType = parseUnitType(productUnitType, DEFAULT_UNIT_TYPE);
   return raw.map((item) => {
     const row = item && typeof item === 'object' ? item : {};
     return {
@@ -120,7 +121,8 @@ function normalizeVariants(raw, hasVariants) {
       stock: toInt(row.stock, 0),
       priceOverride: row.priceOverride === null || row.priceOverride === undefined || row.priceOverride === ''
         ? null
-        : toNumber(row.priceOverride, null)
+        : toNumber(row.priceOverride, null),
+      unitType: parseUnitType(row.unitType, fallbackUnitType)
     };
   }).filter((row) => row.attributeLabel && row.value);
 }
@@ -256,6 +258,23 @@ class ShopCatalogueService {
     };
   }
 
+  async updateCategory(shopId, categoryId, payload) {
+    const owned = await this.getOwnedCategory(shopId, categoryId);
+    const name = typeof payload.name === 'string' ? payload.name.trim() : '';
+    if (!name) {
+      throw httpError(400, 'INVALID_CATEGORY', 'Category name is required');
+    }
+
+    await this.getDb().collection('categories').doc(categoryId).update({ name });
+
+    return {
+      id: categoryId,
+      shopId,
+      name,
+      createdAt: owned.createdAt || null
+    };
+  }
+
   async deleteCategory(shopId, categoryId) {
     await this.getOwnedCategory(shopId, categoryId);
 
@@ -348,9 +367,12 @@ class ShopCatalogueService {
     }
 
     const hasVariants = toBool(payload.hasVariants, existing.hasVariants === true);
+    const unitType = payload.unitType !== undefined
+      ? parseUnitType(payload.unitType, null)
+      : parseUnitType(existing.unitType, DEFAULT_UNIT_TYPE);
     const variants = payload.variants !== undefined
-      ? normalizeVariants(payload.variants, hasVariants)
-      : normalizeVariants(existing.variants, hasVariants);
+      ? normalizeVariants(payload.variants, hasVariants, unitType)
+      : normalizeVariants(existing.variants, hasVariants, unitType);
 
     return {
       shopId,
@@ -360,9 +382,7 @@ class ShopCatalogueService {
         ? (isFilled(payload.description) ? String(payload.description).trim() : null)
         : (existing.description ?? null),
       price,
-      unitType: payload.unitType !== undefined
-        ? parseUnitType(payload.unitType, null)
-        : parseUnitType(existing.unitType, DEFAULT_UNIT_TYPE),
+      unitType,
       taxClass: payload.taxClass !== undefined
         ? (isFilled(payload.taxClass) ? String(payload.taxClass).trim() : null)
         : (existing.taxClass ?? null),
@@ -452,7 +472,11 @@ class ShopCatalogueService {
         variants[idx] = { ...variants[idx], stock: toInt(payload.stock, 0) };
         updates.variants = variants;
       } else if (Array.isArray(payload.variants)) {
-        updates.variants = normalizeVariants(payload.variants, true);
+        updates.variants = normalizeVariants(
+          payload.variants,
+          true,
+          parseUnitType(data.unitType, DEFAULT_UNIT_TYPE)
+        );
       } else {
         throw httpError(400, 'INVALID_STOCK', 'Provide variantId and stock, or variants[]');
       }

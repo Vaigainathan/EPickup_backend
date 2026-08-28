@@ -41,6 +41,13 @@ router.post('/', authMiddleware, requireRole(['shop']), async (req, res) => {
   });
 });
 
+router.put('/:id', authMiddleware, requireRole(['shop']), async (req, res) => {
+  return withShop(req, res, async (shopId) => {
+    const category = await shopCatalogueService.updateCategory(shopId, req.params.id, req.body || {});
+    return res.json({ success: true, data: { category }, message: 'Category updated' });
+  });
+});
+
 router.delete('/:id', authMiddleware, requireRole(['shop']), async (req, res) => {
   return withShop(req, res, async (shopId) => {
     const result = await shopCatalogueService.deleteCategory(shopId, req.params.id);

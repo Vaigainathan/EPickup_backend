@@ -4,6 +4,7 @@ const router = express.Router();
 
 const { authMiddleware, requireRole } = require('../middleware/auth');
 const shopOnboardingService = require('../services/shopOnboardingService');
+const shopPlacesRoutes = require('./shopPlaces');
 
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -85,6 +86,8 @@ async function withShopUser(req, res, handler) {
     return sendError(res, error);
   }
 }
+
+router.use(shopPlacesRoutes);
 
 /**
  * GET /api/shop/onboarding/status

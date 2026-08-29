@@ -223,8 +223,8 @@ class ShopOnboardingService {
     const shopName = typeof payload.shopName === 'string' ? payload.shopName.trim() : '';
     const shopType = typeof payload.shopType === 'string' ? payload.shopType.trim() : '';
     const address = typeof payload.address === 'string' ? payload.address.trim() : '';
-    const lat = Number(payload.latitude ?? payload.lat ?? payload.location?.latitude);
-    const lng = Number(payload.longitude ?? payload.lng ?? payload.location?.longitude);
+    const lat = Number(payload.latitude ?? payload.lat ?? payload.location?.latitude ?? payload.location?.lat);
+    const lng = Number(payload.longitude ?? payload.lng ?? payload.location?.longitude ?? payload.location?.lng);
 
     if (!shopName || !shopType || !address || !Number.isFinite(lat) || !Number.isFinite(lng)) {
       const error = new Error('shopName, shopType, address, and map pin (latitude, longitude) are required');

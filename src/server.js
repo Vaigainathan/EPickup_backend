@@ -150,6 +150,7 @@ const shopAuthRoutes = require('./routes/shopAuth');
 const shopOnboardingRoutes = require('./routes/shopOnboarding');
 const shopCategoriesRoutes = require('./routes/shopCategories');
 const shopProductsRoutes = require('./routes/shopProducts');
+const shopRoutes = require('./routes/shop');
 console.log('✅ All routes imported successfully');
 
 // Import middleware after Firebase initialization
@@ -457,6 +458,7 @@ app.use('/api/shop/auth', shopAuthRoutes);
 app.use('/api/shop/onboarding', shopOnboardingRoutes);
 app.use('/api/shop/categories', shopCategoriesRoutes);
 app.use('/api/shop/products', shopProductsRoutes);
+app.use('/api/shop', shopRoutes);
 app.use('/api/user', appCheckMiddleware.optionalMiddleware(), userRoutes); // User profile routes (includes profile picture upload)
 
 // =============================================================================

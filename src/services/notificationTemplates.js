@@ -118,6 +118,19 @@ const NOTIFICATION_TEMPLATES = {
     }
   },
 
+  SHOP: {
+    BANK_DETAILS_UPDATED: {
+      title: 'Bank details updated',
+      body: 'Your bank details were updated',
+      data: { type: 'bank_details_updated', action: 'view_settings' }
+    },
+    PASSWORD_CHANGED: {
+      title: 'Password changed',
+      body: 'Your password was changed',
+      data: { type: 'password_changed', action: 'view_settings' }
+    }
+  },
+
   // Admin Notifications
   ADMIN: {
     EMERGENCY_ALERT: {

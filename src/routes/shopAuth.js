@@ -92,7 +92,7 @@ router.post('/set-password', authMiddleware, requireRole(['shop']), async (req, 
         success: false,
         error: {
           code: 'USER_INACTIVE',
-          message: 'Account deactivated'
+          message: 'Your account is deactivated, contact support to reactivate'
         }
       });
     }
@@ -159,7 +159,7 @@ router.post('/login', authLimiter, async (req, res) => {
         success: false,
         error: {
           code: 'USER_INACTIVE',
-          message: 'Account deactivated'
+          message: 'Your account is deactivated, contact support to reactivate'
         }
       });
     }

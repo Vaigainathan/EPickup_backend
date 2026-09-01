@@ -216,10 +216,7 @@ class ShopOnboardingService {
     };
   }
 
-  async saveBusinessDetails(userId, payload) {
-    const ctx = await this.loadShopContext(userId);
-    this.assertEditable(ctx.shop);
-
+  async applyBusinessDetails(ctx, payload) {
     const shopName = typeof payload.shopName === 'string' ? payload.shopName.trim() : '';
     const shopType = typeof payload.shopType === 'string' ? payload.shopType.trim() : '';
     const address = typeof payload.address === 'string' ? payload.address.trim() : '';
@@ -260,7 +257,14 @@ class ShopOnboardingService {
       }),
       ctx.shopRef.set(shopWrite, { merge: true })
     ]);
+  }
 
+  async saveBusinessDetails(userId, payload, options = {}) {
+    const ctx = await this.loadShopContext(userId);
+    if (options.requireEditable !== false) {
+      this.assertEditable(ctx.shop);
+    }
+    await this.applyBusinessDetails(ctx, payload);
     return this.getStatus(userId);
   }
 
@@ -386,10 +390,64 @@ class ShopOnboardingService {
     return this.getStatus(userId);
   }
 
-  async verifyUpi(userId, upiId) {
-    const ctx = await this.loadShopContext(userId);
-    this.assertEditable(ctx.shop);
+  async reuploadDocument(userId, type, file, payload = {}) {
+    if (type !== 'gst' && type !== 'fssai') {
+      const error = new Error('type must be gst or fssai');
+      error.status = 400;
+      error.code = 'INVALID_DOCUMENT_TYPE';
+      throw error;
+    }
 
+    const ctx = await this.loadShopContext(userId);
+    if (!file) {
+      const error = new Error('Upload a document file');
+      error.status = 400;
+      error.code = 'MISSING_FILE';
+      throw error;
+    }
+
+    const uploaded = await this.uploadDocumentFile(userId, type, file);
+    const existing = ctx.shopProfile.documents || {};
+    const now = this.now();
+    const documents = { ...existing };
+
+    if (type === 'gst') {
+      documents.gstFilePath = uploaded.filePath;
+      documents.gstUrl = uploaded.filePath;
+      documents.gstStatus = 'action_required';
+    } else {
+      documents.fssaiFilePath = uploaded.filePath;
+      documents.fssaiUrl = uploaded.filePath;
+      documents.fssaiStatus = 'action_required';
+      if (payload.fssaiExpiryDate) {
+        const parsed = new Date(payload.fssaiExpiryDate);
+        if (Number.isNaN(parsed.getTime())) {
+          const error = new Error('Invalid FSSAI expiry date');
+          error.status = 400;
+          error.code = 'INVALID_FSSAI_EXPIRY';
+          throw error;
+        }
+        documents.fssaiExpiryDate = parsed;
+      }
+    }
+
+    await ctx.shopRef.set({
+      documents,
+      updatedAt: now,
+      ...(ctx.shopExists ? {} : { createdAt: now })
+    }, { merge: true });
+
+    const gstUrl = await this.resolveDocumentUrl(documents.gstFilePath, documents.gstUrl);
+    const fssaiUrl = await this.resolveDocumentUrl(documents.fssaiFilePath, documents.fssaiUrl);
+    return {
+      gstUrl,
+      fssaiUrl,
+      gstStatus: documents.gstStatus || null,
+      fssaiStatus: documents.fssaiStatus || null
+    };
+  }
+
+  async applyVerifyUpi(ctx, upiId) {
     const { normalized, valid } = validateUpiVpa(upiId);
     if (!valid) {
       const error = new Error('Invalid UPI ID format');
@@ -417,10 +475,15 @@ class ShopOnboardingService {
     };
   }
 
-  async saveBankDetails(userId, payload) {
+  async verifyUpi(userId, upiId, options = {}) {
     const ctx = await this.loadShopContext(userId);
-    this.assertEditable(ctx.shop);
+    if (options.requireEditable !== false) {
+      this.assertEditable(ctx.shop);
+    }
+    return this.applyVerifyUpi(ctx, upiId);
+  }
 
+  async applySaveBankDetails(ctx, payload) {
     const accountHolderName = typeof payload.accountHolderName === 'string' ? payload.accountHolderName.trim() : '';
     const bankName = typeof payload.bankName === 'string' ? payload.bankName.trim() : '';
     const ifsc = normalizeIfsc(payload.ifsc);
@@ -491,7 +554,14 @@ class ShopOnboardingService {
       updatedAt: now,
       ...(ctx.shopExists ? {} : { createdAt: now })
     }, { merge: true });
+  }
 
+  async saveBankDetails(userId, payload, options = {}) {
+    const ctx = await this.loadShopContext(userId);
+    if (options.requireEditable !== false) {
+      this.assertEditable(ctx.shop);
+    }
+    await this.applySaveBankDetails(ctx, payload);
     return this.getStatus(userId);
   }
 

@@ -47,12 +47,8 @@ class ShopDashboardService {
   }
 
   async getProfile(shopId) {
-    const { shop } = await this.getUserShop(shopId);
-    return {
-      shopName: typeof shop.shopName === 'string' ? shop.shopName : '',
-      shopType: typeof shop.shopType === 'string' ? shop.shopType : '',
-      isOpen: shop.isOpen === true
-    };
+    const shopSettingsService = require('./shopSettingsService');
+    return shopSettingsService.getProfile(shopId);
   }
 
   async setOpenStatus(shopId, isOpen) {

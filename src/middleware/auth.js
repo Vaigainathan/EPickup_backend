@@ -146,8 +146,8 @@ const authMiddleware = async (req, res, next) => {
         success: false,
         error: {
           code: 'USER_INACTIVE',
-          message: 'Account deactivated',
-          details: 'Your account has been deactivated. Please contact support.'
+          message: 'Your account is deactivated, contact support to reactivate',
+          details: 'Your account is deactivated, contact support to reactivate'
         },
         timestamp: new Date().toISOString()
       });

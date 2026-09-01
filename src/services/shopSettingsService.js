@@ -89,6 +89,7 @@ class ShopSettingsService {
     return {
       name: typeof userData.name === 'string' ? userData.name : '',
       email: typeof userData.email === 'string' ? userData.email : '',
+      phone: typeof userData.phone === 'string' ? userData.phone : '',
       shopName: typeof shop.shopName === 'string' ? shop.shopName : '',
       shopType: typeof shop.shopType === 'string' ? shop.shopType : '',
       isOpen: shop.isOpen === true,

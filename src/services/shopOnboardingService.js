@@ -5,6 +5,11 @@ const { encryptAccountNumber } = require('../utils/shopBankEncryption');
 const UPI_VPA_REGEX = /^[a-zA-Z0-9._-]{2,256}@[a-zA-Z]{2,64}$/;
 const IFSC_REGEX = /^[A-Z]{4}0[A-Z0-9]{6}$/;
 const MAX_DOC_BYTES = 5 * 1024 * 1024;
+const FSSAI_REQUIRED_SHOP_TYPES = new Set([
+  'Food & Restaurants',
+  'Grocery & Supermarket',
+  'Meat & Seafood'
+]);
 const REJECTED_SECTIONS = new Set(['business-details', 'documents', 'bank-details']);
 
 function isAllowedDocumentType(contentType, originalName = '') {
@@ -62,7 +67,10 @@ function inferSteps(shop, shopProfile) {
     && hasLocation(shopProfile.location);
 
   const documentsComplete = hasStoredDocument(documents, 'gst')
-    && hasStoredDocument(documents, 'fssai');
+    && (
+      !FSSAI_REQUIRED_SHOP_TYPES.has(typeof shop.shopType === 'string' ? shop.shopType.trim() : '')
+      || hasStoredDocument(documents, 'fssai')
+    );
 
   const hasAccountNumber = isFilled(bank.accountNumberEncrypted)
     || isFilled(bank.accountNumberLast4);

@@ -148,6 +148,7 @@ Thumbs.db
 *.bak
 *.backup
 *.old
+.tmp-railway/
 
 # Test files
 test-results/

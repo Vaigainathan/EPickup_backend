@@ -44,6 +44,34 @@ function presentLocation(location) {
   return { lat, lng };
 }
 
+function presentDriverInfo(raw) {
+  if (!raw || typeof raw !== 'object') {
+    return null;
+  }
+  const name = typeof raw.name === 'string' ? raw.name : '';
+  const phone = typeof raw.phone === 'string' ? raw.phone : '';
+  const vehicle = typeof raw.vehicle === 'string'
+    ? raw.vehicle
+    : (typeof raw.vehicleNumber === 'string' ? raw.vehicleNumber : '');
+  if (!name && !phone && !vehicle) {
+    return null;
+  }
+  return { name, phone, vehicle };
+}
+
+function toLatLng(location) {
+  const presented = presentLocation(location);
+  if (!presented) {
+    return null;
+  }
+  return {
+    lat: presented.lat,
+    lng: presented.lng,
+    latitude: presented.lat,
+    longitude: presented.lng
+  };
+}
+
 function generateHandoverOtp() {
   return String(crypto.randomInt(100000, 1000000));
 }
@@ -116,6 +144,7 @@ class ShopOrderService {
       orderStatus: data.orderStatus,
       displayId: data.displayId ?? null,
       linkedBookingId: data.linkedBookingId ?? null,
+      driverInfo: presentDriverInfo(data.driverInfo),
       payment: {
         status: payment.status || null,
         shopUpiId: payment.shopUpiId || null,
@@ -316,16 +345,194 @@ class ShopOrderService {
   }
 
   async markReady(shopId, orderId) {
-    return this.runOwnedTransition(shopId, orderId, (data) => {
-      if (data.orderStatus === 'ready') {
-        return alreadyProcessed(data);
+    const owned = await this.getOwnedOrder(shopId, orderId);
+    if (owned.data.orderStatus === 'ready' || owned.data.linkedBookingId) {
+      return {
+        alreadyProcessed: true,
+        order: this.presentOrder(owned.id, owned.data)
+      };
+    }
+    if (owned.data.orderStatus !== 'preparing') {
+      throw httpError(409, 'INVALID_TRANSITION', 'Order must be preparing before it can be marked ready');
+    }
+
+    const bookingFields = await this.buildMarketplaceBookingDoc(shopId, owned.id, owned.data);
+    const orderRef = owned.ref;
+
+    const result = await this.getDb().runTransaction(async (tx) => {
+      const snap = await tx.get(orderRef);
+      if (!snap.exists || snap.data().shopId !== shopId) {
+        throw httpError(404, 'ORDER_NOT_FOUND', 'Order not found');
+      }
+      const data = snap.data();
+      if (data.orderStatus === 'ready' || data.linkedBookingId) {
+        return {
+          alreadyProcessed: true,
+          order: this.presentOrder(snap.id, data)
+        };
       }
       if (data.orderStatus !== 'preparing') {
         throw httpError(409, 'INVALID_TRANSITION', 'Order must be preparing before it can be marked ready');
       }
-      return {
-        updates: { orderStatus: 'ready' }
-      };
+
+      const bookingRef = this.getDb().collection('bookings').doc();
+      const now = new Date();
+      tx.set(bookingRef, {
+        ...bookingFields,
+        createdAt: now,
+        updatedAt: now
+      });
+      tx.update(orderRef, {
+        orderStatus: 'ready',
+        linkedBookingId: bookingRef.id,
+        updatedAt: this.now()
+      });
+      return { alreadyProcessed: false };
+    });
+
+    if (result.alreadyProcessed) {
+      return result;
+    }
+
+    const fresh = await orderRef.get();
+    return {
+      alreadyProcessed: false,
+      order: this.presentOrder(fresh.id, fresh.data())
+    };
+  }
+
+  async buildMarketplaceBookingDoc(shopId, orderId, orderData) {
+    const db = this.getDb();
+    const [userSnap, shopSnap, customerSnap] = await Promise.all([
+      db.collection('users').doc(shopId).get(),
+      db.collection('shops').doc(shopId).get(),
+      orderData.customerId
+        ? db.collection('users').doc(orderData.customerId).get()
+        : Promise.resolve(null)
+    ]);
+
+    const userData = userSnap.exists ? (userSnap.data() || {}) : {};
+    const shopUser = userData.shop || {};
+    const shopProfile = shopSnap.exists ? (shopSnap.data() || {}) : {};
+    const customerData = customerSnap && customerSnap.exists ? (customerSnap.data() || {}) : {};
+    const delivery = orderData.deliveryAddress || {};
+
+    const pickupCoords = toLatLng(shopProfile.location);
+    const dropoffCoords = toLatLng(delivery.coordinates);
+    if (!pickupCoords || !dropoffCoords) {
+      throw httpError(
+        409,
+        'MISSING_LOCATION',
+        'Shop pickup location and delivery coordinates are required before marking ready'
+      );
+    }
+
+    const fareCalculationService = require('./fareCalculationService');
+    let distanceKm;
+    let fareDetails;
+    try {
+      const calculated = await fareCalculationService.calculateDistanceAndFare(
+        { lat: pickupCoords.lat, lng: pickupCoords.lng },
+        { lat: dropoffCoords.lat, lng: dropoffCoords.lng }
+      );
+      distanceKm = calculated.distanceKm;
+      fareDetails = calculated.fare;
+    } catch (error) {
+      console.error('❌ [SHOP_ORDERS] Fare calculation failed, using fallback:', error.message);
+      distanceKm = 5;
+      fareDetails = fareCalculationService.calculateFare(distanceKm);
+    }
+
+    const itemCount = Array.isArray(orderData.items)
+      ? orderData.items.reduce((sum, item) => sum + (Number(item.qty) || 0), 0)
+      : 0;
+    const displayId = displayIdService.formatDisplayId(orderData.displayId);
+    const shopName = typeof shopUser.shopName === 'string' && shopUser.shopName
+      ? shopUser.shopName
+      : (typeof userData.name === 'string' && userData.name ? userData.name : 'Shop');
+    const shopPhone = typeof userData.phone === 'string' ? userData.phone : '';
+    const shopAddress = typeof shopProfile.address === 'string' ? shopProfile.address : '';
+    const customerName = typeof customerData.name === 'string' && customerData.name
+      ? customerData.name
+      : 'Customer';
+    const customerPhone = typeof customerData.phone === 'string' ? customerData.phone : '';
+    const dropoffAddress = typeof delivery.text === 'string' ? delivery.text : '';
+
+    return {
+      customerId: orderData.customerId || null,
+      status: 'pending',
+      driverId: null,
+      pickup: {
+        name: shopName,
+        phone: shopPhone,
+        address: shopAddress,
+        coordinates: {
+          latitude: pickupCoords.latitude,
+          longitude: pickupCoords.longitude
+        }
+      },
+      dropoff: {
+        name: customerName,
+        phone: customerPhone,
+        address: dropoffAddress,
+        coordinates: {
+          latitude: dropoffCoords.latitude,
+          longitude: dropoffCoords.longitude
+        }
+      },
+      package: {
+        description: `Order ${displayId} — ${itemCount} items`,
+        weight: 1
+      },
+      fare: {
+        baseFare: fareDetails.baseFare,
+        distanceFare: fareDetails.baseFare,
+        totalFare: fareDetails.totalFare,
+        currency: 'INR',
+        commission: fareDetails.commission,
+        driverNet: fareDetails.driverEarnings,
+        companyRevenue: fareDetails.commission
+      },
+      pricing: {
+        baseFare: fareDetails.baseFare,
+        distanceFare: fareDetails.baseFare,
+        totalFare: fareDetails.totalFare,
+        currency: 'INR',
+        commission: fareDetails.commission,
+        driverNet: fareDetails.driverEarnings,
+        companyRevenue: fareDetails.commission
+      },
+      distance: distanceKm,
+      exactDistance: fareDetails.exactDistanceKm,
+      roundedDistance: fareDetails.roundedDistanceKm || Math.ceil(distanceKm || 0),
+      fareBreakdown: fareDetails.breakdown,
+      paymentMethod: 'cash',
+      paymentStatus: 'pending',
+      sourceType: 'marketplace',
+      marketplaceOrderId: orderId
+    };
+  }
+
+  async cancelLinkedPendingBooking(linkedBookingId) {
+    if (!linkedBookingId) {
+      return;
+    }
+    const ref = this.getDb().collection('bookings').doc(linkedBookingId);
+    await this.getDb().runTransaction(async (tx) => {
+      const snap = await tx.get(ref);
+      if (!snap.exists) {
+        return;
+      }
+      const data = snap.data() || {};
+      if (data.status !== 'pending' || data.driverId) {
+        return;
+      }
+      tx.update(ref, {
+        status: 'cancelled',
+        cancellationReason: 'Marketplace order cancelled',
+        cancelledAt: new Date(),
+        updatedAt: new Date()
+      });
     });
   }
 
@@ -407,6 +614,10 @@ class ShopOrderService {
         reasonLine: result.notify.reason ? ` Reason: ${result.notify.reason}` : ''
       };
       await this.notifyCustomer(result.order.customerId, result.notify.type, vars);
+    }
+
+    if (!result.alreadyProcessed) {
+      await this.cancelLinkedPendingBooking(result.order.linkedBookingId);
     }
 
     return result;
@@ -508,6 +719,7 @@ class ShopOrderService {
         cancelledBy: null
       },
       linkedBookingId: null,
+      driverInfo: null,
       displayId,
       handoverOtp,
       createdAt: now,

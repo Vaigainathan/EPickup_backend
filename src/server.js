@@ -882,6 +882,14 @@ async function initializeServices() {
     slotEnforcementService.initialize();
     console.log('✅ Slot enforcement service initialized');
 
+    const marketplaceSyncService = require('./services/marketplaceSyncService');
+    marketplaceSyncService.start();
+    console.log('✅ Marketplace sync listener attached');
+
+    const marketplacePaymentTimeoutJob = require('./services/marketplacePaymentTimeoutJob');
+    marketplacePaymentTimeoutJob.start();
+    console.log('✅ Marketplace payment-timeout cron scheduled');
+
     // Performance monitoring handled by monitoringService
     console.log('✅ Performance monitoring consolidated into monitoringService');
     

@@ -27,6 +27,9 @@
 
 require('dotenv').config();
 
+const { assertStagingEnv, assertStagingAdmin } = require('./assertStagingFirebase');
+assertStagingEnv();
+
 const shopOrderService = require('../src/services/shopOrderService');
 const displayIdService = require('../src/services/displayIdService');
 
@@ -37,6 +40,10 @@ function argValue(flag) {
 }
 
 async function main() {
+  const { getFirestore } = require('../src/services/firebase');
+  getFirestore();
+  assertStagingAdmin();
+
   const shopId = argValue('--shopId');
   const customerId = argValue('--customerId') || null;
   const orderStatus = argValue('--status') || 'awaiting_payment';

@@ -151,6 +151,11 @@ const NOTIFICATION_TEMPLATES = {
       title: 'Refund sent',
       body: 'The shop has sent your refund for order {{displayId}}.',
       data: { type: 'refund_sent', action: 'view_order' }
+    },
+    PAYMENT_EXPIRED: {
+      title: 'Payment expired',
+      body: 'Payment for order {{displayId}} timed out. The order was cancelled.',
+      data: { type: 'payment_expired', action: 'view_order' }
     }
   },
 

@@ -1,5 +1,8 @@
 {
   "projects": {
-    "default": "epickup-app"
-  }
+    "default": "epickup-app",
+    "staging": "epickup-app-staging"
+  },
+  "targets": {},
+  "etags": {}
 }

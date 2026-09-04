@@ -123,15 +123,20 @@ class ShopSettingsService {
   }
 
   /**
-   * marketplaceOrders does not exist yet — always none.
-   * Later: query in-progress marketplace orders for this shopId.
+   * True if this shop has any marketplace order still in preparing, ready, or handed_over.
    */
-  hasInProgressOrders(/* shopId */) {
-    return false;
+  async hasInProgressOrders(shopId) {
+    const snapshot = await this.getDb()
+      .collection('marketplaceOrders')
+      .where('shopId', '==', shopId)
+      .where('orderStatus', 'in', ['preparing', 'ready', 'handed_over'])
+      .limit(1)
+      .get();
+    return !snapshot.empty;
   }
 
   async deactivate(shopId) {
-    if (this.hasInProgressOrders(shopId)) {
+    if (await this.hasInProgressOrders(shopId)) {
       throw httpError(409, 'ORDERS_IN_PROGRESS', 'Cannot deactivate while orders are in progress');
     }
 

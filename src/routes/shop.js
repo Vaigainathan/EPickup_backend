@@ -33,11 +33,10 @@ async function withShop(req, res, handler) {
 
 /**
  * GET /api/shop/dashboard/stats
- * Placeholder zeros until marketplaceOrders exists.
  */
 router.get('/dashboard/stats', authMiddleware, requireRole(['shop']), async (req, res) => {
-  return withShop(req, res, async () => {
-    const stats = shopDashboardService.getStats();
+  return withShop(req, res, async (shopId) => {
+    const stats = await shopDashboardService.getStats(shopId);
     return res.json({ success: true, data: stats });
   });
 });

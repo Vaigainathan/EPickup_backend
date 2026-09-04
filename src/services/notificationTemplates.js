@@ -131,6 +131,29 @@ const NOTIFICATION_TEMPLATES = {
     }
   },
 
+  MARKETPLACE: {
+    PAYMENT_CONFIRMED: {
+      title: 'Payment confirmed',
+      body: 'Your order {{displayId}} was accepted. The shop is preparing it.',
+      data: { type: 'payment_confirmed', action: 'view_order' }
+    },
+    ORDER_CANCELLED: {
+      title: 'Order cancelled',
+      body: 'Your order {{displayId}} was cancelled.{{reasonLine}}',
+      data: { type: 'order_cancelled', action: 'view_order' }
+    },
+    REFUND_INITIATED: {
+      title: 'Refund pending',
+      body: 'Your order {{displayId}} was cancelled. A refund of ₹{{amount}} is being processed.',
+      data: { type: 'refund_initiated', action: 'view_order' }
+    },
+    REFUND_SENT: {
+      title: 'Refund sent',
+      body: 'The shop has sent your refund for order {{displayId}}.',
+      data: { type: 'refund_sent', action: 'view_order' }
+    }
+  },
+
   // Admin Notifications
   ADMIN: {
     EMERGENCY_ALERT: {

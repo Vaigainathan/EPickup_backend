@@ -906,6 +906,19 @@ service cloud.firestore {
       );
     }
 
+    // Marketplace orders — shop/customer/admin reads; shop-only client updates.
+    // shopId/customerId are role-based UIDs; isOwner() matches Firebase Auth uid
+    // via users/{uid}.originalFirebaseUID. REST mutations use Admin SDK (bypass).
+    match /marketplaceOrders/{orderId} {
+      allow read: if isAuthenticated() && (
+        isOwner(resource.data.shopId) ||
+        isOwner(resource.data.customerId) ||
+        isAdmin()
+      );
+      allow create, delete: if false;
+      allow update: if isAuthenticated() && isOwner(resource.data.shopId);
+    }
+
     // Default rule - deny all other access
     match /{document=**} {
       allow read, write: if false;

@@ -18,6 +18,7 @@ class DisplayIdService {
   constructor() {
     this.counterCollection = 'system_counters';
     this.counterDoc = 'booking_display_id';
+    this.marketplaceCounterDoc = 'marketplace_order_display_id';
   }
 
   get db() {
@@ -46,15 +47,23 @@ class DisplayIdService {
    * @returns {Promise<number>} Next counter value
    */
   async getNextCounter() {
+    return this.getNextCounterFor(this.counterDoc);
+  }
+
+  /**
+   * Atomic counter for a named system_counters doc.
+   * Booking generation must keep using booking_display_id via getNextCounter().
+   */
+  async getNextCounterFor(counterDoc) {
     try {
-      const counterRef = this.db.collection(this.counterCollection).doc(this.counterDoc);
+      const docId = counterDoc || this.counterDoc;
+      const counterRef = this.db.collection(this.counterCollection).doc(docId);
       
       const result = await this.db.runTransaction(async (transaction) => {
         const counterSnap = await transaction.get(counterRef);
         
         if (!counterSnap.exists) {
-          // Initialize counter if it doesn't exist
-          console.log('🆕 Initializing booking display ID counter');
+          console.log(`🆕 Initializing display ID counter: ${docId}`);
           transaction.set(counterRef, {
             nextValue: 1,
             lastUpdated: new Date(),
@@ -67,7 +76,6 @@ class DisplayIdService {
         const currentValue = counterData.nextValue || 0;
         const nextValue = currentValue + 1;
         
-        // Update counter atomically
         transaction.update(counterRef, {
           nextValue: nextValue,
           lastUpdated: new Date(),
@@ -77,7 +85,7 @@ class DisplayIdService {
         return currentValue;
       });
       
-      console.log(`✅ Got next counter value: ${result}`);
+      console.log(`✅ Got next counter value: ${result} (${docId})`);
       return result;
     } catch (error) {
       console.error('❌ Error getting next counter:', error);
@@ -102,9 +110,16 @@ class DisplayIdService {
    * @returns {Promise<number>} Display ID (5-digit)
    */
   async generateDisplayId(bookingTimestamp, customerId) {
+    return this.generateDisplayIdFor(this.counterDoc, bookingTimestamp, customerId);
+  }
+
+  /**
+   * Same mix as generateDisplayId, but increments a chosen counter document.
+   * Use marketplaceCounterDoc for marketplace orders — never booking_display_id.
+   */
+  async generateDisplayIdFor(counterDoc, bookingTimestamp, customerId) {
     try {
-      // 1. Get atomic counter
-      const counter = await this.getNextCounter();
+      const counter = await this.getNextCounterFor(counterDoc);
       
       // 2. Extract timestamp seed
       const timestampSeed = bookingTimestamp % 99989;

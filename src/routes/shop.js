@@ -153,11 +153,10 @@ router.put('/account/password', authMiddleware, requireRole(['shop']), authLimit
 
 /**
  * GET /api/shop/payment-history
- * Honest empty until marketplaceOrders exists.
  */
 router.get('/payment-history', authMiddleware, requireRole(['shop']), async (req, res) => {
-  return withShop(req, res, async () => {
-    const data = shopSettingsService.getPaymentHistory();
+  return withShop(req, res, async (shopId) => {
+    const data = await shopSettingsService.getPaymentHistory(shopId);
     return res.json({ success: true, data });
   });
 });

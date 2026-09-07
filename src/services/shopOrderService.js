@@ -143,6 +143,10 @@ class ShopOrderService {
       },
       orderStatus: data.orderStatus,
       displayId: data.displayId ?? null,
+      // Shop-facing only. Do not reuse this presenter on a customer GET without stripping handoverOtp.
+      handoverOtp: typeof data.handoverOtp === 'string' && data.handoverOtp
+        ? data.handoverOtp
+        : (data.handoverOtp == null ? null : String(data.handoverOtp)),
       linkedBookingId: data.linkedBookingId ?? null,
       driverInfo: presentDriverInfo(data.driverInfo),
       payment: {

@@ -209,11 +209,57 @@ class ShopSettingsService {
     return { updated: true };
   }
 
+  timestampMillis(value) {
+    if (!value) {
+      return 0;
+    }
+    if (typeof value.toMillis === 'function') {
+      return value.toMillis();
+    }
+    if (typeof value.toDate === 'function') {
+      return value.toDate().getTime();
+    }
+    const date = value instanceof Date ? value : new Date(value);
+    const ms = date.getTime();
+    return Number.isNaN(ms) ? 0 : ms;
+  }
+
   /**
-   * Placeholder until marketplaceOrders exists. Do not query or invent history.
+   * Confirmed and refunded marketplace payments for this shop, newest first.
+   * No date-range query — full history only.
    */
-  getPaymentHistory() {
-    return { history: [] };
+  async getPaymentHistory(shopId) {
+    const snapshot = await this.getDb()
+      .collection('marketplaceOrders')
+      .where('shopId', '==', shopId)
+      .orderBy('createdAt', 'desc')
+      .get();
+
+    const displayIdService = require('./displayIdService');
+    const history = [];
+
+    snapshot.docs.forEach((doc) => {
+      const data = doc.data() || {};
+      const payment = data.payment || {};
+      const status = payment.status;
+      if (status !== 'confirmed' && status !== 'refunded') {
+        return;
+      }
+      const at = status === 'refunded'
+        ? (payment.refundedAt || payment.confirmedAt || data.createdAt)
+        : (payment.confirmedAt || data.createdAt);
+      history.push({
+        orderId: doc.id,
+        displayId: data.displayId ?? null,
+        displayIdFormatted: data.displayId == null ? null : displayIdService.formatDisplayId(data.displayId),
+        amount: Number(payment.amount) || 0,
+        paymentStatus: status,
+        at
+      });
+    });
+
+    history.sort((a, b) => this.timestampMillis(b.at) - this.timestampMillis(a.at));
+    return { history };
   }
 }
 

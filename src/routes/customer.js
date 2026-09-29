@@ -2577,4 +2577,7 @@ router.post('/cancel-active-booking', [
   }
 });
 
+const customerMarketplaceRoutes = require('./customerMarketplace');
+router.use('/marketplace', customerMarketplaceRoutes);
+
 module.exports = router;

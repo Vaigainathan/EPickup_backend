@@ -1,6 +1,7 @@
 const admin = require('firebase-admin');
 const { getFirestore, getStorage } = require('./firebase');
 const { encryptAccountNumber } = require('../utils/shopBankEncryption');
+const { isMarketplaceShopType } = require('../constants/marketplaceShopTypes');
 
 const UPI_VPA_REGEX = /^[a-zA-Z0-9._-]{2,256}@[a-zA-Z]{2,64}$/;
 const IFSC_REGEX = /^[A-Z]{4}0[A-Z0-9]{6}$/;
@@ -238,6 +239,13 @@ class ShopOnboardingService {
       throw error;
     }
 
+    if (!isMarketplaceShopType(shopType)) {
+      const error = new Error('shopType must be one of the marketplace categories');
+      error.status = 400;
+      error.code = 'INVALID_SHOP_TYPE';
+      throw error;
+    }
+
     if (lat < -90 || lat > 90 || lng < -180 || lng > 180) {
       const error = new Error('Invalid map coordinates');
       error.status = 400;
@@ -255,6 +263,7 @@ class ShopOnboardingService {
     };
     if (!ctx.shopExists) {
       shopWrite.createdAt = now;
+      shopWrite.orderCount = 0;
     }
 
     await Promise.all([

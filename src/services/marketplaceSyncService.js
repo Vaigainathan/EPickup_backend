@@ -73,51 +73,66 @@ class MarketplaceSyncService {
       return;
     }
 
-    const updates = {};
-    const driverInfo = presentDriverInfo(booking.driverInfo);
-    if (driverInfo) {
-      updates.driverInfo = driverInfo;
-    }
-    if (booking.status === 'delivered') {
-      updates.orderStatus = 'completed';
+    const db = getFirestore();
+    const orderRef = db.collection('marketplaceOrders').doc(orderId);
+    const mirrored = await db.runTransaction(async (transaction) => {
+      const orderSnap = await transaction.get(orderRef);
+      if (!orderSnap.exists) {
+        return null;
+      }
+
+      const order = orderSnap.data() || {};
+      const updates = {};
+      const driverInfo = presentDriverInfo(booking.driverInfo);
+      if (driverInfo) {
+        const current = order.driverInfo;
+        const sameDriver = current
+          && current.name === driverInfo.name
+          && current.phone === driverInfo.phone
+          && current.vehicle === driverInfo.vehicle;
+        if (!sameDriver) {
+          updates.driverInfo = driverInfo;
+        }
+      }
+
+      const completing = booking.status === 'delivered'
+        && order.orderStatus !== 'cancelled'
+        && order.orderStatus !== 'completed';
+      if (completing) {
+        updates.orderStatus = 'completed';
+      }
+
+      if (Object.keys(updates).length === 0) {
+        return null;
+      }
+
+      updates.updatedAt = admin.firestore.FieldValue.serverTimestamp();
+      transaction.update(orderRef, updates);
+
+      if (completing && order.shopId) {
+        const shopRef = db.collection('shops').doc(order.shopId);
+        transaction.set(shopRef, {
+          orderCount: admin.firestore.FieldValue.increment(1)
+        }, { merge: true });
+      }
+
+      return {
+        mirrored: Object.keys(updates).filter((key) => key !== 'updatedAt'),
+        orderCountIncremented: completing && Boolean(order.shopId)
+      };
+    });
+
+    if (!mirrored) {
+      return;
     }
 
-    if (Object.keys(updates).length === 0) {
-      return;
-    }
-
-    const orderRef = getFirestore().collection('marketplaceOrders').doc(orderId);
-    const orderSnap = await orderRef.get();
-    if (!orderSnap.exists) {
-      return;
-    }
-
-    const order = orderSnap.data() || {};
-    if (updates.orderStatus === 'completed' && order.orderStatus === 'cancelled') {
-      delete updates.orderStatus;
-    }
-    if (updates.driverInfo && order.driverInfo
-      && order.driverInfo.name === updates.driverInfo.name
-      && order.driverInfo.phone === updates.driverInfo.phone
-      && order.driverInfo.vehicle === updates.driverInfo.vehicle
-      && !updates.orderStatus) {
-      return;
-    }
-    if (updates.orderStatus === 'completed' && order.orderStatus === 'completed' && !updates.driverInfo) {
-      return;
-    }
-    if (Object.keys(updates).length === 0) {
-      return;
-    }
-
-    updates.updatedAt = admin.firestore.FieldValue.serverTimestamp();
-    await orderRef.update(updates);
     console.log('✅ [MARKETPLACE_SYNC] Mirrored booking change', {
       bookingId: change.doc.id,
       orderId,
       changeType: change.type,
       bookingStatus: booking.status,
-      mirrored: Object.keys(updates).filter((key) => key !== 'updatedAt')
+      mirrored: mirrored.mirrored,
+      orderCountIncremented: mirrored.orderCountIncremented
     });
   }
 }

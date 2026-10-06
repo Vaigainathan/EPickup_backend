@@ -185,6 +185,39 @@ describe('sanitizeParcelBookingInput', () => {
     expect(result.data.package.specialInstructions).toBe('Ring the bell\nLeave at the door');
   });
 
+  test('stores a valid Indian mobile as +91', () => {
+    const accepted = [
+      ['9876543210', '+919876543210'],
+      ['919876543210', '+919876543210'],
+      ['+919876543210', '+919876543210'],
+      ['98765 43210', '+919876543210'],
+      ['9148101698', '+919148101698']
+    ];
+    accepted.forEach(([input, stored]) => {
+      const result = sanitizeParcelBookingInput(requiredBody({
+        pickup: { phone: input, coordinates: coordinates(12.9716, 77.5946) }
+      }));
+      expect(result.ok).toBe(true);
+      expect(result.data.pickup.phone).toBe(stored);
+    });
+  });
+
+  test('rejects an invalid Indian mobile', () => {
+    ['+9148101698', '48101698', '1234567890', '+9198765432100'].forEach((input) => {
+      const result = sanitizeParcelBookingInput(requiredBody({
+        pickup: { phone: input, coordinates: coordinates(12.9716, 77.5946) }
+      }));
+      expect(result.ok).toBe(false);
+      expect(result.errors).toEqual([
+        expect.objectContaining({
+          code: 'INVALID_FIELD',
+          path: 'pickup.phone',
+          message: 'pickup.phone must be a valid 10-digit Indian mobile number'
+        })
+      ]);
+    });
+  });
+
   test('treats null optional fields as absent', () => {
     const result = sanitizeParcelBookingInput({
       ...requiredBody({

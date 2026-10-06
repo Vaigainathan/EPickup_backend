@@ -27,6 +27,9 @@ router.post('/estimate', async (req, res) => {
             data: fareEstimate
         });
     } catch (error) {
+        if (fareCalculationService.isFareUnavailableError(error)) {
+            return res.status(503).json(fareCalculationService.fareUnavailableBody());
+        }
         console.error('Fare estimate error:', error);
         res.status(500).json({
             success: false,
@@ -62,6 +65,9 @@ router.post('/calculate', authenticateToken, async (req, res) => {
             }
         });
     } catch (error) {
+        if (fareCalculationService.isFareUnavailableError(error)) {
+            return res.status(503).json(fareCalculationService.fareUnavailableBody());
+        }
         console.error('Fare calculation error:', error);
         res.status(500).json({
             success: false,

@@ -1,6 +1,7 @@
 const express = require('express');
 const { body, validationResult, query } = require('express-validator');
 const bookingService = require('../services/bookingService');
+const fareCalculationService = require('../services/fareCalculationService');
 // const driverAssignmentService = require('../services/driverAssignmentService'); // Commented out - only used in commented code
 const { getSocketIO, getEventHandler } = require('../services/socket');
 const { requireRole, requireCustomer, requireDriver } = require('../middleware/auth');
@@ -229,6 +230,9 @@ router.post('/', [
     });
 
   } catch (error) {
+    if (fareCalculationService.isFareUnavailableError(error)) {
+      return res.status(503).json(fareCalculationService.fareUnavailableBody());
+    }
     console.error('Error creating booking:', error);
     res.status(500).json({
       success: false,
@@ -419,6 +423,9 @@ router.post('/confirm', [
     });
 
   } catch (error) {
+    if (fareCalculationService.isFareUnavailableError(error)) {
+      return res.status(503).json(fareCalculationService.fareUnavailableBody());
+    }
     console.error('Error confirming booking:', error);
     res.status(500).json({
       success: false,
@@ -518,6 +525,9 @@ router.post('/preview', [
     });
 
   } catch (error) {
+    if (fareCalculationService.isFareUnavailableError(error)) {
+      return res.status(503).json(fareCalculationService.fareUnavailableBody());
+    }
     console.error('Error generating booking preview:', error);
     res.status(500).json({
       success: false,
@@ -1912,6 +1922,9 @@ router.post('/calculate-fare', [
     });
 
   } catch (error) {
+    if (fareCalculationService.isFareUnavailableError(error)) {
+      return res.status(503).json(fareCalculationService.fareUnavailableBody());
+    }
     console.error('Error calculating fare:', error);
     res.status(500).json({
       success: false,

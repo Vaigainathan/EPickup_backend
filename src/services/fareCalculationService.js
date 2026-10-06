@@ -42,6 +42,39 @@
 
 const axios = require('axios');
 
+const ROUTES_COMPUTE_URL = 'https://routes.googleapis.com/directions/v2:computeRoutes';
+const TRAVEL_MODE = 'DRIVE';
+const ROUTE_ATTEMPT_TIMEOUT_MS = 2500;
+const ROUTE_TOTAL_BUDGET_MS = 8000;
+const ROUTE_RETRY_WAITS_MS = [300, 800];
+const ROUTE_MAX_ATTEMPTS = 3;
+const FARE_UNAVAILABLE_DETAILS = "We couldn't calculate the delivery price right now. Please try again.";
+
+class FareUnavailableError extends Error {
+    constructor(reason) {
+        super(reason || 'Fare unavailable');
+        this.name = 'FareUnavailableError';
+        this.code = 'FARE_UNAVAILABLE';
+    }
+}
+
+function fareUnavailableBody() {
+    return {
+        success: false,
+        error: 'Fare unavailable',
+        details: FARE_UNAVAILABLE_DETAILS,
+        code: 'FARE_UNAVAILABLE'
+    };
+}
+
+function isFareUnavailableError(error) {
+    return Boolean(error) && (
+        error instanceof FareUnavailableError
+        || error.code === 'FARE_UNAVAILABLE'
+        || error.name === 'FareUnavailableError'
+    );
+}
+
 class FareCalculationService {
     constructor() {
         // ✅ NEW PRICING STRUCTURE v2 (2026-07-24): BASE ₹10/KM MINIMUM
@@ -205,9 +238,39 @@ class FareCalculationService {
                 calculatedAt: new Date().toISOString()
             };
         } catch (error) {
+            if (isFareUnavailableError(error)) {
+                throw error;
+            }
             console.error('Error calculating distance and fare:', error);
             throw new Error('Failed to calculate fare');
         }
+    }
+
+    now() {
+        return Date.now();
+    }
+
+    sleep(ms) {
+        return new Promise((resolve) => setTimeout(resolve, ms));
+    }
+
+    logRouteAttemptFailure(attempt, error, fallbackMessage) {
+        const httpStatus = error && error.response ? error.response.status : null;
+        const data = error && error.response ? error.response.data : null;
+        const googleError = data && data.error ? data.error : null;
+        const googleStatus = (googleError && googleError.status) || (data && data.status) || null;
+        const googleMessage = (googleError && googleError.message)
+            || (data && data.error_message)
+            || (error && error.message)
+            || fallbackMessage
+            || null;
+        console.error('[ROUTES] distance attempt failed', {
+            attempt,
+            httpStatus,
+            googleStatus,
+            googleMessage
+        });
+        return googleMessage || 'distance request failed';
     }
 
     /**
@@ -217,30 +280,90 @@ class FareCalculationService {
      * @returns {Promise<number>} Distance in kilometers
      */
     async getDistanceFromGoogleMaps(pickup, dropoff) {
-        try {
-            const url = `https://maps.googleapis.com/maps/api/distancematrix/json`;
-            const params = {
-                origins: `${pickup.lat},${pickup.lng}`,
-                destinations: `${dropoff.lat},${dropoff.lng}`,
-                key: this.GOOGLE_MAPS_API_KEY,
-                units: 'metric'
-            };
+        const startedAt = this.now();
+        let lastReason = 'distance unavailable';
 
-            const response = await axios.get(url, { params });
-            
-            if (response.data.status === 'OK') {
-                const element = response.data.rows[0].elements[0];
-                if (element.status === 'OK') {
-                    return element.distance.value / 1000; // Convert meters to kilometers
-                }
+        for (let attempt = 1; attempt <= ROUTE_MAX_ATTEMPTS; attempt += 1) {
+            const remainingMs = ROUTE_TOTAL_BUDGET_MS - (this.now() - startedAt);
+            if (remainingMs < ROUTE_ATTEMPT_TIMEOUT_MS) {
+                lastReason = 'distance budget exceeded';
+                console.error('[ROUTES] distance unavailable', { reason: lastReason, attempt });
+                throw new FareUnavailableError(lastReason);
             }
-            
-            throw new Error('Invalid response from Google Maps API');
-        } catch (error) {
-            console.error('Google Maps API error:', error);
-            // Fallback to direct distance calculation
-            return this.calculateDirectDistance(pickup, dropoff);
+
+            try {
+                const response = await axios.post(
+                    ROUTES_COMPUTE_URL,
+                    {
+                        origin: {
+                            location: {
+                                latLng: {
+                                    latitude: pickup.lat,
+                                    longitude: pickup.lng
+                                }
+                            }
+                        },
+                        destination: {
+                            location: {
+                                latLng: {
+                                    latitude: dropoff.lat,
+                                    longitude: dropoff.lng
+                                }
+                            }
+                        },
+                        travelMode: TRAVEL_MODE,
+                        routingPreference: 'TRAFFIC_UNAWARE'
+                    },
+                    {
+                        timeout: ROUTE_ATTEMPT_TIMEOUT_MS,
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'X-Goog-Api-Key': this.GOOGLE_MAPS_API_KEY,
+                            'X-Goog-FieldMask': 'routes.distanceMeters,routes.duration'
+                        }
+                    }
+                );
+
+                const route = response.data && Array.isArray(response.data.routes)
+                    ? response.data.routes[0]
+                    : null;
+                const meters = route ? route.distanceMeters : undefined;
+                if (typeof meters !== 'number' || !Number.isFinite(meters)) {
+                    lastReason = 'Routes API returned no distance';
+                    console.error('[ROUTES] distance attempt failed', {
+                        attempt,
+                        httpStatus: response.status || null,
+                        googleStatus: null,
+                        googleMessage: lastReason
+                    });
+                    console.error('[ROUTES] distance unavailable', { reason: lastReason, attempt });
+                    throw new FareUnavailableError(lastReason);
+                }
+                return meters / 1000;
+            } catch (error) {
+                if (error instanceof FareUnavailableError) {
+                    throw error;
+                }
+                lastReason = this.logRouteAttemptFailure(attempt, error);
+                const httpStatus = error.response && error.response.status;
+                const retryable = !error.response || httpStatus === 429 || httpStatus >= 500;
+                if (!retryable || attempt >= ROUTE_MAX_ATTEMPTS) {
+                    console.error('[ROUTES] distance unavailable', { reason: lastReason, attempt });
+                    throw new FareUnavailableError(lastReason);
+                }
+                const waitMs = ROUTE_RETRY_WAITS_MS[attempt - 1];
+                const remainingAfterAttempt = ROUTE_TOTAL_BUDGET_MS - (this.now() - startedAt);
+                if (remainingAfterAttempt < waitMs) {
+                    lastReason = 'distance budget exceeded';
+                    console.error('[ROUTES] distance unavailable', { reason: lastReason, attempt });
+                    throw new FareUnavailableError(lastReason);
+                }
+                await this.sleep(waitMs);
+            }
         }
+
+        console.error('[ROUTES] distance unavailable', { reason: lastReason });
+        throw new FareUnavailableError(lastReason);
     }
 
     /**
@@ -409,6 +532,9 @@ class FareCalculationService {
                 validUntil: new Date(Date.now() + 15 * 60 * 1000).toISOString() // 15 minutes validity
             };
         } catch (error) {
+            if (isFareUnavailableError(error)) {
+                throw error;
+            }
             console.error('Error getting fare estimate:', error);
             throw new Error('Failed to get fare estimate');
         }
@@ -444,4 +570,14 @@ class FareCalculationService {
     }
 }
 
-module.exports = new FareCalculationService();
+const fareCalculationService = new FareCalculationService();
+fareCalculationService.FareUnavailableError = FareUnavailableError;
+fareCalculationService.fareUnavailableBody = fareUnavailableBody;
+fareCalculationService.isFareUnavailableError = isFareUnavailableError;
+fareCalculationService.FARE_UNAVAILABLE_DETAILS = FARE_UNAVAILABLE_DETAILS;
+fareCalculationService.TRAVEL_MODE = TRAVEL_MODE;
+fareCalculationService.ROUTE_ATTEMPT_TIMEOUT_MS = ROUTE_ATTEMPT_TIMEOUT_MS;
+fareCalculationService.ROUTE_TOTAL_BUDGET_MS = ROUTE_TOTAL_BUDGET_MS;
+fareCalculationService.ROUTE_RETRY_WAITS_MS = ROUTE_RETRY_WAITS_MS;
+fareCalculationService.ROUTE_MAX_ATTEMPTS = ROUTE_MAX_ATTEMPTS;
+module.exports = fareCalculationService;

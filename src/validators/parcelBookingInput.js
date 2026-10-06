@@ -46,6 +46,32 @@ function collectDropped(source, allowed, prefix, droppedKeys) {
   });
 }
 
+function readIndianMobile(source, key, path, errors, target) {
+  if (!Object.prototype.hasOwnProperty.call(source, key) || isAbsent(source[key])) {
+    return;
+  }
+  const message = `${path} must be a valid 10-digit Indian mobile number`;
+  const raw = source[key];
+  if (typeof raw !== 'string') {
+    pushError(errors, 'INVALID_FIELD', path, message);
+    return;
+  }
+  const compact = raw.replace(/[\s()[\]-]/g, '');
+  if (/^[6-9]\d{9}$/.test(compact)) {
+    target[key] = `+91${compact}`;
+    return;
+  }
+  if (/^91[6-9]\d{9}$/.test(compact)) {
+    target[key] = `+${compact}`;
+    return;
+  }
+  if (/^\+91[6-9]\d{9}$/.test(compact)) {
+    target[key] = compact;
+    return;
+  }
+  pushError(errors, 'INVALID_FIELD', path, message);
+}
+
 function readOptionalString(source, key, path, max, keepBreaks, errors, target) {
   if (!Object.prototype.hasOwnProperty.call(source, key) || isAbsent(source[key])) {
     return;
@@ -141,7 +167,7 @@ function readSide(raw, sideName, coordCode, errors, droppedKeys, stringCoordinat
   const out = {};
   collectDropped(raw, new Set(['name', 'phone', 'address', 'coordinates']), sideName, droppedKeys);
   readOptionalString(raw, 'name', `${sideName}.name`, 100, false, errors, out);
-  readOptionalString(raw, 'phone', `${sideName}.phone`, 20, false, errors, out);
+  readIndianMobile(raw, 'phone', `${sideName}.phone`, errors, out);
   readOptionalString(raw, 'address', `${sideName}.address`, 500, true, errors, out);
   const coordinates = readCoordinates(raw.coordinates, sideName, coordCode, errors, droppedKeys, stringCoordinates);
   if (coordinates) {

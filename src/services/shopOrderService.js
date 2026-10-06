@@ -442,9 +442,15 @@ class ShopOrderService {
       distanceKm = calculated.distanceKm;
       fareDetails = calculated.fare;
     } catch (error) {
-      console.error('❌ [SHOP_ORDERS] Fare calculation failed, using fallback:', error.message);
-      distanceKm = 5;
-      fareDetails = fareCalculationService.calculateFare(distanceKm);
+      if (fareCalculationService.isFareUnavailableError(error)) {
+        console.error('❌ [SHOP_ORDERS] Fare unavailable, order not marked ready:', error.message);
+        throw httpError(
+          503,
+          'FARE_UNAVAILABLE',
+          fareCalculationService.FARE_UNAVAILABLE_DETAILS
+        );
+      }
+      throw error;
     }
 
     const itemCount = Array.isArray(orderData.items)

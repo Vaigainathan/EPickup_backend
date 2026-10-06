@@ -14,7 +14,6 @@
 
 const { getFirestore } = require('./firebase');
 const { GeoPoint, FieldValue } = require('firebase-admin/firestore');
-const axios = require('axios');
 const serviceAreaValidation = require('./serviceAreaValidation');
 const walletService = require('./walletService');
 const displayIdService = require('./displayIdService');
@@ -618,28 +617,17 @@ class BookingService {
    * @returns {number} Distance in kilometers
    */
   async calculateDistance(origin, destination) {
-    try {
-      if (!this.googleMapsApiKey) {
-        // Fallback to Haversine formula if no API key
-        return this.calculateHaversineDistance(origin, destination);
+    const fareCalculationService = require('./fareCalculationService');
+    return fareCalculationService.getDistanceFromGoogleMaps(
+      {
+        lat: origin.latitude,
+        lng: origin.longitude
+      },
+      {
+        lat: destination.latitude,
+        lng: destination.longitude
       }
-
-      const url = `https://maps.googleapis.com/maps/api/distancematrix/json?origins=${origin.latitude},${origin.longitude}&destinations=${destination.latitude},${destination.longitude}&key=${this.googleMapsApiKey}&units=metric`;
-      
-      const response = await axios.get(url);
-      
-      if (response.data.status === 'OK' && response.data.rows[0].elements[0].status === 'OK') {
-        const distanceText = response.data.rows[0].elements[0].distance.text;
-        return parseFloat(distanceText.replace(' km', ''));
-      }
-      
-      // Fallback to Haversine if API fails
-      return this.calculateHaversineDistance(origin, destination);
-      
-    } catch (error) {
-      console.warn('Google Maps API failed, using Haversine formula:', error.message);
-      return this.calculateHaversineDistance(origin, destination);
-    }
+    );
   }
 
   /**

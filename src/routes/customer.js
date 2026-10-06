@@ -756,11 +756,11 @@ router.post('/bookings', authenticateToken, async (req, res) => {
       
       console.log(`💰 Calculated fare for booking: ₹${fareDetails.baseFare} (${distance}km)`);
     } catch (error) {
-      console.error('❌ Error calculating fare, using fallback:', error);
-      // Fallback to basic calculation if service fails
-      distance = 5; // Default distance
-      fareDetails = fareCalculationService.calculateFare(distance);
-      console.log(`💰 Using fallback fare: ₹${fareDetails.baseFare} (${distance}km)`);
+      if (fareCalculationService.isFareUnavailableError(error)) {
+        console.error('❌ Fare unavailable, booking not created:', error.message);
+        return res.status(503).json(fareCalculationService.fareUnavailableBody());
+      }
+      throw error;
     }
     
     // Add customer ID and fare information to booking data

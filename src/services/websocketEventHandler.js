@@ -3,6 +3,7 @@ const { getFirestore } = require('./firebase');
 const firestoreSessionService = require('./firestoreSessionService');
 const expoPushService = require('./expoPushService');
 const { NEW_ORDER_CHANNEL_ID } = require('../constants/notifications');
+const { withParcelSource } = require('./parcelSourceFilter');
 
 /**
  * WebSocket Event Handler Service
@@ -900,9 +901,9 @@ class WebSocketEventHandler {
       }
 
       // Get user's active trips
-      const tripsQuery = await this.db.collection('bookings')
+      const tripsQuery = await withParcelSource(this.db.collection('bookings')
         .where('status', 'in', ['driver_assigned', 'driver_enroute', 'driver_arrived', 'picked_up', 'in_transit'])
-        .where('customerId', '==', userId)
+        .where('customerId', '==', userId))
         .get();
 
       const driverTripsQuery = await this.db.collection('bookings')

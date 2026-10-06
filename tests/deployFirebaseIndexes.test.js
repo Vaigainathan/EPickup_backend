@@ -162,7 +162,7 @@ describe('firestore.indexes.json', () => {
   ));
 
   test('keeps one bookings status/driverId/createdAt index and adds the new definitions', () => {
-    expect(spec.indexes).toHaveLength(92);
+    expect(spec.indexes).toHaveLength(95);
     expect(spec.fieldOverrides).toHaveLength(18);
     const duplicates = spec.indexes.filter((index) =>
       index.collectionGroup === 'bookings'

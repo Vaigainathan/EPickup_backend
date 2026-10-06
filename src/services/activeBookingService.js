@@ -1,4 +1,5 @@
 const { getFirestore } = require('firebase-admin/firestore');
+const { withParcelSource } = require('./parcelSourceFilter');
 
 /**
  * Active Booking Service - Industry Standard Customer Order Management
@@ -42,9 +43,9 @@ class ActiveBookingService {
       // Note: 'at_dropoff' is not in standard statuses, using ACTIVE_BOOKING_STATUSES
       const activeStatuses = [...ACTIVE_BOOKING_STATUSES, 'at_dropoff']; // Include at_dropoff if needed
 
-      const activeBookingsSnapshot = await this.db.collection('bookings')
+      const activeBookingsSnapshot = await withParcelSource(this.db.collection('bookings')
         .where('customerId', '==', customerId)
-        .where('status', 'in', activeStatuses)
+        .where('status', 'in', activeStatuses))
         .limit(1)
         .get();
 
@@ -140,9 +141,9 @@ class ActiveBookingService {
         // ✅ Use shared constants for consistency
         const { ACTIVE_BOOKING_STATUSES } = require('../constants/bookingStatuses');
         const activeStatuses = [...ACTIVE_BOOKING_STATUSES, 'at_dropoff']; // Include at_dropoff if needed
-        const activeBookingsQuery = this.db.collection('bookings')
+        const activeBookingsQuery = withParcelSource(this.db.collection('bookings')
           .where('customerId', '==', customerId)
-          .where('status', 'in', activeStatuses)
+          .where('status', 'in', activeStatuses))
           .limit(1);
 
         const activeBookingsSnapshot = await transaction.get(activeBookingsQuery);

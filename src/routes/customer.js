@@ -14,6 +14,16 @@ const {
   fareFieldsFromCalculation
 } = require('../services/fareQuoteService');
 const { lookupCustomerBookingByIdempotencyKey } = require('../services/bookingIdempotencyLookup');
+const { withParcelSource, marketplaceBookingRejection } = require('../services/parcelSourceFilter');
+
+function sendMarketplaceRejection(res, bookingData, bookingId, route, customerId) {
+  const rejection = marketplaceBookingRejection(bookingData, { bookingId, route, customerId });
+  if (!rejection) {
+    return false;
+  }
+  res.status(rejection.status).json(rejection.body);
+  return true;
+}
 
 function parcelBookingFailureBody(result) {
   if (result.errors.some((entry) => entry.code === 'MISSING_REQUIRED')) {
@@ -318,8 +328,8 @@ router.get('/bookings', authenticateToken, async (req, res) => {
       // Fetch enough records to account for filtering (3x limit)
       const fetchLimit = Math.max(limitNum * 3, 50);
       
-      const query = db.collection('bookings')
-        .where('customerId', '==', userId)
+      const query = withParcelSource(db.collection('bookings')
+        .where('customerId', '==', userId))
         .orderBy('createdAt', 'desc')
         .limit(fetchLimit);
       
@@ -379,9 +389,9 @@ router.get('/bookings', authenticateToken, async (req, res) => {
     }
     
     // ✅ FIXED: Handle specific status queries (for backward compatibility)
-    const query = db.collection('bookings')
+    const query = withParcelSource(db.collection('bookings')
       .where('customerId', '==', userId)
-      .where('status', '==', status)
+      .where('status', '==', status))
       .orderBy('createdAt', 'desc');
     
     // ✅ FIXED: Use cursor-based pagination instead of offset for better performance
@@ -484,6 +494,10 @@ router.get('/bookings/:id', authenticateToken, trackingDataLimiter, async (req, 
         error: 'Access denied',
         details: 'You can only access your own bookings'
       });
+    }
+
+    if (sendMarketplaceRejection(res, bookingData, bookingId, 'GET /api/customer/bookings/:id', userId)) {
+      return;
     }
     
     // ✅ CRITICAL FIX: Populate driver information if driverId exists
@@ -592,9 +606,9 @@ router.get('/active-booking', authenticateToken, async (req, res) => {
     // ✅ CRITICAL FIX: Only consider bookings with assigned drivers as "active"
     // ✅ Use shared constants for consistency (includes money_collection and delivered for payment flow)
     const { ACTIVE_BOOKING_WITH_DRIVER_STATUSES } = require('../constants/bookingStatuses');
-    const activeBookingsQuery = db.collection('bookings')
+    const activeBookingsQuery = withParcelSource(db.collection('bookings')
       .where('customerId', '==', userId)
-      .where('status', 'in', ACTIVE_BOOKING_WITH_DRIVER_STATUSES)
+      .where('status', 'in', ACTIVE_BOOKING_WITH_DRIVER_STATUSES))
       .orderBy('createdAt', 'desc')
       .limit(1);
     
@@ -649,9 +663,9 @@ router.get('/pending-booking', authenticateToken, async (req, res) => {
     
     // ✅ Use shared constants for consistency
     const { PENDING_BOOKING_STATUSES } = require('../constants/bookingStatuses');
-    const pendingBookingsQuery = db.collection('bookings')
+    const pendingBookingsQuery = withParcelSource(db.collection('bookings')
       .where('customerId', '==', userId)
-      .where('status', 'in', PENDING_BOOKING_STATUSES)
+      .where('status', 'in', PENDING_BOOKING_STATUSES))
       .orderBy('createdAt', 'desc')
       .limit(1);
     
@@ -1120,6 +1134,10 @@ router.put('/bookings/:bookingId/cancel', authenticateToken, async (req, res) =>
         success: false,
         error: 'Unauthorized to cancel this booking'
       });
+    }
+
+    if (sendMarketplaceRejection(res, bookingData, bookingId, 'PUT /api/customer/bookings/:bookingId/cancel', userId)) {
+      return;
     }
 
     // ✅ Block cancellation once driver has picked up (order must be returned otherwise)
@@ -1788,6 +1806,10 @@ router.get('/tracking/:bookingId', authenticateToken, async (req, res) => {
         error: 'Unauthorized to track this booking'
       });
     }
+
+    if (sendMarketplaceRejection(res, bookingData, bookingId, 'GET /api/customer/tracking/:bookingId', userId)) {
+      return;
+    }
     
     // Get tracking data
     const trackingQuery = await db.collection('tracking')
@@ -2244,6 +2266,10 @@ router.post('/bookings/:id/confirm-payment', authenticateToken, async (req, res)
         error: 'Access denied - this booking does not belong to you'
       });
     }
+
+    if (sendMarketplaceRejection(res, bookingData, bookingId, 'POST /api/customer/bookings/:id/confirm-payment', userId)) {
+      return;
+    }
     
     // Verify booking is in money collection status
     if (bookingData.status !== 'money_collection') {
@@ -2363,6 +2389,10 @@ router.post('/bookings/:id/rate', authenticateToken, async (req, res) => {
         success: false,
         error: 'Access denied - this booking does not belong to you'
       });
+    }
+
+    if (sendMarketplaceRejection(res, bookingData, bookingId, 'POST /api/customer/bookings/:id/rate', userId)) {
+      return;
     }
     
     // ✅ CRITICAL FIX: Allow rating for both 'delivered' and 'completed' statuses
@@ -2538,6 +2568,10 @@ router.get('/invoice/:bookingId', authenticateToken, async (req, res) => {
         success: false,
         error: 'Access denied'
       });
+    }
+
+    if (sendMarketplaceRejection(res, bookingData, bookingId, 'GET /api/customer/invoice/:bookingId', userId)) {
+      return;
     }
     
     // Only allow invoice download for completed bookings

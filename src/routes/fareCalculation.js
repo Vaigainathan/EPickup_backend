@@ -130,7 +130,7 @@ router.get('/rates', (req, res) => {
         success: true,
         data: {
             baseFarePerKm: fareCalculationService.BASE_FARE_PER_KM,
-            commissionPerKm: fareCalculationService.COMMISSION_PER_KM,
+            commissionPerKm: fareCalculationService.COMMISSION_RATE_PER_KM,
             minimumFare: fareCalculationService.MINIMUM_FARE,
             currency: 'INR',
             updatedAt: new Date().toISOString()

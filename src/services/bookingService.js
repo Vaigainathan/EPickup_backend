@@ -127,6 +127,7 @@ class BookingService {
           vehicle,
           paymentMethod,
           status: 'pending', // Initial status - waiting for driver acceptance
+          sourceType: 'parcel',
           pricing,
           fare,
           distance: {
@@ -455,6 +456,7 @@ class BookingService {
         customerId,
         driverId: null,
         status: 'pending',
+        sourceType: 'parcel',
         
         pickup: {
           name: pickup.name,

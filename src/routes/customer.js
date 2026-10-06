@@ -4,6 +4,32 @@ const { getFirestore } = require('firebase-admin/firestore');
 const { authenticateToken } = require('../middleware/auth');
 const { body, validationResult } = require('express-validator');
 const { trackingDataLimiter } = require('../middleware/rateLimit'); // ✅ Add rate limiting for booking details
+const { sanitizeParcelBookingInput } = require('../validators/parcelBookingInput');
+
+function parcelBookingFailureBody(result) {
+  if (result.errors.some((entry) => entry.code === 'MISSING_REQUIRED')) {
+    return {
+      error: 'Missing required booking fields',
+      details: 'pickup, dropoff, and package are required'
+    };
+  }
+  if (result.errors.some((entry) => entry.code === 'INVALID_PICKUP_COORDINATES')) {
+    return {
+      error: 'Invalid pickup coordinates',
+      details: 'Pickup location coordinates are required'
+    };
+  }
+  if (result.errors.some((entry) => entry.code === 'INVALID_DROPOFF_COORDINATES')) {
+    return {
+      error: 'Invalid dropoff coordinates',
+      details: 'Dropoff location coordinates are required'
+    };
+  }
+  return {
+    error: 'Validation failed',
+    details: result.errors.map((entry) => entry.message).join('; ')
+  };
+}
 
 /**
  * @route GET /api/customer/profile
@@ -665,43 +691,43 @@ router.get('/pending-booking', authenticateToken, async (req, res) => {
 router.post('/bookings', authenticateToken, async (req, res) => {
   try {
     const { uid: userId } = req.user;
-    const bookingData = req.body;
+    const parsedBooking = sanitizeParcelBookingInput(req.body);
+    const bookingData = parsedBooking.data;
     const db = getFirestore();
     
     console.log(`📝 Creating booking for customer: ${userId}`);
-    
-    // Validate required booking fields
-    if (!bookingData.pickup || !bookingData.dropoff || !bookingData.package) {
-      console.error('❌ Missing required booking fields:', {
-        hasPickup: !!bookingData.pickup,
-        hasDropoff: !!bookingData.dropoff,
-        hasPackage: !!bookingData.package,
-        bookingData: bookingData
-      });
+
+    if (!parsedBooking.ok) {
+      const failure = parcelBookingFailureBody(parsedBooking);
+      if (failure.error === 'Missing required booking fields') {
+        console.error('❌ Missing required booking fields:', {
+          hasPickup: !!req.body?.pickup,
+          hasDropoff: !!req.body?.dropoff,
+          hasPackage: !!req.body?.package,
+          bookingData: req.body
+        });
+      } else if (failure.error === 'Invalid pickup coordinates') {
+        console.error('❌ Invalid pickup coordinates:', req.body?.pickup);
+      } else if (failure.error === 'Invalid dropoff coordinates') {
+        console.error('❌ Invalid dropoff coordinates:', req.body?.dropoff);
+      }
       return res.status(400).json({
         success: false,
-        error: 'Missing required booking fields',
-        details: 'pickup, dropoff, and package are required'
-      });
-    }
-    
-    // Validate pickup coordinates
-    if (!bookingData.pickup.coordinates || !bookingData.pickup.coordinates.latitude || !bookingData.pickup.coordinates.longitude) {
-      console.error('❌ Invalid pickup coordinates:', bookingData.pickup);
-      return res.status(400).json({
-        success: false,
-        error: 'Invalid pickup coordinates',
-        details: 'Pickup location coordinates are required'
+        error: failure.error,
+        details: failure.details
       });
     }
-    
-    // Validate dropoff coordinates
-    if (!bookingData.dropoff.coordinates || !bookingData.dropoff.coordinates.latitude || !bookingData.dropoff.coordinates.longitude) {
-      console.error('❌ Invalid dropoff coordinates:', bookingData.dropoff);
-      return res.status(400).json({
-        success: false,
-        error: 'Invalid dropoff coordinates',
-        details: 'Dropoff location coordinates are required'
+
+    if (parsedBooking.droppedKeys.length > 0) {
+      console.warn('⚠️ [PARCEL_BOOKING] Dropped request keys', {
+        customerId: userId,
+        droppedKeys: parsedBooking.droppedKeys
+      });
+    }
+    if (parsedBooking.stringCoordinates.length > 0) {
+      console.warn('⚠️ [PARCEL_BOOKING] Coordinate sent as numeric string', {
+        customerId: userId,
+        coordinates: parsedBooking.stringCoordinates
       });
     }
     
@@ -743,6 +769,7 @@ router.post('/bookings', authenticateToken, async (req, res) => {
       customerId: userId,
       status: 'pending',
       paymentStatus: 'pending',
+      sourceType: 'parcel',
       fare: {
         baseFare: fareDetails.baseFare,
         distanceFare: fareDetails.baseFare, // Simple fare: distance charge only, no minimum fare

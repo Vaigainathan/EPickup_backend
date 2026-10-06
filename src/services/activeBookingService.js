@@ -102,6 +102,7 @@ class ActiveBookingService {
           ...bookingData,
           id: bookingRef.id,
           status: 'pending',
+          sourceType: 'parcel',
           createdAt: new Date(),
           updatedAt: new Date()
         };

@@ -965,12 +965,24 @@ router.post('/bookings', authenticateToken, async (req, res) => {
     }
 
     // ✅ NEW: Generate unique 5-digit display ID (Counter-Hybrid Randomization)
+    let reservedBookingRef = null;
     try {
-      const displayIdService = require('../services/displayIdService');
-      const bookingTimestamp = new Date().getTime();
-      const displayId = await displayIdService.generateDisplayId(bookingTimestamp, userId);
-      newBooking.displayId = displayId;  // Add displayId to booking
-      console.log(`✅ Generated displayId ${displayIdService.formatDisplayId(displayId)} for customer booking`);
+      const { isPoolEnabled, allocateOrderNumber } = require('../services/orderNumberPool');
+      if (isPoolEnabled()) {
+        reservedBookingRef = db.collection('bookings').doc();
+        const displayId = await allocateOrderNumber(db, {
+          kind: 'parcel',
+          refId: reservedBookingRef.id
+        });
+        newBooking.displayId = displayId;
+        console.log(`✅ Allocated order number ${displayId} for customer booking`);
+      } else {
+        const displayIdService = require('../services/displayIdService');
+        const bookingTimestamp = new Date().getTime();
+        const displayId = await displayIdService.generateDisplayId(bookingTimestamp, userId);
+        newBooking.displayId = displayId;  // Add displayId to booking
+        console.log(`✅ Generated displayId ${displayIdService.formatDisplayId(displayId)} for customer booking`);
+      }
     } catch (displayIdError) {
       console.error('❌ Error generating display ID:', displayIdError);
       return res.status(500).json({
@@ -984,8 +996,13 @@ router.post('/bookings', authenticateToken, async (req, res) => {
     try {
       let bookingId;
       if (!bookingData.fareQuoteId) {
-        const bookingRef = await db.collection('bookings').add(newBooking);
-        bookingId = bookingRef.id;
+        if (reservedBookingRef) {
+          await reservedBookingRef.set(newBooking);
+          bookingId = reservedBookingRef.id;
+        } else {
+          const bookingRef = await db.collection('bookings').add(newBooking);
+          bookingId = bookingRef.id;
+        }
       } else {
         bookingId = await db.runTransaction(async (transaction) => {
           const quoteRef = db.collection('fareQuotes').doc(bookingData.fareQuoteId);
@@ -1003,7 +1020,7 @@ router.post('/bookings', authenticateToken, async (req, res) => {
               ? { ok: false, status: 400, code: 'FARE_QUOTE_INVALID', reason: 'already_used' }
               : verdict);
           }
-          const bookingRef = db.collection('bookings').doc();
+          const bookingRef = reservedBookingRef || db.collection('bookings').doc();
           transaction.set(bookingRef, newBooking);
           transaction.update(quoteRef, {
             status: 'used',

@@ -17,6 +17,7 @@ const { GeoPoint, FieldValue } = require('firebase-admin/firestore');
 const serviceAreaValidation = require('./serviceAreaValidation');
 const walletService = require('./walletService');
 const displayIdService = require('./displayIdService');
+const { isPoolEnabled, allocateInTransaction } = require('./orderNumberPool');
 
 /**
  * Booking Service for EPickup delivery platform
@@ -93,14 +94,24 @@ class BookingService {
 
       // ✅ Generate unique 5-digit display ID (Counter-Hybrid Randomization)
       // This is done BEFORE the transaction to atomically increment counter
-      const bookingTimestamp = new Date().getTime();
-      const displayId = await displayIdService.generateDisplayId(bookingTimestamp, customerId);
-      console.log(`✅ Generated displayId ${displayIdService.formatDisplayId(displayId)} for customer ${customerId}`);
+      const poolOn = isPoolEnabled();
+      let displayId;
+      if (!poolOn) {
+        const bookingTimestamp = new Date().getTime();
+        displayId = await displayIdService.generateDisplayId(bookingTimestamp, customerId);
+        console.log(`✅ Generated displayId ${displayIdService.formatDisplayId(displayId)} for customer ${customerId}`);
+      }
 
       // Use atomic transaction for booking creation
       const result = await this.db.runTransaction(async (transaction) => {
         const bookingId = this.db.collection('bookings').doc().id;
         const bookingRef = this.db.collection('bookings').doc(bookingId);
+        if (poolOn) {
+          displayId = await allocateInTransaction(transaction, this.db, {
+            kind: 'parcel',
+            refId: bookingId
+          });
+        }
         
         // ✅ CRITICAL FIX: Ensure specialInstructions is preserved in package object
         const packageData = {

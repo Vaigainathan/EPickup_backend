@@ -2,6 +2,7 @@ const crypto = require('crypto');
 const admin = require('firebase-admin');
 const { getFirestore } = require('./firebase');
 const displayIdService = require('./displayIdService');
+const { isPoolEnabled, allocateOrderNumber } = require('./orderNumberPool');
 const notificationService = require('./notificationService');
 
 const COLLECTION = 'marketplaceOrders';
@@ -675,9 +676,21 @@ class ShopOrderService {
 
     const itemsTotal = 250;
     const deliveryFee = 45;
-    const displayId = await this.allocateUniqueDisplayId(customerId || shopId);
-    const handoverOtp = generateHandoverOtp();
-    const ref = this.orders().doc();
+    let displayId;
+    let handoverOtp;
+    let ref;
+    if (isPoolEnabled()) {
+      ref = this.orders().doc();
+      displayId = await allocateOrderNumber(this.getDb(), {
+        kind: 'shop_order',
+        refId: ref.id
+      });
+      handoverOtp = generateHandoverOtp();
+    } else {
+      displayId = await this.allocateUniqueDisplayId(customerId || shopId);
+      handoverOtp = generateHandoverOtp();
+      ref = this.orders().doc();
+    }
     const now = this.now();
 
     let shopUpiId = '';

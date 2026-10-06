@@ -114,6 +114,12 @@ npm run validate:config       # Validate environment configuration
 npm run migrate              # Run database migrations
 npm run seed                 # Seed database with sample data
 npm run create-indexes       # Create Firestore indexes
+npm run deploy:firestore-indexes -- --project epickup-app-staging
+                             # Preview indexes. Add --apply to deploy indexes only.
+node scripts/deploy-firebase-config.js --project epickup-app-staging
+                             # Print the rules, storage, and indexes commands. Add --apply to run them.
+npm run deploy:firestore-rules
+npm run deploy:storage-rules # Both print the config-script command and exit 1.
 ```
 
 ## 🌍 Environment Variables

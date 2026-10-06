@@ -15,7 +15,7 @@
  * @module versionEnforcer
  */
 
-const { getDb } = require('../services/firebase');
+const { getFirestore } = require('../services/firebase');
 
 /**
  * Compare semantic versions
@@ -43,22 +43,49 @@ function compareVersions(v1, v2) {
 }
 
 /**
+ * Decide allow or block from a stored app policy and the request version.
+ * updateType defaults to 'optional' only when the field is missing.
+ */
+function evaluateVersionPolicy(policy, appVersion) {
+  if (!policy || !policy.current || !policy.minimum) {
+    return { action: 'allow' };
+  }
+
+  const { current, minimum, updateType = 'optional' } = policy;
+
+  if (compareVersions(appVersion, minimum) < 0) {
+    return { action: 'block', status: 426, code: 'VERSION_TOO_OLD' };
+  }
+
+  if (compareVersions(appVersion, current) < 0 && updateType === 'mandatory') {
+    return { action: 'block', status: 426, code: 'UPDATE_REQUIRED' };
+  }
+
+  if (compareVersions(appVersion, current) < 0 && updateType === 'optional') {
+    return { action: 'allow', reason: 'optional_update' };
+  }
+
+  return { action: 'allow' };
+}
+
+/**
  * Get version config from Firestore (with caching)
  */
 let versionConfigCache = null;
 let versionConfigCacheTime = 0;
+let versionConfigCacheValid = false;
 const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
 
 async function getVersionConfig() {
   const now = Date.now();
   
-  // Return cached config if still valid
-  if (versionConfigCache && (now - versionConfigCacheTime) < CACHE_TTL) {
+  // Return cached config if still valid. A cached null means the document was missing.
+  if (versionConfigCacheValid && (now - versionConfigCacheTime) < CACHE_TTL) {
     return versionConfigCache;
   }
   
   try {
-    const db = getDb();
+    const db = getFirestore();
     if (!db) {
       console.warn('⚠️ [VersionEnforcer] Firestore not initialized, allowing request (grace mode)');
       return null;
@@ -68,6 +95,9 @@ async function getVersionConfig() {
     
     if (!doc.exists) {
       console.warn('⚠️ [VersionEnforcer] appSettings/versions document not found, allowing request (grace mode)');
+      versionConfigCache = null;
+      versionConfigCacheTime = now;
+      versionConfigCacheValid = true;
       return null;
     }
     
@@ -76,11 +106,12 @@ async function getVersionConfig() {
     // Cache the config
     versionConfigCache = config;
     versionConfigCacheTime = now;
+    versionConfigCacheValid = true;
     
     return config;
   } catch (error) {
     console.error('❌ [VersionEnforcer] Error fetching version config:', error.message);
-    // Fail open: allow request if we can't read Firestore
+    // Fail open: allow request if we can't read Firestore. Do not cache the error.
     return null;
   }
 }
@@ -139,7 +170,8 @@ async function versionEnforcer(req, res, next) {
     }
     
     const versionPolicy = config[appType];
-    const { current, minimum, updateType = 'optional' } = versionPolicy;
+    const { current, minimum } = versionPolicy;
+    const decision = evaluateVersionPolicy(versionPolicy, appVersion);
     
     // Validate Firestore config format
     if (!current || !minimum) {
@@ -147,16 +179,13 @@ async function versionEnforcer(req, res, next) {
       return next(); // Allow if config is malformed
     }
     
-    // Compare versions
-    const versionCmp = compareVersions(appVersion, minimum);
-    
     // HARD BLOCK: Version below minimum required
-    if (versionCmp < 0) {
+    if (decision.action === 'block' && decision.code === 'VERSION_TOO_OLD') {
       console.warn(
         `🚫 [VersionEnforcer] BLOCKED: ${appType} v${appVersion} < minimum ${minimum} | IP: ${req.ip}`
       );
       
-      return res.status(426).json({
+      return res.status(decision.status).json({
         success: false,
         error: {
           code: 'VERSION_TOO_OLD',
@@ -170,13 +199,12 @@ async function versionEnforcer(req, res, next) {
     }
     
     // SOFT BLOCK: Version below current but above minimum (if mandatory mode)
-    const currentCmp = compareVersions(appVersion, current);
-    if (currentCmp < 0 && updateType === 'mandatory') {
+    if (decision.action === 'block' && decision.code === 'UPDATE_REQUIRED') {
       console.warn(
         `🚫 [VersionEnforcer] BLOCKED: ${appType} v${appVersion} < current ${current} (mandatory mode) | IP: ${req.ip}`
       );
       
-      return res.status(426).json({
+      return res.status(decision.status).json({
         success: false,
         error: {
           code: 'UPDATE_REQUIRED',
@@ -195,7 +223,7 @@ async function versionEnforcer(req, res, next) {
     req.appVersion = appVersion;
     req.appType = appType;
     
-    if (currentCmp < 0 && updateType === 'optional') {
+    if (decision.reason === 'optional_update') {
       console.info(
         `ℹ️  [VersionEnforcer] Optional update available: ${appType} v${appVersion} → ${current}`
       );
@@ -212,5 +240,6 @@ async function versionEnforcer(req, res, next) {
 module.exports = {
   versionEnforcer,
   compareVersions,
+  evaluateVersionPolicy,
   getVersionConfig
 };

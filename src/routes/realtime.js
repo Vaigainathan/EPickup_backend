@@ -4,6 +4,7 @@ const socketService = require('../services/socket');
 const driverAssignmentService = require('../services/driverAssignmentService');
 const notificationService = require('../services/notificationService');
 const { requireRole } = require('../middleware/auth');
+const { userRateLimiter } = require('../middleware/userRateLimiter');
 const { body, validationResult } = require('express-validator');
 
 /**
@@ -43,6 +44,7 @@ router.get('/status', async (req, res) => {
  */
 router.get('/booking/:bookingId/driver-location', [
   requireRole(['customer']),
+  userRateLimiter({ windowMs: 60 * 1000, max: 30, name: 'driver-location' }),
 ], async (req, res) => {
   try {
     const { bookingId } = req.params;

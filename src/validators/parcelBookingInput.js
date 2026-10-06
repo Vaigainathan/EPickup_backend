@@ -6,7 +6,8 @@ const TOP_LEVEL_KEYS = new Set([
   'paymentMethod',
   'idempotencyKey',
   'estimatedPickupTime',
-  'estimatedDeliveryTime'
+  'estimatedDeliveryTime',
+  'fareQuoteId'
 ]);
 
 function isPlainObject(value) {
@@ -70,6 +71,24 @@ function readIndianMobile(source, key, path, errors, target) {
     return;
   }
   pushError(errors, 'INVALID_FIELD', path, message);
+}
+
+function readFareQuoteId(source, errors, target) {
+  if (!Object.prototype.hasOwnProperty.call(source, 'fareQuoteId') || isAbsent(source.fareQuoteId)) {
+    return;
+  }
+  const raw = source.fareQuoteId;
+  const message = 'fareQuoteId must be a non-empty string of at most 128 characters';
+  if (typeof raw !== 'string') {
+    pushError(errors, 'INVALID_FIELD', 'fareQuoteId', message);
+    return;
+  }
+  const cleaned = cleanString(raw, false);
+  if (cleaned.length === 0 || cleaned.length > 128) {
+    pushError(errors, 'INVALID_FIELD', 'fareQuoteId', message);
+    return;
+  }
+  target.fareQuoteId = cleaned;
 }
 
 function readOptionalString(source, key, path, max, keepBreaks, errors, target) {
@@ -283,6 +302,7 @@ function sanitizeParcelBookingInput(body) {
 
   readOptionalString(source, 'paymentMethod', 'paymentMethod', 30, false, errors, data);
   readOptionalString(source, 'idempotencyKey', 'idempotencyKey', 200, false, errors, data);
+  readFareQuoteId(source, errors, data);
   readDate(source, 'estimatedPickupTime', errors, data);
   readDate(source, 'estimatedDeliveryTime', errors, data);
 

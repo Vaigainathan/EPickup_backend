@@ -13,4 +13,12 @@ describe('calculateFare totalFare', () => {
   ])('%s km → ₹%s', (km, totalFare) => {
     expect(fareCalculationService.calculateFare(km).totalFare).toBe(totalFare);
   });
+
+  test.each([
+    [0.4, 'tier1'],
+    [1.0, 'tier2'],
+    [8.46, 'tier3+']
+  ])('%s km pricingTier is %s', (km, pricingTier) => {
+    expect(fareCalculationService.calculateFare(km).breakdown.pricingTier).toBe(pricingTier);
+  });
 });

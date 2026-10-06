@@ -84,6 +84,8 @@ class FareCalculationService {
         this.REMAINDER_RATE_TIER1 = 5; // <500m remainder = ₹5
         this.REMAINDER_RATE_TIER2 = 10; // ≥500m remainder = ₹10 (rounds up)
         this.REMAINDER_THRESHOLD = 0.5; // 500m threshold for tier 2
+        this.TIER_1_DISTANCE = 0.5;    // 0–500m
+        this.TIER_2_DISTANCE = 1.0;    // 500m–1km
         
         // ✅ NEW COMMISSION STRUCTURE v2 (2026-07-24): FLOOR + SMART REMAINDER
         this.COMMISSION_RATE_PER_KM = 1.15;  // ₹1.15/km flat

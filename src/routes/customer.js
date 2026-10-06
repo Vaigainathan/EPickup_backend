@@ -1,10 +1,18 @@
 const express = require('express');
 const router = express.Router();
-const { getFirestore } = require('firebase-admin/firestore');
-const { authenticateToken } = require('../middleware/auth');
+const { getFirestore, Timestamp } = require('firebase-admin/firestore');
+const { authenticateToken, userRateLimit } = require('../middleware/auth');
 const { body, validationResult } = require('express-validator');
 const { trackingDataLimiter } = require('../middleware/rateLimit'); // ✅ Add rate limiting for booking details
 const { sanitizeParcelBookingInput } = require('../validators/parcelBookingInput');
+const {
+  QUOTE_TTL_MS,
+  FareQuoteTransactionError,
+  validateQuoteForBooking,
+  quoteFailureBody,
+  parseFareQuoteRequest,
+  fareFieldsFromCalculation
+} = require('../services/fareQuoteService');
 
 function parcelBookingFailureBody(result) {
   if (result.errors.some((entry) => entry.code === 'MISSING_REQUIRED')) {
@@ -683,6 +691,113 @@ router.get('/pending-booking', authenticateToken, async (req, res) => {
   }
 });
 
+function quoteLatLng(side) {
+  return {
+    latitude: side.coordinates.latitude,
+    longitude: side.coordinates.longitude
+  };
+}
+
+async function readQuoteForBooking(db, quoteId, customerId, bookingData, now) {
+  const quoteSnap = await db.collection('fareQuotes').doc(quoteId).get();
+  if (!quoteSnap.exists) {
+    return {
+      result: { ok: false, status: 400, code: 'FARE_QUOTE_INVALID', reason: 'missing' }
+    };
+  }
+  const quote = quoteSnap.data() || {};
+  let storedBooking = null;
+  if (quote.status === 'used' && quote.usedByBookingId) {
+    const bookingSnap = await db.collection('bookings').doc(quote.usedByBookingId).get();
+    if (bookingSnap.exists) {
+      const data = bookingSnap.data() || {};
+      storedBooking = { id: bookingSnap.id, ...data };
+      quote.usedByIdempotencyKey = typeof data.idempotencyKey === 'string' && data.idempotencyKey.length > 0
+        ? data.idempotencyKey
+        : null;
+    } else {
+      quote.usedByIdempotencyKey = null;
+    }
+  }
+  const result = validateQuoteForBooking(quote, {
+    customerId,
+    pickup: quoteLatLng(bookingData.pickup),
+    dropoff: quoteLatLng(bookingData.dropoff),
+    idempotencyKey: bookingData.idempotencyKey,
+    now
+  });
+  return { result, quote, storedBooking };
+}
+
+/**
+ * @route POST /api/customer/fare-quotes
+ * @desc Lock a delivery price for 15 minutes
+ * @access Private (Customer only)
+ */
+router.post('/fare-quotes', authenticateToken, userRateLimit(30, 5 * 60 * 1000), async (req, res) => {
+  try {
+    const parsed = parseFareQuoteRequest(req.body);
+    if (!parsed.ok) {
+      return res.status(400).json({
+        success: false,
+        error: 'Validation failed',
+        details: parsed.details
+      });
+    }
+
+    const fareCalculationService = require('../services/fareCalculationService');
+    let distanceAndFare;
+    try {
+      distanceAndFare = await fareCalculationService.calculateDistanceAndFare(
+        { lat: parsed.data.pickup.latitude, lng: parsed.data.pickup.longitude },
+        { lat: parsed.data.dropoff.latitude, lng: parsed.data.dropoff.longitude }
+      );
+    } catch (error) {
+      if (fareCalculationService.isFareUnavailableError(error)) {
+        return res.status(503).json(fareCalculationService.fareUnavailableBody());
+      }
+      throw error;
+    }
+
+    const nowMs = Date.now();
+    const expiresAt = Timestamp.fromMillis(nowMs + QUOTE_TTL_MS);
+    const quoteRef = getFirestore().collection('fareQuotes').doc();
+    await quoteRef.set({
+      customerId: req.user.uid,
+      pickup: parsed.data.pickup,
+      dropoff: parsed.data.dropoff,
+      weight: parsed.data.weight,
+      vehicleType: parsed.data.vehicleType,
+      distanceKm: distanceAndFare.distanceKm,
+      fare: distanceAndFare.fare,
+      status: 'active',
+      createdAt: Timestamp.fromMillis(nowMs),
+      expiresAt,
+      usedByBookingId: null,
+      usedByIdempotencyKey: null,
+      usedAt: null
+    });
+
+    return res.status(201).json({
+      success: true,
+      data: {
+        quoteId: quoteRef.id,
+        totalFare: distanceAndFare.fare.totalFare,
+        distanceKm: distanceAndFare.distanceKm,
+        currency: 'INR',
+        expiresAt: expiresAt.toDate().toISOString()
+      }
+    });
+  } catch (error) {
+    console.error('❌ Error creating fare quote:', error);
+    return res.status(500).json({
+      success: false,
+      error: 'Failed to create fare quote',
+      details: error.message
+    });
+  }
+});
+
 /**
  * @route POST /api/customer/bookings
  * @desc Create new booking
@@ -731,67 +846,82 @@ router.post('/bookings', authenticateToken, async (req, res) => {
       });
     }
     
-    // Calculate fare using the dedicated fare calculation service
     const fareCalculationService = require('../services/fareCalculationService');
     
     let fareDetails;
     let distance;
     
-    try {
-      // Calculate distance and fare using the proper service
-      const pickupCoords = {
-        lat: bookingData.pickup.coordinates.latitude,
-        lng: bookingData.pickup.coordinates.longitude
-      };
-      const dropoffCoords = {
-        lat: bookingData.dropoff.coordinates.latitude,
-        lng: bookingData.dropoff.coordinates.longitude
-      };
-      
-      console.log('📍 Calculating fare for coordinates:', { pickupCoords, dropoffCoords });
-      
-      const distanceAndFare = await fareCalculationService.calculateDistanceAndFare(pickupCoords, dropoffCoords);
-      fareDetails = distanceAndFare.fare;
-      distance = distanceAndFare.distanceKm;
-      
-      console.log(`💰 Calculated fare for booking: ₹${fareDetails.baseFare} (${distance}km)`);
-    } catch (error) {
-      if (fareCalculationService.isFareUnavailableError(error)) {
-        console.error('❌ Fare unavailable, booking not created:', error.message);
-        return res.status(503).json(fareCalculationService.fareUnavailableBody());
+    if (!bookingData.fareQuoteId) {
+      try {
+        const pickupCoords = {
+          lat: bookingData.pickup.coordinates.latitude,
+          lng: bookingData.pickup.coordinates.longitude
+        };
+        const dropoffCoords = {
+          lat: bookingData.dropoff.coordinates.latitude,
+          lng: bookingData.dropoff.coordinates.longitude
+        };
+        
+        console.log('📍 Calculating fare for coordinates:', { pickupCoords, dropoffCoords });
+        
+        const distanceAndFare = await fareCalculationService.calculateDistanceAndFare(pickupCoords, dropoffCoords);
+        fareDetails = distanceAndFare.fare;
+        distance = distanceAndFare.distanceKm;
+        
+        console.log(`💰 Calculated fare for booking: ₹${fareDetails.baseFare} (${distance}km)`);
+      } catch (error) {
+        if (fareCalculationService.isFareUnavailableError(error)) {
+          console.error('❌ Fare unavailable, booking not created:', error.message);
+          return res.status(503).json(fareCalculationService.fareUnavailableBody());
+        }
+        throw error;
       }
-      throw error;
+    } else {
+      const prepared = await readQuoteForBooking(
+        db,
+        bookingData.fareQuoteId,
+        userId,
+        bookingData,
+        Date.now()
+      );
+      if (prepared.result.reuse) {
+        if (!prepared.storedBooking) {
+          const failure = quoteFailureBody({
+            ok: false,
+            status: 400,
+            code: 'FARE_QUOTE_INVALID',
+            reason: 'already_used'
+          });
+          return res.status(failure.status).json(failure.body);
+        }
+        const stored = prepared.storedBooking;
+        return res.status(200).json({
+          success: true,
+          message: 'Booking already created',
+          data: {
+            booking: {
+              ...stored,
+              createdAt: stored.createdAt?.toDate ? stored.createdAt.toDate() : (stored.createdAt || new Date()),
+              updatedAt: stored.updatedAt?.toDate ? stored.updatedAt.toDate() : (stored.updatedAt || new Date())
+            }
+          }
+        });
+      }
+      if (!prepared.result.ok) {
+        const failure = quoteFailureBody(prepared.result);
+        return res.status(failure.status).json(failure.body);
+      }
+      fareDetails = prepared.quote.fare;
+      distance = prepared.quote.distanceKm;
     }
     
-    // Add customer ID and fare information to booking data
     const newBooking = {
       ...bookingData,
       customerId: userId,
       status: 'pending',
       paymentStatus: 'pending',
       sourceType: 'parcel',
-      fare: {
-        baseFare: fareDetails.baseFare,
-        distanceFare: fareDetails.baseFare, // Simple fare: distance charge only, no minimum fare
-        totalFare: fareDetails.totalFare,
-        currency: 'INR',
-        commission: fareDetails.commission,
-        driverNet: fareDetails.driverEarnings,
-        companyRevenue: fareDetails.commission
-      },
-      pricing: {
-        baseFare: fareDetails.baseFare,
-        distanceFare: fareDetails.baseFare, // Simple fare: distance charge only, no minimum fare
-        totalFare: fareDetails.totalFare,
-        currency: 'INR',
-        commission: fareDetails.commission,
-        driverNet: fareDetails.driverEarnings,
-        companyRevenue: fareDetails.commission
-      },
-      distance: distance,
-      exactDistance: fareDetails.exactDistanceKm,
-      roundedDistance: fareDetails.roundedDistanceKm || Math.ceil(distance || 0), // ✅ DEFENSIVE: Fallback if missing
-      fareBreakdown: fareDetails.breakdown,
+      ...fareFieldsFromCalculation(fareDetails, distance),
       createdAt: new Date(),
       updatedAt: new Date()
     };
@@ -838,8 +968,38 @@ router.post('/bookings', authenticateToken, async (req, res) => {
 
     // Create booking in Firestore
     try {
-      const bookingRef = await db.collection('bookings').add(newBooking);
-      const bookingId = bookingRef.id;
+      let bookingId;
+      if (!bookingData.fareQuoteId) {
+        const bookingRef = await db.collection('bookings').add(newBooking);
+        bookingId = bookingRef.id;
+      } else {
+        bookingId = await db.runTransaction(async (transaction) => {
+          const quoteRef = db.collection('fareQuotes').doc(bookingData.fareQuoteId);
+          const quoteSnap = await transaction.get(quoteRef);
+          const quote = quoteSnap.exists ? (quoteSnap.data() || {}) : null;
+          const verdict = validateQuoteForBooking(quote, {
+            customerId: userId,
+            pickup: quoteLatLng(bookingData.pickup),
+            dropoff: quoteLatLng(bookingData.dropoff),
+            idempotencyKey: bookingData.idempotencyKey,
+            now: Date.now()
+          });
+          if (!verdict.ok || verdict.reuse) {
+            throw new FareQuoteTransactionError(verdict.reuse
+              ? { ok: false, status: 400, code: 'FARE_QUOTE_INVALID', reason: 'already_used' }
+              : verdict);
+          }
+          const bookingRef = db.collection('bookings').doc();
+          transaction.set(bookingRef, newBooking);
+          transaction.update(quoteRef, {
+            status: 'used',
+            usedByBookingId: bookingRef.id,
+            usedByIdempotencyKey: bookingData.idempotencyKey || null,
+            usedAt: Timestamp.now()
+          });
+          return bookingRef.id;
+        });
+      }
       const createdBooking = { id: bookingId, ...newBooking };
 
       console.log(`✅ Created booking ${bookingId} for customer: ${userId}`);
@@ -861,7 +1021,7 @@ router.post('/bookings', authenticateToken, async (req, res) => {
         }
       });
 
-      res.json({
+      const successBody = {
         success: true,
         data: {
           booking: {
@@ -871,8 +1031,15 @@ router.post('/bookings', authenticateToken, async (req, res) => {
           }
         },
         message: 'Booking created successfully'
-      });
+      };
+      if (bookingData.fareQuoteId) {
+        return res.status(201).json(successBody);
+      }
+      res.json(successBody);
     } catch (firestoreError) {
+      if (firestoreError instanceof FareQuoteTransactionError) {
+        return res.status(firestoreError.status).json(firestoreError.body);
+      }
       console.error('❌ Firestore error creating booking:', firestoreError);
       return res.status(500).json({
         success: false,

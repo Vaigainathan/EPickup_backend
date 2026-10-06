@@ -218,6 +218,39 @@ describe('sanitizeParcelBookingInput', () => {
     });
   });
 
+  test('accepts a fareQuoteId and omits null', () => {
+    const accepted = sanitizeParcelBookingInput({
+      ...fullBody,
+      fareQuoteId: 'quote-1'
+    });
+    expect(accepted.ok).toBe(true);
+    expect(accepted.data.fareQuoteId).toBe('quote-1');
+
+    const omitted = sanitizeParcelBookingInput({
+      ...requiredBody(),
+      fareQuoteId: null
+    });
+    expect(omitted.ok).toBe(true);
+    expect(omitted.data.fareQuoteId).toBeUndefined();
+  });
+
+  test('rejects an empty, over-long, or non-string fareQuoteId', () => {
+    ['', '   ', 'x'.repeat(129), 12].forEach((fareQuoteId) => {
+      const result = sanitizeParcelBookingInput({
+        ...requiredBody(),
+        fareQuoteId
+      });
+      expect(result.ok).toBe(false);
+      expect(result.errors).toEqual([
+        expect.objectContaining({
+          code: 'INVALID_FIELD',
+          path: 'fareQuoteId',
+          message: 'fareQuoteId must be a non-empty string of at most 128 characters'
+        })
+      ]);
+    });
+  });
+
   test('treats null optional fields as absent', () => {
     const result = sanitizeParcelBookingInput({
       ...requiredBody({

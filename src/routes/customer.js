@@ -14,6 +14,8 @@ const {
   fareFieldsFromCalculation
 } = require('../services/fareQuoteService');
 const { lookupCustomerBookingByIdempotencyKey } = require('../services/bookingIdempotencyLookup');
+const { decideParcelLock, presentLockedBooking } = require('../services/customerParcelLock');
+const { customerCancelRefusal, activeCancelHttp } = require('../constants/bookingStatuses');
 const { withParcelSource, marketplaceBookingRejection } = require('../services/parcelSourceFilter');
 
 function sendMarketplaceRejection(res, bookingData, bookingId, route, customerId) {
@@ -978,23 +980,15 @@ router.post('/bookings', authenticateToken, async (req, res) => {
       });
     }
 
-    // ✅ NEW: Generate unique 5-digit display ID (Counter-Hybrid Randomization)
-    let reservedBookingRef = null;
+    const reservedBookingRef = db.collection('bookings').doc();
+    const { isPoolEnabled, allocateInTransaction, PoolNoFreeNumberError } = require('../services/orderNumberPool');
+    const poolOn = isPoolEnabled();
     try {
-      const { isPoolEnabled, allocateOrderNumber } = require('../services/orderNumberPool');
-      if (isPoolEnabled()) {
-        reservedBookingRef = db.collection('bookings').doc();
-        const displayId = await allocateOrderNumber(db, {
-          kind: 'parcel',
-          refId: reservedBookingRef.id
-        });
-        newBooking.displayId = displayId;
-        console.log(`✅ Allocated order number ${displayId} for customer booking`);
-      } else {
+      if (!poolOn) {
         const displayIdService = require('../services/displayIdService');
         const bookingTimestamp = new Date().getTime();
         const displayId = await displayIdService.generateDisplayId(bookingTimestamp, userId);
-        newBooking.displayId = displayId;  // Add displayId to booking
+        newBooking.displayId = displayId;
         console.log(`✅ Generated displayId ${displayIdService.formatDisplayId(displayId)} for customer booking`);
       }
     } catch (displayIdError) {
@@ -1006,20 +1000,33 @@ router.post('/bookings', authenticateToken, async (req, res) => {
       });
     }
 
-    // Create booking in Firestore
     try {
-      let bookingId;
-      if (!bookingData.fareQuoteId) {
-        if (reservedBookingRef) {
-          await reservedBookingRef.set(newBooking);
-          bookingId = reservedBookingRef.id;
-        } else {
-          const bookingRef = await db.collection('bookings').add(newBooking);
-          bookingId = bookingRef.id;
+      const outcome = await db.runTransaction(async (transaction) => {
+        const lockRef = db.collection('customerParcelLocks').doc(userId);
+        const lockSnap = await transaction.get(lockRef);
+        const lock = lockSnap.exists ? (lockSnap.data() || {}) : null;
+        let lockedBooking = null;
+        if (lock && lock.bookingId) {
+          const lockedSnap = await transaction.get(db.collection('bookings').doc(lock.bookingId));
+          if (lockedSnap.exists) {
+            lockedBooking = { id: lockedSnap.id, ...(lockedSnap.data() || {}) };
+          }
         }
-      } else {
-        bookingId = await db.runTransaction(async (transaction) => {
-          const quoteRef = db.collection('fareQuotes').doc(bookingData.fareQuoteId);
+        const decision = decideParcelLock({
+          lock,
+          booking: lockedBooking,
+          requestKey: bookingData.idempotencyKey
+        });
+        if (decision.action === 'reuse') {
+          return { action: 'reuse', booking: presentLockedBooking(lockedBooking) };
+        }
+        if (decision.action === 'conflict') {
+          return { action: 'conflict', booking: lockedBooking };
+        }
+
+        let quoteRef = null;
+        if (bookingData.fareQuoteId) {
+          quoteRef = db.collection('fareQuotes').doc(bookingData.fareQuoteId);
           const quoteSnap = await transaction.get(quoteRef);
           const quote = quoteSnap.exists ? (quoteSnap.data() || {}) : null;
           const verdict = validateQuoteForBooking(quote, {
@@ -1034,17 +1041,55 @@ router.post('/bookings', authenticateToken, async (req, res) => {
               ? { ok: false, status: 400, code: 'FARE_QUOTE_INVALID', reason: 'already_used' }
               : verdict);
           }
-          const bookingRef = reservedBookingRef || db.collection('bookings').doc();
-          transaction.set(bookingRef, newBooking);
+        }
+        if (poolOn) {
+          newBooking.displayId = await allocateInTransaction(transaction, db, {
+            kind: 'parcel',
+            refId: reservedBookingRef.id
+          });
+        }
+        transaction.set(reservedBookingRef, newBooking);
+        if (quoteRef) {
           transaction.update(quoteRef, {
             status: 'used',
-            usedByBookingId: bookingRef.id,
+            usedByBookingId: reservedBookingRef.id,
             usedByIdempotencyKey: bookingData.idempotencyKey || null,
             usedAt: Timestamp.now()
           });
-          return bookingRef.id;
+        }
+        transaction.set(lockRef, {
+          bookingId: reservedBookingRef.id,
+          idempotencyKey: bookingData.idempotencyKey || null,
+          createdAt: Timestamp.now()
+        });
+        return { action: 'created', bookingId: reservedBookingRef.id };
+      });
+
+      if (outcome.action === 'reuse') {
+        return res.status(200).json({
+          success: true,
+          message: 'Booking already created',
+          data: { booking: outcome.booking }
         });
       }
+      if (outcome.action === 'conflict') {
+        const existing = outcome.booking || {};
+        return res.status(409).json({
+          success: false,
+          error: {
+            code: 'CUSTOMER_ACTIVE_BOOKING_EXISTS',
+            message: 'You already have an active booking. Please complete or cancel it before creating a new one.',
+            details: {
+              existingBookingId: existing.id,
+              status: existing.status,
+              createdAt: existing.createdAt
+            }
+          },
+          timestamp: new Date().toISOString()
+        });
+      }
+
+      const bookingId = outcome.bookingId;
       const createdBooking = { id: bookingId, ...newBooking };
 
       console.log(`✅ Created booking ${bookingId} for customer: ${userId}`);
@@ -1084,6 +1129,14 @@ router.post('/bookings', authenticateToken, async (req, res) => {
     } catch (firestoreError) {
       if (firestoreError instanceof FareQuoteTransactionError) {
         return res.status(firestoreError.status).json(firestoreError.body);
+      }
+      if (firestoreError instanceof PoolNoFreeNumberError) {
+        console.error('❌ Error generating display ID:', firestoreError);
+        return res.status(500).json({
+          success: false,
+          error: 'Failed to generate booking ID',
+          details: firestoreError.message
+        });
       }
       console.error('❌ Firestore error creating booking:', firestoreError);
       return res.status(500).json({
@@ -1140,18 +1193,9 @@ router.put('/bookings/:bookingId/cancel', authenticateToken, async (req, res) =>
       return;
     }
 
-    // ✅ Block cancellation once driver has picked up (order must be returned otherwise)
-    const currentStatus = bookingData.status || '';
-    const nonCancellableStatuses = ['picked_up', 'in_transit', 'at_dropoff', 'delivered', 'completed', 'cancelled'];
-    if (nonCancellableStatuses.includes(currentStatus)) {
-      return res.status(400).json({
-        success: false,
-        error: 'Cannot cancel this booking',
-        code: 'CANCELLATION_NOT_ALLOWED',
-        message: currentStatus === 'cancelled'
-          ? 'This booking is already cancelled.'
-          : 'Cancellation is not allowed once the driver has picked up your order. Please contact support if you have an issue.'
-      });
+    const refusal = customerCancelRefusal(bookingData.status);
+    if (refusal) {
+      return res.status(refusal.status).json(refusal.body);
     }
 
     // Update booking status
@@ -2804,24 +2848,14 @@ router.post('/cancel-active-booking', [
     const activeBookingService = new ActiveBookingService();
     
     const result = await activeBookingService.cancelActiveBooking(customerId, reason);
-    
-    if (result.success) {
-      res.status(200).json({
-        success: true,
-        message: 'Active booking cancelled successfully',
-        data: result,
-        timestamp: new Date().toISOString()
-      });
-    } else {
-      res.status(400).json({
-        success: false,
-        error: {
-          code: 'CANCELLATION_FAILED',
-          message: result.message || 'Failed to cancel active booking'
-        },
-        timestamp: new Date().toISOString()
-      });
+    const http = activeCancelHttp(result);
+    if (result && result.outcome === 'refuse') {
+      return res.status(http.status).json(http.body);
     }
+    return res.status(http.status).json({
+      ...http.body,
+      timestamp: new Date().toISOString()
+    });
   } catch (error) {
     console.error('Error cancelling active booking:', error);
     res.status(500).json({

@@ -38,14 +38,11 @@ class ActiveBookingService {
         this.db = this.getDb();
       }
       
-      // ✅ Use shared constants for consistency
-      const { ACTIVE_BOOKING_STATUSES } = require('../constants/bookingStatuses');
-      // Note: 'at_dropoff' is not in standard statuses, using ACTIVE_BOOKING_STATUSES
-      const activeStatuses = [...ACTIVE_BOOKING_STATUSES, 'at_dropoff']; // Include at_dropoff if needed
+      const { CUSTOMER_PARCEL_BLOCKING_STATUSES } = require('../constants/bookingStatuses');
 
       const activeBookingsSnapshot = await withParcelSource(this.db.collection('bookings')
         .where('customerId', '==', customerId)
-        .where('status', 'in', activeStatuses))
+        .where('status', 'in', CUSTOMER_PARCEL_BLOCKING_STATUSES))
         .limit(1)
         .get();
 
@@ -135,27 +132,29 @@ class ActiveBookingService {
    * ✅ ZOMATO STANDARD: Proper cleanup when canceling active booking
    */
   async cancelActiveBooking(customerId, reason = 'Cancelled by customer') {
+    const db = this.getDb();
+    this.db = db;
     try {
-      const result = await this.db.runTransaction(async (transaction) => {
-        // Find active booking
-        // ✅ Use shared constants for consistency
-        const { ACTIVE_BOOKING_STATUSES } = require('../constants/bookingStatuses');
-        const activeStatuses = [...ACTIVE_BOOKING_STATUSES, 'at_dropoff']; // Include at_dropoff if needed
-        const activeBookingsQuery = withParcelSource(this.db.collection('bookings')
+      const result = await db.runTransaction(async (transaction) => {
+        const { CUSTOMER_PARCEL_BLOCKING_STATUSES, planCustomerActiveCancel } = require('../constants/bookingStatuses');
+        const activeBookingsQuery = withParcelSource(db.collection('bookings')
           .where('customerId', '==', customerId)
-          .where('status', 'in', activeStatuses))
+          .where('status', 'in', CUSTOMER_PARCEL_BLOCKING_STATUSES))
           .limit(1);
 
         const activeBookingsSnapshot = await transaction.get(activeBookingsQuery);
 
         if (activeBookingsSnapshot.empty) {
-          throw new Error('NO_ACTIVE_BOOKING');
+          return { success: false, outcome: 'not_blocking' };
         }
 
         const bookingDoc = activeBookingsSnapshot.docs[0];
         const bookingData = bookingDoc.data();
+        const plan = planCustomerActiveCancel(bookingData.status);
+        if (plan.action !== 'cancel') {
+          return { success: false, outcome: 'refuse', refusal: plan.refusal };
+        }
 
-        // Update booking status
         transaction.update(bookingDoc.ref, {
           status: 'cancelled',
           cancelledAt: new Date(),
@@ -180,7 +179,9 @@ class ActiveBookingService {
         };
       });
 
-      console.log(`✅ [ActiveBookingService] Cancelled active booking for customer ${customerId}`);
+      if (result.success) {
+        console.log(`✅ [ActiveBookingService] Cancelled active booking for customer ${customerId}`);
+      }
       return result;
 
     } catch (error) {

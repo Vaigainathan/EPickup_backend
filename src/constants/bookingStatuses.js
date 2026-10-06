@@ -91,12 +91,88 @@ const PAYMENT_STATUSES = [
   'completed'
 ];
 
+const CUSTOMER_PARCEL_BLOCKING_STATUSES = ACTIVE_BOOKING_STATUSES.filter((status) =>
+  status !== 'delivered' && status !== 'money_collection'
+);
+
+const CUSTOMER_NON_CANCELLABLE_STATUSES = [
+  'picked_up',
+  'in_transit',
+  'at_dropoff',
+  'delivered',
+  'money_collection',
+  'completed',
+  'cancelled',
+  'rejected'
+];
+
+function customerCancelRefusal(status) {
+  const currentStatus = status || '';
+  if (!CUSTOMER_NON_CANCELLABLE_STATUSES.includes(currentStatus)) {
+    return null;
+  }
+  return {
+    status: 400,
+    body: {
+      success: false,
+      error: 'Cannot cancel this booking',
+      code: 'CANCELLATION_NOT_ALLOWED',
+      message: currentStatus === 'cancelled'
+        ? 'This booking is already cancelled.'
+        : 'Cancellation is not allowed once the driver has picked up your order. Please contact support if you have an issue.'
+    }
+  };
+}
+
+function planCustomerActiveCancel(status) {
+  if (!CUSTOMER_PARCEL_BLOCKING_STATUSES.includes(status)) {
+    return { action: 'not_blocking' };
+  }
+  const refusal = customerCancelRefusal(status);
+  if (refusal) {
+    return { action: 'refuse', refusal };
+  }
+  return { action: 'cancel' };
+}
+
+function activeCancelHttp(result) {
+  if (result && result.success) {
+    return {
+      status: 200,
+      body: {
+        success: true,
+        message: 'Active booking cancelled successfully',
+        data: result
+      }
+    };
+  }
+  if (result && result.outcome === 'refuse') {
+    return {
+      status: result.refusal.status,
+      body: result.refusal.body
+    };
+  }
+  return {
+    status: 404,
+    body: {
+      success: false,
+      error: 'No parcel booking to cancel',
+      code: 'NO_BLOCKING_BOOKING'
+    }
+  };
+}
+
 module.exports = {
   ACTIVE_BOOKING_STATUSES,
   ACTIVE_BOOKING_WITH_DRIVER_STATUSES,
   PENDING_BOOKING_STATUSES,
   COMPLETED_BOOKING_STATUSES,
   VALID_BOOKING_STATUSES,
-  PAYMENT_STATUSES
+  PAYMENT_STATUSES,
+  CUSTOMER_PARCEL_BLOCKING_STATUSES,
+  CUSTOMER_NON_CANCELLABLE_STATUSES,
+  customerCancelRefusal,
+  planCustomerActiveCancel,
+  activeCancelHttp
 };
 

@@ -13,6 +13,7 @@ const {
   parseFareQuoteRequest,
   fareFieldsFromCalculation
 } = require('../services/fareQuoteService');
+const { lookupCustomerBookingByIdempotencyKey } = require('../services/bookingIdempotencyLookup');
 
 function parcelBookingFailureBody(result) {
   if (result.errors.some((entry) => entry.code === 'MISSING_REQUIRED')) {
@@ -843,6 +844,19 @@ router.post('/bookings', authenticateToken, async (req, res) => {
       console.warn('⚠️ [PARCEL_BOOKING] Coordinate sent as numeric string', {
         customerId: userId,
         coordinates: parsedBooking.stringCoordinates
+      });
+    }
+
+    const existingBooking = await lookupCustomerBookingByIdempotencyKey(
+      db,
+      userId,
+      bookingData.idempotencyKey
+    );
+    if (existingBooking.found) {
+      return res.status(200).json({
+        success: true,
+        message: 'Booking already created',
+        data: { booking: existingBooking.booking }
       });
     }
     

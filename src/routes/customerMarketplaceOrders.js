@@ -1,9 +1,11 @@
 const express = require('express');
 const router = express.Router();
 
-const { authMiddleware, requireRole } = require('../middleware/auth');
+const { authMiddleware, authenticateToken, requireRole } = require('../middleware/auth');
 const { userRateLimiter } = require('../middleware/userRateLimiter');
+const { getFirestore } = require('../services/firebase');
 const { createMarketplaceOrder } = require('../services/marketplace/createCustomerOrder');
+const { listCustomerOrders, getCustomerOrder } = require('../services/marketplace/customerOrderRead');
 
 const minuteLimiter = userRateLimiter({
   windowMs: 60 * 1000,
@@ -15,12 +17,22 @@ const dayLimiter = userRateLimiter({
   max: 30,
   name: 'marketplace-order-create-day'
 });
+const listLimiter = userRateLimiter({
+  windowMs: 60 * 1000,
+  max: 60,
+  name: 'marketplace-order-list-minute'
+});
+const detailLimiter = userRateLimiter({
+  windowMs: 60 * 1000,
+  max: 120,
+  name: 'marketplace-order-detail-minute'
+});
 
-function sendError(res, error) {
+function sendError(res, error, fallbackMessage) {
   const status = error.status || 500;
   const errorBody = {
     code: error.code || 'INTERNAL_ERROR',
-    message: status === 500 ? 'Failed to create marketplace order' : error.message
+    message: status === 500 ? fallbackMessage : error.message
   };
   if (error.orderId !== undefined) {
     errorBody.orderId = error.orderId;
@@ -52,7 +64,37 @@ router.post(
       });
       return res.status(result.status).json(result.body);
     } catch (error) {
-      return sendError(res, error);
+      return sendError(res, error, 'Failed to create marketplace order');
+    }
+  }
+);
+
+router.get(
+  '/marketplace-orders',
+  authenticateToken,
+  requireRole(['customer']),
+  listLimiter,
+  async (req, res) => {
+    try {
+      const data = await listCustomerOrders(getFirestore(), req.user.uid, req.query || {});
+      return res.json({ success: true, data });
+    } catch (error) {
+      return sendError(res, error, 'Failed to list marketplace orders');
+    }
+  }
+);
+
+router.get(
+  '/marketplace-orders/:id',
+  authenticateToken,
+  requireRole(['customer']),
+  detailLimiter,
+  async (req, res) => {
+    try {
+      const data = await getCustomerOrder(getFirestore(), req.user.uid, req.params.id);
+      return res.json({ success: true, data });
+    } catch (error) {
+      return sendError(res, error, 'Failed to load marketplace order');
     }
   }
 );

@@ -34,6 +34,13 @@ const ALLOWED_TRANSITIONS = {
   handed_over: ['completed', 'delivery_failed']
 };
 
+const TERMINAL_ORDER_STATUSES = ORDER_STATUSES.filter(
+  (status) => !Object.prototype.hasOwnProperty.call(ALLOWED_TRANSITIONS, status)
+);
+const ONGOING_ORDER_STATUSES = ORDER_STATUSES.filter(
+  (status) => Object.prototype.hasOwnProperty.call(ALLOWED_TRANSITIONS, status)
+);
+
 const ENFORCEMENT_TTL_MS = 60 * 1000;
 const DEFAULT_ENFORCEMENT = { newStatuses: false, utrBlocksReject: false };
 
@@ -95,6 +102,8 @@ async function getMarketplaceEnforcement() {
 
 module.exports = {
   ORDER_STATUSES,
+  ONGOING_ORDER_STATUSES,
+  TERMINAL_ORDER_STATUSES,
   PAYMENT_STATUSES,
   ALLOWED_TRANSITIONS,
   InvalidStateError,

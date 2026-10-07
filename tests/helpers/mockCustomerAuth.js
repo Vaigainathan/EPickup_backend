@@ -11,5 +11,6 @@ function requireRole() {
 
 module.exports = {
   authMiddleware,
+  authenticateToken: authMiddleware,
   requireRole
 };

@@ -13,11 +13,44 @@ const PAYMENT_FIELDS = [
   'refundedAt'
 ];
 
+const PAYMENT_TIME_FIELDS = ['initiatedAt', 'confirmedAt', 'expiredAt', 'refundedAt'];
+
+function toIso(value) {
+  if (value == null) {
+    return null;
+  }
+  if (typeof value.toDate === 'function') {
+    const date = value.toDate();
+    return date instanceof Date && !Number.isNaN(date.getTime()) ? date.toISOString() : null;
+  }
+  if (value instanceof Date) {
+    return Number.isNaN(value.getTime()) ? null : value.toISOString();
+  }
+  if (typeof value === 'string') {
+    return value;
+  }
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return new Date(value).toISOString();
+  }
+  return null;
+}
+
+function copyWindow(window) {
+  if (!window || typeof window !== 'object') {
+    return null;
+  }
+  return {
+    start: toIso(window.start),
+    end: toIso(window.end)
+  };
+}
+
 function copyPayment(payment) {
   const source = payment && typeof payment === 'object' ? payment : {};
   const copied = {};
   PAYMENT_FIELDS.forEach((field) => {
-    copied[field] = source[field] === undefined ? null : source[field];
+    const value = source[field] === undefined ? null : source[field];
+    copied[field] = PAYMENT_TIME_FIELDS.includes(field) ? toIso(value) : value;
   });
   return copied;
 }
@@ -39,7 +72,7 @@ function presentCustomerOrder(order) {
     expectedAmountPaise: source.expectedAmountPaise ?? null,
     deliveryFee: source.deliveryFee ?? null,
     deliveryAddress: source.deliveryAddress ?? null,
-    window: source.window ?? null,
+    window: copyWindow(source.window),
     verifiedPayeeName: source.verifiedPayeeName ?? null,
     policyGroup: source.policyGroup ?? null,
     shopSnapshot: source.shopSnapshot ?? null,
@@ -55,14 +88,34 @@ function presentCustomerOrder(order) {
     payment: copyPayment(source.payment),
     cancellation: {
       reason: cancellation.reason ?? null,
-      cancelledAt: cancellation.cancelledAt ?? null,
+      cancelledAt: toIso(cancellation.cancelledAt),
       cancelledBy: cancellation.cancelledBy ?? null
     },
-    createdAt: source.createdAt ?? null,
-    updatedAt: source.updatedAt ?? null
+    createdAt: toIso(source.createdAt),
+    updatedAt: toIso(source.updatedAt)
+  };
+}
+
+function presentCustomerOrderSummary(order) {
+  const view = presentCustomerOrder(order);
+  const items = Array.isArray(view.items) ? view.items : [];
+  const first = items[0] || null;
+  const snapshot = view.shopSnapshot && typeof view.shopSnapshot === 'object' ? view.shopSnapshot : {};
+  return {
+    id: view.id,
+    displayId: view.displayId,
+    orderStatus: view.orderStatus,
+    shopSnapshot: { name: snapshot.name ?? null },
+    itemsCount: items.length,
+    firstItemName: first && typeof first.name === 'string' ? first.name : null,
+    expectedAmount: view.expectedAmount,
+    expectedAmountPaise: view.expectedAmountPaise,
+    createdAt: view.createdAt,
+    window: view.window
   };
 }
 
 module.exports = {
-  presentCustomerOrder
+  presentCustomerOrder,
+  presentCustomerOrderSummary
 };

@@ -550,12 +550,12 @@ async function confirmShortBalance(tx, context) {
   tx.update(orderRef, {
     orderStatus: 'preparing',
     'payment.status': 'confirmed',
-    'payment.officialUtr': matched.officialUtr,
-    'payment.utrSource': matched.utrSource,
     'payment.confirmedAt': at,
     'payment.confirmedByShopUid': shopId,
     'payment.receivedAmount': receivedAmount,
     'payment.receivedAmountPaise': receivedPaise,
+    'payment.balance.officialUtr': matched.officialUtr,
+    'payment.balance.utrSource': matched.utrSource,
     'payment.balance.confirmedAt': at
   });
   writeRegistry(tx, registrySnap, registryRef, {

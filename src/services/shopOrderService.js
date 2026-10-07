@@ -222,6 +222,8 @@ class ShopOrderService {
             amountPaise: payment.balance.amountPaise ?? null,
             dueBy: toIso(payment.balance.dueBy),
             utr: payment.balance.utr ?? null,
+            officialUtr: payment.balance.officialUtr ?? null,
+            utrSource: payment.balance.utrSource ?? null,
             submittedAt: toIso(payment.balance.submittedAt),
             confirmedAt: toIso(payment.balance.confirmedAt)
           }

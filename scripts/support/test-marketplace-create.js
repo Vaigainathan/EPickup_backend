@@ -20,7 +20,9 @@
  * dry run, and from the amount_short_cancel stub after --apply.
  * --confirm dry run prints utrLast4. On a short order that is the last 4 of
  * balance.utr. --full-utr sends that 12-digit value instead. --confirm --apply
- * calls confirmPayment. A short confirm needs --enforce.
+ * calls confirmPayment. A short confirm needs --enforce. The confirm result
+ * prints officialUtrLast4 for the first payment and balanceOfficialUtrLast4
+ * for the balance match.
  * --amount-differs <rupees> dry run prints utrLast4 and the body and
  * writes nothing. --amount-differs <rupees> --apply calls the service.
  * --enforce passes { newStatuses: true, utrBlocksReject: true } into that
@@ -700,6 +702,9 @@ async function main() {
         paymentStatus: result.order.payment.status,
         officialUtrLast4: result.order.payment.officialUtr
           ? String(result.order.payment.officialUtr).slice(-4)
+          : null,
+        balanceOfficialUtrLast4: result.order.payment.balance && result.order.payment.balance.officialUtr
+          ? String(result.order.payment.balance.officialUtr).slice(-4)
           : null
       }, null, 2));
     } catch (error) {

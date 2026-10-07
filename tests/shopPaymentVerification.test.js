@@ -687,6 +687,9 @@ describe('shop payment verification', () => {
       payment: {
         status: 'short',
         amount: 100,
+        customerUtr: UTR,
+        officialUtr: UTR,
+        utrSource: 'customer',
         receivedAmount: 40,
         receivedAmountPaise: 4000,
         balance: {
@@ -708,14 +711,29 @@ describe('shop payment verification', () => {
     expect(stored.payment.status).toBe('confirmed');
     expect(stored.payment.receivedAmount).toBe(100);
     expect(stored.payment.receivedAmountPaise).toBe(10000);
+    expect(stored.payment.officialUtr).toBe(UTR);
+    expect(stored.payment.utrSource).toBe('customer');
+    expect(stored.payment.balance.officialUtr).toBe(balanceUtr);
+    expect(stored.payment.balance.utrSource).toBe('customer');
     expect(stored.payment.balance.confirmedAt).toBeTruthy();
+    expect(confirmed.body.data.order.payment.officialUtr).toBe(UTR);
+    expect(confirmed.body.data.order.payment.balance.officialUtr).toBe(balanceUtr);
+    expect(confirmed.body.data.order.payment.balance.utrSource).toBe('customer');
+    const customerView = presentCustomerOrder({ id: 'order-bal', payment: stored.payment });
+    expect(customerView.payment.balance.officialUtr).toBe(balanceUtr);
+    expect(customerView.payment.balance.utrSource).toBeUndefined();
+    expect(JSON.stringify(customerView)).not.toContain('utrSource');
     expect(mockDocs.has('marketplaceLocks/cust-1_shop-1')).toBe(false);
-    expect(eventsFor('order-bal').map((event) => event.type)).toContain('balance_confirmed');
+    const balanceEvent = eventsFor('order-bal').find((event) => event.type === 'balance_confirmed');
+    expect(balanceEvent.data.officialUtr).toBe(balanceUtr);
 
     seedOrder('order-shop-bal', {
       payment: {
         status: 'short',
         amount: 100,
+        customerUtr: UTR,
+        officialUtr: UTR,
+        utrSource: 'customer',
         receivedAmount: 40,
         receivedAmountPaise: 4000,
         balance: {
@@ -732,7 +750,13 @@ describe('shop payment verification', () => {
     const shopTyped = await post('order-shop-bal/confirm-payment', { fullUtr: SHOP_UTR, withinWindowAttested: true });
     expect(shopTyped.status).toBe(200);
     expect(mockDocs.get(`utrRegistry/${SHOP_UTR}`)).toMatchObject({ orderId: 'order-shop-bal', kind: 'shop' });
-    expect(mockDocs.get('marketplaceOrders/order-shop-bal').payment.receivedAmount).toBe(100);
+    const shopStored = mockDocs.get('marketplaceOrders/order-shop-bal');
+    expect(shopStored.payment.receivedAmount).toBe(100);
+    expect(shopStored.payment.officialUtr).toBe(UTR);
+    expect(shopStored.payment.utrSource).toBe('customer');
+    expect(shopStored.payment.balance.officialUtr).toBe(SHOP_UTR);
+    expect(shopStored.payment.balance.utrSource).toBe('shop');
+    expect(shopTyped.body.data.order.payment.balance.utrSource).toBe('shop');
 
     mockGetEnforcement.mockResolvedValue({ newStatuses: false, utrBlocksReject: false });
     seedOrder('order-off', { payment: { status: 'short', amount: 100 } });

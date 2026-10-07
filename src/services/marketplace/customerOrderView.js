@@ -70,6 +70,7 @@ function copyBalance(payment) {
     amountPaise: balance.amountPaise ?? null,
     dueBy: toIso(balance.dueBy),
     utr: balance.utr ?? null,
+    officialUtr: balance.officialUtr ?? null,
     submittedAt: toIso(balance.submittedAt),
     confirmedAt: toIso(balance.confirmedAt)
   };

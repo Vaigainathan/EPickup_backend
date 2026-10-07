@@ -182,6 +182,11 @@ const NOTIFICATION_TEMPLATES = {
       body: 'Order {{displayId}} has a UTR to check.',
       data: { type: 'utr_submitted', action: 'view_order' }
     },
+    AMOUNT_SHORT: {
+      title: 'Payment short',
+      body: '₹{{receivedAmount}} received, ₹{{balanceAmount}} short — pay balance or cancel',
+      data: { type: 'amount_short', action: 'view_order' }
+    },
     CUSTOMER_CANCELLED: {
       title: 'Order cancelled',
       body: 'Order {{displayId}} was cancelled. {{detail}}',

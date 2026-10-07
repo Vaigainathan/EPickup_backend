@@ -91,6 +91,14 @@ beforeEach(() => {
   });
 });
 
+describe('legacy payment expiry set', () => {
+  test('short is not selected by the old timeout set', () => {
+    expect(job.isLegacyPaymentExpireable('short')).toBe(false);
+    expect(job.isLegacyPaymentExpireable('pending')).toBe(true);
+    expect(job.isLegacyPaymentExpireable('initiated')).toBe(true);
+  });
+});
+
 describe('expireOne lock release', () => {
   test('deletes a lock that points at this order and decrements a positive unpaid count', async () => {
     mockTimeoutDocs.set('marketplaceLocks/cust-1_shop-1', { orderId: 'order-1' });

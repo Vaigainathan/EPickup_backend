@@ -48,6 +48,14 @@ function mockRef(path) {
   return {
     id,
     path,
+    async get() {
+      const data = mockDocs.get(path);
+      return {
+        exists: data !== undefined,
+        id,
+        data: () => (data === undefined ? undefined : mockClone(data))
+      };
+    },
     collection(name) {
       return {
         doc(subId) {
@@ -369,17 +377,140 @@ describe('customer cancel', () => {
     expect(JSON.stringify(response.body)).not.toContain('654321');
   });
 
-  test('short and preparing cannot be cancelled', async () => {
-    seedOrder('order-short', { payment: { status: 'short', amount: 1540 } });
+  test('preparing cannot be cancelled', async () => {
     seedOrder('order-prep', { orderStatus: 'preparing', payment: { status: 'confirmed' } });
-
-    const short = await postCancel('order-short');
-    expect(short.status).toBe(409);
-    expect(short.body.error.code).toBe('CANCEL_NOT_ALLOWED');
-
     const preparing = await postCancel('order-prep');
     expect(preparing.status).toBe(409);
     expect(preparing.body.error.code).toBe('CANCEL_NOT_ALLOWED');
     expect(mockSendTemplate).not.toHaveBeenCalled();
+  });
+
+  test('a short order cancels once and refunds the amount received', async () => {
+    seedOrder('order-short', {
+      payment: {
+        status: 'short',
+        amount: 100,
+        receivedAmount: 40,
+        balance: { amount: 60, amountPaise: 6000, dueBy: stamp(Date.now() + HOUR), utr: null }
+      }
+    });
+    seedLock('order-short');
+    seedUser(1);
+
+    const response = await postCancel('order-short');
+    expect(response.status).toBe(200);
+    expect(response.body.data.order.orderStatus).toBe('cancelled');
+    expect(response.body.data.order.cancellation.reason).toBe('amount_short_cancel');
+    expect(response.body.data.order.payment.status).toBe('refund_pending');
+    const stored = mockDocs.get('marketplaceOrders/order-short');
+    expect(stored.closedReason).toBeUndefined();
+    expect(stored.refunds).toHaveLength(1);
+    expect(stored.refunds[0]).toMatchObject({ reason: 'amount_short_cancel', amount: 40 });
+    expect(mockDocs.has('marketplaceLocks/customer-test_shop-1')).toBe(false);
+    expect(mockDocs.get('users/customer-test').customer.marketplace.unpaidCount).toBe(0);
+    expect(mockSendTemplate).toHaveBeenCalledWith(
+      'customer-test',
+      'MARKETPLACE',
+      'REFUND_INITIATED',
+      expect.objectContaining({ amount: 40 })
+    );
+
+    const replay = await postCancel('order-short');
+    expect(replay.status).toBe(200);
+    expect(mockDocs.get('marketplaceOrders/order-short').refunds).toHaveLength(1);
+    expect(mockSendTemplate).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('balance UTR', () => {
+  const BALANCE = '555555555555';
+
+  function shortOrder(id, extra = {}) {
+    const due = extra.dueBy || stamp(Date.now() + HOUR);
+    seedOrder(id, {
+      payment: {
+        status: 'short',
+        amount: 100,
+        customerUtr: UTR,
+        receivedAmount: 40,
+        balance: {
+          amount: 60,
+          amountPaise: 6000,
+          dueBy: due,
+          utr: extra.utr || null,
+          submittedAt: extra.utr ? stamp(Date.now()) : null,
+          confirmedAt: null
+        }
+      }
+    });
+  }
+
+  function postBalance(id, utr) {
+    return request(app())
+      .post(`/api/customer/marketplace-orders/${id}/balance-utr`)
+      .set('Idempotency-Key', KEY)
+      .send({ utr });
+  }
+
+  test('a balance UTR before dueBy is kind balance and a repeat does not write again', async () => {
+    shortOrder('order-b1');
+    seedLock('order-b1');
+    const created = await postBalance('order-b1', BALANCE);
+    expect(created.status).toBe(200);
+    expect(created.body.data.order.orderStatus).toBe('awaiting_payment');
+    expect(created.body.data.order.payment.balance.utr).toBe(BALANCE);
+    expect(mockDocs.get(`utrRegistry/${BALANCE}`)).toMatchObject({
+      orderId: 'order-b1',
+      kind: 'balance'
+    });
+    expect(mockDocs.has('marketplaceLocks/customer-test_shop-1')).toBe(true);
+    expect(mockSendTemplate).toHaveBeenCalledWith(
+      'shop-1',
+      'MARKETPLACE',
+      'UTR_SUBMITTED',
+      { displayId: '#62191' }
+    );
+
+    const replay = await postBalance('order-b1', BALANCE);
+    expect(replay.status).toBe(200);
+    expect(pathsStarting(`utrRegistry/${BALANCE}`)).toHaveLength(1);
+    expect(pathsStarting('marketplaceOrders/order-b1/events/')).toHaveLength(1);
+    expect(mockSendTemplate).toHaveBeenCalledTimes(1);
+
+    const different = await postBalance('order-b1', OTHER_UTR);
+    expect(different.status).toBe(409);
+    expect(different.body.error.code).toBe('ALREADY_SUBMITTED');
+  });
+
+  test('another order, the payment UTR, and a closed window are refused', async () => {
+    shortOrder('order-b2');
+    mockDocs.set(`utrRegistry/${BALANCE}`, { orderId: 'other-order', kind: 'customer' });
+    const used = await postBalance('order-b2', BALANCE);
+    expect(used.status).toBe(409);
+    expect(used.body.error.code).toBe('UTR_USED');
+
+    shortOrder('order-b3');
+    mockDocs.set(`utrRegistry/${UTR}`, { orderId: 'order-b3', customerId: 'customer-test', kind: 'customer' });
+    const reused = await postBalance('order-b3', UTR);
+    expect(reused.status).toBe(409);
+    expect(reused.body.error.code).toBe('UTR_USED');
+
+    shortOrder('order-b4', { dueBy: stamp(Date.now()) });
+    const closed = await postBalance('order-b4', OTHER_UTR);
+    expect(closed.status).toBe(409);
+    expect(closed.body.error.code).toBe('BALANCE_WINDOW_CLOSED');
+  });
+
+  test('customer GET while short returns the balance and dueBy', async () => {
+    const due = stamp(Date.UTC(2026, 0, 2, 3, 4, 5));
+    shortOrder('order-b5', { dueBy: due });
+    const response = await request(app()).get('/api/customer/marketplace-orders/order-b5');
+    expect(response.status).toBe(200);
+    expect(response.body.data.paymentDetails.expectedAmount).toBe(60);
+    expect(response.body.data.paymentDetails.expectedAmountPaise).toBe(6000);
+    expect(response.body.data.paymentDetails.dueBy).toBe('2026-01-02T03:04:05.000Z');
+    expect(response.body.data.paymentDetails.upiId).toBeNull();
+    expect(response.body.data.order.payment.balance.amount).toBe(60);
+    expect(JSON.stringify(response.body)).not.toContain('654321');
   });
 });

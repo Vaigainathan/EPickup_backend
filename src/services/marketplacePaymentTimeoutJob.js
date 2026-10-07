@@ -5,6 +5,7 @@ const displayIdService = require('./displayIdService');
 const shopOrderService = require('./shopOrderService');
 
 const SETTINGS_DOC = ['appSettings', 'marketplace'];
+// short is not expireable. MP-6 owns balance dueBy via isShortBalanceExpired.
 const EXPIREABLE = new Set(['pending', 'initiated']);
 
 class MarketplacePaymentTimeoutJob {
@@ -103,6 +104,7 @@ class MarketplacePaymentTimeoutJob {
     const cutoff = admin.firestore.Timestamp.fromMillis(Date.now() - settings.timeoutMs);
     const snapshot = await getFirestore()
       .collection('marketplaceOrders')
+      // pending and initiated only. A short balance is left for MP-6.
       .where('payment.status', 'in', ['pending', 'initiated'])
       .where('createdAt', '<', cutoff)
       .get();
@@ -141,4 +143,6 @@ class MarketplacePaymentTimeoutJob {
   }
 }
 
-module.exports = new MarketplacePaymentTimeoutJob();
+const marketplacePaymentTimeoutJob = new MarketplacePaymentTimeoutJob();
+marketplacePaymentTimeoutJob.isLegacyPaymentExpireable = (status) => EXPIREABLE.has(status);
+module.exports = marketplacePaymentTimeoutJob;

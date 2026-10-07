@@ -128,7 +128,7 @@ jest.mock('../src/services/notificationService', () => ({
   sendToUser: (...args) => mockSendToUser(...args)
 }));
 
-const { isPastPaymentGrace } = require('../src/services/marketplace/shopPaymentVerification');
+const { isPastPaymentGrace, isShortBalanceExpired } = require('../src/services/marketplace/shopPaymentVerification');
 const { presentCustomerOrder } = require('../src/services/marketplace/customerOrderView');
 const shopOrderService = require('../src/services/shopOrderService');
 const shopOrderRoutes = require('../src/routes/shopOrders');
@@ -207,7 +207,7 @@ describe('shop payment verification', () => {
   });
 
   test('switches off: an empty confirm still prepares and releases the matching lock', async () => {
-    seedOrder('order-1');
+    seedOrder('order-1', { expectedAmountPaise: 153999 });
     const response = await post('order-1/confirm-payment', {});
     expect(response.status).toBe(200);
     expect(response.body.data.order.orderStatus).toBe('preparing');
@@ -216,6 +216,9 @@ describe('shop payment verification', () => {
     expect(mockDocs.get('users/cust-1').customer.marketplace.unpaidCount).toBe(0);
     expect([...mockDocs.keys()].some((path) => path.startsWith('utrRegistry/'))).toBe(false);
     expect(response.body.message).toBe('Payment confirmed');
+    const storedConfirm = mockDocs.get('marketplaceOrders/order-1').payment;
+    expect(storedConfirm.receivedAmount).toBe(1539.99);
+    expect(storedConfirm.receivedAmountPaise).toBe(153999);
     const events = eventsFor('order-1');
     expect(events).toHaveLength(1);
     expect(events[0]).toMatchObject({
@@ -410,13 +413,8 @@ describe('shop payment verification', () => {
     expect(mockDocs.get('marketplaceOrders/order-attested').payment.late).toBeUndefined();
   });
 
-  test('short, receivedAmount, and amount-differs are unavailable', async () => {
+  test('confirm-payment still refuses a receivedAmount when new statuses are on', async () => {
     mockGetEnforcement.mockResolvedValue(ON);
-    seedOrder('order-short', { payment: { status: 'short', amount: 1540 } });
-    const short = await post('order-short/confirm-payment', { fullUtr: UTR, withinWindowAttested: true });
-    expect(short.status).toBe(409);
-    expect(short.body.error.code).toBe('AMOUNT_DIFFERS_UNAVAILABLE');
-
     seedOrder('order-amt', { payment: { status: 'pending', amount: 1540 } });
     const amount = await post('order-amt/confirm-payment', {
       fullUtr: UTR,
@@ -425,10 +423,7 @@ describe('shop payment verification', () => {
     });
     expect(amount.status).toBe(409);
     expect(amount.body.error.code).toBe('AMOUNT_DIFFERS_UNAVAILABLE');
-
-    const route = await post('order-amt/amount-differs', { receivedAmount: 10 });
-    expect(route.status).toBe(409);
-    expect(route.body.error.code).toBe('AMOUNT_DIFFERS_UNAVAILABLE');
+    expect(mockDocs.get('marketplaceOrders/order-amt').orderStatus).toBe('awaiting_payment');
   });
 
   test('not found with a UTR opens review and without a UTR is refused', async () => {
@@ -555,5 +550,221 @@ describe('shop payment verification', () => {
     expect(body).not.toContain('654321');
     expect(body).not.toContain('utrSource');
     expect(body).not.toContain('private');
+  });
+
+  test('amount differs writes a short balance, an overpaid stub, or a normal confirm', async () => {
+    const money = require('../src/validators/marketplace');
+    const toPaise = jest.spyOn(money, 'toPaise');
+    seedOrder('order-bad', {
+      expectedAmount: 100,
+      expectedAmountPaise: 10000,
+      payment: { status: 'customer_claimed', customerUtr: UTR, amount: 100 }
+    });
+    const three = await post('order-bad/amount-differs', { receivedAmount: 10.999, utrLast4: '9012' });
+    const text = await post('order-bad/amount-differs', { receivedAmount: 'abc', utrLast4: '9012' });
+    expect(three.status).toBe(400);
+    expect(text.status).toBe(400);
+    expect(three.body.error.code).toBe('VALIDATION');
+    expect(text.body.error.code).toBe('VALIDATION');
+    expect(toPaise).not.toHaveBeenCalled();
+    expect(mockDocs.get('marketplaceOrders/order-bad').payment.status).toBe('customer_claimed');
+    toPaise.mockRestore();
+
+    seedOrder('order-short', {
+      expectedAmount: 100,
+      expectedAmountPaise: 10000,
+      payment: { status: 'customer_claimed', customerUtr: UTR, amount: 100 }
+    });
+    mockDocs.set(`utrRegistry/${UTR}`, { orderId: 'order-short', customerId: 'cust-1', kind: 'customer' });
+    mockDocs.set('marketplaceLocks/cust-1_shop-1', { orderId: 'order-short' });
+    const less = await post('order-short/amount-differs', { receivedAmount: 40, utrLast4: '9012' });
+    expect(less.status).toBe(200);
+    expect(less.body.data.order.orderStatus).toBe('awaiting_payment');
+    const shortStored = mockDocs.get('marketplaceOrders/order-short');
+    expect(shortStored.payment.status).toBe('short');
+    expect(shortStored.payment.receivedAmount).toBe(40);
+    expect(shortStored.payment.receivedAmountPaise).toBe(4000);
+    expect(shortStored.payment.balance).toMatchObject({ amount: 60, amountPaise: 6000, utr: null });
+    expect(mockDocs.has('marketplaceLocks/cust-1_shop-1')).toBe(true);
+    expect(eventsFor('order-short').map((event) => event.type)).toContain('amount_differs');
+    const shortPush = mockSendToUser.mock.calls[0][1];
+    expect(shortPush.body).toBe('₹40 received, ₹60 short — pay balance or cancel');
+    expect(shortPush.data.variables.receivedAmount).toBeUndefined();
+    expect(shortPush.data.variables.balanceAmount).toBeUndefined();
+
+    const againShort = await post('order-short/amount-differs', { receivedAmount: 40, utrLast4: '9012' });
+    expect(againShort.status).toBe(409);
+    expect(againShort.body.error.code).toBe('INVALID_STATE');
+
+    seedOrder('order-more', {
+      expectedAmount: 100,
+      expectedAmountPaise: 10000,
+      payment: { status: 'customer_claimed', customerUtr: '222222222222', amount: 100 }
+    });
+    mockDocs.set('utrRegistry/222222222222', { orderId: 'order-more', customerId: 'cust-1', kind: 'customer' });
+    mockDocs.set('marketplaceLocks/cust-1_shop-1', { orderId: 'order-more' });
+    const more = await post('order-more/amount-differs', { receivedAmount: 150, utrLast4: '2222' });
+    expect(more.status).toBe(200);
+    expect(more.body.data.order.orderStatus).toBe('preparing');
+    const moreStored = mockDocs.get('marketplaceOrders/order-more');
+    expect(moreStored.payment.status).toBe('confirmed');
+    expect(moreStored.payment.receivedAmount).toBe(150);
+    expect(moreStored.refunds).toHaveLength(1);
+    expect(moreStored.refunds[0]).toMatchObject({ reason: 'overpaid', amount: 50, status: 'upi_needed' });
+    expect(mockDocs.has('marketplaceLocks/cust-1_shop-1')).toBe(false);
+    const moreReplay = await post('order-more/amount-differs', { receivedAmount: 150, utrLast4: '2222' });
+    expect(moreReplay.status).toBe(200);
+    expect(mockDocs.get('marketplaceOrders/order-more').refunds).toHaveLength(1);
+
+    seedOrder('order-equal', {
+      expectedAmount: 100,
+      expectedAmountPaise: 10000,
+      payment: { status: 'pending', amount: 100 }
+    });
+    mockDocs.set('marketplaceLocks/cust-1_shop-1', { orderId: 'order-equal' });
+    const equal = await post('order-equal/amount-differs', { receivedAmount: 100, fullUtr: '777777777777' });
+    expect(equal.status).toBe(200);
+    const equalStored = mockDocs.get('marketplaceOrders/order-equal');
+    expect(equalStored.orderStatus).toBe('preparing');
+    expect(equalStored.payment.receivedAmount).toBe(100);
+    expect(equalStored.payment.receivedAmountPaise).toBe(10000);
+    expect(equalStored.refunds).toBeUndefined();
+
+    seedOrder('order-huge', {
+      expectedAmount: 100,
+      expectedAmountPaise: 10000,
+      payment: { status: 'pending', amount: 100 }
+    });
+    const huge = await post('order-huge/amount-differs', { receivedAmount: 201, fullUtr: '666666666666' });
+    expect(huge.status).toBe(400);
+    expect(huge.body.error.code).toBe('VALIDATION');
+    expect(mockDocs.get('marketplaceOrders/order-huge').orderStatus).toBe('awaiting_payment');
+
+    seedOrder('order-used', {
+      expectedAmount: 100,
+      expectedAmountPaise: 10000,
+      payment: { status: 'pending', amount: 100 }
+    });
+    mockDocs.set('utrRegistry/888888888888', { orderId: 'other-order', kind: 'shop' });
+    const used = await post('order-used/amount-differs', { receivedAmount: 100, fullUtr: '888888888888' });
+    expect(used.status).toBe(409);
+    expect(used.body.error.code).toBe('UTR_USED');
+
+    seedOrder('order-late', {
+      orderStatus: 'payment_unconfirmed',
+      expectedAmount: 100,
+      expectedAmountPaise: 10000,
+      payment: { status: 'expired', amount: 100 }
+    });
+    const late = await post('order-late/amount-differs', { receivedAmount: 80, fullUtr: '444444444444' });
+    expect(late.status).toBe(409);
+    expect(late.body.error.code).toBe('INVALID_STATE');
+  });
+
+  test('a normal confirm stores receivedAmount equal to expected', async () => {
+    mockGetEnforcement.mockResolvedValue(ON);
+    seedOrder('order-1', {
+      expectedAmount: 100,
+      expectedAmountPaise: 10000,
+      payment: { status: 'customer_claimed', customerUtr: UTR, amount: 1540 }
+    });
+    mockDocs.set(`utrRegistry/${UTR}`, { orderId: 'order-1', customerId: 'cust-1', kind: 'customer' });
+    const response = await post('order-1/confirm-payment', { utrLast4: '9012', withinWindowAttested: true });
+    expect(response.status).toBe(200);
+    const stored = mockDocs.get('marketplaceOrders/order-1').payment;
+    expect(stored.status).toBe('confirmed');
+    expect(stored.receivedAmount).toBe(100);
+    expect(stored.receivedAmountPaise).toBe(10000);
+  });
+
+  test('balance confirm adds the balance and can register a shop UTR', async () => {
+    mockGetEnforcement.mockResolvedValue(ON);
+    const due = stamp(Date.now() + (15 * MINUTE));
+    const balanceUtr = '555555555555';
+    seedOrder('order-bal', {
+      expectedAmount: 100,
+      expectedAmountPaise: 10000,
+      payment: {
+        status: 'short',
+        amount: 100,
+        receivedAmount: 40,
+        receivedAmountPaise: 4000,
+        balance: {
+          amount: 60,
+          amountPaise: 6000,
+          dueBy: due,
+          utr: balanceUtr,
+          submittedAt: stamp(Date.now()),
+          confirmedAt: null
+        }
+      }
+    });
+    mockDocs.set(`utrRegistry/${balanceUtr}`, { orderId: 'order-bal', customerId: 'cust-1', kind: 'balance' });
+    mockDocs.set('marketplaceLocks/cust-1_shop-1', { orderId: 'order-bal' });
+    const confirmed = await post('order-bal/confirm-payment', { utrLast4: '5555', withinWindowAttested: true });
+    expect(confirmed.status).toBe(200);
+    const stored = mockDocs.get('marketplaceOrders/order-bal');
+    expect(stored.orderStatus).toBe('preparing');
+    expect(stored.payment.status).toBe('confirmed');
+    expect(stored.payment.receivedAmount).toBe(100);
+    expect(stored.payment.receivedAmountPaise).toBe(10000);
+    expect(stored.payment.balance.confirmedAt).toBeTruthy();
+    expect(mockDocs.has('marketplaceLocks/cust-1_shop-1')).toBe(false);
+    expect(eventsFor('order-bal').map((event) => event.type)).toContain('balance_confirmed');
+
+    seedOrder('order-shop-bal', {
+      payment: {
+        status: 'short',
+        amount: 100,
+        receivedAmount: 40,
+        receivedAmountPaise: 4000,
+        balance: {
+          amount: 60,
+          amountPaise: 6000,
+          dueBy: due,
+          utr: null,
+          submittedAt: null,
+          confirmedAt: null
+        }
+      }
+    });
+    mockDocs.set('marketplaceLocks/cust-1_shop-1', { orderId: 'order-shop-bal' });
+    const shopTyped = await post('order-shop-bal/confirm-payment', { fullUtr: SHOP_UTR, withinWindowAttested: true });
+    expect(shopTyped.status).toBe(200);
+    expect(mockDocs.get(`utrRegistry/${SHOP_UTR}`)).toMatchObject({ orderId: 'order-shop-bal', kind: 'shop' });
+    expect(mockDocs.get('marketplaceOrders/order-shop-bal').payment.receivedAmount).toBe(100);
+
+    mockGetEnforcement.mockResolvedValue({ newStatuses: false, utrBlocksReject: false });
+    seedOrder('order-off', { payment: { status: 'short', amount: 100 } });
+    const off = await post('order-off/confirm-payment', {});
+    expect(off.status).toBe(409);
+    expect(off.body.error.code).toBe('INVALID_TRANSITION');
+    expect(mockDocs.get('marketplaceOrders/order-off').payment.status).toBe('short');
+  });
+
+  test('paid-check refunds the stored received amount', async () => {
+    seedOrder('order-paid', {
+      orderStatus: 'cancelled',
+      expectedAmount: 100,
+      payment: {
+        status: 'customer_claimed',
+        customerUtr: UTR,
+        amount: 1540,
+        receivedAmount: 40
+      },
+      cancellation: { reason: 'customer_cancel', paidCheck: 'pending' }
+    });
+    mockDocs.set(`utrRegistry/${UTR}`, { orderId: 'order-paid', customerId: 'cust-1', kind: 'customer' });
+    const response = await post('order-paid/paid-check', { received: true, utrLast4: '9012' });
+    expect(response.status).toBe(200);
+    expect(mockDocs.get('marketplaceOrders/order-paid').refunds[0].amount).toBe(40);
+  });
+
+  test('a short balance is expired at dueBy and not before', () => {
+    const due = 1_700_000_000_000;
+    const data = { payment: { status: 'short', balance: { dueBy: stamp(due) } } };
+    expect(isShortBalanceExpired(data, due - 1)).toBe(false);
+    expect(isShortBalanceExpired(data, due)).toBe(true);
+    expect(isShortBalanceExpired({ payment: { status: 'pending', balance: { dueBy: stamp(due) } } }, due)).toBe(false);
   });
 });

@@ -1,3 +1,4 @@
+const crypto = require('crypto');
 const { Timestamp } = require('firebase-admin/firestore');
 const { getFirestore } = require('../firebase');
 const { MARKETPLACE_DEFAULTS } = require('../../config/marketplaceDefaults');
@@ -7,7 +8,11 @@ const { appendEvent } = require('./orderEvents');
 const displayIdService = require('../displayIdService');
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-const CUSTOMER_CANCEL_REASONS = new Set(['customer_unpaid_cancel', 'customer_cancel']);
+const CUSTOMER_CANCEL_REASONS = new Set([
+  'customer_unpaid_cancel',
+  'customer_cancel',
+  'amount_short_cancel'
+]);
 
 function httpError(status, code, message) {
   const error = new Error(message);
@@ -98,6 +103,21 @@ function orderResponse(status, data, orderId) {
       }
     }
   };
+}
+
+async function notifyCustomer(customerId, template, variables) {
+  if (!customerId) {
+    return;
+  }
+  try {
+    const notificationService = require('../notificationService');
+    const result = await notificationService.sendTemplateNotification(customerId, 'MARKETPLACE', template, variables);
+    if (result && result.success === false) {
+      console.error(`❌ [MARKETPLACE_ORDER] push ${template} failed`, result.error || result);
+    }
+  } catch (error) {
+    console.error(`❌ [MARKETPLACE_ORDER] push ${template} failed`, error);
+  }
 }
 
 async function notifyShop(shopId, template, variables) {
@@ -214,6 +234,79 @@ async function submitCustomerUtr({ customerId, orderId, idempotencyKey, utr, now
   return orderResponse(200, outcome.data, orderId);
 }
 
+async function submitBalanceUtr({ customerId, orderId, idempotencyKey, utr, nowMs }) {
+  requireUuid(idempotencyKey);
+  if (!isValidUtr(utr)) {
+    throw httpError(400, 'INVALID_UTR', 'UTR must be exactly 12 digits');
+  }
+  const now = Number.isFinite(nowMs) ? nowMs : Date.now();
+  const db = getFirestore();
+  const orderRef = db.collection('marketplaceOrders').doc(orderId);
+  const registryRef = db.collection('utrRegistry').doc(String(utr));
+
+  const outcome = await db.runTransaction(async (tx) => {
+    const orderSnap = await tx.get(orderRef);
+    const data = ownedOrder(orderSnap, customerId);
+    const payment = data.payment || {};
+    const balance = payment.balance && typeof payment.balance === 'object' ? payment.balance : {};
+    if (payment.status !== 'short' || data.orderStatus !== 'awaiting_payment') {
+      throw httpError(409, 'INVALID_STATE', 'This order is not waiting for a balance UTR');
+    }
+    const dueMs = millisOf(balance.dueBy);
+    if (!Number.isFinite(dueMs) || now >= dueMs) {
+      throw httpError(409, 'BALANCE_WINDOW_CLOSED', 'The balance window is closed');
+    }
+    if (balance.utr === utr) {
+      return { replay: true, data };
+    }
+    if (balance.utr) {
+      throw httpError(409, 'ALREADY_SUBMITTED', 'A balance UTR was already submitted for this order');
+    }
+
+    const registrySnap = await tx.get(registryRef);
+    if (registrySnap.exists) {
+      throw httpError(409, 'UTR_USED', 'This UTR is already used');
+    }
+
+    const at = Timestamp.fromMillis(now);
+    const nextBalance = {
+      ...balance,
+      utr,
+      submittedAt: at
+    };
+    tx.update(orderRef, {
+      'payment.balance': nextBalance,
+      updatedAt: at
+    });
+    tx.set(registryRef, {
+      orderId,
+      customerId,
+      kind: 'balance',
+      at
+    });
+    appendEvent(tx, orderRef, {
+      type: 'balance_utr',
+      actor: { type: 'customer', id: customerId },
+      data: { utr }
+    });
+    return {
+      replay: false,
+      data: {
+        ...data,
+        payment: { ...payment, balance: nextBalance },
+        updatedAt: at
+      },
+      shopId: data.shopId,
+      displayId: displayLabel(data)
+    };
+  });
+
+  if (!outcome.replay) {
+    await notifyShop(outcome.shopId, 'UTR_SUBMITTED', { displayId: outcome.displayId });
+  }
+  return orderResponse(200, outcome.data, orderId);
+}
+
 async function cancelCustomerOrder({ customerId, orderId, idempotencyKey, nowMs }) {
   requireUuid(idempotencyKey);
   const now = Number.isFinite(nowMs) ? nowMs : Date.now();
@@ -228,7 +321,72 @@ async function cancelCustomerOrder({ customerId, orderId, idempotencyKey, nowMs 
     if (data.orderStatus === 'cancelled' && CUSTOMER_CANCEL_REASONS.has(cancellation.reason)) {
       return { replay: true, data };
     }
-    if (payment.status === 'short' || data.orderStatus !== 'awaiting_payment') {
+    if (payment.status === 'short') {
+      if (data.orderStatus !== 'awaiting_payment') {
+        throw httpError(409, 'CANCEL_NOT_ALLOWED', 'This order cannot be cancelled');
+      }
+      const lockRef = db.collection('marketplaceLocks').doc(`${customerId}_${data.shopId}`);
+      const userRef = db.collection('users').doc(customerId);
+      const lockSnap = await tx.get(lockRef);
+      const userSnap = await tx.get(userRef);
+      const at = Timestamp.fromMillis(now);
+      const reason = 'amount_short_cancel';
+      const refund = {
+        id: crypto.randomBytes(8).toString('hex'),
+        reason,
+        amount: payment.receivedAmount != null ? payment.receivedAmount : null,
+        items: Array.isArray(data.items) ? data.items : [],
+        status: 'upi_needed',
+        customerUpiId: null,
+        createdAt: at
+      };
+      const nextCancellation = {
+        reason,
+        cancelledBy: 'customer',
+        requestedBy: 'customer',
+        cancelledAt: at
+      };
+      const nextPayment = { ...payment, status: 'refund_pending' };
+      const nextRefunds = (Array.isArray(data.refunds) ? data.refunds : []).concat([refund]);
+      tx.update(orderRef, {
+        orderStatus: 'cancelled',
+        cancellation: nextCancellation,
+        'payment.status': 'refund_pending',
+        refunds: nextRefunds,
+        updatedAt: at
+      });
+      const lockData = lockSnap.exists ? (lockSnap.data() || {}) : null;
+      if (lockData && lockData.orderId === orderId) {
+        tx.delete(lockRef);
+      }
+      const unpaidCount = unpaidCountOf(userSnap);
+      if (unpaidCount > 0) {
+        tx.update(userRef, {
+          'customer.marketplace.unpaidCount': unpaidCount - 1
+        });
+      }
+      appendEvent(tx, orderRef, {
+        type: 'cancelled',
+        actor: { type: 'customer', id: customerId },
+        data: { reason }
+      });
+      return {
+        replay: false,
+        shortRefund: true,
+        refundAmount: refund.amount,
+        shopId: data.shopId,
+        displayId: displayLabel(data),
+        data: {
+          ...data,
+          orderStatus: 'cancelled',
+          cancellation: nextCancellation,
+          payment: nextPayment,
+          refunds: nextRefunds,
+          updatedAt: at
+        }
+      };
+    }
+    if (data.orderStatus !== 'awaiting_payment') {
       throw httpError(409, 'CANCEL_NOT_ALLOWED', 'This order cannot be cancelled');
     }
 
@@ -291,6 +449,13 @@ async function cancelCustomerOrder({ customerId, orderId, idempotencyKey, nowMs 
     };
   });
 
+  if (!outcome.replay && outcome.shortRefund) {
+    await notifyCustomer(customerId, 'REFUND_INITIATED', {
+      displayId: outcome.displayId,
+      amount: outcome.refundAmount
+    });
+    return orderResponse(200, outcome.data, orderId);
+  }
   if (!outcome.replay) {
     const detail = outcome.hasUtr
       ? 'Check whether you received the payment.'
@@ -305,6 +470,7 @@ async function cancelCustomerOrder({ customerId, orderId, idempotencyKey, nowMs 
 
 module.exports = {
   submitCustomerUtr,
+  submitBalanceUtr,
   cancelCustomerOrder,
   isWithinUtrWindow,
   acceptHoursFrom

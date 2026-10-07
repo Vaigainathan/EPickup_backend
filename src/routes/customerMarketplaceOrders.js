@@ -6,7 +6,7 @@ const { userRateLimiter } = require('../middleware/userRateLimiter');
 const { getFirestore } = require('../services/firebase');
 const { createMarketplaceOrder } = require('../services/marketplace/createCustomerOrder');
 const { listCustomerOrders, getCustomerOrder } = require('../services/marketplace/customerOrderRead');
-const { submitCustomerUtr, cancelCustomerOrder } = require('../services/marketplace/customerOrderActions');
+const { submitCustomerUtr, submitBalanceUtr, cancelCustomerOrder } = require('../services/marketplace/customerOrderActions');
 
 const minuteLimiter = userRateLimiter({
   windowMs: 60 * 1000,
@@ -37,6 +37,11 @@ const cancelLimiter = userRateLimiter({
   windowMs: 60 * 1000,
   max: 10,
   name: 'marketplace-order-cancel-minute'
+});
+const balanceUtrLimiter = userRateLimiter({
+  windowMs: 60 * 1000,
+  max: 10,
+  name: 'marketplace-order-balance-utr-minute'
 });
 
 function sendError(res, error, fallbackMessage) {
@@ -130,6 +135,26 @@ router.post(
       return res.status(result.status).json(result.body);
     } catch (error) {
       return sendError(res, error, 'Failed to cancel marketplace order');
+    }
+  }
+);
+
+router.post(
+  '/marketplace-orders/:id/balance-utr',
+  authenticateToken,
+  requireRole(['customer']),
+  balanceUtrLimiter,
+  async (req, res) => {
+    try {
+      const result = await submitBalanceUtr({
+        customerId: req.user.uid,
+        orderId: req.params.id,
+        idempotencyKey: req.get('Idempotency-Key'),
+        utr: req.body && req.body.utr
+      });
+      return res.status(result.status).json(result.body);
+    } catch (error) {
+      return sendError(res, error, 'Failed to submit balance UTR');
     }
   }
 );

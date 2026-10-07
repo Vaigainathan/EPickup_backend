@@ -7,6 +7,8 @@ const PAYMENT_FIELDS = [
   'transactionReference',
   'customerUtr',
   'officialUtr',
+  'receivedAmount',
+  'receivedAmountPaise',
   'customerUpiId',
   'utrSubmittedAt',
   'initiatedAt',
@@ -57,6 +59,22 @@ function copyPayment(payment) {
   return copied;
 }
 
+function copyBalance(payment) {
+  const source = payment && typeof payment === 'object' ? payment : {};
+  const balance = source.balance && typeof source.balance === 'object' ? source.balance : null;
+  if (!balance) {
+    return null;
+  }
+  return {
+    amount: balance.amount ?? null,
+    amountPaise: balance.amountPaise ?? null,
+    dueBy: toIso(balance.dueBy),
+    utr: balance.utr ?? null,
+    submittedAt: toIso(balance.submittedAt),
+    confirmedAt: toIso(balance.confirmedAt)
+  };
+}
+
 function presentCustomerOrder(order) {
   const source = order && typeof order === 'object' ? order : {};
   const cancellation = source.cancellation && typeof source.cancellation === 'object'
@@ -87,7 +105,10 @@ function presentCustomerOrder(order) {
     displayId: source.displayId ?? null,
     linkedBookingId: source.linkedBookingId ?? null,
     driverInfo: source.driverInfo ?? null,
-    payment: copyPayment(source.payment),
+    payment: {
+      ...copyPayment(source.payment),
+      balance: copyBalance(source.payment)
+    },
     cancellation: {
       reason: cancellation.reason ?? null,
       cancelledAt: toIso(cancellation.cancelledAt),

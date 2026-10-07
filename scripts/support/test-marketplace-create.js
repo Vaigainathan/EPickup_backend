@@ -8,14 +8,21 @@
  *   node scripts/support/test-marketplace-create.js --customer <id> --shop <id> --cleanup [--order <id>]
  *   node scripts/support/test-marketplace-create.js --customer <id> --shop <id> --cleanup --apply [--order <id>]
  *   node scripts/support/test-marketplace-create.js --customer <id> --shop <id> --utr [12-digits]
+ *   node scripts/support/test-marketplace-create.js --customer <id> --shop <id> --balance-utr <12-digits>
  *   node scripts/support/test-marketplace-create.js --customer <id> --shop <id> --cancel
- *   node scripts/support/test-marketplace-create.js --customer <id> --shop <id> --confirm [--enforce]
+ *   node scripts/support/test-marketplace-create.js --customer <id> --shop <id> --confirm [--enforce] [--full-utr <12-digits>]
  *
- * --utr and --cancel use the order on marketplaceLocks/{customer}_{shop}.
+ * --utr, --balance-utr, and --cancel use the order on marketplaceLocks/{customer}_{shop}.
  * --utr without a value uses 123456789012. Dry run prints that order and
  * does not write. Add --apply to call submitCustomerUtr or cancelCustomerOrder.
- * --confirm dry run prints utrLast4 from the stored customer UTR and
- * withinWindowAttested true. --confirm --apply calls confirmPayment.
+ * --balance-utr dry run prints the last 4 and writes nothing. --apply calls submitBalanceUtr.
+ * --cancel on a short order prints refundAmount from the received amount on a
+ * dry run, and from the amount_short_cancel stub after --apply.
+ * --confirm dry run prints utrLast4. On a short order that is the last 4 of
+ * balance.utr. --full-utr sends that 12-digit value instead. --confirm --apply
+ * calls confirmPayment. A short confirm needs --enforce.
+ * --amount-differs <rupees> dry run prints utrLast4 and the body and
+ * writes nothing. --amount-differs <rupees> --apply calls the service.
  * --enforce passes { newStatuses: true, utrBlocksReject: true } into that
  * call only. It does not write appSettings.
  *
@@ -45,6 +52,11 @@ const {
   recentOrdersForCleanup,
   shouldDecrementUnpaid
 } = require('./marketplaceCleanupRules');
+const {
+  confirmRequestBody,
+  shortCancelRefundPreview,
+  refundStubAmount
+} = require('./marketplaceStagingActions');
 
 assertStagingEnv();
 
@@ -466,7 +478,7 @@ async function main() {
   const apply = process.argv.includes('--apply');
   const cleanup = process.argv.includes('--cleanup');
   if (!customerId || !shopId) {
-    console.error('Usage: node scripts/support/test-marketplace-create.js --customer <id> --shop <id> [--apply] [--cleanup] [--order <id>] [--utr [12-digits]] [--cancel] [--confirm] [--enforce]');
+    console.error('Usage: node scripts/support/test-marketplace-create.js --customer <id> --shop <id> [--apply] [--cleanup] [--order <id>] [--utr [12-digits]] [--balance-utr <12-digits>] [--cancel] [--confirm] [--full-utr <12-digits>] [--enforce] [--amount-differs <rupees>]');
     process.exit(1);
   }
 
@@ -528,8 +540,13 @@ async function main() {
     return;
   }
 
-  const confirm = process.argv.includes('--confirm');
-  if (confirm) {
+  if (process.argv.includes('--amount-differs')) {
+    const raw = argValue('--amount-differs');
+    const receivedAmount = Number(raw);
+    if (!raw || !Number.isFinite(receivedAmount) || receivedAmount <= 0) {
+      console.error('--amount-differs needs a positive rupee amount.');
+      process.exit(1);
+    }
     const preview = await utrCancelPreview(db, customerId, shopId, null);
     let utrLast4 = null;
     if (preview.order) {
@@ -541,6 +558,114 @@ async function main() {
         utrLast4 = stored.slice(-4);
       }
     }
+    const body = { receivedAmount, utrLast4 };
+    console.log(JSON.stringify({
+      amountDiffers: true,
+      apply,
+      order: preview.order,
+      body
+    }, null, 2));
+    if (!apply) {
+      console.log('Dry run. Re-run with --amount-differs <rupees> --apply to record the amount.');
+      return;
+    }
+    if (!preview.order || !utrLast4) {
+      console.error('No locked order with a customer UTR.');
+      process.exit(1);
+    }
+    const shopOrderService = require('../../src/services/shopOrderService');
+    try {
+      const result = await shopOrderService.reportAmountDiffers(shopId, preview.order.id, body);
+      console.log(JSON.stringify({
+        recorded: true,
+        alreadyProcessed: result.alreadyProcessed,
+        orderStatus: result.order.orderStatus,
+        paymentStatus: result.order.payment.status,
+        receivedAmount: result.order.payment.receivedAmount
+      }, null, 2));
+    } catch (error) {
+      console.log(JSON.stringify({
+        recorded: false,
+        status: error.status || 500,
+        code: error.code || null,
+        message: error.message
+      }, null, 2));
+      process.exitCode = 1;
+    }
+    return;
+  }
+
+  if (process.argv.includes('--balance-utr')) {
+    const utr = argValue('--balance-utr');
+    const { isValidUtr } = require('../../src/validators/marketplace');
+    if (!isValidUtr(utr)) {
+      console.error('--balance-utr needs exactly 12 digits.');
+      process.exit(1);
+    }
+    const preview = await utrCancelPreview(db, customerId, shopId, null);
+    console.log(JSON.stringify({
+      balanceUtr: true,
+      apply,
+      order: preview.order,
+      utrLast4: utr.slice(-4)
+    }, null, 2));
+    if (!apply) {
+      console.log('Dry run. Re-run with --balance-utr <12 digits> --apply to submit the balance UTR.');
+      return;
+    }
+    if (!preview.order) {
+      console.error('No locked order for this customer and shop.');
+      process.exit(1);
+    }
+    const { submitBalanceUtr } = require('../../src/services/marketplace/customerOrderActions');
+    try {
+      const result = await submitBalanceUtr({
+        customerId,
+        orderId: preview.order.id,
+        idempotencyKey: crypto.randomUUID(),
+        utr
+      });
+      const balance = result.body.data.order.payment.balance;
+      console.log(JSON.stringify({
+        submitted: true,
+        status: result.status,
+        orderStatus: result.body.data.order.orderStatus,
+        paymentStatus: result.body.data.order.payment.status,
+        balanceUtrLast4: balance && balance.utr ? String(balance.utr).slice(-4) : null
+      }, null, 2));
+    } catch (error) {
+      console.log(JSON.stringify({
+        submitted: false,
+        status: error.status || 500,
+        code: error.code || null,
+        message: error.message
+      }, null, 2));
+      process.exitCode = 1;
+    }
+    return;
+  }
+
+  const confirm = process.argv.includes('--confirm');
+  if (process.argv.includes('--full-utr') && !confirm) {
+    console.error('--full-utr is only used with --confirm.');
+    process.exit(1);
+  }
+  if (confirm) {
+    const preview = await utrCancelPreview(db, customerId, shopId, null);
+    const fullUtrRaw = process.argv.includes('--full-utr') ? argValue('--full-utr') : '';
+    if (process.argv.includes('--full-utr')) {
+      const { isValidUtr } = require('../../src/validators/marketplace');
+      if (!isValidUtr(fullUtrRaw)) {
+        console.error('--full-utr needs exactly 12 digits.');
+        process.exit(1);
+      }
+    }
+    let payment = null;
+    if (preview.order) {
+      const orderSnap = await db.collection('marketplaceOrders').doc(preview.order.id).get();
+      payment = orderSnap.exists ? (orderSnap.data().payment || {}) : null;
+    }
+    const request = confirmRequestBody({ payment, fullUtr: fullUtrRaw });
     const enforcement = process.argv.includes('--enforce')
       ? { newStatuses: true, utrBlocksReject: true }
       : undefined;
@@ -549,14 +674,15 @@ async function main() {
       apply,
       enforce: Boolean(enforcement),
       order: preview.order,
-      body: { utrLast4, withinWindowAttested: true }
+      body: request.ok ? request.logBody : null,
+      message: request.ok ? null : request.message
     }, null, 2));
     if (!apply) {
       console.log('Dry run. Re-run with --confirm --apply to confirm payment.');
       return;
     }
-    if (!preview.order || !utrLast4) {
-      console.error('No locked order with a customer UTR to confirm.');
+    if (!preview.order || !request.ok) {
+      console.error(request.message || 'No locked order to confirm.');
       process.exit(1);
     }
     const shopOrderService = require('../../src/services/shopOrderService');
@@ -564,7 +690,7 @@ async function main() {
       const result = await shopOrderService.confirmPayment(
         shopId,
         preview.order.id,
-        { utrLast4, withinWindowAttested: true },
+        request.body,
         enforcement
       );
       console.log(JSON.stringify({
@@ -597,11 +723,18 @@ async function main() {
       shopId,
       submitUtr ? (argValue('--utr') || '123456789012') : null
     );
+    let refundAmount = null;
+    if (cancelOrder && preview.order) {
+      const orderSnap = await db.collection('marketplaceOrders').doc(preview.order.id).get();
+      const payment = orderSnap.exists ? (orderSnap.data().payment || {}) : null;
+      refundAmount = shortCancelRefundPreview(payment);
+    }
     console.log(JSON.stringify({
       utr: submitUtr,
       cancel: cancelOrder,
       apply,
-      preview
+      preview,
+      refundAmount
     }, null, 2));
     if (!apply) {
       console.log('Dry run. Re-run with --apply to submit the UTR or cancel.');
@@ -648,11 +781,14 @@ async function main() {
           orderId: preview.order.id,
           idempotencyKey: crypto.randomUUID()
         });
+        const stored = await db.collection('marketplaceOrders').doc(preview.order.id).get();
+        const refunds = stored.exists ? (stored.data().refunds || []) : [];
         console.log(JSON.stringify({
           cancelled: true,
           status: result.status,
           orderStatus: result.body.data.order.orderStatus,
-          reason: result.body.data.order.cancellation.reason
+          reason: result.body.data.order.cancellation.reason,
+          refundAmount: refundStubAmount(refunds)
         }, null, 2));
       } catch (error) {
         console.log(JSON.stringify({

@@ -296,15 +296,35 @@ function mixDisplayId(counter, timestamp, customerId) {
   return ((counter + combinedSeed) % 89999) + 10000;
 }
 
+function isoStamp(value) {
+  if (value == null) {
+    return null;
+  }
+  if (typeof value.toDate === 'function') {
+    const date = value.toDate();
+    return date instanceof Date ? date.toISOString() : null;
+  }
+  if (value instanceof Date) {
+    return value.toISOString();
+  }
+  return value;
+}
+
 function paymentDetailsFromStored(data) {
   const payment = data && data.payment ? data.payment : {};
-  return {
+  const balance = payment.balance && typeof payment.balance === 'object' ? payment.balance : null;
+  const short = payment.status === 'short' && balance;
+  const details = {
     upiId: payment.shopUpiId ?? null,
-    expectedAmount: data ? data.expectedAmount ?? null : null,
-    expectedAmountPaise: data ? data.expectedAmountPaise ?? null : null,
+    expectedAmount: short ? (balance.amount ?? null) : (data ? data.expectedAmount ?? null : null),
+    expectedAmountPaise: short ? (balance.amountPaise ?? null) : (data ? data.expectedAmountPaise ?? null : null),
     verifiedPayeeName: data ? data.verifiedPayeeName ?? null : null,
     window: data ? data.window ?? null : null
   };
+  if (short) {
+    details.dueBy = isoStamp(balance.dueBy);
+  }
+  return details;
 }
 
 function successBody(id, data) {

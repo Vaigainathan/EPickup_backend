@@ -48,12 +48,15 @@ describe('presentCustomerOrder', () => {
       transactionReference: 'ord-1',
       customerUtr: '123456789012',
       officialUtr: null,
+      receivedAmount: null,
+      receivedAmountPaise: null,
       customerUpiId: 'me@upi',
       utrSubmittedAt: null,
       initiatedAt: null,
       confirmedAt: null,
       expiredAt: null,
-      refundedAt: null
+      refundedAt: null,
+      balance: null
     });
     expect(view.id).toBe('ord-1');
     expect(view.orderStatus).toBe('ready');

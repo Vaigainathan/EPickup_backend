@@ -11,6 +11,7 @@ const {
   readUnpaidRelease,
   writeUnpaidRelease,
   confirmShopPayment,
+  reportAmountDiffers,
   reportPaymentNotFound,
   answerPaidCheck,
   shopCancelAllowed
@@ -213,6 +214,18 @@ class ShopOrderService {
         transactionReference: payment.transactionReference || id,
         customerUtr: payment.customerUtr ?? null,
         officialUtr: payment.officialUtr ?? null,
+        receivedAmount: payment.receivedAmount ?? null,
+        receivedAmountPaise: payment.receivedAmountPaise ?? null,
+        balance: payment.balance && typeof payment.balance === 'object'
+          ? {
+            amount: payment.balance.amount ?? null,
+            amountPaise: payment.balance.amountPaise ?? null,
+            dueBy: toIso(payment.balance.dueBy),
+            utr: payment.balance.utr ?? null,
+            submittedAt: toIso(payment.balance.submittedAt),
+            confirmedAt: toIso(payment.balance.confirmedAt)
+          }
+          : null,
         customerUpiId: payment.customerUpiId ?? null,
         initiatedAt: payment.initiatedAt || null,
         confirmedAt: payment.confirmedAt || null,
@@ -237,11 +250,13 @@ class ShopOrderService {
       return;
     }
     try {
-      if (type === 'UTR_CORRECTED') {
+      if (type === 'UTR_CORRECTED' || type === 'AMOUNT_SHORT') {
         const template = NotificationTemplateProcessor.getTemplate('MARKETPLACE', type);
         const notification = NotificationTemplateProcessor.process(template, variables);
         if (notification.data && notification.data.variables) {
           delete notification.data.variables.utr;
+          delete notification.data.variables.receivedAmount;
+          delete notification.data.variables.balanceAmount;
         }
         const result = await notificationService.sendToUser(customerId, notification);
         if (result && result.success === false) {
@@ -404,6 +419,8 @@ class ShopOrderService {
           orderStatus: 'preparing',
           'payment.status': 'confirmed',
           'payment.amount': data.itemsTotal,
+          'payment.receivedAmount': data.expectedAmount != null ? data.expectedAmount : null,
+          'payment.receivedAmountPaise': data.expectedAmountPaise != null ? data.expectedAmountPaise : null,
           'payment.confirmedAt': this.now(),
           'payment.confirmedByShopUid': shopId
         },
@@ -420,6 +437,18 @@ class ShopOrderService {
     }
 
     return result;
+  }
+
+  async reportAmountDiffers(shopId, orderId, body) {
+    const outcome = await reportAmountDiffers({ shopId, orderId, body });
+    if (!outcome.alreadyProcessed) {
+      await this.sendNotifies(outcome.customerId, outcome.notifies);
+    }
+    const fresh = await this.orders().doc(orderId).get();
+    return {
+      alreadyProcessed: outcome.alreadyProcessed,
+      order: await this.presentOrder(fresh.id, fresh.data())
+    };
   }
 
   async reportNotFound(shopId, orderId) {

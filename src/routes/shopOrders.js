@@ -92,12 +92,9 @@ router.post('/:id/paid-check', authMiddleware, requireRole(['shop']), async (req
 });
 
 router.post('/:id/amount-differs', authMiddleware, requireRole(['shop']), async (req, res) => {
-  return res.status(409).json({
-    success: false,
-    error: {
-      code: 'AMOUNT_DIFFERS_UNAVAILABLE',
-      message: 'Amount differs is not available yet'
-    }
+  return withShop(req, res, async (shopId) => {
+    const result = await shopOrderService.reportAmountDiffers(shopId, req.params.id, req.body || {});
+    return sendTransition(res, result, 'Amount recorded');
   });
 });
 

@@ -6,6 +6,7 @@ const PAYMENT_FIELDS = [
   'amount',
   'transactionReference',
   'customerUtr',
+  'officialUtr',
   'customerUpiId',
   'utrSubmittedAt',
   'initiatedAt',

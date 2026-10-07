@@ -4,6 +4,17 @@ const { getFirestore } = require('./firebase');
 const displayIdService = require('./displayIdService');
 const { isPoolEnabled, allocateOrderNumber } = require('./orderNumberPool');
 const notificationService = require('./notificationService');
+const { NotificationTemplateProcessor } = require('./notificationTemplates');
+const { appendEvent } = require('./marketplace/orderEvents');
+const {
+  resolveEnforcement,
+  readUnpaidRelease,
+  writeUnpaidRelease,
+  confirmShopPayment,
+  reportPaymentNotFound,
+  answerPaidCheck,
+  shopCancelAllowed
+} = require('./marketplace/shopPaymentVerification');
 
 const COLLECTION = 'marketplaceOrders';
 const DISPLAY_ID_ATTEMPTS = 8;
@@ -96,6 +107,26 @@ function parseDisplayId(value) {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
+function toIso(value) {
+  if (value == null) {
+    return null;
+  }
+  if (typeof value.toDate === 'function') {
+    const date = value.toDate();
+    return date instanceof Date && !Number.isNaN(date.getTime()) ? date.toISOString() : null;
+  }
+  if (value instanceof Date) {
+    return Number.isNaN(value.getTime()) ? null : value.toISOString();
+  }
+  if (typeof value === 'string') {
+    return value;
+  }
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return new Date(value).toISOString();
+  }
+  return null;
+}
+
 function paymentStatus(data) {
   return data?.payment?.status || null;
 }
@@ -167,6 +198,10 @@ class ShopOrderService {
       },
       orderStatus: data.orderStatus,
       displayId: data.displayId ?? null,
+      expectedAmount: data.expectedAmount ?? null,
+      window: data.window && typeof data.window === 'object'
+        ? { start: toIso(data.window.start), end: toIso(data.window.end) }
+        : null,
       // Shop-facing only. Do not reuse this presenter on a customer GET without stripping handoverOtp.
       handoverOtp,
       linkedBookingId: data.linkedBookingId ?? null,
@@ -177,6 +212,7 @@ class ShopOrderService {
         amount,
         transactionReference: payment.transactionReference || id,
         customerUtr: payment.customerUtr ?? null,
+        officialUtr: payment.officialUtr ?? null,
         customerUpiId: payment.customerUpiId ?? null,
         initiatedAt: payment.initiatedAt || null,
         confirmedAt: payment.confirmedAt || null,
@@ -187,7 +223,9 @@ class ShopOrderService {
       cancellation: {
         reason: cancellation.reason ?? null,
         cancelledAt: cancellation.cancelledAt || null,
-        cancelledBy: cancellation.cancelledBy ?? null
+        cancelledBy: cancellation.cancelledBy ?? null,
+        paidCheck: typeof cancellation.paidCheck === 'string' ? cancellation.paidCheck : null,
+        paidCheckAt: toIso(cancellation.paidCheckAt)
       },
       createdAt: data.createdAt || null,
       updatedAt: data.updatedAt || null
@@ -199,9 +237,31 @@ class ShopOrderService {
       return;
     }
     try {
-      await notificationService.sendTemplateNotification(customerId, 'MARKETPLACE', type, variables);
+      if (type === 'UTR_CORRECTED') {
+        const template = NotificationTemplateProcessor.getTemplate('MARKETPLACE', type);
+        const notification = NotificationTemplateProcessor.process(template, variables);
+        if (notification.data && notification.data.variables) {
+          delete notification.data.variables.utr;
+        }
+        const result = await notificationService.sendToUser(customerId, notification);
+        if (result && result.success === false) {
+          console.error('❌ [SHOP_ORDERS] Notification failed:', (result.error && result.error.code) || result.error);
+        }
+        return;
+      }
+      const result = await notificationService.sendTemplateNotification(customerId, 'MARKETPLACE', type, variables);
+      if (result && result.success === false) {
+        console.error('❌ [SHOP_ORDERS] Notification failed:', (result.error && result.error.code) || result.error);
+      }
     } catch (error) {
       console.error('❌ [SHOP_ORDERS] Notification failed:', error.message);
+    }
+  }
+
+  async sendNotifies(customerId, notifies) {
+    const notes = Array.isArray(notifies) ? notifies : [];
+    for (let index = 0; index < notes.length; index += 1) {
+      await this.notifyCustomer(customerId, notes[index].type, notes[index].variables || {});
     }
   }
 
@@ -297,8 +357,22 @@ class ShopOrderService {
     };
   }
 
-  async confirmPayment(shopId, orderId) {
-    const result = await this.runOwnedTransition(shopId, orderId, (data) => {
+  async confirmPayment(shopId, orderId, body, enforcement) {
+    const flags = await resolveEnforcement(enforcement);
+    if (flags.newStatuses) {
+      const outcome = await confirmShopPayment({ shopId, orderId, body });
+      if (!outcome.alreadyProcessed) {
+        await this.sendNotifies(outcome.customerId, outcome.notifies);
+      }
+      const fresh = await this.orders().doc(orderId).get();
+      return {
+        alreadyProcessed: outcome.alreadyProcessed,
+        order: await this.presentOrder(fresh.id, fresh.data())
+      };
+    }
+
+    const ref = this.orders().doc(orderId);
+    const result = await this.runOwnedTransition(shopId, orderId, async (data, tx) => {
       const status = paymentStatus(data);
       if (status === 'confirmed' && POST_CONFIRM_ORDER.has(data.orderStatus)) {
         return alreadyProcessed(data);
@@ -311,6 +385,15 @@ class ShopOrderService {
       }
 
       this.assertAmountInvariant(data.itemsTotal, data.payment?.amount);
+      const release = data.orderStatus === 'awaiting_payment'
+        ? await readUnpaidRelease(tx, ref.firestore, {
+          customerId: data.customerId,
+          shopId: data.shopId
+        })
+        : null;
+      if (release) {
+        writeUnpaidRelease(tx, release, orderId, true);
+      }
 
       return {
         updates: {
@@ -335,8 +418,34 @@ class ShopOrderService {
     return result;
   }
 
-  async rejectOrder(shopId, orderId) {
-    const result = await this.runOwnedTransition(shopId, orderId, (data) => {
+  async reportNotFound(shopId, orderId) {
+    const outcome = await reportPaymentNotFound({ shopId, orderId });
+    if (!outcome.alreadyProcessed) {
+      await this.sendNotifies(outcome.customerId, outcome.notifies);
+    }
+    const fresh = await this.orders().doc(orderId).get();
+    return {
+      alreadyProcessed: outcome.alreadyProcessed,
+      order: await this.presentOrder(fresh.id, fresh.data())
+    };
+  }
+
+  async answerPaidCheck(shopId, orderId, body) {
+    const outcome = await answerPaidCheck({ shopId, orderId, body });
+    if (!outcome.alreadyProcessed) {
+      await this.sendNotifies(outcome.customerId, outcome.notifies);
+    }
+    const fresh = await this.orders().doc(orderId).get();
+    return {
+      alreadyProcessed: outcome.alreadyProcessed,
+      order: await this.presentOrder(fresh.id, fresh.data())
+    };
+  }
+
+  async rejectOrder(shopId, orderId, enforcement) {
+    const flags = await resolveEnforcement(enforcement);
+    const ref = this.orders().doc(orderId);
+    const result = await this.runOwnedTransition(shopId, orderId, async (data, tx) => {
       if (wasPaymentConfirmed(data)) {
         throw httpError(
           409,
@@ -346,6 +455,45 @@ class ShopOrderService {
       }
       if (data.orderStatus === 'cancelled') {
         return alreadyProcessed(data);
+      }
+      const payment = data.payment || {};
+      if (flags.utrBlocksReject && (payment.customerUtr || payment.officialUtr)) {
+        throw httpError(409, 'UTR_PRESENT', 'Use Received or Not found when a UTR exists');
+      }
+
+      const db = ref.firestore;
+      const release = data.orderStatus === 'awaiting_payment'
+        ? await readUnpaidRelease(tx, db, { customerId: data.customerId, shopId: data.shopId })
+        : null;
+      const shopRef = db.collection('shops').doc(shopId);
+      const shopSnap = flags.utrBlocksReject ? await tx.get(shopRef) : null;
+      if (release) {
+        writeUnpaidRelease(tx, release, orderId, true);
+      }
+      if (flags.utrBlocksReject && shopSnap && shopSnap.exists) {
+        const rejections = shopSnap.data() && shopSnap.data().marketplaceStats
+          ? Number(shopSnap.data().marketplaceStats.rejections)
+          : 0;
+        tx.update(shopRef, {
+          'marketplaceStats.rejections': (Number.isFinite(rejections) ? rejections : 0) + 1
+        });
+      }
+      if (flags.utrBlocksReject) {
+        appendEvent(tx, ref, {
+          type: 'rejected',
+          actor: { type: 'shop', id: shopId }
+        });
+        return {
+          updates: {
+            orderStatus: 'cancelled',
+            closedReason: 'shop_rejected',
+            'cancellation.reason': 'shop_rejected',
+            'cancellation.cancelledAt': this.now(),
+            'cancellation.cancelledBy': shopId,
+            'cancellation.requestedBy': 'shop'
+          },
+          notify: { type: 'ORDER_CANCELLED', reason: null }
+        };
       }
 
       return {
@@ -597,13 +745,15 @@ class ShopOrderService {
     });
   }
 
-  async cancelOrder(shopId, orderId, payload = {}) {
+  async cancelOrder(shopId, orderId, payload = {}, enforcement) {
     const reason = typeof payload.reason === 'string' ? payload.reason.trim() : '';
     if (!reason) {
       throw httpError(400, 'MISSING_REASON', 'reason is required');
     }
+    const flags = await resolveEnforcement(enforcement);
+    const ref = this.orders().doc(orderId);
 
-    const result = await this.runOwnedTransition(shopId, orderId, (data) => {
+    const result = await this.runOwnedTransition(shopId, orderId, async (data, tx) => {
       const paid = paymentStatus(data) === 'confirmed';
       const refundPending = paymentStatus(data) === 'refund_pending'
         || paymentStatus(data) === 'refunded';
@@ -613,6 +763,19 @@ class ShopOrderService {
           alreadyProcessed: true,
           extra: { refundRequired: paid || refundPending }
         };
+      }
+      const decision = shopCancelAllowed(data, flags);
+      if (!decision.ok) {
+        throw httpError(409, 'CANCEL_NOT_ALLOWED', 'This order cannot be cancelled');
+      }
+      const release = data.orderStatus === 'awaiting_payment'
+        ? await readUnpaidRelease(tx, ref.firestore, {
+          customerId: data.customerId,
+          shopId: data.shopId
+        })
+        : null;
+      if (release) {
+        writeUnpaidRelease(tx, release, orderId, true);
       }
 
       if (paid) {

@@ -5,14 +5,19 @@
  * Usage:
  *   node scripts/support/test-marketplace-create.js --customer <id> --shop <id>
  *   node scripts/support/test-marketplace-create.js --customer <id> --shop <id> --apply
- *   node scripts/support/test-marketplace-create.js --customer <id> --shop <id> --cleanup
- *   node scripts/support/test-marketplace-create.js --customer <id> --shop <id> --cleanup --apply
+ *   node scripts/support/test-marketplace-create.js --customer <id> --shop <id> --cleanup [--order <id>]
+ *   node scripts/support/test-marketplace-create.js --customer <id> --shop <id> --cleanup --apply [--order <id>]
  *   node scripts/support/test-marketplace-create.js --customer <id> --shop <id> --utr [12-digits]
  *   node scripts/support/test-marketplace-create.js --customer <id> --shop <id> --cancel
+ *   node scripts/support/test-marketplace-create.js --customer <id> --shop <id> --confirm [--enforce]
  *
  * --utr and --cancel use the order on marketplaceLocks/{customer}_{shop}.
  * --utr without a value uses 123456789012. Dry run prints that order and
  * does not write. Add --apply to call submitCustomerUtr or cancelCustomerOrder.
+ * --confirm dry run prints utrLast4 from the stored customer UTR and
+ * withinWindowAttested true. --confirm --apply calls confirmPayment.
+ * --enforce passes { newStatuses: true, utrBlocksReject: true } into that
+ * call only. It does not write appSettings.
  *
  * --apply case order. The price case is first, on this shop, so the unpaid
  * lock is not written yet:
@@ -21,17 +26,21 @@
  *   3. same key → 200, same order, unpaidCount unchanged
  *   4. new key, same shop → UNPAID_ORDER_EXISTS
  *
- * --cleanup prints the lock, order, events, private/handover, and
- * utrRegistry/{utr} it would remove. With no lock, it uses the newest
- * cancelled order for this customer and shop. --cleanup --apply deletes
- * those. unpaidCount is decremented only for an awaiting_payment order
- * when the count is greater than 0. orderNumbers is left in place.
+ * --cleanup prints the lock, order, events, private/handover, and every
+ * utrRegistry doc whose orderId is this order. Lookup order: --order <id>,
+ * else the lock, else the newest cancelled order, else the newest order
+ * in any status (preparing included). --cleanup --apply deletes those.
+ * unpaidCount is decremented when the matching lock is deleted and the
+ * count is greater than 0, whatever the order status. An awaiting_payment
+ * order with no lock still decrements when the count is greater than 0.
+ * orderNumbers is left in place. Dry run is the default.
  */
 
 require('dotenv').config();
 
 const crypto = require('crypto');
 const { assertStagingEnv, assertStagingAdmin } = require('../assertStagingFirebase');
+const { chooseCleanupTarget, shouldDecrementUnpaid } = require('./marketplaceCleanupRules');
 
 assertStagingEnv();
 
@@ -310,34 +319,65 @@ async function printOutcome(db, customerId, shopId, orderId, displayId) {
   }, null, 2));
 }
 
-async function newestCancelledOrder(db, customerId, shopId) {
+async function orderWithoutLock(db, customerId, shopId) {
   const snap = await db.collection('marketplaceOrders').where('customerId', '==', customerId).get();
-  let chosen = null;
-  let chosenMs = -1;
-  snap.docs.forEach((doc) => {
+  const orders = snap.docs.map((doc) => {
     const data = doc.data() || {};
-    if (data.shopId !== shopId || data.orderStatus !== 'cancelled') {
-      return;
-    }
     const createdAtMs = data.createdAt && typeof data.createdAt.toMillis === 'function'
       ? data.createdAt.toMillis()
       : 0;
-    if (!chosen || createdAtMs >= chosenMs) {
-      chosen = doc.id;
-      chosenMs = createdAtMs;
-    }
+    return {
+      id: doc.id,
+      shopId: data.shopId,
+      orderStatus: data.orderStatus,
+      createdAtMs
+    };
   });
-  return chosen;
+  return chooseCleanupTarget({ shopId, orders });
 }
 
-async function cleanupPlan(db, customerId, shopId) {
+async function registryDocsForOrder(db, orderId) {
+  const snap = await db.collection('utrRegistry').where('orderId', '==', orderId).get();
+  return snap.docs.map((doc) => ({
+    id: doc.id,
+    kind: (doc.data() || {}).kind || null
+  }));
+}
+
+function presentCleanupPlan(plan) {
+  return {
+    foundBy: plan.foundBy,
+    lockExists: plan.lockExists,
+    deleteLock: plan.deleteLock,
+    orderId: plan.orderId,
+    orderOwned: plan.orderOwned,
+    orderStatus: plan.orderStatus,
+    eventCount: plan.eventCount,
+    privateHandoverExists: plan.privateHandoverExists,
+    displayId: plan.displayId,
+    orderNumbersExists: plan.orderNumbersExists,
+    utrRegistry: plan.registryDocs.map((doc) => ({
+      last4: String(doc.id).slice(-4),
+      kind: doc.kind
+    })),
+    unpaidCount: plan.unpaidCount
+  };
+}
+
+async function cleanupPlan(db, customerId, shopId, explicitOrderId) {
   const lockSnap = await db.collection('marketplaceLocks').doc(`${customerId}_${shopId}`).get();
   const lock = lockSnap.exists ? (lockSnap.data() || {}) : null;
-  let orderId = lock && lock.orderId ? lock.orderId : null;
-  let foundBy = orderId ? 'lock' : null;
-  if (!orderId) {
-    orderId = await newestCancelledOrder(db, customerId, shopId);
-    foundBy = orderId ? 'cancelled-order' : null;
+  const lockOrderId = lock && lock.orderId ? lock.orderId : null;
+  let orderId = null;
+  let foundBy = null;
+  if (explicitOrderId || lockOrderId) {
+    const picked = chooseCleanupTarget({ explicitOrderId, lockOrderId, shopId, orders: [] });
+    orderId = picked.orderId;
+    foundBy = picked.foundBy;
+  } else {
+    const picked = await orderWithoutLock(db, customerId, shopId);
+    orderId = picked.orderId;
+    foundBy = picked.foundBy;
   }
   const orderRef = orderId ? db.collection('marketplaceOrders').doc(orderId) : null;
   const orderSnap = orderRef ? await orderRef.get() : null;
@@ -349,15 +389,14 @@ async function cleanupPlan(db, customerId, shopId) {
   const registrySnap = displayId == null
     ? null
     : await db.collection('orderNumbers').doc(String(displayId)).get();
-  const utr = owned && order.payment && order.payment.customerUtr
-    ? String(order.payment.customerUtr)
-    : null;
-  const utrSnap = utr ? await db.collection('utrRegistry').doc(utr).get() : null;
-  const utrRegistryOrderId = utrSnap && utrSnap.exists ? (utrSnap.data() || {}).orderId || null : null;
+  const registryDocs = owned ? await registryDocsForOrder(db, orderId) : [];
+  const unpaidCount = await readUnpaidCount(db, customerId);
+  const deleteLock = Boolean(owned && lockOrderId && lockOrderId === orderId);
 
   return {
     foundBy,
     lockExists: lockSnap.exists,
+    deleteLock,
     orderId,
     orderOwned: owned,
     orderStatus: owned ? (order.orderStatus || null) : null,
@@ -365,10 +404,13 @@ async function cleanupPlan(db, customerId, shopId) {
     privateHandoverExists: Boolean(privateSnap && privateSnap.exists),
     displayId: displayId == null ? null : displayId,
     orderNumbersExists: Boolean(registrySnap && registrySnap.exists),
-    utr,
-    utrRegistryExists: Boolean(utrSnap && utrSnap.exists),
-    deleteUtrRegistry: Boolean(utr && utrRegistryOrderId === orderId),
-    unpaidCount: await readUnpaidCount(db, customerId)
+    registryDocs,
+    unpaidCount,
+    decrementUnpaid: shouldDecrementUnpaid({
+      deleteLock,
+      orderStatus: owned ? (order.orderStatus || null) : null,
+      unpaidCount
+    })
   };
 }
 
@@ -382,13 +424,13 @@ async function applyCleanup(db, customerId, shopId, plan) {
     batch.delete(orderRef.collection('private').doc('handover'));
     batch.delete(orderRef);
   }
-  if (plan.lockExists) {
+  if (plan.deleteLock) {
     batch.delete(db.collection('marketplaceLocks').doc(`${customerId}_${shopId}`));
   }
-  if (plan.deleteUtrRegistry && plan.utr) {
-    batch.delete(db.collection('utrRegistry').doc(plan.utr));
-  }
-  if (plan.orderOwned && plan.orderStatus === 'awaiting_payment' && plan.unpaidCount > 0) {
+  plan.registryDocs.forEach((doc) => {
+    batch.delete(db.collection('utrRegistry').doc(doc.id));
+  });
+  if (plan.decrementUnpaid) {
     batch.update(db.collection('users').doc(customerId), {
       'customer.marketplace.unpaidCount': FieldValue.increment(-1)
     });
@@ -425,7 +467,7 @@ async function main() {
   const apply = process.argv.includes('--apply');
   const cleanup = process.argv.includes('--cleanup');
   if (!customerId || !shopId) {
-    console.error('Usage: node scripts/support/test-marketplace-create.js --customer <id> --shop <id> [--apply] [--cleanup] [--utr [12-digits]] [--cancel]');
+    console.error('Usage: node scripts/support/test-marketplace-create.js --customer <id> --shop <id> [--apply] [--cleanup] [--order <id>] [--utr [12-digits]] [--cancel] [--confirm] [--enforce]');
     process.exit(1);
   }
 
@@ -445,26 +487,89 @@ async function main() {
   }, null, 2));
 
   if (cleanup) {
-    const plan = await cleanupPlan(db, customerId, shopId);
+    const plan = await cleanupPlan(db, customerId, shopId, argValue('--order'));
     console.log(JSON.stringify({
       cleanup: true,
       apply,
       wouldDelete: {
-        lock: plan.lockExists,
+        lock: plan.deleteLock,
         order: plan.orderOwned,
         events: plan.eventCount,
         privateHandover: plan.privateHandoverExists,
-        utrRegistry: plan.deleteUtrRegistry ? `utrRegistry/${plan.utr}` : null,
-        unpaidCountDecrement: plan.orderOwned && plan.orderStatus === 'awaiting_payment' && plan.unpaidCount > 0
+        utrRegistry: plan.registryDocs.map((doc) => ({
+          last4: String(doc.id).slice(-4),
+          kind: doc.kind
+        })),
+        unpaidCountDecrement: plan.decrementUnpaid
       },
       orderNumbersLeftInPlace: plan.orderNumbersExists,
-      plan
+      plan: presentCleanupPlan(plan)
     }, null, 2));
     if (apply) {
       await applyCleanup(db, customerId, shopId, plan);
       console.log('Cleanup applied.');
     } else {
       console.log('Cleanup dry run. Re-run with --cleanup --apply to delete.');
+    }
+    return;
+  }
+
+  const confirm = process.argv.includes('--confirm');
+  if (confirm) {
+    const preview = await utrCancelPreview(db, customerId, shopId, null);
+    let utrLast4 = null;
+    if (preview.order) {
+      const orderSnap = await db.collection('marketplaceOrders').doc(preview.order.id).get();
+      const stored = orderSnap.exists && orderSnap.data().payment
+        ? orderSnap.data().payment.customerUtr
+        : null;
+      if (typeof stored === 'string' && stored.length >= 4) {
+        utrLast4 = stored.slice(-4);
+      }
+    }
+    const enforcement = process.argv.includes('--enforce')
+      ? { newStatuses: true, utrBlocksReject: true }
+      : undefined;
+    console.log(JSON.stringify({
+      confirm: true,
+      apply,
+      enforce: Boolean(enforcement),
+      order: preview.order,
+      body: { utrLast4, withinWindowAttested: true }
+    }, null, 2));
+    if (!apply) {
+      console.log('Dry run. Re-run with --confirm --apply to confirm payment.');
+      return;
+    }
+    if (!preview.order || !utrLast4) {
+      console.error('No locked order with a customer UTR to confirm.');
+      process.exit(1);
+    }
+    const shopOrderService = require('../../src/services/shopOrderService');
+    try {
+      const result = await shopOrderService.confirmPayment(
+        shopId,
+        preview.order.id,
+        { utrLast4, withinWindowAttested: true },
+        enforcement
+      );
+      console.log(JSON.stringify({
+        confirmed: true,
+        alreadyProcessed: result.alreadyProcessed,
+        orderStatus: result.order.orderStatus,
+        paymentStatus: result.order.payment.status,
+        officialUtrLast4: result.order.payment.officialUtr
+          ? String(result.order.payment.officialUtr).slice(-4)
+          : null
+      }, null, 2));
+    } catch (error) {
+      console.log(JSON.stringify({
+        confirmed: false,
+        status: error.status || 500,
+        code: error.code || null,
+        message: error.message
+      }, null, 2));
+      process.exitCode = 1;
     }
     return;
   }

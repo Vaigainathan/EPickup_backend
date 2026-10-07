@@ -137,6 +137,21 @@ const NOTIFICATION_TEMPLATES = {
       body: 'Your order {{displayId}} was accepted. The shop is preparing it.',
       data: { type: 'payment_confirmed', action: 'view_order' }
     },
+    UTR_CORRECTED: {
+      title: 'Payment confirmed',
+      body: 'Payment confirmed with UTR {{utr}}.',
+      data: { type: 'utr_corrected', action: 'view_order' }
+    },
+    PAYMENT_LATE_ACCEPTED: {
+      title: 'Payment confirmed',
+      body: 'Your late payment for order {{displayId}} was accepted. The shop is preparing it.',
+      data: { type: 'payment_late_accepted', action: 'view_order' }
+    },
+    PAYMENT_UNDER_REVIEW: {
+      title: 'Payment under review',
+      body: 'Payment for order {{displayId}} is under review.',
+      data: { type: 'payment_under_review', action: 'view_order' }
+    },
     ORDER_CANCELLED: {
       title: 'Order cancelled',
       body: 'Your order {{displayId}} was cancelled.{{reasonLine}}',

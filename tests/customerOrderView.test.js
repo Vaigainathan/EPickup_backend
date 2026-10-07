@@ -47,6 +47,7 @@ describe('presentCustomerOrder', () => {
       amount: 100,
       transactionReference: 'ord-1',
       customerUtr: '123456789012',
+      officialUtr: null,
       customerUpiId: 'me@upi',
       utrSubmittedAt: null,
       initiatedAt: null,

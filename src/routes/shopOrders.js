@@ -72,8 +72,32 @@ router.get('/:id', authMiddleware, requireRole(['shop']), async (req, res) => {
  */
 router.post('/:id/confirm-payment', authMiddleware, requireRole(['shop']), async (req, res) => {
   return withShop(req, res, async (shopId) => {
-    const result = await shopOrderService.confirmPayment(shopId, req.params.id);
+    const result = await shopOrderService.confirmPayment(shopId, req.params.id, req.body || {});
     return sendTransition(res, result, 'Payment confirmed');
+  });
+});
+
+router.post('/:id/payment-not-found', authMiddleware, requireRole(['shop']), async (req, res) => {
+  return withShop(req, res, async (shopId) => {
+    const result = await shopOrderService.reportNotFound(shopId, req.params.id);
+    return sendTransition(res, result, 'Payment review opened');
+  });
+});
+
+router.post('/:id/paid-check', authMiddleware, requireRole(['shop']), async (req, res) => {
+  return withShop(req, res, async (shopId) => {
+    const result = await shopOrderService.answerPaidCheck(shopId, req.params.id, req.body || {});
+    return sendTransition(res, result, 'Paid check recorded');
+  });
+});
+
+router.post('/:id/amount-differs', authMiddleware, requireRole(['shop']), async (req, res) => {
+  return res.status(409).json({
+    success: false,
+    error: {
+      code: 'AMOUNT_DIFFERS_UNAVAILABLE',
+      message: 'Amount differs is not available yet'
+    }
   });
 });
 

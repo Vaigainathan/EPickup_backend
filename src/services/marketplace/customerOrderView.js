@@ -7,13 +7,14 @@ const PAYMENT_FIELDS = [
   'transactionReference',
   'customerUtr',
   'customerUpiId',
+  'utrSubmittedAt',
   'initiatedAt',
   'confirmedAt',
   'expiredAt',
   'refundedAt'
 ];
 
-const PAYMENT_TIME_FIELDS = ['initiatedAt', 'confirmedAt', 'expiredAt', 'refundedAt'];
+const PAYMENT_TIME_FIELDS = ['initiatedAt', 'confirmedAt', 'expiredAt', 'refundedAt', 'utrSubmittedAt'];
 
 function toIso(value) {
   if (value == null) {
@@ -89,7 +90,9 @@ function presentCustomerOrder(order) {
     cancellation: {
       reason: cancellation.reason ?? null,
       cancelledAt: toIso(cancellation.cancelledAt),
-      cancelledBy: cancellation.cancelledBy ?? null
+      cancelledBy: cancellation.cancelledBy ?? null,
+      paidCheck: typeof cancellation.paidCheck === 'string' ? cancellation.paidCheck : null,
+      paidCheckAt: toIso(cancellation.paidCheckAt)
     },
     createdAt: toIso(source.createdAt),
     updatedAt: toIso(source.updatedAt)

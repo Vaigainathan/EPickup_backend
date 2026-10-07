@@ -57,12 +57,33 @@ class MarketplacePaymentTimeoutJob {
       if (!EXPIREABLE.has(paymentStatus)) {
         return { expired: false, reason: 'not-expireable', paymentStatus, orderStatus: data.orderStatus };
       }
+      const db = getFirestore();
+      const customerId = data.customerId || null;
+      const shopId = data.shopId || null;
+      const lockRef = customerId && shopId
+        ? db.collection('marketplaceLocks').doc(`${customerId}_${shopId}`)
+        : null;
+      const userRef = customerId ? db.collection('users').doc(customerId) : null;
+      const lockSnap = lockRef ? await tx.get(lockRef) : null;
+      const userSnap = userRef ? await tx.get(userRef) : null;
       tx.update(orderRef, {
         orderStatus: 'cancelled',
         'payment.status': 'expired',
         'payment.expiredAt': admin.firestore.FieldValue.serverTimestamp(),
         updatedAt: admin.firestore.FieldValue.serverTimestamp()
       });
+      const lockData = lockSnap && lockSnap.exists ? (lockSnap.data() || {}) : null;
+      if (lockRef && lockData && lockData.orderId === orderRef.id) {
+        tx.delete(lockRef);
+      }
+      const marketplace = userSnap && userSnap.exists && userSnap.data()
+        && userSnap.data().customer && userSnap.data().customer.marketplace;
+      const unpaidCount = marketplace ? Number(marketplace.unpaidCount) : 0;
+      if (userRef && Number.isFinite(unpaidCount) && unpaidCount > 0) {
+        tx.update(userRef, {
+          'customer.marketplace.unpaidCount': unpaidCount - 1
+        });
+      }
       return {
         expired: true,
         customerId: data.customerId || null,

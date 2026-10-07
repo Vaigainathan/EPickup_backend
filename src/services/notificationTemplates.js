@@ -161,6 +161,16 @@ const NOTIFICATION_TEMPLATES = {
       title: 'New order to confirm',
       body: 'Order {{displayId}} is waiting for a payment of ₹{{expectedAmount}}.',
       data: { type: 'incoming_payment', action: 'view_order' }
+    },
+    UTR_SUBMITTED: {
+      title: 'UTR entered',
+      body: 'Order {{displayId}} has a UTR to check.',
+      data: { type: 'utr_submitted', action: 'view_order' }
+    },
+    CUSTOMER_CANCELLED: {
+      title: 'Order cancelled',
+      body: 'Order {{displayId}} was cancelled. {{detail}}',
+      data: { type: 'customer_cancelled', action: 'view_order' }
     }
   },
 

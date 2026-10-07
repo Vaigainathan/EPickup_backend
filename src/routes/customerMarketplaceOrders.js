@@ -6,6 +6,7 @@ const { userRateLimiter } = require('../middleware/userRateLimiter');
 const { getFirestore } = require('../services/firebase');
 const { createMarketplaceOrder } = require('../services/marketplace/createCustomerOrder');
 const { listCustomerOrders, getCustomerOrder } = require('../services/marketplace/customerOrderRead');
+const { submitCustomerUtr, cancelCustomerOrder } = require('../services/marketplace/customerOrderActions');
 
 const minuteLimiter = userRateLimiter({
   windowMs: 60 * 1000,
@@ -26,6 +27,16 @@ const detailLimiter = userRateLimiter({
   windowMs: 60 * 1000,
   max: 120,
   name: 'marketplace-order-detail-minute'
+});
+const utrLimiter = userRateLimiter({
+  windowMs: 60 * 1000,
+  max: 10,
+  name: 'marketplace-order-utr-minute'
+});
+const cancelLimiter = userRateLimiter({
+  windowMs: 60 * 1000,
+  max: 10,
+  name: 'marketplace-order-cancel-minute'
 });
 
 function sendError(res, error, fallbackMessage) {
@@ -80,6 +91,45 @@ router.get(
       return res.json({ success: true, data });
     } catch (error) {
       return sendError(res, error, 'Failed to list marketplace orders');
+    }
+  }
+);
+
+router.post(
+  '/marketplace-orders/:id/utr',
+  authenticateToken,
+  requireRole(['customer']),
+  utrLimiter,
+  async (req, res) => {
+    try {
+      const result = await submitCustomerUtr({
+        customerId: req.user.uid,
+        orderId: req.params.id,
+        idempotencyKey: req.get('Idempotency-Key'),
+        utr: req.body && req.body.utr
+      });
+      return res.status(result.status).json(result.body);
+    } catch (error) {
+      return sendError(res, error, 'Failed to submit UTR');
+    }
+  }
+);
+
+router.post(
+  '/marketplace-orders/:id/cancel',
+  authenticateToken,
+  requireRole(['customer']),
+  cancelLimiter,
+  async (req, res) => {
+    try {
+      const result = await cancelCustomerOrder({
+        customerId: req.user.uid,
+        orderId: req.params.id,
+        idempotencyKey: req.get('Idempotency-Key')
+      });
+      return res.status(result.status).json(result.body);
+    } catch (error) {
+      return sendError(res, error, 'Failed to cancel marketplace order');
     }
   }
 );

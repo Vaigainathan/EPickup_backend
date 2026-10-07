@@ -156,6 +156,11 @@ const NOTIFICATION_TEMPLATES = {
       title: 'Payment expired',
       body: 'Payment for order {{displayId}} timed out. The order was cancelled.',
       data: { type: 'payment_expired', action: 'view_order' }
+    },
+    INCOMING_PAYMENT: {
+      title: 'New order to confirm',
+      body: 'Order {{displayId}} is waiting for a payment of ₹{{expectedAmount}}.',
+      data: { type: 'incoming_payment', action: 'view_order' }
     }
   },
 

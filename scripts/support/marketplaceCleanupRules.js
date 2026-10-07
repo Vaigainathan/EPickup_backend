@@ -1,42 +1,35 @@
 /**
  * Pure cleanup choices for the staging marketplace script.
- * Lock deletion decrements unpaidCount whenever the count is above 0,
- * including an already-cancelled order. With no lock and no cancelled
- * order, the newest order of any status is the target.
+ * A lock, or --order, is the only target. With neither, nothing is chosen.
+ * Deleting a lock decrements unpaidCount whenever the count is above 0.
  */
 
-function chooseCleanupTarget({ explicitOrderId, lockOrderId, shopId, orders }) {
+function chooseCleanupTarget({ explicitOrderId, lockOrderId }) {
   if (explicitOrderId) {
     return { orderId: explicitOrderId, foundBy: 'order-flag' };
   }
   if (lockOrderId) {
     return { orderId: lockOrderId, foundBy: 'lock' };
   }
-  let cancelledId = null;
-  let cancelledMs = -1;
-  let newestId = null;
-  let newestMs = -1;
-  (orders || []).forEach((order) => {
-    if (!order || order.shopId !== shopId) {
-      return;
-    }
-    const createdAtMs = Number.isFinite(order.createdAtMs) ? order.createdAtMs : 0;
-    if (!newestId || createdAtMs >= newestMs) {
-      newestId = order.id;
-      newestMs = createdAtMs;
-    }
-    if (order.orderStatus === 'cancelled' && (!cancelledId || createdAtMs >= cancelledMs)) {
-      cancelledId = order.id;
-      cancelledMs = createdAtMs;
-    }
-  });
-  if (cancelledId) {
-    return { orderId: cancelledId, foundBy: 'cancelled-order' };
-  }
-  if (newestId) {
-    return { orderId: newestId, foundBy: 'newest-order' };
-  }
   return { orderId: null, foundBy: null };
+}
+
+function recentOrdersForCleanup(orders, shopId, limit = 5) {
+  return (orders || [])
+    .filter((order) => order && order.shopId === shopId)
+    .slice()
+    .sort((left, right) => {
+      const leftMs = Number.isFinite(left.createdAtMs) ? left.createdAtMs : 0;
+      const rightMs = Number.isFinite(right.createdAtMs) ? right.createdAtMs : 0;
+      return rightMs - leftMs;
+    })
+    .slice(0, limit)
+    .map((order) => ({
+      id: order.id,
+      displayId: order.displayId == null ? null : order.displayId,
+      status: order.orderStatus || null,
+      createdAt: order.createdAt || null
+    }));
 }
 
 function shouldDecrementUnpaid(plan) {
@@ -52,5 +45,6 @@ function shouldDecrementUnpaid(plan) {
 
 module.exports = {
   chooseCleanupTarget,
+  recentOrdersForCleanup,
   shouldDecrementUnpaid
 };

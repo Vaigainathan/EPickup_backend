@@ -184,6 +184,12 @@ function post(path, body) {
   return body === undefined ? req : req.send(body);
 }
 
+function eventsFor(orderId) {
+  return [...mockDocs.keys()]
+    .filter((path) => path.startsWith(`marketplaceOrders/${orderId}/events/`))
+    .map((path) => mockDocs.get(path));
+}
+
 beforeEach(() => {
   mockDocs.clear();
   mockEventSeq = 0;
@@ -209,14 +215,73 @@ describe('shop payment verification', () => {
     expect(mockDocs.has('marketplaceLocks/cust-1_shop-1')).toBe(false);
     expect(mockDocs.get('users/cust-1').customer.marketplace.unpaidCount).toBe(0);
     expect([...mockDocs.keys()].some((path) => path.startsWith('utrRegistry/'))).toBe(false);
+    expect(response.body.message).toBe('Payment confirmed');
+    const events = eventsFor('order-1');
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      type: 'shop_confirm',
+      actor: { type: 'shop', id: 'shop-1' }
+    });
   });
 
-  test('switches off: reject still cancels an order that has a UTR', async () => {
+  test('switches off: reject with a customer UTR stays customer_claimed and opens paid-check', async () => {
     seedOrder('order-1', { payment: { status: 'customer_claimed', customerUtr: UTR, amount: 1540 } });
     const response = await post('order-1/reject');
     expect(response.status).toBe(200);
+    expect(response.body.message).toBe('Order rejected');
     expect(response.body.data.order.orderStatus).toBe('cancelled');
+    expect(response.body.data.order.payment.status).toBe('customer_claimed');
+    expect(response.body.data.order.cancellation.paidCheck).toBe('pending');
+    const stored = mockDocs.get('marketplaceOrders/order-1');
+    expect(stored.closedReason).toBe('shop_rejected');
+    expect(stored.payment.status).toBe('customer_claimed');
+    expect(stored.cancellation.paidCheck).toBe('pending');
+    expect(stored.cancellation.paidCheckAt).toBeTruthy();
+    expect(stored.cancellation.reason).toBe('shop_rejected');
+    expect(stored.cancellation.cancelledBy).toBe('shop-1');
+    expect(mockDocs.get('shops/shop-1').marketplaceStats.rejections).toBe(1);
     expect(mockDocs.has('marketplaceLocks/cust-1_shop-1')).toBe(false);
+    expect(eventsFor('order-1')[0]).toMatchObject({
+      type: 'rejected',
+      actor: { type: 'shop', id: 'shop-1' },
+      data: { hadCustomerUtr: true }
+    });
+  });
+
+  test('switches off: reject without a UTR sets payment.status cancelled', async () => {
+    seedOrder('order-bare', { payment: { status: 'pending', amount: 1540 } });
+    mockDocs.set('marketplaceLocks/cust-1_shop-1', { orderId: 'order-bare' });
+    const response = await post('order-bare/reject');
+    expect(response.status).toBe(200);
+    expect(response.body.message).toBe('Order rejected');
+    expect(response.body.data.order.orderStatus).toBe('cancelled');
+    expect(response.body.data.order.payment.status).toBe('cancelled');
+    expect(response.body.data.order.cancellation.paidCheck).toBeNull();
+    const stored = mockDocs.get('marketplaceOrders/order-bare');
+    expect(stored.closedReason).toBe('shop_rejected');
+    expect(stored.cancellation.reason).toBe('shop_rejected');
+    expect(stored.cancellation.cancelledBy).toBe('shop-1');
+    expect(mockDocs.get('shops/shop-1').marketplaceStats.rejections).toBe(1);
+    const event = eventsFor('order-bare')[0];
+    expect(event).toMatchObject({
+      type: 'rejected',
+      actor: { type: 'shop', id: 'shop-1' },
+      data: null
+    });
+    expect(event.data).toBeNull();
+  });
+
+  test('switches off: cancel writes the shop reason on the cancelled event', async () => {
+    seedOrder('order-1');
+    const response = await post('order-1/cancel', { reason: 'out of stock' });
+    expect(response.status).toBe(200);
+    expect(response.body.message).toBe('Order cancelled');
+    expect(response.body.data.order.orderStatus).toBe('cancelled');
+    expect(eventsFor('order-1')[0]).toMatchObject({
+      type: 'cancelled',
+      actor: { type: 'shop', id: 'shop-1' },
+      reason: 'out of stock'
+    });
   });
 
   test('an enforcement override does not read appSettings', async () => {

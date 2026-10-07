@@ -394,6 +394,10 @@ class ShopOrderService {
       if (release) {
         writeUnpaidRelease(tx, release, orderId, true);
       }
+      appendEvent(tx, ref, {
+        type: 'shop_confirm',
+        actor: { type: 'shop', id: shopId }
+      });
 
       return {
         updates: {
@@ -461,16 +465,17 @@ class ShopOrderService {
         throw httpError(409, 'UTR_PRESENT', 'Use Received or Not found when a UTR exists');
       }
 
+      const hasCustomerUtr = Boolean(payment.customerUtr);
       const db = ref.firestore;
       const release = data.orderStatus === 'awaiting_payment'
         ? await readUnpaidRelease(tx, db, { customerId: data.customerId, shopId: data.shopId })
         : null;
       const shopRef = db.collection('shops').doc(shopId);
-      const shopSnap = flags.utrBlocksReject ? await tx.get(shopRef) : null;
+      const shopSnap = await tx.get(shopRef);
       if (release) {
         writeUnpaidRelease(tx, release, orderId, true);
       }
-      if (flags.utrBlocksReject && shopSnap && shopSnap.exists) {
+      if (shopSnap && shopSnap.exists) {
         const rejections = shopSnap.data() && shopSnap.data().marketplaceStats
           ? Number(shopSnap.data().marketplaceStats.rejections)
           : 0;
@@ -478,31 +483,28 @@ class ShopOrderService {
           'marketplaceStats.rejections': (Number.isFinite(rejections) ? rejections : 0) + 1
         });
       }
-      if (flags.utrBlocksReject) {
-        appendEvent(tx, ref, {
-          type: 'rejected',
-          actor: { type: 'shop', id: shopId }
-        });
-        return {
-          updates: {
-            orderStatus: 'cancelled',
-            closedReason: 'shop_rejected',
-            'cancellation.reason': 'shop_rejected',
-            'cancellation.cancelledAt': this.now(),
-            'cancellation.cancelledBy': shopId,
-            'cancellation.requestedBy': 'shop'
-          },
-          notify: { type: 'ORDER_CANCELLED', reason: null }
-        };
+      appendEvent(tx, ref, {
+        type: 'rejected',
+        actor: { type: 'shop', id: shopId },
+        data: !flags.utrBlocksReject && hasCustomerUtr ? { hadCustomerUtr: true } : null
+      });
+      const updates = {
+        orderStatus: 'cancelled',
+        closedReason: 'shop_rejected',
+        'cancellation.reason': 'shop_rejected',
+        'cancellation.cancelledAt': this.now(),
+        'cancellation.cancelledBy': shopId,
+        'cancellation.requestedBy': 'shop'
+      };
+      if (!flags.utrBlocksReject && hasCustomerUtr) {
+        updates['cancellation.paidCheck'] = 'pending';
+        updates['cancellation.paidCheckAt'] = this.now();
+        updates['payment.status'] = 'customer_claimed';
+      } else if (!flags.utrBlocksReject) {
+        updates['payment.status'] = 'cancelled';
       }
-
       return {
-        updates: {
-          orderStatus: 'cancelled',
-          'cancellation.reason': null,
-          'cancellation.cancelledAt': this.now(),
-          'cancellation.cancelledBy': shopId
-        },
+        updates,
         notify: { type: 'ORDER_CANCELLED', reason: null }
       };
     });
@@ -777,6 +779,11 @@ class ShopOrderService {
       if (release) {
         writeUnpaidRelease(tx, release, orderId, true);
       }
+      appendEvent(tx, ref, {
+        type: 'cancelled',
+        actor: { type: 'shop', id: shopId },
+        reason
+      });
 
       if (paid) {
         return {

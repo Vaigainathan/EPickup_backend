@@ -27,20 +27,24 @@
  *   4. new key, same shop → UNPAID_ORDER_EXISTS
  *
  * --cleanup prints the lock, order, events, private/handover, and every
- * utrRegistry doc whose orderId is this order. Lookup order: --order <id>,
- * else the lock, else the newest cancelled order, else the newest order
- * in any status (preparing included). --cleanup --apply deletes those.
- * unpaidCount is decremented when the matching lock is deleted and the
- * count is greater than 0, whatever the order status. An awaiting_payment
- * order with no lock still decrements when the count is greater than 0.
- * orderNumbers is left in place. Dry run is the default.
+ * utrRegistry doc whose orderId is this order. Lookup is --order <id>,
+ * else the lock. With neither, it prints the 5 newest orders for this
+ * customer and shop and deletes nothing. --cleanup --apply deletes the
+ * chosen order only. unpaidCount is decremented when the matching lock
+ * is deleted and the count is greater than 0, whatever the order status.
+ * An awaiting_payment order with no lock still decrements when the count
+ * is greater than 0. orderNumbers is left in place. Dry run is the default.
  */
 
 require('dotenv').config();
 
 const crypto = require('crypto');
 const { assertStagingEnv, assertStagingAdmin } = require('../assertStagingFirebase');
-const { chooseCleanupTarget, shouldDecrementUnpaid } = require('./marketplaceCleanupRules');
+const {
+  chooseCleanupTarget,
+  recentOrdersForCleanup,
+  shouldDecrementUnpaid
+} = require('./marketplaceCleanupRules');
 
 assertStagingEnv();
 
@@ -319,21 +323,24 @@ async function printOutcome(db, customerId, shopId, orderId, displayId) {
   }, null, 2));
 }
 
-async function orderWithoutLock(db, customerId, shopId) {
+async function recentOrders(db, customerId, shopId) {
   const snap = await db.collection('marketplaceOrders').where('customerId', '==', customerId).get();
   const orders = snap.docs.map((doc) => {
     const data = doc.data() || {};
     const createdAtMs = data.createdAt && typeof data.createdAt.toMillis === 'function'
       ? data.createdAt.toMillis()
       : 0;
+    const createdAt = createdAtMs ? new Date(createdAtMs).toISOString() : null;
     return {
       id: doc.id,
       shopId: data.shopId,
       orderStatus: data.orderStatus,
-      createdAtMs
+      displayId: data.displayId == null ? null : data.displayId,
+      createdAtMs,
+      createdAt
     };
   });
-  return chooseCleanupTarget({ shopId, orders });
+  return recentOrdersForCleanup(orders, shopId, 5);
 }
 
 async function registryDocsForOrder(db, orderId) {
@@ -368,17 +375,9 @@ async function cleanupPlan(db, customerId, shopId, explicitOrderId) {
   const lockSnap = await db.collection('marketplaceLocks').doc(`${customerId}_${shopId}`).get();
   const lock = lockSnap.exists ? (lockSnap.data() || {}) : null;
   const lockOrderId = lock && lock.orderId ? lock.orderId : null;
-  let orderId = null;
-  let foundBy = null;
-  if (explicitOrderId || lockOrderId) {
-    const picked = chooseCleanupTarget({ explicitOrderId, lockOrderId, shopId, orders: [] });
-    orderId = picked.orderId;
-    foundBy = picked.foundBy;
-  } else {
-    const picked = await orderWithoutLock(db, customerId, shopId);
-    orderId = picked.orderId;
-    foundBy = picked.foundBy;
-  }
+  const picked = chooseCleanupTarget({ explicitOrderId, lockOrderId });
+  const orderId = picked.orderId;
+  const foundBy = picked.foundBy;
   const orderRef = orderId ? db.collection('marketplaceOrders').doc(orderId) : null;
   const orderSnap = orderRef ? await orderRef.get() : null;
   const order = orderSnap && orderSnap.exists ? (orderSnap.data() || {}) : null;
@@ -487,7 +486,22 @@ async function main() {
   }, null, 2));
 
   if (cleanup) {
-    const plan = await cleanupPlan(db, customerId, shopId, argValue('--order'));
+    const explicitOrderId = argValue('--order');
+    const plan = await cleanupPlan(db, customerId, shopId, explicitOrderId);
+    if (!plan.orderOwned) {
+      const candidates = await recentOrders(db, customerId, shopId);
+      const message = explicitOrderId
+        ? 'That order does not belong to this customer and shop. Nothing was deleted. Pass --order <id> from the list below.'
+        : 'No lock for this customer and shop. Pass --order <id>. Nothing was deleted.';
+      console.log(JSON.stringify({
+        cleanup: true,
+        deleted: false,
+        message,
+        recentOrders: candidates
+      }, null, 2));
+      process.exitCode = 1;
+      return;
+    }
     console.log(JSON.stringify({
       cleanup: true,
       apply,

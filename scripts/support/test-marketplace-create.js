@@ -1,0 +1,493 @@
+/**
+ * Staging test for marketplace order create. Calls createMarketplaceOrder
+ * directly. Dry run is the default and writes nothing.
+ *
+ * Usage:
+ *   node scripts/support/test-marketplace-create.js --customer <id> --shop <id>
+ *   node scripts/support/test-marketplace-create.js --customer <id> --shop <id> --apply
+ *   node scripts/support/test-marketplace-create.js --customer <id> --shop <id> --cleanup
+ *   node scripts/support/test-marketplace-create.js --customer <id> --shop <id> --cleanup --apply
+ *
+ * --apply case order. The price case is first, on this shop, so the unpaid
+ * lock is not written yet:
+ *   1. new key, wrong price → ITEMS_CHANGED reason price
+ *   2. new key, qty 1, current price (variantId when the product has one) → 201
+ *   3. same key → 200, same order, unpaidCount unchanged
+ *   4. new key, same shop → UNPAID_ORDER_EXISTS
+ *
+ * --cleanup prints the lock, order, events, and private/handover it would
+ * remove. --cleanup --apply deletes those and decrements unpaidCount.
+ * orderNumbers is left in place.
+ */
+
+require('dotenv').config();
+
+const crypto = require('crypto');
+const { assertStagingEnv, assertStagingAdmin } = require('../assertStagingFirebase');
+
+assertStagingEnv();
+
+function argValue(flag) {
+  const index = process.argv.indexOf(flag);
+  if (index === -1) {
+    return '';
+  }
+  const next = process.argv[index + 1];
+  if (!next || next.startsWith('--')) {
+    return '';
+  }
+  return next;
+}
+
+function plain(value) {
+  if (value == null) {
+    return value;
+  }
+  if (typeof value.toDate === 'function') {
+    return value.toDate().toISOString();
+  }
+  if (typeof value.latitude === 'number' && typeof value.longitude === 'number') {
+    return { lat: value.latitude, lng: value.longitude };
+  }
+  if (Array.isArray(value)) {
+    return value.map(plain);
+  }
+  if (typeof value === 'object') {
+    const out = {};
+    Object.keys(value).forEach((key) => {
+      if (key === 'handoverOtp' || key === 'otp' || key === 'accountNumberEncrypted' || key === 'passwordHash') {
+        out[key] = '[redacted]';
+        return;
+      }
+      out[key] = plain(value[key]);
+    });
+    return out;
+  }
+  return value;
+}
+
+function istClock(now = new Date()) {
+  const formatter = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'Asia/Kolkata',
+    weekday: 'long',
+    hour: '2-digit',
+    minute: '2-digit',
+    hourCycle: 'h23'
+  });
+  const parts = {};
+  formatter.formatToParts(now).forEach((part) => {
+    parts[part.type] = part.value;
+  });
+  let hour = Number(parts.hour);
+  if (hour === 24) {
+    hour = 0;
+  }
+  const minute = Number(parts.minute);
+  const pad = (value) => String(value).padStart(2, '0');
+  return {
+    weekday: String(parts.weekday || '').toLowerCase(),
+    time: `${pad(hour)}:${pad(minute)}`
+  };
+}
+
+function openingHoursCheck(isOpen, openingHours, isShopOpenNow) {
+  const clock = istClock();
+  const openNow = isShopOpenNow({ isOpen, openingHours });
+  let reason = 'inside today\'s opening window';
+  if (isOpen !== true) {
+    reason = 'isOpen is not true, so the shop is closed before hours are checked';
+  } else if (openingHours == null) {
+    reason = 'openingHours is absent and isOpen is true, so the shop is open';
+  } else if (!openNow) {
+    reason = 'openingHours are present and the current Asia/Kolkata time is outside today\'s window, or today\'s hours cannot be read';
+  }
+  return {
+    nowIst: clock,
+    isOpen,
+    openingHours: openingHours || null,
+    openNow,
+    reason
+  };
+}
+
+function addressSummary(address) {
+  const row = address || {};
+  return {
+    id: row.id || null,
+    text: row.text || row.address || row.addressLine || row.fullAddress || null,
+    hasCoordinates: Boolean(row.coordinates || row.location || row.lat || row.latitude)
+  };
+}
+
+function variantSummary(variant) {
+  return {
+    id: variant.id,
+    value: variant.value || null,
+    priceOverride: variant.priceOverride ?? null,
+    stock: variant.stock ?? null
+  };
+}
+
+function productSummary(id, data) {
+  const variants = Array.isArray(data.variants) ? data.variants : [];
+  return {
+    id,
+    name: data.name || null,
+    isActive: data.isActive !== false,
+    price: data.price ?? null,
+    stock: data.stock ?? null,
+    hasVariants: data.hasVariants === true,
+    variants: variants.map(variantSummary)
+  };
+}
+
+function currentOffer(product) {
+  if (product.hasVariants && product.variants.length > 0) {
+    const variant = product.variants.find((row) => Number(row.stock) >= 1) || product.variants[0];
+    const price = typeof variant.priceOverride === 'number' ? variant.priceOverride : product.price;
+    return {
+      productId: product.id,
+      variantId: variant.id,
+      qty: 1,
+      price,
+      stock: Number(variant.stock) || 0
+    };
+  }
+  return {
+    productId: product.id,
+    qty: 1,
+    price: product.price,
+    stock: Number(product.stock) || 0
+  };
+}
+
+function lineFromOffer(offer, price) {
+  const line = {
+    productId: offer.productId,
+    qty: 1,
+    price
+  };
+  if (offer.variantId) {
+    line.variantId = offer.variantId;
+  }
+  return line;
+}
+
+async function loadContext(db, customerId, shopId, isShopOpenNow) {
+  const [customerSnap, shopUserSnap, shopSnap, productsSnap] = await Promise.all([
+    db.collection('users').doc(customerId).get(),
+    db.collection('users').doc(shopId).get(),
+    db.collection('shops').doc(shopId).get(),
+    db.collection('products').where('shopId', '==', shopId).get()
+  ]);
+
+  const customer = customerSnap.exists ? (customerSnap.data() || {}) : null;
+  const addresses = customer && customer.customer && Array.isArray(customer.customer.addresses)
+    ? customer.customer.addresses
+    : [];
+  const shopUser = shopUserSnap.exists ? (shopUserSnap.data() || {}) : null;
+  const identity = shopUser && shopUser.shop ? shopUser.shop : {};
+  const shop = shopSnap.exists ? (shopSnap.data() || {}) : null;
+  const bank = shop && shop.bank ? shop.bank : {};
+  const openingHours = shop && shop.storefront && shop.storefront.openingHours !== undefined
+    ? shop.storefront.openingHours
+    : null;
+  const isOpen = identity.isOpen === true;
+  const products = productsSnap.docs
+    .map((doc) => productSummary(doc.id, doc.data() || {}))
+    .filter((row) => row.isActive);
+  const offer = products.map(currentOffer).find((row) => row.stock >= 1) || null;
+
+  return {
+    customerExists: Boolean(customer),
+    addresses: addresses.map(addressSummary),
+    unpaidCount: customer && customer.customer && customer.customer.marketplace
+      ? (customer.customer.marketplace.unpaidCount || 0)
+      : 0,
+    shop: {
+      shopDocExists: Boolean(shop),
+      userType: shopUser ? shopUser.userType : null,
+      isActive: shopUser ? shopUser.isActive !== false : false,
+      approvalStatus: identity.approvalStatus || null,
+      isOpen,
+      shopType: identity.shopType || null,
+      shopName: identity.shopName || null,
+      upiId: typeof bank.upiId === 'string' ? bank.upiId : null,
+      upiVerified: bank.upiVerified === true,
+      upiNameVerification: bank.upiNameVerification ? plain(bank.upiNameVerification) : null,
+      openingHours: plain(openingHours)
+    },
+    openingHoursCheck: openingHoursCheck(isOpen, openingHours, isShopOpenNow),
+    products,
+    line: offer ? lineFromOffer(offer, offer.price) : null,
+    wrongPriceLine: offer ? lineFromOffer(offer, Number(offer.price) + 50) : null
+  };
+}
+
+async function readUnpaidCount(db, customerId) {
+  const snap = await db.collection('users').doc(customerId).get();
+  const marketplace = snap.exists && snap.data().customer && snap.data().customer.marketplace;
+  return marketplace && marketplace.unpaidCount ? marketplace.unpaidCount : 0;
+}
+
+async function paymentJobReport(db, shopId) {
+  const settingsSnap = await db.collection('appSettings').doc('marketplace').get();
+  const timeoutRaw = settingsSnap.exists ? settingsSnap.data().PAYMENT_TIMEOUT_MS : null;
+  const timeoutMs = Number(timeoutRaw);
+  const timeoutOk = Number.isFinite(timeoutMs) && timeoutMs > 0;
+  const cutoffMs = timeoutOk ? Date.now() - timeoutMs : null;
+  const ordersSnap = await db.collection('marketplaceOrders').where('shopId', '==', shopId).get();
+  const matching = [];
+  ordersSnap.docs.forEach((doc) => {
+    const data = doc.data() || {};
+    const paymentStatus = data.payment && data.payment.status;
+    if (paymentStatus !== 'pending' && paymentStatus !== 'initiated') {
+      return;
+    }
+    const createdAtMs = data.createdAt && typeof data.createdAt.toMillis === 'function'
+      ? data.createdAt.toMillis()
+      : null;
+    matching.push({
+      id: doc.id,
+      orderStatus: data.orderStatus || null,
+      paymentStatus,
+      createdAt: createdAtMs == null ? null : new Date(createdAtMs).toISOString(),
+      wouldExpireNow: timeoutOk && createdAtMs != null && createdAtMs < cutoffMs
+    });
+  });
+
+  return {
+    job: 'MarketplacePaymentTimeoutJob',
+    query: "payment.status in ['pending', 'initiated'] AND createdAt < now - PAYMENT_TIMEOUT_MS",
+    expireWrite: "orderStatus 'cancelled', payment.status 'expired', payment.expiredAt. Does not write cancellation. Does not expire customer_claimed.",
+    timeoutMs: timeoutOk ? timeoutMs : null,
+    cutoff: cutoffMs == null ? null : new Date(cutoffMs).toISOString(),
+    shopMatches: matching,
+    newOrderWouldExpireOnNextTick: false
+  };
+}
+
+async function callCreate(createMarketplaceOrder, customerId, idempotencyKey, body) {
+  try {
+    const result = await createMarketplaceOrder({ customerId, idempotencyKey, body });
+    return { ok: true, status: result.status, body: result.body };
+  } catch (error) {
+    return {
+      ok: false,
+      status: error.status || 500,
+      code: error.code || null,
+      message: error.message,
+      lines: error.lines || null,
+      orderId: error.orderId || null
+    };
+  }
+}
+
+async function printOutcome(db, customerId, shopId, orderId, displayId) {
+  const orderSnap = await db.collection('marketplaceOrders').doc(orderId).get();
+  const privateSnap = await db.collection('marketplaceOrders').doc(orderId).collection('private').doc('handover').get();
+  const lockSnap = await db.collection('marketplaceLocks').doc(`${customerId}_${shopId}`).get();
+  const eventsSnap = await db.collection('marketplaceOrders').doc(orderId).collection('events').get();
+  const registrySnap = displayId == null
+    ? null
+    : await db.collection('orderNumbers').doc(String(displayId)).get();
+
+  console.log(JSON.stringify({
+    order: orderSnap.exists ? plain(orderSnap.data()) : null,
+    privateHandoverExists: privateSnap.exists,
+    marketplaceLock: lockSnap.exists ? plain(lockSnap.data()) : null,
+    unpaidCount: await readUnpaidCount(db, customerId),
+    eventTypes: eventsSnap.docs.map((doc) => (doc.data() || {}).type || null),
+    orderNumbers: registrySnap && registrySnap.exists ? plain(registrySnap.data()) : null
+  }, null, 2));
+}
+
+async function cleanupPlan(db, customerId, shopId) {
+  const lockSnap = await db.collection('marketplaceLocks').doc(`${customerId}_${shopId}`).get();
+  const lock = lockSnap.exists ? (lockSnap.data() || {}) : null;
+  const orderId = lock && lock.orderId ? lock.orderId : null;
+  const orderRef = orderId ? db.collection('marketplaceOrders').doc(orderId) : null;
+  const orderSnap = orderRef ? await orderRef.get() : null;
+  const order = orderSnap && orderSnap.exists ? (orderSnap.data() || {}) : null;
+  const owned = Boolean(order && order.customerId === customerId && order.shopId === shopId);
+  const eventsSnap = owned ? await orderRef.collection('events').get() : null;
+  const privateSnap = owned ? await orderRef.collection('private').doc('handover').get() : null;
+  const displayId = owned ? order.displayId : null;
+  const registrySnap = displayId == null
+    ? null
+    : await db.collection('orderNumbers').doc(String(displayId)).get();
+
+  return {
+    lockExists: lockSnap.exists,
+    orderId,
+    orderOwned: owned,
+    eventCount: eventsSnap ? eventsSnap.size : 0,
+    privateHandoverExists: Boolean(privateSnap && privateSnap.exists),
+    displayId: displayId == null ? null : displayId,
+    orderNumbersExists: Boolean(registrySnap && registrySnap.exists),
+    unpaidCount: await readUnpaidCount(db, customerId)
+  };
+}
+
+async function applyCleanup(db, customerId, shopId, plan) {
+  const { FieldValue } = require('firebase-admin/firestore');
+  const batch = db.batch();
+  if (plan.orderOwned && plan.orderId) {
+    const orderRef = db.collection('marketplaceOrders').doc(plan.orderId);
+    const eventsSnap = await orderRef.collection('events').get();
+    eventsSnap.docs.forEach((doc) => batch.delete(doc.ref));
+    batch.delete(orderRef.collection('private').doc('handover'));
+    batch.delete(orderRef);
+  }
+  if (plan.lockExists) {
+    batch.delete(db.collection('marketplaceLocks').doc(`${customerId}_${shopId}`));
+  }
+  if (plan.orderOwned && plan.unpaidCount > 0) {
+    batch.update(db.collection('users').doc(customerId), {
+      'customer.marketplace.unpaidCount': FieldValue.increment(-1)
+    });
+  }
+  await batch.commit();
+}
+
+async function main() {
+  const customerId = argValue('--customer');
+  const shopId = argValue('--shop');
+  const apply = process.argv.includes('--apply');
+  const cleanup = process.argv.includes('--cleanup');
+  if (!customerId || !shopId) {
+    console.error('Usage: node scripts/support/test-marketplace-create.js --customer <id> --shop <id> [--apply] [--cleanup]');
+    process.exit(1);
+  }
+
+  const { getFirestore } = require('../../src/services/firebase');
+  const { isShopOpenNow } = require('../../src/services/marketplace/createCustomerOrder');
+  const db = getFirestore();
+  assertStagingAdmin();
+
+  const context = await loadContext(db, customerId, shopId, isShopOpenNow);
+  const jobReport = await paymentJobReport(db, shopId);
+  console.log(JSON.stringify({
+    dryRun: !apply,
+    customerId,
+    shopId,
+    ...context,
+    paymentJob: jobReport
+  }, null, 2));
+
+  if (cleanup) {
+    const plan = await cleanupPlan(db, customerId, shopId);
+    console.log(JSON.stringify({
+      cleanup: true,
+      apply,
+      wouldDelete: {
+        lock: plan.lockExists,
+        order: plan.orderOwned,
+        events: plan.eventCount,
+        privateHandover: plan.privateHandoverExists,
+        unpaidCountDecrement: plan.orderOwned && plan.unpaidCount > 0
+      },
+      orderNumbersLeftInPlace: plan.orderNumbersExists,
+      plan
+    }, null, 2));
+    if (apply) {
+      await applyCleanup(db, customerId, shopId, plan);
+      console.log('Cleanup applied.');
+    } else {
+      console.log('Cleanup dry run. Re-run with --cleanup --apply to delete.');
+    }
+    return;
+  }
+
+  if (!apply) {
+    console.log('Dry run. Re-run with --apply to create orders.');
+    return;
+  }
+
+  const { createMarketplaceOrder } = require('../../src/services/marketplace/createCustomerOrder');
+  const address = context.addresses[0];
+  if (!address) {
+    console.error('No saved address. --apply did not create an order.');
+    process.exit(1);
+  }
+  if (!context.line) {
+    console.error('No active product with stock. --apply did not create an order.');
+    process.exit(1);
+  }
+
+  const body = {
+    shopId,
+    addressId: address.id,
+    items: [context.line]
+  };
+  const wrongBody = {
+    shopId,
+    addressId: address.id,
+    items: [context.wrongPriceLine]
+  };
+
+  const priceCase = await callCreate(createMarketplaceOrder, customerId, crypto.randomUUID(), wrongBody);
+  console.log(JSON.stringify({
+    step: 1,
+    expected: 'ITEMS_CHANGED',
+    status: priceCase.status,
+    code: priceCase.code || null,
+    lines: priceCase.lines
+  }, null, 2));
+  if (priceCase.code !== 'ITEMS_CHANGED') {
+    process.exit(1);
+  }
+
+  const key = crypto.randomUUID();
+  const unpaidBefore = await readUnpaidCount(db, customerId);
+  const created = await callCreate(createMarketplaceOrder, customerId, key, body);
+  const order = created.ok ? created.body.data.order : null;
+  console.log(JSON.stringify({
+    step: 2,
+    expected: 201,
+    status: created.status,
+    code: created.code || null,
+    orderId: order && order.id,
+    displayId: order && order.displayId,
+    itemsTotal: order && order.itemsTotal,
+    expectedAmount: order && order.expectedAmount,
+    expectedAmountPaise: order && order.expectedAmountPaise,
+    amountAdjustmentPaise: order && order.amountAdjustmentPaise,
+    window: order && order.window
+  }, null, 2));
+  if (!created.ok || created.status !== 201) {
+    process.exit(1);
+  }
+
+  const unpaidAfterCreate = await readUnpaidCount(db, customerId);
+  const replay = await callCreate(createMarketplaceOrder, customerId, key, body);
+  const replayOrder = replay.ok ? replay.body.data.order : null;
+  const unpaidAfterReplay = await readUnpaidCount(db, customerId);
+  console.log(JSON.stringify({
+    step: 3,
+    expectedStatus: 200,
+    status: replay.status,
+    sameOrder: Boolean(replayOrder && replayOrder.id === order.id),
+    unpaidCountBeforeReplay: unpaidAfterCreate,
+    unpaidCountAfterReplay: unpaidAfterReplay,
+    unpaidCountUnchanged: unpaidAfterReplay === unpaidAfterCreate,
+    unpaidCountBeforeCreate: unpaidBefore
+  }, null, 2));
+
+  const conflict = await callCreate(createMarketplaceOrder, customerId, crypto.randomUUID(), body);
+  console.log(JSON.stringify({
+    step: 4,
+    expected: 'UNPAID_ORDER_EXISTS',
+    status: conflict.status,
+    code: conflict.code || null,
+    orderId: conflict.orderId
+  }, null, 2));
+
+  await printOutcome(db, customerId, shopId, order.id, order.displayId);
+  console.log(JSON.stringify({ paymentJob: await paymentJobReport(db, shopId) }, null, 2));
+}
+
+main().catch((error) => {
+  console.error(error.message || error);
+  process.exit(1);
+});

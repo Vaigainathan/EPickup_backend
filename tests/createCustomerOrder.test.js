@@ -4,6 +4,8 @@ const {
   classifyOrderLines,
   sumItemsTotalPaise,
   chooseAmountAdjustment,
+  occupiedExpectedPaise,
+  blockingExpectedPaise,
   policyGroupFor,
   isShopOpenNow,
   paymentDetailsFromStored,
@@ -85,21 +87,68 @@ describe('classifyOrderLines', () => {
 });
 
 describe('chooseAmountAdjustment', () => {
-  test('picks the smallest free paise offset in 0..99', () => {
-    const chosen = chooseAmountAdjustment(10000, [10000, 10001]);
-    expect(chosen).toEqual({
+  test('reduces the amount by the smallest free paise offset and never goes above the items total', () => {
+    const second = chooseAmountAdjustment(154000, [154000]);
+    const third = chooseAmountAdjustment(154000, [154000, 153999]);
+    expect(second).toEqual({
+      amountAdjustmentPaise: 1,
+      expectedAmountPaise: 153999,
+      expectedAmount: 1539.99
+    });
+    expect(third).toEqual({
       amountAdjustmentPaise: 2,
-      expectedAmountPaise: 10002,
-      expectedAmount: 100.02
+      expectedAmountPaise: 153998,
+      expectedAmount: 1539.98
+    });
+    expect(second.expectedAmountPaise).toBeLessThanOrEqual(154000);
+    expect(third.expectedAmountPaise).toBeLessThanOrEqual(154000);
+  });
+
+  test('a new order at an existing reduced amount steps one paise lower', () => {
+    const existing = {
+      itemsTotalPaise: 154000,
+      itemsTotal: 1540,
+      expectedAmountPaise: 153999
+    };
+    expect(occupiedExpectedPaise(existing)).toBe(153999);
+    expect(chooseAmountAdjustment(153999, [occupiedExpectedPaise(existing)])).toEqual({
+      amountAdjustmentPaise: 1,
+      expectedAmountPaise: 153998,
+      expectedAmount: 1539.98
     });
   });
 
-  test('returns null when every offset is taken', () => {
+  test('avoids a payment_unconfirmed amount and ignores other statuses', () => {
+    const occupied = blockingExpectedPaise([
+      {
+        orderStatus: 'payment_unconfirmed',
+        itemsTotalPaise: 154001,
+        expectedAmountPaise: 154000
+      },
+      {
+        orderStatus: 'preparing',
+        itemsTotalPaise: 154000,
+        expectedAmountPaise: 153999
+      }
+    ]);
+    expect(occupied).toEqual([154000]);
+    expect(chooseAmountAdjustment(154000, occupied).expectedAmountPaise).toBe(153999);
+  });
+
+  test('returns null when every positive offset is taken', () => {
     const occupied = [];
     for (let offset = 0; offset <= 99; offset += 1) {
-      occupied.push(5000 + offset);
+      occupied.push(154000 - offset);
     }
-    expect(chooseAmountAdjustment(5000, occupied)).toBeNull();
+    expect(chooseAmountAdjustment(154000, occupied)).toBeNull();
+  });
+
+  test('a total of 50 paise is busy once 1..50 are taken', () => {
+    const occupied = [];
+    for (let paise = 1; paise <= 50; paise += 1) {
+      occupied.push(paise);
+    }
+    expect(chooseAmountAdjustment(50, occupied)).toBeNull();
   });
 });
 

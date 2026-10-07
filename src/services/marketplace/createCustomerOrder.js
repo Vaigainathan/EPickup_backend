@@ -171,6 +171,8 @@ function sumItemsTotalPaise(goodLines) {
   return goodLines.reduce((sum, line) => sum + line.linePaise, 0);
 }
 
+const UNPAID_AMOUNT_STATUSES = ['awaiting_payment', 'payment_unconfirmed'];
+
 function occupiedExpectedPaise(data) {
   if (data && Number.isInteger(data.expectedAmountPaise)) {
     return data.expectedAmountPaise;
@@ -181,10 +183,19 @@ function occupiedExpectedPaise(data) {
   return null;
 }
 
+function blockingExpectedPaise(orders) {
+  return (Array.isArray(orders) ? orders : [])
+    .filter((order) => order && UNPAID_AMOUNT_STATUSES.includes(order.orderStatus))
+    .map((order) => occupiedExpectedPaise(order));
+}
+
 function chooseAmountAdjustment(itemsTotalPaise, occupiedPaise) {
   const taken = new Set(occupiedPaise.filter((value) => Number.isInteger(value)));
   for (let amountAdjustmentPaise = 0; amountAdjustmentPaise <= 99; amountAdjustmentPaise += 1) {
-    const expectedAmountPaise = itemsTotalPaise + amountAdjustmentPaise;
+    const expectedAmountPaise = itemsTotalPaise - amountAdjustmentPaise;
+    if (expectedAmountPaise <= 0) {
+      continue;
+    }
     if (!taken.has(expectedAmountPaise)) {
       return {
         amountAdjustmentPaise,
@@ -417,8 +428,8 @@ async function createMarketplaceOrder({ customerId, idempotencyKey, body }) {
 
     const awaitingSnap = await tx.get(db.collection('marketplaceOrders')
       .where('shopId', '==', shopId)
-      .where('orderStatus', '==', 'awaiting_payment'));
-    const occupied = awaitingSnap.docs.map((doc) => occupiedExpectedPaise(doc.data()));
+      .where('orderStatus', 'in', UNPAID_AMOUNT_STATUSES));
+    const occupied = blockingExpectedPaise(awaitingSnap.docs.map((doc) => doc.data()));
     const itemsTotalPaise = sumItemsTotalPaise(classified.goodLines);
     const adjustment = chooseAmountAdjustment(itemsTotalPaise, occupied);
     if (!adjustment) {
@@ -570,8 +581,10 @@ module.exports = {
   validateCreateInput,
   classifyOrderLines,
   sumItemsTotalPaise,
+  UNPAID_AMOUNT_STATUSES,
   chooseAmountAdjustment,
   occupiedExpectedPaise,
+  blockingExpectedPaise,
   policyGroupFor,
   isShopOpenNow,
   paymentDetailsFromStored,

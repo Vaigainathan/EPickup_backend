@@ -917,6 +917,10 @@ service cloud.firestore {
       );
       allow create, delete: if false;
       allow update: if isAuthenticated() && isOwner(resource.data.shopId);
+
+      match /private/{docId} {
+        allow read, write: if false;
+      }
     }
 
     // Default rule - deny all other access

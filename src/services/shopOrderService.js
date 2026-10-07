@@ -77,6 +77,13 @@ function generateHandoverOtp() {
   return String(crypto.randomInt(100000, 1000000));
 }
 
+function otpFromValue(value) {
+  if (value == null || value === '') {
+    return null;
+  }
+  return String(value);
+}
+
 function parseDisplayId(value) {
   if (typeof value === 'number' && Number.isFinite(value)) {
     return value;
@@ -124,12 +131,28 @@ class ShopOrderService {
     }
   }
 
-  presentOrder(id, data) {
+  handoverPrivateRef(orderId) {
+    return this.orders().doc(orderId).collection('private').doc('handover');
+  }
+
+  async readHandoverOtp(orderId, data) {
+    const privateSnap = await this.handoverPrivateRef(orderId).get();
+    if (privateSnap.exists) {
+      const fromPrivate = otpFromValue(privateSnap.data() && privateSnap.data().otp);
+      if (fromPrivate) {
+        return fromPrivate;
+      }
+    }
+    return otpFromValue(data && data.handoverOtp);
+  }
+
+  async presentOrder(id, data) {
     const payment = data.payment || {};
     const itemsTotal = data.itemsTotal ?? 0;
     const amount = payment.amount ?? itemsTotal;
     const cancellation = data.cancellation || {};
     const address = data.deliveryAddress || {};
+    const handoverOtp = await this.readHandoverOtp(id, data);
 
     return {
       id,
@@ -145,9 +168,7 @@ class ShopOrderService {
       orderStatus: data.orderStatus,
       displayId: data.displayId ?? null,
       // Shop-facing only. Do not reuse this presenter on a customer GET without stripping handoverOtp.
-      handoverOtp: typeof data.handoverOtp === 'string' && data.handoverOtp
-        ? data.handoverOtp
-        : (data.handoverOtp == null ? null : String(data.handoverOtp)),
+      handoverOtp,
       linkedBookingId: data.linkedBookingId ?? null,
       driverInfo: presentDriverInfo(data.driverInfo),
       payment: {
@@ -229,7 +250,7 @@ class ShopOrderService {
       query = query.where('orderStatus', '==', orderStatus);
     }
     const snapshot = await query.orderBy('createdAt', 'desc').get();
-    return snapshot.docs.map((doc) => this.presentOrder(doc.id, doc.data()));
+    return Promise.all(snapshot.docs.map((doc) => this.presentOrder(doc.id, doc.data())));
   }
 
   async getOrder(shopId, orderId) {
@@ -245,11 +266,11 @@ class ShopOrderService {
         throw httpError(404, 'ORDER_NOT_FOUND', 'Order not found');
       }
       const data = snap.data();
-      const applied = apply(data);
+      const applied = await apply(data, tx);
       if (applied.alreadyProcessed) {
         return {
           alreadyProcessed: true,
-          order: this.presentOrder(snap.id, data),
+          order: await this.presentOrder(snap.id, data),
           notify: null,
           extra: applied.extra || {}
         };
@@ -272,7 +293,7 @@ class ShopOrderService {
     const fresh = await ref.get();
     return {
       ...result,
-      order: this.presentOrder(fresh.id, fresh.data())
+      order: await this.presentOrder(fresh.id, fresh.data())
     };
   }
 
@@ -354,7 +375,7 @@ class ShopOrderService {
     if (owned.data.orderStatus === 'ready' || owned.data.linkedBookingId) {
       return {
         alreadyProcessed: true,
-        order: this.presentOrder(owned.id, owned.data)
+        order: await this.presentOrder(owned.id, owned.data)
       };
     }
     if (owned.data.orderStatus !== 'preparing') {
@@ -373,7 +394,7 @@ class ShopOrderService {
       if (data.orderStatus === 'ready' || data.linkedBookingId) {
         return {
           alreadyProcessed: true,
-          order: this.presentOrder(snap.id, data)
+          order: await this.presentOrder(snap.id, data)
         };
       }
       if (data.orderStatus !== 'preparing') {
@@ -402,7 +423,7 @@ class ShopOrderService {
     const fresh = await orderRef.get();
     return {
       alreadyProcessed: false,
-      order: this.presentOrder(fresh.id, fresh.data())
+      order: await this.presentOrder(fresh.id, fresh.data())
     };
   }
 
@@ -554,14 +575,18 @@ class ShopOrderService {
       throw httpError(400, 'INVALID_HANDOVER', 'otp and displayId are required');
     }
 
-    return this.runOwnedTransition(shopId, orderId, (data) => {
+    return this.runOwnedTransition(shopId, orderId, async (data, tx) => {
       if (data.orderStatus === 'handed_over') {
         return alreadyProcessed(data);
       }
       if (data.orderStatus !== 'ready') {
         throw httpError(409, 'INVALID_TRANSITION', 'Order must be ready before handover');
       }
-      const expectedOtp = String(data.handoverOtp || '');
+      const privateSnap = await tx.get(this.handoverPrivateRef(orderId));
+      const privateOtp = privateSnap.exists
+        ? otpFromValue(privateSnap.data() && privateSnap.data().otp)
+        : null;
+      const expectedOtp = privateOtp || otpFromValue(data.handoverOtp) || '';
       const expectedDisplay = Number(data.displayId);
       if (otp !== expectedOtp || displayId !== expectedDisplay) {
         throw httpError(409, 'HANDOVER_MISMATCH', 'Order ID or OTP does not match');
@@ -744,17 +769,19 @@ class ShopOrderService {
       linkedBookingId: null,
       driverInfo: null,
       displayId,
-      handoverOtp,
       createdAt: now,
       updatedAt: now
     };
 
     this.assertAmountInvariant(doc.itemsTotal, doc.payment.amount);
-    await ref.set(doc);
+    const batch = this.getDb().batch();
+    batch.set(ref, doc);
+    batch.set(this.handoverPrivateRef(ref.id), { otp: handoverOtp });
+    await batch.commit();
     const saved = await ref.get();
 
     return {
-      order: this.presentOrder(saved.id, saved.data()),
+      order: await this.presentOrder(saved.id, saved.data()),
       handoverOtp,
       displayId
     };

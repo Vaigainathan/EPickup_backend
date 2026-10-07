@@ -1,6 +1,7 @@
 const { Server } = require('socket.io');
 const jwt = require('jsonwebtoken');
 const WebSocketEventHandler = require('./websocketEventHandler');
+const { applyJoinBookingRoom, applyJoinBooking } = require('./bookingRoomAuth');
 
 /**
  * Sanitize message data to prevent XSS and other attacks
@@ -297,43 +298,8 @@ const initializeSocketIO = async (server) => {
 
       // Handle explicit booking room joins from customer trip-progress bootstrap
       socket.on('join_booking_room', (data) => {
-        try {
-          if (!socket || typeof socket.join !== 'function') {
-            socket.emit('error', {
-              code: 'INVALID_SOCKET',
-              message: 'Socket instance is not available for room join',
-              timestamp: new Date().toISOString()
-            });
-            return;
-          }
-
-          const bookingId = typeof data === 'string' ? data : data?.bookingId || data?.tripId;
-          if (!bookingId || typeof bookingId !== 'string' || !bookingId.trim()) {
-            socket.emit('error', {
-              code: 'INVALID_DATA',
-              message: 'Booking ID is required to join booking room',
-              timestamp: new Date().toISOString()
-            });
-            return;
-          }
-
-          const roomName = `booking:${bookingId.trim()}`;
-          socket.join(roomName);
-
-          socket.emit('booking-room-joined', {
-            success: true,
-            bookingId: bookingId.trim(),
-            room: roomName,
-            timestamp: new Date().toISOString()
-          });
-        } catch (error) {
-          console.error('❌ [SOCKET] Failed to join booking room:', error);
-          socket.emit('error', {
-            code: 'ROOM_JOIN_ERROR',
-            message: 'Failed to join booking room',
-            timestamp: new Date().toISOString()
-          });
-        }
+        const { getFirestore } = require('../services/firebase');
+        applyJoinBookingRoom(socket, data, getFirestore());
       });
 
       // Handle tracking unsubscription
@@ -492,113 +458,9 @@ const initializeSocketIO = async (server) => {
       });
 
       // ✅ CRITICAL FIX: Handle booking room join/leave with permission validation
-      socket.on('join-booking', async (bookingId) => {
-        try {
-        if (!bookingId) {
-          socket.emit('error', {
-            code: 'INVALID_BOOKING_ID',
-            message: 'Booking ID is required'
-          });
-          return;
-        }
-
-          const userId = socket.userId;
-          const userType = socket.userType;
-
-          if (!userId || !userType) {
-            socket.emit('error', {
-              code: 'AUTHENTICATION_ERROR',
-              message: 'User authentication required'
-            });
-            return;
-          }
-
-          // ✅ CRITICAL FIX: Validate user has permission to join this booking room
-          const { getFirestore } = require('../services/firebase');
-          const db = getFirestore();
-          const bookingRef = db.collection('bookings').doc(bookingId);
-          const bookingDoc = await bookingRef.get();
-
-          if (!bookingDoc.exists) {
-            socket.emit('error', {
-              code: 'BOOKING_NOT_FOUND',
-              message: 'Booking not found'
-            });
-            return;
-          }
-
-          const booking = bookingDoc.data();
-
-          // ✅ CRITICAL FIX: Check if user is customer or driver of this booking
-          if (userType === 'customer' && booking.customerId !== userId) {
-            socket.emit('error', {
-              code: 'PERMISSION_DENIED',
-              message: 'You do not have permission to join this booking room'
-            });
-            console.warn(`⚠️ [SOCKET] Permission denied: Customer ${userId} tried to join booking ${bookingId} (owner: ${booking.customerId})`);
-            return;
-          }
-
-          if (userType === 'driver' && booking.driverId !== userId) {
-            socket.emit('error', {
-              code: 'PERMISSION_DENIED',
-              message: 'You do not have permission to join this booking room'
-            });
-            console.warn(`⚠️ [SOCKET] Permission denied: Driver ${userId} tried to join booking ${bookingId} (assigned driver: ${booking.driverId})`);
-            return;
-          }
-
-          // ✅ CRITICAL FIX: Allow join for active bookings and delivered bookings (for payment workflow)
-          // Drivers need to stay connected even after delivery to receive payment confirmation updates
-          const activeStatuses = ['pending', 'driver_assigned', 'accepted', 'driver_enroute', 
-                                 'driver_arrived', 'picked_up', 'in_transit', 'at_dropoff', 
-                                 'delivered', 'money_collection']; // ✅ FIX: Include delivered and money_collection
-          const terminalStatuses = ['completed', 'cancelled', 'rejected'];
-          
-          if (terminalStatuses.includes(booking.status)) {
-            // Only block terminal states (completed, cancelled, rejected)
-            socket.emit('error', {
-              code: 'BOOKING_NOT_ACTIVE',
-              message: `Booking is in terminal state: ${booking.status}`
-            });
-            console.warn(`⚠️ [SOCKET] Booking ${bookingId} is in terminal state (status: ${booking.status})`);
-            return;
-          }
-          
-          // ✅ FIX: Allow join for all non-terminal states (including delivered for payment workflow)
-          if (!activeStatuses.includes(booking.status) && !terminalStatuses.includes(booking.status)) {
-            console.warn(`⚠️ [SOCKET] Booking ${bookingId} has unknown status: ${booking.status}, allowing join anyway`);
-          }
-
-          // ✅ CRITICAL FIX: Persist room membership in database for recovery
-          const roomMembershipRef = db.collection('websocket_rooms').doc(`${bookingId}:${userId}`);
-          await roomMembershipRef.set({
-            bookingId,
-            userId,
-            userType,
-            room: `booking:${bookingId}`,
-            joinedAt: new Date(),
-            lastSeen: new Date(),
-            socketId: socket.id
-          }, { merge: true });
-        
-        // Join booking room
-        socket.join(`booking:${bookingId}`);
-          console.log(`✅ [SOCKET] User ${userId} (${userType}) joined booking room: booking:${bookingId}`);
-        
-        socket.emit('booking-room-joined', {
-          success: true,
-          bookingId: bookingId,
-          room: `booking:${bookingId}`
-        });
-        } catch (error) {
-          console.error('❌ [SOCKET] Error joining booking room:', error);
-          socket.emit('error', {
-            code: 'ROOM_JOIN_ERROR',
-            message: 'Failed to join booking room',
-            details: error.message
-          });
-        }
+      socket.on('join-booking', (bookingId) => {
+        const { getFirestore } = require('../services/firebase');
+        applyJoinBooking(socket, bookingId, getFirestore());
       });
 
       socket.on('leave-booking', async (bookingId) => {

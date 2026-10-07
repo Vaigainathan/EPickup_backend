@@ -4,6 +4,7 @@ const firestoreSessionService = require('./firestoreSessionService');
 const expoPushService = require('./expoPushService');
 const { NEW_ORDER_CHANNEL_ID } = require('../constants/notifications');
 const { withParcelSource } = require('./parcelSourceFilter');
+const { authorizeBookingRoomJoin } = require('./bookingRoomAuth');
 
 /**
  * WebSocket Event Handler Service
@@ -342,7 +343,9 @@ class WebSocketEventHandler {
    */
   async handleTrackingSubscription(socket, data) {
     try {
-      const { tripId, userId, userType } = data; // eslint-disable-line no-unused-vars
+      const tripId = data && data.tripId;
+      const userId = socket.userId;
+      const userType = socket.userType;
 
       if (!tripId || !userId) {
         socket.emit('error', {
@@ -352,8 +355,8 @@ class WebSocketEventHandler {
         return;
       }
 
-      // Verify user has access to this trip
-      const hasAccess = await this.verifyTripAccess(userId, tripId);
+      // Identity comes from the verified socket, never from the event payload.
+      const hasAccess = await this.verifyTripAccess(userId, tripId, userType);
       if (!hasAccess) {
         socket.emit('error', {
           code: 'ACCESS_DENIED',
@@ -1068,14 +1071,26 @@ class WebSocketEventHandler {
    * @param {string} tripId - Trip ID
    * @returns {boolean} Access verification result
    */
-  async verifyTripAccess(userId, tripId) {
+  async verifyTripAccess(userId, tripId, userType) {
     try {
       if (!this.db) return false;
 
       const tripDoc = await this.db.collection('bookings').doc(tripId).get();
       if (!tripDoc.exists) return false;
 
-      const tripData = tripDoc.data();
+      const tripData = tripDoc.data() || {};
+      if (userType === 'admin') {
+        return true;
+      }
+      if (userType === 'customer') {
+        return tripData.customerId === userId;
+      }
+      if (userType === 'driver') {
+        return tripData.driverId === userId;
+      }
+      if (userType) {
+        return false;
+      }
       return tripData.customerId === userId || tripData.driverId === userId;
 
     } catch (error) {
@@ -1102,9 +1117,27 @@ class WebSocketEventHandler {
         return;
       }
 
-      // Check if user has permission to join this room
-      const hasPermission = this.checkRoomPermission(userType, userRole, room);
-      if (!hasPermission) {
+      if (typeof room === 'string' && room.startsWith('booking:')) {
+        const bookingId = room.slice('booking:'.length);
+        if (!bookingId) {
+          socket.emit('error', {
+            code: 'INVALID_ROOM',
+            message: 'Room name is required'
+          });
+          return;
+        }
+        if (!this.db) {
+          this.db = getFirestore();
+        }
+        const decision = await authorizeBookingRoomJoin(this.db, socket, bookingId);
+        if (!decision.ok) {
+          socket.emit('error', {
+            code: decision.code,
+            message: decision.message
+          });
+          return;
+        }
+      } else if (!this.checkRoomPermission(userType, userRole, room, userId)) {
         socket.emit('error', {
           code: 'ROOM_ACCESS_DENIED',
           message: 'You do not have permission to join this room'
@@ -1216,22 +1249,30 @@ class WebSocketEventHandler {
    * @param {string} room - Room name
    * @returns {boolean} Permission result
    */
-  checkRoomPermission(userType, userRole, room) {
+  checkRoomPermission(userType, userRole, room, userId) {
     // Admin can join any room
     if (userType === 'admin' || userRole === 'admin') {
       return true;
     }
 
-    // Customer can join customer-specific rooms
-    if (userType === 'customer') {
-      // ✅ CRITICAL FIX: Use correct room naming format (booking: not booking_)
-      return room.startsWith('customer_') || room.startsWith('user:') || room.startsWith('booking:');
+    if (typeof room !== 'string' || !userId) {
+      return false;
     }
 
-    // Driver can join driver-specific rooms
+    const owns = (prefix) => {
+      if (!room.startsWith(prefix)) {
+        return false;
+      }
+      const id = room.slice(prefix.length);
+      return id.length > 0 && id === userId;
+    };
+
+    if (userType === 'customer') {
+      return owns('customer_') || owns('user:');
+    }
+
     if (userType === 'driver') {
-      // ✅ CRITICAL FIX: Use correct room naming format (booking: not booking_)
-      return room.startsWith('driver_') || room.startsWith('user:') || room.startsWith('booking:') || room.startsWith('location_');
+      return owns('driver_') || owns('user:') || owns('location_');
     }
 
     return false;

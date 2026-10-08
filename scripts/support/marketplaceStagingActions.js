@@ -135,13 +135,19 @@ function presentCancellation(cancellation) {
 
 function presentRefund(refund) {
   const source = refund && typeof refund === 'object' ? refund : {};
-  return {
+  const row = {
     id: source.id ?? null,
     reason: source.reason ?? null,
     status: source.status ?? null,
     amount: source.amount ?? null,
+    dueBy: toIso(source.dueBy),
+    refundUtrLast4: last4(source.refundUtr),
     createdAt: toIso(source.createdAt)
   };
+  if (typeof source.closedBy === 'string' && source.closedBy) {
+    row.closedBy = source.closedBy;
+  }
+  return row;
 }
 
 function presentEvent(data) {
@@ -168,11 +174,14 @@ function presentEvent(data) {
     if (event.data.result != null) {
       shown.result = event.data.result;
     }
+    if (event.data.legacy === true) {
+      shown.legacy = true;
+    }
   }
   return shown;
 }
 
-function buildOrderShow({ orderId, data, events, lock, unpaidCount }) {
+function buildOrderShow({ orderId, data, events, lock, unpaidCount, refunds }) {
   const source = data && typeof data === 'object' ? data : {};
   const payment = source.payment && typeof source.payment === 'object' ? source.payment : {};
   const shownEvents = (Array.isArray(events) ? events : []).map(presentEvent);
@@ -196,7 +205,8 @@ function buildOrderShow({ orderId, data, events, lock, unpaidCount }) {
     },
     review: presentReview(payment),
     cancellation: presentCancellation(source.cancellation),
-    refunds: (Array.isArray(source.refunds) ? source.refunds : []).map(presentRefund),
+    hasOpenRefund: source.hasOpenRefund === true,
+    refunds: (Array.isArray(refunds) ? refunds : []).map(presentRefund),
     events: shownEvents,
     lock: {
       exists: Boolean(lockData),

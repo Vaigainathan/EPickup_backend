@@ -231,6 +231,17 @@ function isServerStamp(value) {
   return Boolean(method) && method === probeMethod;
 }
 
+function refundDocs(orderId) {
+  const prefix = `marketplaceOrders/${orderId}/refunds/`;
+  const found = [];
+  mockTimeoutDocs.forEach((data, path) => {
+    if (path.startsWith(prefix) && path.split('/').length === 4) {
+      found.push(data);
+    }
+  });
+  return found;
+}
+
 function eventsFor(orderId) {
   return [...mockTimeoutDocs.entries()]
     .filter(([path]) => path.startsWith(`marketplaceOrders/${orderId}/events/`))
@@ -559,14 +570,17 @@ describe('payment job modes', () => {
     expect(order.cancellation.cancelledBy).toBe('system');
     expect(isServerStamp(order.cancellation.cancelledAt)).toBe(true);
     expect(order.payment.status).toBe('refund_pending');
-    expect(order.refunds).toHaveLength(1);
-    expect(order.refunds[0].reason).toBe('balance_expired');
-    expect(order.refunds[0].amount).toBe(40);
-    expect(order.refunds[0].status).toBe('upi_needed');
-    expect(order.refunds[0].customerUpiId).toBeNull();
-    expect(isServerStamp(order.refunds[0].createdAt)).toBe(false);
-    expect(isRealClockTimestamp(order.refunds[0].createdAt, now)).toBe(true);
-    expect(eventsFor('order-1')[0]).toMatchObject({
+    expect(order.payment.balance.status).toBe('expired');
+    expect(order.hasOpenRefund).toBe(true);
+    expect(order.refunds).toBeUndefined();
+    const created = refundDocs('order-1');
+    expect(created).toHaveLength(1);
+    expect(created[0].reason).toBe('balance_expired');
+    expect(created[0].amount).toBe(40);
+    expect(created[0].status).toBe('upi_needed');
+    expect(created[0].customerUpiId).toBeNull();
+    expect(isServerStamp(created[0].createdAt)).toBe(true);
+    expect(eventsFor('order-1').find((event) => event.type === 'cancelled')).toMatchObject({
       type: 'cancelled',
       reason: 'balance_expired'
     });
@@ -577,7 +591,7 @@ describe('payment job modes', () => {
 
     const second = await job.runTick({ nowMs: now + 60000, enforcement: ON });
     expect(second.actions).toEqual([]);
-    expect(mockTimeoutDocs.get('marketplaceOrders/order-1').refunds).toHaveLength(1);
+    expect(refundDocs('order-1')).toHaveLength(1);
     expect(mockNotifyCustomer).toHaveBeenCalledTimes(1);
   });
 
@@ -834,7 +848,9 @@ describe('simulated clock', () => {
       expect(isServerStamp(value)).toBe(true);
       expect(typeof value.toMillis).not.toBe('function');
     });
-    expect(isRealClockTimestamp(balance.refunds[0].createdAt, now)).toBe(true);
+    const balanceRefund = refundDocs('order-balance')[0];
+    expect(isServerStamp(balanceRefund.createdAt)).toBe(true);
+    expect(isRealClockTimestamp(balanceRefund.createdAt, now)).toBe(false);
     const eventTimes = [
       ...eventsFor('order-nudge'),
       ...eventsFor('order-reminder'),

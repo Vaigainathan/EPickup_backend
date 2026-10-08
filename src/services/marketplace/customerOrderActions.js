@@ -1,10 +1,10 @@
-const crypto = require('crypto');
 const { Timestamp, FieldValue } = require('firebase-admin/firestore');
 const { getFirestore } = require('../firebase');
 const { MARKETPLACE_DEFAULTS } = require('../../config/marketplaceDefaults');
 const { isValidUtr } = require('../../validators/marketplace');
 const { presentCustomerOrder } = require('./customerOrderView');
 const { appendEvent } = require('./orderEvents');
+const { createRefund } = require('./refunds');
 const displayIdService = require('../displayIdService');
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -93,14 +93,18 @@ function unpaidCountOf(userSnap) {
   return Number.isFinite(count) && count > 0 ? count : 0;
 }
 
-function orderResponse(status, data, orderId) {
+function orderResponse(status, data, orderId, extras) {
+  const payload = {
+    order: presentCustomerOrder({ ...data, id: orderId })
+  };
+  if (extras && extras.refund) {
+    payload.refund = extras.refund;
+  }
   return {
     status,
     body: {
       success: true,
-      data: {
-        order: presentCustomerOrder({ ...data, id: orderId })
-      }
+      data: payload
     }
   };
 }
@@ -368,15 +372,7 @@ async function cancelCustomerOrder({ customerId, orderId, idempotencyKey, nowMs 
       const userSnap = await tx.get(userRef);
       const at = Timestamp.fromMillis(now);
       const reason = 'amount_short_cancel';
-      const refund = {
-        id: crypto.randomBytes(8).toString('hex'),
-        reason,
-        amount: payment.receivedAmount != null ? payment.receivedAmount : null,
-        items: Array.isArray(data.items) ? data.items : [],
-        status: 'upi_needed',
-        customerUpiId: null,
-        createdAt: at
-      };
+      const refundAmount = payment.receivedAmount != null ? payment.receivedAmount : null;
       const nextCancellation = {
         reason,
         cancelledBy: 'customer',
@@ -384,13 +380,21 @@ async function cancelCustomerOrder({ customerId, orderId, idempotencyKey, nowMs 
         cancelledAt: at
       };
       const nextPayment = { ...payment, status: 'refund_pending' };
-      const nextRefunds = (Array.isArray(data.refunds) ? data.refunds : []).concat([refund]);
       tx.update(orderRef, {
         orderStatus: 'cancelled',
+        closedReason: reason,
         cancellation: nextCancellation,
         'payment.status': 'refund_pending',
-        refunds: nextRefunds,
         updatedAt: at
+      });
+      const created = createRefund(tx, {
+        orderRef,
+        data,
+        reason,
+        amount: refundAmount,
+        items: data.items,
+        actor: { type: 'customer', id: customerId },
+        resultingOrderStatus: 'cancelled'
       });
       const lockData = lockSnap.exists ? (lockSnap.data() || {}) : null;
       if (lockData && lockData.orderId === orderId) {
@@ -410,15 +414,21 @@ async function cancelCustomerOrder({ customerId, orderId, idempotencyKey, nowMs 
       return {
         replay: false,
         shortRefund: true,
-        refundAmount: refund.amount,
+        refundAmount,
+        refund: {
+          id: created.refundId,
+          amount: created.amount,
+          status: 'upi_needed'
+        },
         shopId: data.shopId,
         displayId: displayLabel(data),
         data: {
           ...data,
           orderStatus: 'cancelled',
+          closedReason: reason,
           cancellation: nextCancellation,
           payment: nextPayment,
-          refunds: nextRefunds,
+          hasOpenRefund: true,
           updatedAt: at
         }
       };
@@ -491,7 +501,7 @@ async function cancelCustomerOrder({ customerId, orderId, idempotencyKey, nowMs 
       displayId: outcome.displayId,
       amount: outcome.refundAmount
     });
-    return orderResponse(200, outcome.data, orderId);
+    return orderResponse(200, outcome.data, orderId, { refund: outcome.refund });
   }
   if (!outcome.replay) {
     const detail = outcome.hasUtr

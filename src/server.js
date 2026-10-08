@@ -890,6 +890,10 @@ async function initializeServices() {
     marketplacePaymentTimeoutJob.start();
     console.log('✅ Marketplace payment-timeout cron scheduled');
 
+    const marketplaceRefundJob = require('./services/marketplaceRefundJob');
+    marketplaceRefundJob.start();
+    console.log('✅ Marketplace refund cron scheduled');
+
     // Performance monitoring handled by monitoringService
     console.log('✅ Performance monitoring consolidated into monitoringService');
     

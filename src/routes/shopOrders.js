@@ -4,6 +4,7 @@ const router = express.Router();
 const { authMiddleware, requireRole } = require('../middleware/auth');
 const shopCatalogueService = require('../services/shopCatalogueService');
 const shopOrderService = require('../services/shopOrderService');
+const { markRefundSent } = require('../services/marketplace/refunds');
 
 function sendError(res, error) {
   const status = error.status || 500;
@@ -123,6 +124,24 @@ router.post('/:id/cancel', authMiddleware, requireRole(['shop']), async (req, re
   return withShop(req, res, async (shopId) => {
     const result = await shopOrderService.cancelOrder(shopId, req.params.id, req.body || {});
     return sendTransition(res, result, 'Order cancelled');
+  });
+});
+
+router.post('/:id/refunds/:refundId/sent', authMiddleware, requireRole(['shop']), async (req, res) => {
+  return withShop(req, res, async (shopId) => {
+    const result = await markRefundSent({
+      shopId,
+      orderId: req.params.id,
+      refundId: req.params.refundId,
+      refundUtr: req.body && req.body.refundUtr,
+      amount: req.body && req.body.amount,
+      actor: { type: 'shop', id: shopId }
+    });
+    return res.json({
+      success: true,
+      message: result.alreadyProcessed ? 'Already processed' : 'Refund marked sent',
+      data: { refund: result.refund }
+    });
   });
 });
 

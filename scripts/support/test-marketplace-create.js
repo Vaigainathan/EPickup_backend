@@ -45,6 +45,12 @@
  * { newStatuses: true } and does not write appSettings.
  * --show --order <id> reads that order and writes nothing. --apply is ignored.
  * Timestamps are ISO. UTR values are the last 4 only.
+ * --refund-upi <upiId> --refund <refundId> --order <id> [--save] calls
+ * submitCustomerUpi with upiId and upiIdConfirm set to the same value.
+ * --refund-ack yes|no --refund <refundId> --order <id> calls acknowledgeRefund.
+ * Both are dry-run unless --apply. Logs show the UPI handle only (***@ybl).
+ * --legacy-refund-sent --order <id> calls shopOrderService.refundSent with no
+ * enforcement override, the same as POST /api/shop/orders/:id/refund-sent.
  *
  * --apply case order. The price case is first, on this shop, so the unpaid
  * lock is not written yet:
@@ -53,8 +59,9 @@
  *   3. same key → 200, same order, unpaidCount unchanged
  *   4. new key, same shop → UNPAID_ORDER_EXISTS
  *
- * --cleanup prints the lock, order, events, private/handover, and every
- * utrRegistry doc whose orderId is this order. Lookup is --order <id>,
+ * --cleanup prints the lock, order, events, refunds subcollection, private/handover,
+ * and every utrRegistry doc whose orderId is this order, including kind refund.
+ * Lookup is --order <id>,
  * else the lock. With neither, it prints the 5 newest orders for this
  * customer and shop and deletes nothing. --cleanup --apply deletes the
  * chosen order only. unpaidCount is decremented when the matching lock
@@ -75,11 +82,39 @@ const {
 const {
   confirmRequestBody,
   shortCancelRefundPreview,
-  refundStubAmount,
   buildOrderShow
 } = require('./marketplaceStagingActions');
 
 assertStagingEnv();
+
+function maskUpi(value) {
+  if (typeof value !== 'string') {
+    return null;
+  }
+  const at = value.lastIndexOf('@');
+  if (at < 1 || at === value.length - 1) {
+    return '***';
+  }
+  return `***${value.slice(at)}`;
+}
+
+async function requireOwnedOrder(db, customerId, shopId, orderId) {
+  if (!orderId) {
+    console.error('Needs --order <id>. Nothing was written.');
+    process.exit(1);
+  }
+  const snap = await db.collection('marketplaceOrders').doc(orderId).get();
+  if (!snap.exists) {
+    console.error('Order not found. Nothing was written.');
+    process.exit(1);
+  }
+  const data = snap.data() || {};
+  if (data.customerId !== customerId || data.shopId !== shopId) {
+    console.error('That order does not belong to this customer and shop. Nothing was written.');
+    process.exit(1);
+  }
+  return data;
+}
 
 function argValue(flag) {
   const index = process.argv.indexOf(flag);
@@ -396,6 +431,8 @@ function presentCleanupPlan(plan) {
     privateHandoverExists: plan.privateHandoverExists,
     displayId: plan.displayId,
     orderNumbersExists: plan.orderNumbersExists,
+    refunds: plan.refundCount,
+    refundRegistry: plan.refundRegistryCount,
     utrRegistry: plan.registryDocs.map((doc) => ({
       last4: String(doc.id).slice(-4),
       kind: doc.kind
@@ -417,6 +454,7 @@ async function cleanupPlan(db, customerId, shopId, explicitOrderId) {
   const order = orderSnap && orderSnap.exists ? (orderSnap.data() || {}) : null;
   const owned = Boolean(order && order.customerId === customerId && order.shopId === shopId);
   const eventsSnap = owned ? await orderRef.collection('events').get() : null;
+  const refundsSnap = owned ? await orderRef.collection('refunds').get() : null;
   const privateSnap = owned ? await orderRef.collection('private').doc('handover').get() : null;
   const displayId = owned ? order.displayId : null;
   const registrySnap = displayId == null
@@ -443,6 +481,8 @@ async function cleanupPlan(db, customerId, shopId, explicitOrderId) {
     orderOwned: owned,
     orderStatus: owned ? (order.orderStatus || null) : null,
     eventCount: eventsSnap ? eventsSnap.size : 0,
+    refundCount: refundsSnap ? refundsSnap.size : 0,
+    refundRegistryCount: registryDocs.filter((doc) => doc.kind === 'refund').length,
     privateHandoverExists: Boolean(privateSnap && privateSnap.exists),
     displayId: displayId == null ? null : displayId,
     orderNumbersExists: Boolean(registrySnap && registrySnap.exists),
@@ -464,6 +504,8 @@ async function applyCleanup(db, customerId, shopId, plan) {
     const orderRef = db.collection('marketplaceOrders').doc(plan.orderId);
     const eventsSnap = await orderRef.collection('events').get();
     eventsSnap.docs.forEach((doc) => batch.delete(doc.ref));
+    const refundsSnap = await orderRef.collection('refunds').get();
+    refundsSnap.docs.forEach((doc) => batch.delete(doc.ref));
     batch.delete(orderRef.collection('private').doc('handover'));
     batch.delete(orderRef.collection('private').doc('paymentReport'));
     batch.delete(orderRef);
@@ -538,6 +580,7 @@ async function printOrderShow(db, customerId, shopId, orderId) {
     return;
   }
   const eventsSnap = await db.collection('marketplaceOrders').doc(orderId).collection('events').get();
+  const refundsSnap = await db.collection('marketplaceOrders').doc(orderId).collection('refunds').get();
   const lockSnap = await db.collection('marketplaceLocks').doc(`${customerId}_${shopId}`).get();
   const lock = lockSnap.exists ? (lockSnap.data() || {}) : null;
 
@@ -545,6 +588,7 @@ async function printOrderShow(db, customerId, shopId, orderId) {
     orderId,
     data,
     events: eventsSnap.docs.map((doc) => doc.data()),
+    refunds: refundsSnap.docs.map((doc) => ({ id: doc.id, ...(doc.data() || {}) })),
     lock,
     unpaidCount: await readUnpaidCount(db, customerId)
   }), null, 2));
@@ -556,7 +600,7 @@ async function main() {
   const apply = process.argv.includes('--apply');
   const cleanup = process.argv.includes('--cleanup');
   if (!customerId || !shopId) {
-    console.error('Usage: node scripts/support/test-marketplace-create.js --customer <id> --shop <id> [--apply] [--cleanup] [--order <id>] [--show --order <id>] [--utr [12-digits]] [--balance-utr <12-digits>] [--cancel] [--confirm] [--full-utr <12-digits>] [--fulfil false] [--payment-not-found] [--evidence <file> --order <id>] [--payment-report --order <id> --utr <12-digits>] [--enforce] [--amount-differs <rupees>] [--tick] [--now <ISO>] [--advance-minutes <N>]');
+    console.error('Usage: node scripts/support/test-marketplace-create.js --customer <id> --shop <id> [--apply] [--cleanup] [--order <id>] [--show --order <id>] [--utr [12-digits]] [--balance-utr <12-digits>] [--cancel] [--confirm] [--full-utr <12-digits>] [--fulfil false] [--payment-not-found] [--evidence <file> --order <id>] [--payment-report --order <id> --utr <12-digits>] [--enforce] [--amount-differs <rupees>] [--tick] [--refund-tick] [--refund-upi <upiId> --refund <refundId> --order <id>] [--save] [--refund-ack yes|no --refund <refundId> --order <id>] [--legacy-refund-sent --order <id>] [--now <ISO>] [--advance-minutes <N>]');
     process.exit(1);
   }
 
@@ -584,6 +628,149 @@ async function main() {
     ...context,
     paymentJob: jobReport
   }, null, 2));
+
+  if (process.argv.includes('--refund-upi')) {
+    const upiId = argValue('--refund-upi');
+    const refundId = argValue('--refund');
+    const orderId = argValue('--order');
+    if (!upiId || !refundId || !orderId) {
+      console.error('Needs --refund-upi <upiId>, --refund <refundId>, and --order <id>. Nothing was written.');
+      process.exit(1);
+    }
+    await requireOwnedOrder(db, customerId, shopId, orderId);
+    const save = process.argv.includes('--save');
+    console.log(JSON.stringify({
+      refundUpi: true,
+      dryRun: !apply,
+      orderId,
+      refundId,
+      upiHandle: maskUpi(upiId),
+      save
+    }, null, 2));
+    if (!apply) {
+      console.log('Dry run. Re-run with --apply to submit the refund UPI.');
+      return;
+    }
+    const { submitCustomerUpi } = require('../../src/services/marketplace/refunds');
+    try {
+      const result = await submitCustomerUpi({
+        customerId,
+        orderId,
+        refundId,
+        idempotencyKey: crypto.randomUUID(),
+        upiId,
+        upiIdConfirm: upiId,
+        save
+      });
+      const refund = result.body && result.body.data ? result.body.data.refund : null;
+      console.log(JSON.stringify({
+        applied: true,
+        orderId,
+        refundId,
+        status: refund ? refund.status : null,
+        upiHandle: maskUpi(refund && refund.customerUpiId)
+      }, null, 2));
+    } catch (error) {
+      console.log(JSON.stringify({
+        applied: false,
+        status: error.status || 500,
+        code: error.code || null,
+        message: error.message
+      }, null, 2));
+      process.exitCode = 1;
+    }
+    return;
+  }
+
+  if (process.argv.includes('--refund-ack')) {
+    const answer = argValue('--refund-ack');
+    const refundId = argValue('--refund');
+    const orderId = argValue('--order');
+    if ((answer !== 'yes' && answer !== 'no') || !refundId || !orderId) {
+      console.error('Needs --refund-ack yes|no, --refund <refundId>, and --order <id>. Nothing was written.');
+      process.exit(1);
+    }
+    await requireOwnedOrder(db, customerId, shopId, orderId);
+    console.log(JSON.stringify({
+      refundAck: true,
+      dryRun: !apply,
+      orderId,
+      refundId,
+      received: answer === 'yes'
+    }, null, 2));
+    if (!apply) {
+      console.log('Dry run. Re-run with --apply to acknowledge the refund.');
+      return;
+    }
+    const { acknowledgeRefund } = require('../../src/services/marketplace/refunds');
+    try {
+      const result = await acknowledgeRefund({
+        customerId,
+        orderId,
+        refundId,
+        received: answer === 'yes',
+        idempotencyKey: crypto.randomUUID()
+      });
+      const refund = result.body && result.body.data ? result.body.data.refund : null;
+      console.log(JSON.stringify({
+        applied: true,
+        orderId,
+        refundId,
+        status: refund ? refund.status : null,
+        upiHandle: maskUpi(refund && refund.customerUpiId)
+      }, null, 2));
+    } catch (error) {
+      console.log(JSON.stringify({
+        applied: false,
+        status: error.status || 500,
+        code: error.code || null,
+        message: error.message
+      }, null, 2));
+      process.exitCode = 1;
+    }
+    return;
+  }
+
+  if (process.argv.includes('--legacy-refund-sent')) {
+    const orderId = argValue('--order');
+    if (!orderId) {
+      console.error('Needs --legacy-refund-sent --order <id>. Nothing was written.');
+      process.exit(1);
+    }
+    const data = await requireOwnedOrder(db, customerId, shopId, orderId);
+    const payment = data.payment && typeof data.payment === 'object' ? data.payment : {};
+    console.log(JSON.stringify({
+      legacyRefundSent: true,
+      dryRun: !apply,
+      orderId,
+      paymentStatus: payment.status || null,
+      hasOpenRefund: data.hasOpenRefund === true
+    }, null, 2));
+    if (!apply) {
+      console.log('Dry run. Re-run with --apply to record the legacy refund sent.');
+      return;
+    }
+    const shopOrderService = require('../../src/services/shopOrderService');
+    try {
+      const result = await shopOrderService.refundSent(shopId, orderId);
+      console.log(JSON.stringify({
+        applied: true,
+        alreadyProcessed: result.alreadyProcessed === true,
+        orderStatus: result.order ? result.order.orderStatus : null,
+        paymentStatus: result.order && result.order.payment ? result.order.payment.status : null,
+        hasOpenRefund: result.order ? result.order.hasOpenRefund === true : null
+      }, null, 2));
+    } catch (error) {
+      console.log(JSON.stringify({
+        applied: false,
+        status: error.status || 500,
+        code: error.code || null,
+        message: error.message
+      }, null, 2));
+      process.exitCode = 1;
+    }
+    return;
+  }
 
   if (process.argv.includes('--tick')) {
     const nowArg = argValue('--now');
@@ -620,6 +807,41 @@ async function main() {
     return;
   }
 
+  if (process.argv.includes('--refund-tick')) {
+    const nowArg = argValue('--now');
+    const advanceArg = argValue('--advance-minutes');
+    if (nowArg && advanceArg) {
+      console.error('Pass either --now or --advance-minutes.');
+      process.exit(1);
+    }
+    const tickOptions = {
+      dryRun: !apply,
+      only: { customerId, shopId }
+    };
+    if (nowArg) {
+      const nowMs = Date.parse(nowArg);
+      if (!Number.isFinite(nowMs)) {
+        console.error('--now must be an ISO time.');
+        process.exit(1);
+      }
+      tickOptions.nowMs = nowMs;
+    } else if (advanceArg) {
+      const minutes = Number(advanceArg);
+      if (!Number.isFinite(minutes)) {
+        console.error('--advance-minutes must be a number.');
+        process.exit(1);
+      }
+      tickOptions.nowMs = Date.now() + (minutes * 60 * 1000);
+    }
+    if (process.argv.includes('--enforce')) {
+      tickOptions.enforcement = { newStatuses: true };
+    }
+    const marketplaceRefundJob = require('../../src/services/marketplaceRefundJob');
+    const result = await marketplaceRefundJob.runTick(tickOptions);
+    console.log(JSON.stringify({ refundTick: true, applied: apply, ...result }, null, 2));
+    return;
+  }
+
   if (cleanup) {
     const explicitOrderId = argValue('--order');
     const plan = await cleanupPlan(db, customerId, shopId, explicitOrderId);
@@ -644,6 +866,8 @@ async function main() {
         lock: plan.deleteLock,
         order: plan.orderOwned,
         events: plan.eventCount,
+        refunds: plan.refundCount,
+        refundRegistry: plan.refundRegistryCount,
         privateHandover: plan.privateHandoverExists,
         evidenceFiles: plan.evidenceDocs.length,
         utrRegistry: plan.registryDocs.map((doc) => ({
@@ -1117,14 +1341,12 @@ async function main() {
           orderId: preview.order.id,
           idempotencyKey: crypto.randomUUID()
         });
-        const stored = await db.collection('marketplaceOrders').doc(preview.order.id).get();
-        const refunds = stored.exists ? (stored.data().refunds || []) : [];
         console.log(JSON.stringify({
           cancelled: true,
           status: result.status,
           orderStatus: result.body.data.order.orderStatus,
           reason: result.body.data.order.cancellation.reason,
-          refundAmount: refundStubAmount(refunds)
+          refund: result.body.data.refund || null
         }, null, 2));
       } catch (error) {
         console.log(JSON.stringify({

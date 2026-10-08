@@ -17,6 +17,13 @@ const {
   answerPaidCheck,
   shopCancelAllowed
 } = require('./marketplace/shopPaymentVerification');
+const {
+  OPEN_STATUSES,
+  createRefund,
+  listShopRefunds,
+  loadRefundDocs,
+  presentShopRefund
+} = require('./marketplace/refunds');
 
 const COLLECTION = 'marketplaceOrders';
 const DISPLAY_ID_ATTEMPTS = 8;
@@ -200,8 +207,11 @@ class ShopOrderService {
     return otpFromValue(data && data.handoverOtp);
   }
 
-  async presentOrder(id, data) {
+  async presentOrder(id, data, refundDocs) {
     const payment = data.payment || {};
+    const loaded = Array.isArray(refundDocs)
+      ? refundDocs
+      : await loadRefundDocs(this.orders().doc(id));
     const itemsTotal = data.itemsTotal ?? 0;
     const amount = payment.amount ?? itemsTotal;
     const cancellation = data.cancellation || {};
@@ -266,7 +276,9 @@ class ShopOrderService {
         paidCheckAt: toIso(cancellation.paidCheckAt)
       },
       createdAt: data.createdAt || null,
-      updatedAt: data.updatedAt || null
+      updatedAt: data.updatedAt || null,
+      hasOpenRefund: data.hasOpenRefund === true,
+      refunds: loaded.map((refund) => presentShopRefund(refund, id))
     };
   }
 
@@ -357,6 +369,10 @@ class ShopOrderService {
       throw httpError(404, 'ORDER_NOT_FOUND', 'Order not found');
     }
     return { ref: snap.ref, id: snap.id, data: snap.data() };
+  }
+
+  async listOpenRefunds(shopId, status) {
+    return listShopRefunds(shopId, status);
   }
 
   async listOrders(shopId, status) {
@@ -881,6 +897,19 @@ class ShopOrderService {
       });
 
       if (paid) {
+        const received = data.payment && data.payment.receivedAmount != null
+          ? data.payment.receivedAmount
+          : data.expectedAmount;
+        createRefund(tx, {
+          orderRef: ref,
+          data,
+          reason: 'shop_cancel',
+          amount: received != null ? received : null,
+          items: data.items,
+          actor: { type: 'shop', id: shopId },
+          eventReason: reason,
+          resultingOrderStatus: 'cancelled'
+        });
         return {
           updates: {
             orderStatus: 'cancelled',
@@ -924,8 +953,13 @@ class ShopOrderService {
     return result;
   }
 
-  async refundSent(shopId, orderId) {
-    const result = await this.runOwnedTransition(shopId, orderId, (data) => {
+  async refundSent(shopId, orderId, enforcement) {
+    const flags = await resolveEnforcement(enforcement);
+    if (flags.newStatuses === true) {
+      throw httpError(409, 'REFUND_UTR_REQUIRED', 'Record the refund UTR on the refund');
+    }
+    const orderRef = this.orders().doc(orderId);
+    const result = await this.runOwnedTransition(shopId, orderId, async (data, tx) => {
       const status = paymentStatus(data);
       if (status === 'refunded') {
         return alreadyProcessed(data);
@@ -933,10 +967,29 @@ class ShopOrderService {
       if (status !== 'refund_pending') {
         throw httpError(409, 'INVALID_TRANSITION', 'Refund can only be sent while refund is pending');
       }
+      const refundSnap = await tx.get(orderRef.collection('refunds'));
+      const openDocs = (refundSnap.docs || []).filter((doc) => {
+        const refundStatus = (doc.data() || {}).status;
+        return OPEN_STATUSES.has(refundStatus);
+      });
+      const stamp = admin.firestore.FieldValue.serverTimestamp();
+      openDocs.forEach((doc) => {
+        tx.update(doc.ref, {
+          status: 'closed',
+          closedBy: 'legacy_refund_sent',
+          updatedAt: stamp
+        });
+        appendEvent(tx, orderRef, {
+          type: 'refund_auto_closed',
+          actor: { type: 'shop', id: shopId },
+          data: { legacy: true }
+        });
+      });
       return {
         updates: {
           'payment.status': 'refunded',
-          'payment.refundedAt': this.now()
+          'payment.refundedAt': this.now(),
+          hasOpenRefund: false
         },
         notify: { type: 'REFUND_SENT' }
       };

@@ -1,10 +1,10 @@
-const crypto = require('crypto');
 const { Timestamp, FieldValue } = require('firebase-admin/firestore');
 const { getFirestore } = require('../firebase');
 const { MARKETPLACE_DEFAULTS } = require('../../config/marketplaceDefaults');
 const marketplaceMoney = require('../../validators/marketplace');
 const { isValidUtr } = marketplaceMoney;
 const { appendEvent } = require('./orderEvents');
+const { createRefund, hasReason } = require('./refunds');
 const { getMarketplaceEnforcement } = require('./orderStateMachine');
 const displayIdService = require('../displayIdService');
 
@@ -153,18 +153,6 @@ function expectedReceivedFields(data) {
   return {
     'payment.receivedAmount': data.expectedAmount != null ? data.expectedAmount : null,
     'payment.receivedAmountPaise': data.expectedAmountPaise != null ? data.expectedAmountPaise : null
-  };
-}
-
-function refundStub(reason, amount, items, at) {
-  return {
-    id: crypto.randomBytes(8).toString('hex'),
-    reason,
-    amount,
-    items: Array.isArray(items) ? items : [],
-    status: 'upi_needed',
-    customerUpiId: null,
-    createdAt: at
   };
 }
 
@@ -326,7 +314,6 @@ async function confirmOpenReview(tx, context) {
 
   if (!fulfil) {
     const amount = reviewRefundAmount(data, payment, review);
-    const refund = refundStub('review_refund', amount, data.items, Timestamp.now());
     tx.update(orderRef, {
       orderStatus: 'cancelled',
       closedReason: 'shop_cancelled',
@@ -344,8 +331,16 @@ async function confirmOpenReview(tx, context) {
         reason: 'shop_cancelled',
         decidedBy: shopId,
         decidedAt: FieldValue.serverTimestamp()
-      },
-      refunds: (Array.isArray(data.refunds) ? data.refunds : []).concat([refund])
+      }
+    });
+    createRefund(tx, {
+      orderRef,
+      data,
+      reason: 'review_refund',
+      amount,
+      items: data.items,
+      actor: { type: 'shop', id: shopId },
+      resultingOrderStatus: 'cancelled'
     });
     writeRegistry(tx, reads.registrySnap, reads.registryRef, {
       orderId,
@@ -726,26 +721,28 @@ async function answerPaidCheck({ shopId, orderId, body, nowMs }) {
     const registryRef = db.collection('utrRegistry').doc(matched.officialUtr);
     const registrySnap = await tx.get(registryRef);
     assertRegistryAvailable(registrySnap, orderId);
+    const alreadyRefund = await hasReason(tx, orderRef, 'customer_cancel');
     const amount = payment.receivedAmount != null
       ? payment.receivedAmount
       : (data.expectedAmount != null ? data.expectedAmount : null);
-    const refund = {
-      id: crypto.randomBytes(8).toString('hex'),
-      reason: 'customer_cancel',
-      amount,
-      items: Array.isArray(data.items) ? data.items : [],
-      status: 'upi_needed',
-      customerUpiId: null,
-      createdAt: at
-    };
     tx.update(orderRef, {
       'cancellation.paidCheck': 'received',
       'cancellation.paidCheckAt': at,
       'payment.status': 'refund_pending',
       'payment.officialUtr': matched.officialUtr,
-      'payment.utrSource': matched.utrSource,
-      refunds: (Array.isArray(data.refunds) ? data.refunds : []).concat([refund])
+      'payment.utrSource': matched.utrSource
     });
+    if (!alreadyRefund) {
+      createRefund(tx, {
+        orderRef,
+        data,
+        reason: 'customer_cancel',
+        amount,
+        items: data.items,
+        actor: { type: 'shop', id: shopId },
+        resultingOrderStatus: 'cancelled'
+      });
+    }
     writeRegistry(tx, registrySnap, registryRef, {
       orderId,
       customerId: data.customerId,
@@ -905,18 +902,27 @@ async function differOnOpenReview(tx, context) {
     }
   };
   const notifies = [];
+  let overpaidAmount = null;
   if (receivedPaise > expectedPaise) {
-    const refundAmount = marketplaceMoney.fromPaise(receivedPaise - expectedPaise);
-    patch.refunds = (Array.isArray(data.refunds) ? data.refunds : []).concat([
-      refundStub('overpaid', refundAmount, data.items, at)
-    ]);
-    notifies.push({ type: 'REFUND_INITIATED', variables: { ...variables, amount: refundAmount } });
+    overpaidAmount = marketplaceMoney.fromPaise(receivedPaise - expectedPaise);
+    notifies.push({ type: 'REFUND_INITIATED', variables: { ...variables, amount: overpaidAmount } });
   } else if (matched.corrected) {
     notifies.push({ type: 'UTR_CORRECTED', variables: { ...variables, utr: matched.officialUtr } });
   } else {
     notifies.push({ type: 'PAYMENT_CONFIRMED', variables });
   }
   tx.update(orderRef, patch);
+  if (overpaidAmount != null) {
+    createRefund(tx, {
+      orderRef,
+      data,
+      reason: 'overpaid',
+      amount: overpaidAmount,
+      items: data.items,
+      actor: { type: 'shop', id: shopId },
+      resultingOrderStatus: 'preparing'
+    });
+  }
   writeRegistry(tx, reads.registrySnap, reads.registryRef, {
     orderId,
     customerId: data.customerId,
@@ -1092,13 +1098,12 @@ async function reportAmountDiffers({ shopId, orderId, body, nowMs }) {
       };
     }
     const notifies = [];
+    let overpaidAmount = null;
     if (receivedPaise > expectedPaise) {
-      const refundAmount = marketplaceMoney.fromPaise(receivedPaise - expectedPaise);
-      const refund = refundStub('overpaid', refundAmount, data.items, at);
-      confirming.refunds = (Array.isArray(data.refunds) ? data.refunds : []).concat([refund]);
+      overpaidAmount = marketplaceMoney.fromPaise(receivedPaise - expectedPaise);
       notifies.push({
         type: 'REFUND_INITIATED',
-        variables: { ...variables, amount: refundAmount }
+        variables: { ...variables, amount: overpaidAmount }
       });
     } else if (matched.corrected) {
       notifies.push({
@@ -1112,6 +1117,17 @@ async function reportAmountDiffers({ shopId, orderId, body, nowMs }) {
       notifies.push({ type: 'PAYMENT_LATE_ACCEPTED', variables });
     }
     tx.update(orderRef, confirming);
+    if (overpaidAmount != null) {
+      createRefund(tx, {
+        orderRef,
+        data,
+        reason: 'overpaid',
+        amount: overpaidAmount,
+        items: data.items,
+        actor: { type: 'shop', id: shopId },
+        resultingOrderStatus: 'preparing'
+      });
+    }
     writeRegistry(tx, registrySnap, registryRef, {
       orderId,
       customerId: data.customerId,
@@ -1119,6 +1135,13 @@ async function reportAmountDiffers({ shopId, orderId, body, nowMs }) {
       at
     });
     writeUnpaidRelease(tx, release, orderId, true, userPatch);
+    if (overpaidAmount != null) {
+      appendEvent(tx, orderRef, {
+        type: 'amount_differs',
+        actor: { type: 'shop', id: shopId },
+        data: { receivedAmount: rupees, expectedAmount: data.expectedAmount ?? null }
+      });
+    }
     appendEvent(tx, orderRef, {
       type: 'shop_confirm',
       actor: { type: 'shop', id: shopId },
@@ -1268,7 +1291,6 @@ async function resolvePaymentReview({ orderId, outcome, reason, operator }) {
     }
 
     const amount = reviewRefundAmount(data, payment, review);
-    const refund = refundStub('review_refund', amount, data.items, Timestamp.now());
     tx.update(orderRef, {
       orderStatus: 'cancelled',
       closedReason: 'support_cancelled',
@@ -1278,8 +1300,17 @@ async function resolvePaymentReview({ orderId, outcome, reason, operator }) {
       'payment.status': 'refund_pending',
       ...arrivedAmountFields(amount, data),
       'payment.review.status': 'resolved',
-      'payment.review.outcome': outcomeDoc,
-      refunds: (Array.isArray(data.refunds) ? data.refunds : []).concat([refund])
+      'payment.review.outcome': outcomeDoc
+    });
+    createRefund(tx, {
+      orderRef,
+      data,
+      reason: 'review_refund',
+      amount,
+      items: data.items,
+      actor,
+      eventReason: note,
+      resultingOrderStatus: 'cancelled'
     });
     if (disputed) {
       bumpShopStat(tx, shopSnap, shopRef, 'reviewsFoundAgainstShop');

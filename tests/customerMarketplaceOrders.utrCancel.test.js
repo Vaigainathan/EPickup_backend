@@ -113,6 +113,17 @@ jest.mock('../src/services/notificationService', () => ({
 const { isWithinUtrWindow, submitCustomerUtr } = require('../src/services/marketplace/customerOrderActions');
 const customerMarketplaceOrderRoutes = require('../src/routes/customerMarketplaceOrders');
 
+function refundDocs(orderId) {
+  const prefix = `marketplaceOrders/${orderId}/refunds/`;
+  const found = [];
+  mockDocs.forEach((data, path) => {
+    if (path.startsWith(prefix) && path.split('/').length === 4) {
+      found.push(data);
+    }
+  });
+  return found;
+}
+
 const KEY = '11111111-1111-4111-8111-111111111111';
 const UTR = '123456789012';
 const OTHER_UTR = '999999999999';
@@ -482,9 +493,16 @@ describe('customer cancel', () => {
     expect(response.body.data.order.cancellation.reason).toBe('amount_short_cancel');
     expect(response.body.data.order.payment.status).toBe('refund_pending');
     const stored = mockDocs.get('marketplaceOrders/order-short');
-    expect(stored.closedReason).toBeUndefined();
-    expect(stored.refunds).toHaveLength(1);
-    expect(stored.refunds[0]).toMatchObject({ reason: 'amount_short_cancel', amount: 40 });
+    expect(stored.closedReason).toBe('amount_short_cancel');
+    expect(response.body.data.refund).toEqual({
+      id: refundDocs('order-short')[0].id,
+      amount: 40,
+      status: 'upi_needed'
+    });
+    expect(stored.refunds).toBeUndefined();
+    expect(stored.hasOpenRefund).toBe(true);
+    expect(refundDocs('order-short')).toHaveLength(1);
+    expect(refundDocs('order-short')[0]).toMatchObject({ reason: 'amount_short_cancel', amount: 40 });
     expect(mockDocs.has('marketplaceLocks/customer-test_shop-1')).toBe(false);
     expect(mockDocs.get('users/customer-test').customer.marketplace.unpaidCount).toBe(0);
     expect(mockSendTemplate).toHaveBeenCalledWith(
@@ -496,7 +514,7 @@ describe('customer cancel', () => {
 
     const replay = await postCancel('order-short');
     expect(replay.status).toBe(200);
-    expect(mockDocs.get('marketplaceOrders/order-short').refunds).toHaveLength(1);
+    expect(refundDocs('order-short')).toHaveLength(1);
     expect(mockSendTemplate).toHaveBeenCalledTimes(1);
   });
 });

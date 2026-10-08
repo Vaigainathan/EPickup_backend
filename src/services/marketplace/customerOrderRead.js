@@ -4,6 +4,7 @@ const {
   TERMINAL_ORDER_STATUSES
 } = require('./orderStateMachine');
 const { presentCustomerOrder, presentCustomerOrderSummary } = require('./customerOrderView');
+const { loadRefundDocs } = require('./refunds');
 const { httpError, paymentDetailsFromStored } = require('./createCustomerOrder');
 
 const PAYMENT_DETAILS_STATUSES = ['awaiting_payment'];
@@ -91,7 +92,8 @@ async function getCustomerOrder(db, customerId, orderId) {
   if (data.customerId !== customerId) {
     throw httpError(404, 'ORDER_NOT_FOUND', 'Order not found');
   }
-  const order = presentCustomerOrder({ ...data, id: snapshot.id });
+  const refunds = await loadRefundDocs(snapshot.ref);
+  const order = presentCustomerOrder({ ...data, id: snapshot.id, refunds });
   const body = { order };
   if (PAYMENT_DETAILS_STATUSES.includes(order.orderStatus)) {
     const details = paymentDetailsFromStored(data);

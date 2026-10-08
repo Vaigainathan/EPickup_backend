@@ -174,13 +174,43 @@ const NOTIFICATION_TEMPLATES = {
     },
     REFUND_INITIATED: {
       title: 'Refund pending',
-      body: 'Your order {{displayId}} was cancelled. A refund of ₹{{amount}} is being processed.',
+      body: 'Share your UPI ID to receive your refund.',
       data: { type: 'refund_initiated', action: 'view_order' }
+    },
+    REFUND_UPI_REMINDER: {
+      title: 'Refund pending',
+      body: 'Share your UPI ID to receive your refund for order {{displayId}}.',
+      data: { type: 'refund_upi_reminder', action: 'view_order' }
+    },
+    REFUND_DUE: {
+      title: 'Refund due',
+      body: 'A refund is due for order {{displayId}}. Pay it within 24 hours.',
+      data: { type: 'refund_due', action: 'view_order' }
+    },
+    REFUND_OVERDUE: {
+      title: 'Refund overdue',
+      body: 'The refund for order {{displayId}} is overdue.',
+      data: { type: 'refund_overdue', action: 'view_order' }
     },
     REFUND_SENT: {
       title: 'Refund sent',
-      body: 'The shop has sent your refund for order {{displayId}}.',
+      body: 'The shop has sent your refund for order {{displayId}}. UTR ending {{refundUtr}}.',
       data: { type: 'refund_sent', action: 'view_order' }
+    },
+    REFUND_ACK_REMINDER: {
+      title: 'Confirm your refund',
+      body: 'Confirm whether you received the refund for order {{displayId}}.',
+      data: { type: 'refund_ack_reminder', action: 'view_order' }
+    },
+    REFUND_CLOSED: {
+      title: 'Refund closed',
+      body: 'The refund for order {{displayId}} is closed.',
+      data: { type: 'refund_closed', action: 'view_order' }
+    },
+    REFUND_DISPUTED: {
+      title: 'Refund under review',
+      body: 'The refund for order {{displayId}} is under review.',
+      data: { type: 'refund_disputed', action: 'view_order' }
     },
     PAYMENT_EXPIRED: {
       title: 'Payment expired',
@@ -290,8 +320,12 @@ class NotificationTemplateProcessor {
     // ✅ FIX: Remove undefined values from variables before adding to data
     const cleanedVariables = this.removeUndefinedValues(variables);
     const bodyVariables = { ...variables };
-    if (template.data && template.data.type === 'utr_corrected' && typeof bodyVariables.utr === 'string') {
+    const dataType = template.data && template.data.type;
+    if (dataType === 'utr_corrected' && typeof bodyVariables.utr === 'string') {
       bodyVariables.utr = bodyVariables.utr.slice(-4);
+    }
+    if (dataType === 'refund_sent' && typeof bodyVariables.refundUtr === 'string') {
+      bodyVariables.refundUtr = bodyVariables.refundUtr.slice(-4);
     }
 
     const processedTemplate = {
@@ -303,12 +337,15 @@ class NotificationTemplateProcessor {
     // Add cleaned variables to data for app processing (only if there are any)
     // One place for every REFUND_INITIATED send. The body already has the rupee
     // amount. The data payload must not.
-    if (template.data && template.data.type === 'refund_initiated') {
+    if (typeof dataType === 'string' && dataType.startsWith('refund_')) {
       delete cleanedVariables.amount;
+      delete cleanedVariables.upiId;
+      delete cleanedVariables.refundUtr;
+      delete cleanedVariables.utr;
     }
     // One place for every UTR_CORRECTED send, customer and shop. The body shows
     // the last 4. The data payload must not carry the UTR.
-    if (template.data && template.data.type === 'utr_corrected') {
+    if (dataType === 'utr_corrected') {
       delete cleanedVariables.utr;
     }
 

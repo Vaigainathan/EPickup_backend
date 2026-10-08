@@ -166,3 +166,7 @@ pnpm-lock.yaml
 
 # Local development
 .local/
+
+# Project images
+ichigo.jpg
+test_doc.jpg

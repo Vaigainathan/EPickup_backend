@@ -9,6 +9,7 @@ const { createMarketplaceOrder } = require('../services/marketplace/createCustom
 const { listCustomerOrders, getCustomerOrder } = require('../services/marketplace/customerOrderRead');
 const { submitCustomerUtr, submitBalanceUtr, cancelCustomerOrder } = require('../services/marketplace/customerOrderActions');
 const { uploadPaymentEvidence, submitPaymentReport } = require('../services/marketplace/paymentEvidence');
+const { submitCustomerUpi, acknowledgeRefund } = require('../services/marketplace/refunds');
 
 const evidenceUpload = multer({
   storage: multer.memoryStorage(),
@@ -59,6 +60,11 @@ const reportLimiter = userRateLimiter({
   windowMs: 60 * 1000,
   max: 10,
   name: 'marketplace-order-report-minute'
+});
+const refundLimiter = userRateLimiter({
+  windowMs: 60 * 1000,
+  max: 10,
+  name: 'marketplace-order-refund-minute'
 });
 
 function handleEvidenceUpload(req, res, next) {
@@ -240,6 +246,50 @@ router.post(
       return res.status(result.status).json(result.body);
     } catch (error) {
       return sendError(res, error, 'Failed to submit payment report');
+    }
+  }
+);
+
+router.post(
+  '/marketplace-orders/:id/refunds/:refundId/upi',
+  authenticateToken,
+  requireRole(['customer']),
+  refundLimiter,
+  async (req, res) => {
+    try {
+      const result = await submitCustomerUpi({
+        customerId: req.user.uid,
+        orderId: req.params.id,
+        refundId: req.params.refundId,
+        idempotencyKey: req.get('Idempotency-Key'),
+        upiId: req.body && req.body.upiId,
+        upiIdConfirm: req.body && req.body.upiIdConfirm,
+        save: req.body && req.body.save === true
+      });
+      return res.status(result.status).json(result.body);
+    } catch (error) {
+      return sendError(res, error, 'Failed to submit refund UPI');
+    }
+  }
+);
+
+router.post(
+  '/marketplace-orders/:id/refunds/:refundId/ack',
+  authenticateToken,
+  requireRole(['customer']),
+  refundLimiter,
+  async (req, res) => {
+    try {
+      const result = await acknowledgeRefund({
+        customerId: req.user.uid,
+        orderId: req.params.id,
+        refundId: req.params.refundId,
+        received: req.body && req.body.received,
+        idempotencyKey: req.get('Idempotency-Key')
+      });
+      return res.status(result.status).json(result.body);
+    } catch (error) {
+      return sendError(res, error, 'Failed to acknowledge refund');
     }
   }
 );

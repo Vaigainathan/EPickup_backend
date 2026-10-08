@@ -1,4 +1,5 @@
 // The customer app can read the main marketplaceOrders document directly via Firestore rules; never store shop-internal or secret data on it — use private/ subdocuments.
+const { presentCustomerRefund } = require('./refunds');
 
 const PAYMENT_FIELDS = [
   'status',
@@ -131,7 +132,9 @@ function presentCustomerOrder(order) {
       paidCheckAt: toIso(cancellation.paidCheckAt)
     },
     createdAt: toIso(source.createdAt),
-    updatedAt: toIso(source.updatedAt)
+    updatedAt: toIso(source.updatedAt),
+    hasOpenRefund: source.hasOpenRefund === true,
+    refunds: (Array.isArray(source.refunds) ? source.refunds : []).map(presentCustomerRefund)
   };
 }
 

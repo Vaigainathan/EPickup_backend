@@ -919,6 +919,15 @@ service cloud.firestore {
         allow read, write: if false;
       }
 
+      match /refunds/{refundId} {
+        allow read: if isAuthenticated() && (
+          isOwner(get(/databases/$(database)/documents/marketplaceOrders/$(orderId)).data.shopId) ||
+          isOwner(get(/databases/$(database)/documents/marketplaceOrders/$(orderId)).data.customerId) ||
+          isAdmin()
+        );
+        allow write: if false;
+      }
+
       match /{document=**} {
         allow write: if false;
       }

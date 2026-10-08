@@ -61,10 +61,29 @@ function mockRef(path) {
     id,
     path,
     collection(name) {
+      const prefix = `${path}/${name}/`;
       return {
         doc(subId) {
           const child = subId || `auto-${mockEventSeq += 1}`;
           return mockRef(`${path}/${name}/${child}`);
+        },
+        async get() {
+          const docs = [];
+          mockDocs.forEach((data, docPath) => {
+            if (!docPath.startsWith(prefix)) {
+              return;
+            }
+            const rest = docPath.slice(prefix.length);
+            if (!rest || rest.includes('/')) {
+              return;
+            }
+            docs.push({
+              id: rest,
+              ref: mockRef(docPath),
+              data: () => mockClone(data)
+            });
+          });
+          return { docs, empty: docs.length === 0, size: docs.length };
         }
       };
     },
@@ -133,6 +152,17 @@ const { NotificationTemplateProcessor } = require('../src/services/notificationT
 const { presentCustomerOrder } = require('../src/services/marketplace/customerOrderView');
 const shopOrderService = require('../src/services/shopOrderService');
 const shopOrderRoutes = require('../src/routes/shopOrders');
+
+function refundDocs(orderId) {
+  const prefix = `marketplaceOrders/${orderId}/refunds/`;
+  const found = [];
+  mockDocs.forEach((data, path) => {
+    if (path.startsWith(prefix) && path.split('/').length === 4) {
+      found.push(data);
+    }
+  });
+  return found;
+}
 
 const UTR = '123456789012';
 const SHOP_UTR = '999999999999';
@@ -478,13 +508,15 @@ describe('shop payment verification', () => {
     expect(received.body.data.order.orderStatus).toBe('cancelled');
     expect(received.body.data.order.cancellation.paidCheck).toBe('received');
     expect(received.body.data.order.payment.status).toBe('refund_pending');
-    const refunds = mockDocs.get('marketplaceOrders/order-1').refunds;
+    const refunds = refundDocs('order-1');
     expect(refunds).toHaveLength(1);
     expect(refunds[0]).toMatchObject({
       reason: 'customer_cancel',
       amount: 1539.99,
       status: 'upi_needed'
     });
+    expect(mockDocs.get('marketplaceOrders/order-1').hasOpenRefund).toBe(true);
+    expect(mockDocs.get('marketplaceOrders/order-1').refunds).toBeUndefined();
     expect(mockDocs.get(`utrRegistry/${UTR}`).kind).toBe('customer');
     expect(mockSendTemplate).toHaveBeenCalledWith(
       'cust-1',
@@ -495,7 +527,7 @@ describe('shop payment verification', () => {
 
     const again = await post('order-1/paid-check', { received: true, utrLast4: '9012' });
     expect(again.status).toBe(200);
-    expect(mockDocs.get('marketplaceOrders/order-1').refunds).toHaveLength(1);
+    expect(refundDocs('order-1')).toHaveLength(1);
 
     seedOrder('order-shop', {
       orderStatus: 'cancelled',
@@ -515,7 +547,7 @@ describe('shop payment verification', () => {
     const used = await post('order-used/paid-check', { received: true, fullUtr: '888888888888' });
     expect(used.status).toBe(409);
     expect(used.body.error.code).toBe('UTR_USED');
-    expect(mockDocs.get('marketplaceOrders/order-used').refunds).toBeUndefined();
+    expect(refundDocs('order-used')).toHaveLength(0);
 
     seedOrder('order-no', {
       orderStatus: 'cancelled',
@@ -525,7 +557,7 @@ describe('shop payment verification', () => {
     const closed = await post('order-no/paid-check', { received: false });
     expect(closed.status).toBe(200);
     expect(closed.body.data.order.cancellation.paidCheck).toBe('not_received');
-    expect(mockDocs.get('marketplaceOrders/order-no').refunds).toBeUndefined();
+    expect(refundDocs('order-no')).toHaveLength(0);
     expect(mockDocs.get('marketplaceOrders/order-no').orderStatus).toBe('cancelled');
   });
 
@@ -611,12 +643,18 @@ describe('shop payment verification', () => {
     const moreStored = mockDocs.get('marketplaceOrders/order-more');
     expect(moreStored.payment.status).toBe('confirmed');
     expect(moreStored.payment.receivedAmount).toBe(150);
-    expect(moreStored.refunds).toHaveLength(1);
-    expect(moreStored.refunds[0]).toMatchObject({ reason: 'overpaid', amount: 50, status: 'upi_needed' });
+    expect(moreStored.payment.status).toBe('confirmed');
+    expect(moreStored.hasOpenRefund).toBe(true);
+    expect(moreStored.refunds).toBeUndefined();
+    expect(refundDocs('order-more')[0]).toMatchObject({ reason: 'overpaid', amount: 50, status: 'upi_needed' });
+    expect(eventsFor('order-more').find((event) => event.type === 'amount_differs').data).toEqual({
+      receivedAmount: 150,
+      expectedAmount: 100
+    });
     expect(mockDocs.has('marketplaceLocks/cust-1_shop-1')).toBe(false);
     const moreReplay = await post('order-more/amount-differs', { receivedAmount: 150, utrLast4: '2222' });
     expect(moreReplay.status).toBe(200);
-    expect(mockDocs.get('marketplaceOrders/order-more').refunds).toHaveLength(1);
+    expect(refundDocs('order-more')).toHaveLength(1);
 
     seedOrder('order-equal', {
       expectedAmount: 100,
@@ -630,7 +668,7 @@ describe('shop payment verification', () => {
     expect(equalStored.orderStatus).toBe('preparing');
     expect(equalStored.payment.receivedAmount).toBe(100);
     expect(equalStored.payment.receivedAmountPaise).toBe(10000);
-    expect(equalStored.refunds).toBeUndefined();
+    expect(refundDocs('order-equal')).toHaveLength(0);
 
     seedOrder('order-huge', {
       expectedAmount: 100,
@@ -783,7 +821,7 @@ describe('shop payment verification', () => {
     mockDocs.set(`utrRegistry/${UTR}`, { orderId: 'order-paid', customerId: 'cust-1', kind: 'customer' });
     const response = await post('order-paid/paid-check', { received: true, utrLast4: '9012' });
     expect(response.status).toBe(200);
-    expect(mockDocs.get('marketplaceOrders/order-paid').refunds[0].amount).toBe(40);
+    expect(refundDocs('order-paid')[0].amount).toBe(40);
   });
 
   function seedOpenReview(id, reviewPatch = {}) {
@@ -875,12 +913,12 @@ describe('shop payment verification', () => {
     expect(stored.cancellation.cancelledAt).toBeTruthy();
     expect(stored.payment.status).toBe('refund_pending');
     expect(stored.payment.review.outcome.result).toBe('refund');
-    expect(stored.refunds).toHaveLength(1);
-    expect(stored.refunds[0].reason).toBe('review_refund');
-    expect(stored.refunds[0].amount).toBe(100);
-    expect(stored.payment.receivedAmount).toBe(stored.refunds[0].amount);
+    expect(refundDocs('order-1')).toHaveLength(1);
+    expect(refundDocs('order-1')[0].reason).toBe('review_refund');
+    expect(refundDocs('order-1')[0].amount).toBe(100);
+    expect(stored.payment.receivedAmount).toBe(refundDocs('order-1')[0].amount);
     expect(stored.payment.receivedAmountPaise).toBe(10000);
-    expect(stored.refunds[0].reason).not.toBe('late_unfulfilled');
+    expect(refundDocs('order-1')[0].reason).not.toBe('late_unfulfilled');
     expect(mockDocs.get('shops/shop-1').marketplaceStats.reviewsFoundAgainstShop).toBe(0);
   });
 
@@ -891,7 +929,7 @@ describe('shop payment verification', () => {
     expect(equal.status).toBe(200);
     expect(mockDocs.get('marketplaceOrders/order-eq').orderStatus).toBe('preparing');
     expect(mockDocs.get('marketplaceOrders/order-eq').payment.review.outcome.result).toBe('found');
-    expect(mockDocs.get('marketplaceOrders/order-eq').refunds).toBeUndefined();
+    expect(refundDocs('order-eq')).toHaveLength(0);
     expect(eventsFor('order-eq').find((event) => event.type === 'amount_differs').data).toEqual({
       receivedAmount: 100,
       expectedAmount: 100
@@ -902,8 +940,10 @@ describe('shop payment verification', () => {
     expect(over.status).toBe(200);
     const overStored = mockDocs.get('marketplaceOrders/order-over');
     expect(overStored.orderStatus).toBe('preparing');
-    expect(overStored.refunds[0].reason).toBe('overpaid');
-    expect(overStored.refunds[0].amount).toBe(40);
+    expect(overStored.payment.status).toBe('confirmed');
+    expect(overStored.hasOpenRefund).toBe(true);
+    expect(refundDocs('order-over')[0].reason).toBe('overpaid');
+    expect(refundDocs('order-over')[0].amount).toBe(40);
     expect(overStored.payment.balance).toBeUndefined();
     expect(eventsFor('order-over').find((event) => event.type === 'amount_differs').data).toEqual({
       receivedAmount: 140,
@@ -918,7 +958,7 @@ describe('shop payment verification', () => {
     expect(shortStored.payment.review.status).toBe('open');
     expect(shortStored.payment.review.shopResponse).toMatchObject({ result: 'short', receivedAmount: 40 });
     expect(shortStored.payment.balance).toBeUndefined();
-    expect(shortStored.refunds).toBeUndefined();
+    expect(refundDocs('order-short-review')).toHaveLength(0);
     const shortEvents = eventsFor('order-short');
     expect(shortEvents.find((event) => event.type === 'shop_response').data).toEqual({
       result: 'short',
@@ -990,7 +1030,7 @@ describe('shop payment verification', () => {
     expect(stored.cancellation.reason).toBe('payment_not_verified');
     expect(stored.cancellation.cancelledBy).toBe('support');
     expect(stored.payment.status).toBe('not_verified');
-    expect(stored.refunds).toBeUndefined();
+    expect(refundDocs('order-1')).toHaveLength(0);
     expect(mockDocs.get('users/cust-1').customer.marketplace.stats.reportsNotVerified).toBe(1);
     expect(mockDocs.get('shops/shop-1').marketplaceStats.reviewsFoundAgainstShop).toBe(0);
     const second = await resolvePaymentReview({
@@ -1064,8 +1104,8 @@ describe('shop payment verification', () => {
     expect(stored.closedReason).toBe('support_cancelled');
     expect(stored.cancellation.reason).toBe('support_cancelled');
     expect(stored.cancellation.cancelledBy).toBe('support');
-    expect(stored.refunds[0].reason).toBe('review_refund');
-    expect(stored.refunds[0].amount).toBe(40);
+    expect(refundDocs('order-1')[0].reason).toBe('review_refund');
+    expect(refundDocs('order-1')[0].amount).toBe(40);
     expect(stored.payment.receivedAmount).toBe(40);
     expect(stored.payment.receivedAmount).toBe(stored.payment.review.shopResponse.receivedAmount);
     expect(stored.payment.receivedAmountPaise).toBe(4000);
@@ -1076,7 +1116,7 @@ describe('shop payment verification', () => {
     expect(mockDocs.get('shops/shop-1').marketplaceStats.reviewsFoundAgainstShop).toBe(1);
   });
 
-  test('REFUND_INITIATED keeps the rupee amount in the body and strips it from data.variables', () => {
+  test('REFUND_INITIATED asks for a UPI ID and strips the amount from data.variables', () => {
     const template = NotificationTemplateProcessor.getTemplate('MARKETPLACE', 'REFUND_INITIATED');
     const note = NotificationTemplateProcessor.process(template, {
       displayId: '#11',
@@ -1084,7 +1124,8 @@ describe('shop payment verification', () => {
       shopName: 'Vaigzz',
       amount: 40
     });
-    expect(note.body).toContain('₹40');
+    expect(note.body).toBe('Share your UPI ID to receive your refund.');
+    expect(note.body).not.toContain('40');
     expect(note.data.variables.amount).toBeUndefined();
     expect(note.data.variables.orderId).toBe('order-1');
     expect(note.data.variables.displayId).toBe('#11');

@@ -6,6 +6,7 @@ const { authLimiter } = require('../middleware/rateLimit');
 const shopCatalogueService = require('../services/shopCatalogueService');
 const shopDashboardService = require('../services/shopDashboardService');
 const shopSettingsService = require('../services/shopSettingsService');
+const shopOrderService = require('../services/shopOrderService');
 const { handleDocumentUpload, pickDocumentFiles } = require('../middleware/shopDocumentUpload');
 
 function sendError(res, error) {
@@ -158,6 +159,13 @@ router.get('/payment-history', authMiddleware, requireRole(['shop']), async (req
   return withShop(req, res, async (shopId) => {
     const data = await shopSettingsService.getPaymentHistory(shopId);
     return res.json({ success: true, data });
+  });
+});
+
+router.get('/refunds', authMiddleware, requireRole(['shop']), async (req, res) => {
+  return withShop(req, res, async (shopId) => {
+    const refunds = await shopOrderService.listOpenRefunds(shopId, req.query.status);
+    return res.json({ success: true, data: { refunds } });
   });
 });
 

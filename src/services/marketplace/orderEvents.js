@@ -31,6 +31,7 @@ const EVENT_TYPES = [
   'refund_disputed',
   'refund_auto_closed',
   'refund_reminder',
+  'refund_resent',
   'marked_ready',
   'delivery_stage',
   'handed_over',

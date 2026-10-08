@@ -1,4 +1,3 @@
-const crypto = require('crypto');
 const cron = require('node-cron');
 const admin = require('firebase-admin');
 const { getFirestore } = require('./firebase');
@@ -7,6 +6,7 @@ const shopOrderService = require('./shopOrderService');
 const { MARKETPLACE_DEFAULTS } = require('../config/marketplaceDefaults');
 const { getMarketplaceEnforcement } = require('./marketplace/orderStateMachine');
 const { appendEvent } = require('./marketplace/orderEvents');
+const { createRefund } = require('./marketplace/refunds');
 const { isShortBalanceExpired } = require('./marketplace/shopPaymentVerification');
 
 const SETTINGS_DOC = ['appSettings', 'marketplace'];
@@ -335,17 +335,6 @@ class MarketplacePaymentTimeoutJob {
         notifies = [{ audience: 'customer', id: customerId, template: 'PAYMENT_NOT_CONFIRMED', variables }];
       } else if (action.kind === 'balance_expired') {
         const payment = data.payment || {};
-        const refund = {
-          id: crypto.randomBytes(8).toString('hex'),
-          reason: 'balance_expired',
-          amount: payment.receivedAmount != null ? payment.receivedAmount : null,
-          items: Array.isArray(data.items) ? data.items : [],
-          status: 'upi_needed',
-          customerUpiId: null,
-          // Firestore rejects serverTimestamp() inside an array. This is the real
-          // server clock, not the simulated tick clock used for comparisons.
-          createdAt: admin.firestore.Timestamp.now()
-        };
         tx.update(orderRef, {
           orderStatus: 'cancelled',
           closedReason: 'balance_expired',
@@ -353,8 +342,17 @@ class MarketplacePaymentTimeoutJob {
           'cancellation.cancelledAt': at,
           'cancellation.cancelledBy': 'system',
           'payment.status': 'refund_pending',
-          refunds: (Array.isArray(data.refunds) ? data.refunds : []).concat([refund]),
+          'payment.balance.status': 'expired',
           updatedAt: at
+        });
+        const refund = createRefund(tx, {
+          orderRef,
+          data,
+          reason: 'balance_expired',
+          amount: payment.receivedAmount != null ? payment.receivedAmount : null,
+          items: data.items,
+          actor: JOB_ACTOR,
+          resultingOrderStatus: 'cancelled'
         });
         releaseLock(tx, lockRef, lockSnap, userRef, userSnap, orderRef.id);
         appendEvent(tx, orderRef, {

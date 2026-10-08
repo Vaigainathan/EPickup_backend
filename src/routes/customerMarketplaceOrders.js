@@ -1,4 +1,5 @@
 const express = require('express');
+const multer = require('multer');
 const router = express.Router();
 
 const { authMiddleware, authenticateToken, requireRole } = require('../middleware/auth');
@@ -7,6 +8,12 @@ const { getFirestore } = require('../services/firebase');
 const { createMarketplaceOrder } = require('../services/marketplace/createCustomerOrder');
 const { listCustomerOrders, getCustomerOrder } = require('../services/marketplace/customerOrderRead');
 const { submitCustomerUtr, submitBalanceUtr, cancelCustomerOrder } = require('../services/marketplace/customerOrderActions');
+const { uploadPaymentEvidence, submitPaymentReport } = require('../services/marketplace/paymentEvidence');
+
+const evidenceUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 5 * 1024 * 1024, files: 1 }
+});
 
 const minuteLimiter = userRateLimiter({
   windowMs: 60 * 1000,
@@ -43,6 +50,43 @@ const balanceUtrLimiter = userRateLimiter({
   max: 10,
   name: 'marketplace-order-balance-utr-minute'
 });
+const evidenceLimiter = userRateLimiter({
+  windowMs: 60 * 1000,
+  max: 10,
+  name: 'marketplace-order-evidence-minute'
+});
+const reportLimiter = userRateLimiter({
+  windowMs: 60 * 1000,
+  max: 10,
+  name: 'marketplace-order-report-minute'
+});
+
+function handleEvidenceUpload(req, res, next) {
+  evidenceUpload.single('file')(req, res, (err) => {
+    if (err) {
+      const limited = err.code === 'LIMIT_FILE_SIZE'
+        || err.code === 'LIMIT_FILE_COUNT'
+        || err.code === 'LIMIT_UNEXPECTED_FILE';
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'FILE_INVALID',
+          message: limited ? 'File must be 5MB or smaller' : 'File must be a jpg or png'
+        }
+      });
+    }
+    if (!req.file) {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'FILE_INVALID',
+          message: 'File must be a jpg or png'
+        }
+      });
+    }
+    return next();
+  });
+}
 
 function sendError(res, error, fallbackMessage) {
   const status = error.status || 500;
@@ -155,6 +199,47 @@ router.post(
       return res.status(result.status).json(result.body);
     } catch (error) {
       return sendError(res, error, 'Failed to submit balance UTR');
+    }
+  }
+);
+
+router.post(
+  '/marketplace-orders/:id/evidence',
+  authenticateToken,
+  requireRole(['customer']),
+  evidenceLimiter,
+  handleEvidenceUpload,
+  async (req, res) => {
+    try {
+      const result = await uploadPaymentEvidence({
+        customerId: req.user.uid,
+        orderId: req.params.id,
+        idempotencyKey: req.get('Idempotency-Key'),
+        file: req.file
+      });
+      return res.json({ success: true, data: { evidenceId: result.evidenceId } });
+    } catch (error) {
+      return sendError(res, error, 'Failed to upload evidence');
+    }
+  }
+);
+
+router.post(
+  '/marketplace-orders/:id/payment-report',
+  authenticateToken,
+  requireRole(['customer']),
+  reportLimiter,
+  async (req, res) => {
+    try {
+      const result = await submitPaymentReport({
+        customerId: req.user.uid,
+        orderId: req.params.id,
+        idempotencyKey: req.get('Idempotency-Key'),
+        body: req.body || {}
+      });
+      return res.status(result.status).json(result.body);
+    } catch (error) {
+      return sendError(res, error, 'Failed to submit payment report');
     }
   }
 );

@@ -289,10 +289,14 @@ class NotificationTemplateProcessor {
 
     // ✅ FIX: Remove undefined values from variables before adding to data
     const cleanedVariables = this.removeUndefinedValues(variables);
+    const bodyVariables = { ...variables };
+    if (template.data && template.data.type === 'utr_corrected' && typeof bodyVariables.utr === 'string') {
+      bodyVariables.utr = bodyVariables.utr.slice(-4);
+    }
 
     const processedTemplate = {
       title: this.substituteVariables(template.title, variables),
-      body: this.substituteVariables(template.body, variables),
+      body: this.substituteVariables(template.body, bodyVariables),
       data: { ...template.data }
     };
 
@@ -301,6 +305,11 @@ class NotificationTemplateProcessor {
     // amount. The data payload must not.
     if (template.data && template.data.type === 'refund_initiated') {
       delete cleanedVariables.amount;
+    }
+    // One place for every UTR_CORRECTED send, customer and shop. The body shows
+    // the last 4. The data payload must not carry the UTR.
+    if (template.data && template.data.type === 'utr_corrected') {
+      delete cleanedVariables.utr;
     }
 
     if (Object.keys(cleanedVariables).length > 0) {

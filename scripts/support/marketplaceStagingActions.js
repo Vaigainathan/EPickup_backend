@@ -63,9 +63,153 @@ function reviewScriptWrites({ list, apply }) {
   return apply === true;
 }
 
+function toIso(value) {
+  if (value == null) {
+    return null;
+  }
+  if (typeof value.toDate === 'function') {
+    const date = value.toDate();
+    return date instanceof Date ? date.toISOString() : null;
+  }
+  if (value instanceof Date) {
+    return value.toISOString();
+  }
+  if (typeof value === 'string') {
+    return value;
+  }
+  return null;
+}
+
+function flagTimes(source) {
+  if (!source || typeof source !== 'object') {
+    return null;
+  }
+  const out = {};
+  Object.keys(source).forEach((key) => {
+    out[key] = toIso(source[key]);
+  });
+  return out;
+}
+
+function presentBalance(balance) {
+  if (!balance || typeof balance !== 'object') {
+    return null;
+  }
+  return {
+    status: balance.status ?? null,
+    dueBy: toIso(balance.dueBy),
+    officialUtrLast4: last4(balance.officialUtr)
+  };
+}
+
+function presentReview(payment) {
+  const review = payment && payment.review;
+  if (!review || typeof review !== 'object') {
+    return null;
+  }
+  const response = review.shopResponse && typeof review.shopResponse === 'object' ? review.shopResponse : null;
+  const outcome = review.outcome && typeof review.outcome === 'object' ? review.outcome : null;
+  return {
+    status: review.status ?? null,
+    openedAt: toIso(review.openedAt),
+    escalatedAt: toIso(review.escalatedAt),
+    trigger: review.trigger ?? review.reason ?? null,
+    shopResponse: response
+      ? { result: response.result ?? null, receivedAmount: response.receivedAmount ?? null }
+      : null,
+    outcome: outcome ? { result: outcome.result ?? null } : null
+  };
+}
+
+function presentCancellation(cancellation) {
+  const source = cancellation && typeof cancellation === 'object' ? cancellation : {};
+  return {
+    reason: source.reason ?? null,
+    cancelledAt: toIso(source.cancelledAt),
+    cancelledBy: source.cancelledBy ?? null,
+    paidCheck: source.paidCheck ?? null,
+    paidCheckAt: toIso(source.paidCheckAt),
+    paidCheckEscalatedAt: toIso(source.paidCheckEscalatedAt)
+  };
+}
+
+function presentRefund(refund) {
+  const source = refund && typeof refund === 'object' ? refund : {};
+  return {
+    id: source.id ?? null,
+    reason: source.reason ?? null,
+    status: source.status ?? null,
+    amount: source.amount ?? null,
+    createdAt: toIso(source.createdAt)
+  };
+}
+
+function presentEvent(data) {
+  const event = data && typeof data === 'object' ? data : {};
+  const actor = event.actor && typeof event.actor === 'object' ? event.actor : {};
+  const shown = {
+    type: event.type ?? null,
+    actor: {
+      type: actor.type ?? null,
+      id: actor.id ?? null
+    },
+    at: toIso(event.at)
+  };
+  if (event.data && typeof event.data === 'object') {
+    if (event.data.mode != null) {
+      shown.mode = event.data.mode;
+    }
+    if (event.data.trigger != null) {
+      shown.trigger = event.data.trigger;
+    }
+    if (event.data.hoursOpen != null) {
+      shown.hoursOpen = event.data.hoursOpen;
+    }
+    if (event.data.result != null) {
+      shown.result = event.data.result;
+    }
+  }
+  return shown;
+}
+
+function buildOrderShow({ orderId, data, events, lock, unpaidCount }) {
+  const source = data && typeof data === 'object' ? data : {};
+  const payment = source.payment && typeof source.payment === 'object' ? source.payment : {};
+  const shownEvents = (Array.isArray(events) ? events : []).map(presentEvent);
+  shownEvents.sort((left, right) => String(left.at || '').localeCompare(String(right.at || '')));
+  const lockData = lock && typeof lock === 'object' ? lock : null;
+  return {
+    show: true,
+    wrote: false,
+    orderId,
+    displayId: source.displayId ?? null,
+    orderStatus: source.orderStatus ?? null,
+    closedReason: source.closedReason ?? null,
+    payment: {
+      status: payment.status ?? null,
+      receivedAmount: payment.receivedAmount ?? null,
+      customerUtrLast4: last4(payment.customerUtr),
+      officialUtrLast4: last4(payment.officialUtr),
+      balance: presentBalance(payment.balance),
+      nudges: flagTimes(payment.nudges),
+      remindersSent: flagTimes(payment.remindersSent)
+    },
+    review: presentReview(payment),
+    cancellation: presentCancellation(source.cancellation),
+    refunds: (Array.isArray(source.refunds) ? source.refunds : []).map(presentRefund),
+    events: shownEvents,
+    lock: {
+      exists: Boolean(lockData),
+      orderId: lockData && lockData.orderId ? lockData.orderId : null
+    },
+    unpaidCount: unpaidCount ?? null
+  };
+}
+
 module.exports = {
   confirmRequestBody,
   shortCancelRefundPreview,
   refundStubAmount,
-  reviewScriptWrites
+  reviewScriptWrites,
+  buildOrderShow
 };

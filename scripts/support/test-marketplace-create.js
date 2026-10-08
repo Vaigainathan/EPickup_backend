@@ -30,6 +30,12 @@
  * writes nothing. --amount-differs <rupees> --apply calls the service.
  * --payment-not-found [--order <id>] [--apply] calls reportNotFound.
  * --confirm --fulfil false sends fulfil:false.
+ * --evidence <local-file> --order <id> [--idempotency-key <uuid>] [--apply]
+ * uploads one jpg or png. Dry run prints bytes and image type. Apply prints
+ * evidenceId and the key. The same key returns the same id.
+ * --payment-report --order <id> --utr <12-digits> [--note <text>]
+ * [--evidence-ids <id,id>] [--apply] prints the UTR last 4, note length, and
+ * id count. It does not print the note.
  * --enforce passes { newStatuses: true, utrBlocksReject: true } into that
  * call only. It does not write appSettings.
  * --tick runs the payment job for this customer and shop only. Dry run
@@ -69,7 +75,8 @@ const {
 const {
   confirmRequestBody,
   shortCancelRefundPreview,
-  refundStubAmount
+  refundStubAmount,
+  buildOrderShow
 } = require('./marketplaceStagingActions');
 
 assertStagingEnv();
@@ -111,122 +118,6 @@ function plain(value) {
     return out;
   }
   return value;
-}
-
-function toIso(value) {
-  if (value == null) {
-    return null;
-  }
-  if (typeof value.toDate === 'function') {
-    const date = value.toDate();
-    return date instanceof Date ? date.toISOString() : null;
-  }
-  if (value instanceof Date) {
-    return value.toISOString();
-  }
-  if (typeof value === 'string') {
-    return value;
-  }
-  return null;
-}
-
-function last4(value) {
-  if (typeof value !== 'string' || value.length < 4) {
-    return null;
-  }
-  return value.slice(-4);
-}
-
-function flagTimes(source) {
-  if (!source || typeof source !== 'object') {
-    return null;
-  }
-  const out = {};
-  Object.keys(source).forEach((key) => {
-    out[key] = toIso(source[key]);
-  });
-  return out;
-}
-
-function presentBalance(balance) {
-  if (!balance || typeof balance !== 'object') {
-    return null;
-  }
-  return {
-    status: balance.status ?? null,
-    dueBy: toIso(balance.dueBy),
-    officialUtrLast4: last4(balance.officialUtr)
-  };
-}
-
-function presentReview(payment) {
-  const review = payment && payment.review;
-  if (!review || typeof review !== 'object') {
-    return null;
-  }
-  const response = review.shopResponse && typeof review.shopResponse === 'object' ? review.shopResponse : null;
-  const outcome = review.outcome && typeof review.outcome === 'object' ? review.outcome : null;
-  return {
-    status: review.status ?? null,
-    openedAt: toIso(review.openedAt),
-    escalatedAt: toIso(review.escalatedAt),
-    trigger: review.trigger ?? review.reason ?? null,
-    shopResponse: response
-      ? { result: response.result ?? null, receivedAmount: response.receivedAmount ?? null }
-      : null,
-    outcome: outcome ? { result: outcome.result ?? null } : null
-  };
-}
-
-function presentCancellation(cancellation) {
-  const source = cancellation && typeof cancellation === 'object' ? cancellation : {};
-  return {
-    reason: source.reason ?? null,
-    cancelledAt: toIso(source.cancelledAt),
-    cancelledBy: source.cancelledBy ?? null,
-    paidCheck: source.paidCheck ?? null,
-    paidCheckAt: toIso(source.paidCheckAt),
-    paidCheckEscalatedAt: toIso(source.paidCheckEscalatedAt)
-  };
-}
-
-function presentRefund(refund) {
-  const source = refund && typeof refund === 'object' ? refund : {};
-  return {
-    id: source.id ?? null,
-    reason: source.reason ?? null,
-    status: source.status ?? null,
-    amount: source.amount ?? null,
-    createdAt: toIso(source.createdAt)
-  };
-}
-
-function presentEvent(data) {
-  const event = data && typeof data === 'object' ? data : {};
-  const actor = event.actor && typeof event.actor === 'object' ? event.actor : {};
-  const shown = {
-    type: event.type ?? null,
-    actor: {
-      type: actor.type ?? null,
-      id: actor.id ?? null
-    },
-    at: toIso(event.at)
-  };
-  if (event.data && typeof event.data === 'object') {
-    if (event.data.mode != null) {
-      shown.mode = event.data.mode;
-    }
-    if (event.data.trigger != null) {
-      shown.trigger = event.data.trigger;
-    }
-    if (event.data.hoursOpen != null) {
-      shown.hoursOpen = event.data.hoursOpen;
-    }
-    if (event.data.result != null) {
-      shown.result = event.data.result;
-    }
-  }
-  return shown;
 }
 
 function istClock(now = new Date()) {
@@ -509,6 +400,7 @@ function presentCleanupPlan(plan) {
       last4: String(doc.id).slice(-4),
       kind: doc.kind
     })),
+    evidenceFileCount: plan.evidenceDocs.length,
     unpaidCount: plan.unpaidCount
   };
 }
@@ -531,6 +423,15 @@ async function cleanupPlan(db, customerId, shopId, explicitOrderId) {
     ? null
     : await db.collection('orderNumbers').doc(String(displayId)).get();
   const registryDocs = owned ? await registryDocsForOrder(db, orderId) : [];
+  const evidenceSnap = owned
+    ? await db.collection('evidenceUploads').where('orderId', '==', orderId).get()
+    : null;
+  const evidenceDocs = evidenceSnap
+    ? evidenceSnap.docs.map((doc) => ({
+      id: doc.id,
+      path: typeof (doc.data() || {}).path === 'string' ? doc.data().path : null
+    }))
+    : [];
   const unpaidCount = await readUnpaidCount(db, customerId);
   const deleteLock = Boolean(owned && lockOrderId && lockOrderId === orderId);
 
@@ -546,6 +447,7 @@ async function cleanupPlan(db, customerId, shopId, explicitOrderId) {
     displayId: displayId == null ? null : displayId,
     orderNumbersExists: Boolean(registrySnap && registrySnap.exists),
     registryDocs,
+    evidenceDocs,
     unpaidCount,
     decrementUnpaid: shouldDecrementUnpaid({
       deleteLock,
@@ -563,7 +465,20 @@ async function applyCleanup(db, customerId, shopId, plan) {
     const eventsSnap = await orderRef.collection('events').get();
     eventsSnap.docs.forEach((doc) => batch.delete(doc.ref));
     batch.delete(orderRef.collection('private').doc('handover'));
+    batch.delete(orderRef.collection('private').doc('paymentReport'));
     batch.delete(orderRef);
+    const { getStorage } = require('../../src/services/firebase');
+    const bucket = getStorage().bucket();
+    for (const item of plan.evidenceDocs) {
+      if (item.path) {
+        try {
+          await bucket.file(item.path).delete();
+        } catch {
+          console.error('Evidence file delete failed.');
+        }
+      }
+      batch.delete(db.collection('evidenceUploads').doc(item.id));
+    }
   }
   if (plan.deleteLock) {
     batch.delete(db.collection('marketplaceLocks').doc(`${customerId}_${shopId}`));
@@ -622,38 +537,17 @@ async function printOrderShow(db, customerId, shopId, orderId) {
     process.exitCode = 1;
     return;
   }
-  const payment = data.payment && typeof data.payment === 'object' ? data.payment : {};
   const eventsSnap = await db.collection('marketplaceOrders').doc(orderId).collection('events').get();
   const lockSnap = await db.collection('marketplaceLocks').doc(`${customerId}_${shopId}`).get();
   const lock = lockSnap.exists ? (lockSnap.data() || {}) : null;
-  const events = eventsSnap.docs.map((doc) => presentEvent(doc.data()));
-  events.sort((left, right) => String(left.at || '').localeCompare(String(right.at || '')));
 
-  console.log(JSON.stringify({
-    show: true,
-    wrote: false,
+  console.log(JSON.stringify(buildOrderShow({
     orderId,
-    displayId: data.displayId ?? null,
-    orderStatus: data.orderStatus ?? null,
-    closedReason: data.closedReason ?? null,
-    payment: {
-      status: payment.status ?? null,
-      receivedAmount: payment.receivedAmount ?? null,
-      officialUtrLast4: last4(payment.officialUtr),
-      balance: presentBalance(payment.balance),
-      nudges: flagTimes(payment.nudges),
-      remindersSent: flagTimes(payment.remindersSent)
-    },
-    review: presentReview(payment),
-    cancellation: presentCancellation(data.cancellation),
-    refunds: (Array.isArray(data.refunds) ? data.refunds : []).map(presentRefund),
-    events,
-    lock: {
-      exists: lockSnap.exists,
-      orderId: lock && lock.orderId ? lock.orderId : null
-    },
+    data,
+    events: eventsSnap.docs.map((doc) => doc.data()),
+    lock,
     unpaidCount: await readUnpaidCount(db, customerId)
-  }, null, 2));
+  }), null, 2));
 }
 
 async function main() {
@@ -662,7 +556,7 @@ async function main() {
   const apply = process.argv.includes('--apply');
   const cleanup = process.argv.includes('--cleanup');
   if (!customerId || !shopId) {
-    console.error('Usage: node scripts/support/test-marketplace-create.js --customer <id> --shop <id> [--apply] [--cleanup] [--order <id>] [--show --order <id>] [--utr [12-digits]] [--balance-utr <12-digits>] [--cancel] [--confirm] [--full-utr <12-digits>] [--fulfil false] [--payment-not-found] [--enforce] [--amount-differs <rupees>] [--tick] [--now <ISO>] [--advance-minutes <N>]');
+    console.error('Usage: node scripts/support/test-marketplace-create.js --customer <id> --shop <id> [--apply] [--cleanup] [--order <id>] [--show --order <id>] [--utr [12-digits]] [--balance-utr <12-digits>] [--cancel] [--confirm] [--full-utr <12-digits>] [--fulfil false] [--payment-not-found] [--evidence <file> --order <id>] [--payment-report --order <id> --utr <12-digits>] [--enforce] [--amount-differs <rupees>] [--tick] [--now <ISO>] [--advance-minutes <N>]');
     process.exit(1);
   }
 
@@ -751,6 +645,7 @@ async function main() {
         order: plan.orderOwned,
         events: plan.eventCount,
         privateHandover: plan.privateHandoverExists,
+        evidenceFiles: plan.evidenceDocs.length,
         utrRegistry: plan.registryDocs.map((doc) => ({
           last4: String(doc.id).slice(-4),
           kind: doc.kind
@@ -765,6 +660,153 @@ async function main() {
       console.log('Cleanup applied.');
     } else {
       console.log('Cleanup dry run. Re-run with --cleanup --apply to delete.');
+    }
+    return;
+  }
+
+  if (process.argv.includes('--evidence')) {
+    const filePath = argValue('--evidence');
+    const orderId = argValue('--order');
+    if (!filePath || !orderId) {
+      console.error('--evidence needs a local file and --order <id>. Nothing was written.');
+      process.exit(1);
+    }
+    const preview = await utrCancelPreview(db, customerId, shopId, null, orderId);
+    if (!preview.owned) {
+      console.error('That order does not belong to this customer and shop. Nothing was written.');
+      process.exit(1);
+    }
+    const fs = require('fs/promises');
+    const { MAX_BYTES, imageExt, uploadPaymentEvidence } = require('../../src/services/marketplace/paymentEvidence');
+    let stat;
+    try {
+      stat = await fs.stat(filePath);
+    } catch {
+      console.error('Evidence file could not be read. Nothing was written.');
+      process.exit(1);
+    }
+    const header = Buffer.alloc(8);
+    const handle = await fs.open(filePath, 'r');
+    try {
+      await handle.read(header, 0, 8, 0);
+    } finally {
+      await handle.close();
+    }
+    const ext = imageExt(header);
+    const key = argValue('--idempotency-key') || crypto.randomUUID();
+    console.log(JSON.stringify({
+      evidence: true,
+      apply,
+      orderId,
+      bytes: stat.size,
+      image: ext || 'invalid',
+      idempotencyKey: key
+    }, null, 2));
+    if (!apply && !ext) {
+      console.log('Would be rejected: FILE_INVALID. Nothing was written.');
+      return;
+    }
+    if (!apply) {
+      console.log('Dry run. Re-run with --evidence --apply to upload. Nothing was written.');
+      return;
+    }
+    if (stat.size > MAX_BYTES || !ext) {
+      console.log(JSON.stringify({
+        uploaded: false,
+        code: 'FILE_INVALID',
+        message: 'File must be a jpg or png of 5MB or smaller'
+      }, null, 2));
+      process.exitCode = 1;
+      return;
+    }
+    try {
+      const buffer = await fs.readFile(filePath);
+      const result = await uploadPaymentEvidence({
+        customerId,
+        orderId,
+        idempotencyKey: key,
+        file: { buffer }
+      });
+      console.log(JSON.stringify({
+        uploaded: true,
+        evidenceId: result.evidenceId,
+        replay: result.replay === true,
+        idempotencyKey: key
+      }, null, 2));
+    } catch (error) {
+      console.log(JSON.stringify({
+        uploaded: false,
+        status: error.status || 500,
+        code: error.code || null,
+        message: error.message
+      }, null, 2));
+      process.exitCode = 1;
+    }
+    return;
+  }
+
+  if (process.argv.includes('--payment-report')) {
+    const orderId = argValue('--order');
+    const utr = argValue('--utr');
+    const note = argValue('--note');
+    const idArg = argValue('--evidence-ids');
+    if (!orderId || !utr) {
+      console.error('--payment-report needs --order <id> and --utr <12-digits>. Nothing was written.');
+      process.exit(1);
+    }
+    const preview = await utrCancelPreview(db, customerId, shopId, utr, orderId);
+    if (!preview.owned) {
+      console.error('That order does not belong to this customer and shop. Nothing was written.');
+      process.exit(1);
+    }
+    const evidenceIds = idArg
+      ? idArg.split(',').map((id) => id.trim()).filter(Boolean)
+      : [];
+    console.log(JSON.stringify({
+      paymentReport: true,
+      apply,
+      order: preview.order,
+      utrLast4: utr.slice(-4),
+      noteLength: note ? note.length : 0,
+      evidenceIdCount: evidenceIds.length
+    }, null, 2));
+    if (!apply) {
+      console.log('Dry run. Re-run with --payment-report --apply to submit. Nothing was written.');
+      return;
+    }
+    const { submitPaymentReport } = require('../../src/services/marketplace/paymentEvidence');
+    const body = { utr };
+    if (note) {
+      body.note = note;
+    }
+    if (evidenceIds.length > 0) {
+      body.evidenceIds = evidenceIds;
+    }
+    try {
+      const result = await submitPaymentReport({
+        customerId,
+        orderId,
+        idempotencyKey: crypto.randomUUID(),
+        body
+      });
+      console.log(JSON.stringify({
+        submitted: true,
+        status: result.status,
+        orderStatus: result.body.data.order.orderStatus,
+        paymentStatus: result.body.data.order.payment.status,
+        reviewStatus: result.body.data.order.review && result.body.data.order.review.status,
+        customerUtrLast4: typeof result.body.data.order.payment.customerUtr === 'string'
+          ? result.body.data.order.payment.customerUtr.slice(-4)
+          : null
+      }, null, 2));
+    } catch (error) {
+      console.log(JSON.stringify({
+        submitted: false,
+        status: error.status || 500,
+        code: error.code || null,
+        message: error.message
+      }, null, 2));
+      process.exitCode = 1;
     }
     return;
   }

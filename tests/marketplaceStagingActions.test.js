@@ -2,7 +2,8 @@ const {
   confirmRequestBody,
   shortCancelRefundPreview,
   refundStubAmount,
-  reviewScriptWrites
+  reviewScriptWrites,
+  buildOrderShow
 } = require('../scripts/support/marketplaceStagingActions');
 
 describe('staging confirm body', () => {
@@ -62,5 +63,49 @@ describe('resolve-payment-review writes', () => {
     expect(reviewScriptWrites({ list: true, apply: false })).toBe(false);
     expect(reviewScriptWrites({ list: false, apply: false })).toBe(false);
     expect(reviewScriptWrites({ list: false, apply: true })).toBe(true);
+  });
+
+  test('show payload keeps the UTR last 4 and omits the note, evidence ids, and storage path', () => {
+    const shown = buildOrderShow({
+      orderId: 'order-1',
+      data: {
+        displayId: 11,
+        orderStatus: 'payment_review',
+        payment: {
+          status: 'under_review',
+          customerUtr: '246813579024',
+          review: {
+            status: 'open',
+            trigger: 'customer_report',
+            note: 'slip-note-secret',
+            evidenceIds: ['ev-secret']
+          }
+        },
+        storagePath: 'marketplaceOrders/order-1/evidence/ev-secret.jpg'
+      },
+      events: [{
+        type: 'utr_submitted',
+        actor: { type: 'customer', id: 'cust-1' },
+        data: { utr: '246813579024', path: 'marketplaceOrders/order-1/evidence/ev-secret.jpg' },
+        at: null
+      }, {
+        type: 'review_opened',
+        actor: { type: 'customer', id: 'cust-1' },
+        data: { trigger: 'customer_report' },
+        at: null
+      }],
+      lock: null,
+      unpaidCount: 0
+    });
+    const json = JSON.stringify(shown);
+    expect(shown.payment.customerUtrLast4).toBe('9024');
+    expect(shown.payment.customerUtr).toBeUndefined();
+    expect(shown.review.trigger).toBe('customer_report');
+    expect(shown.review.status).toBe('open');
+    expect(json).not.toContain('246813579024');
+    expect(json).not.toContain('slip-note-secret');
+    expect(json).not.toContain('evidenceIds');
+    expect(json).not.toContain('ev-secret');
+    expect(json).not.toContain('marketplaceOrders/');
   });
 });

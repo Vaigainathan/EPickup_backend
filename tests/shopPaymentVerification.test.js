@@ -349,7 +349,8 @@ describe('shop payment verification', () => {
     expect(events).toEqual(expect.arrayContaining(['shop_confirm', 'utr_corrected']));
     expect(mockSendToUser).toHaveBeenCalled();
     const sent = mockSendToUser.mock.calls[0][1];
-    expect(sent.body).toBe(`Payment confirmed with UTR ${SHOP_UTR}.`);
+    expect(sent.body).toBe('Payment confirmed with UTR 9999.');
+    expect(JSON.stringify(sent)).not.toMatch(/\d{12}/);
     expect(JSON.stringify(sent.data)).not.toContain(SHOP_UTR);
   });
 
@@ -1087,6 +1088,22 @@ describe('shop payment verification', () => {
     expect(note.data.variables.amount).toBeUndefined();
     expect(note.data.variables.orderId).toBe('order-1');
     expect(note.data.variables.displayId).toBe('#11');
+  });
+
+  test('UTR_CORRECTED body and data never contain a 12-digit UTR', () => {
+    const template = NotificationTemplateProcessor.getTemplate('MARKETPLACE', 'UTR_CORRECTED');
+    const note = NotificationTemplateProcessor.process(template, {
+      displayId: '#11',
+      orderId: 'order-1',
+      shopName: 'Vaigzz',
+      utr: '987654321098'
+    });
+    expect(note.title).toBe('Payment confirmed');
+    expect(note.body).toBe('Payment confirmed with UTR 1098.');
+    expect(note.body).not.toContain('987654321098');
+    expect(JSON.stringify(note)).not.toMatch(/\d{12}/);
+    expect(note.data.variables.utr).toBeUndefined();
+    expect(note.data.variables.orderId).toBe('order-1');
   });
 
   test('a short balance is expired at dueBy and not before', () => {

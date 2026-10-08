@@ -4,8 +4,11 @@
  *   node scripts/support/resolve-payment-review.js --list
  *   node scripts/support/resolve-payment-review.js --order <id> --outcome found|not_found|refund --reason <text> --operator <id>
  *   node scripts/support/resolve-payment-review.js --order <id> --outcome refund --reason <text> --operator <id> --apply
+ *   node scripts/support/resolve-payment-review.js --order <id> --evidence
  *
  * --list writes nothing, including when --apply is also passed.
+ * --evidence is read-only. It prints the payment-report note and evidence
+ * count, and downloads files into ./tmp/evidence/<orderId>/.
  */
 
 require('dotenv').config();
@@ -60,6 +63,47 @@ async function main() {
   const db = getFirestore();
   assertStagingAdmin();
 
+  if (process.argv.includes('--evidence')) {
+    const evidenceOrderId = argValue('--order');
+    if (!evidenceOrderId) {
+      console.error('--evidence needs --order <id>. Nothing was written.');
+      process.exit(1);
+    }
+    const path = require('path');
+    const { downloadOrderEvidence } = require('../../src/services/marketplace/paymentEvidence');
+    const folder = `tmp/evidence/${evidenceOrderId}`;
+    try {
+      const result = await downloadOrderEvidence(
+        db,
+        evidenceOrderId,
+        path.join(process.cwd(), 'tmp', 'evidence', evidenceOrderId)
+      );
+      if (!result.exists) {
+        console.log(JSON.stringify({
+          evidence: true,
+          wrote: false,
+          orderId: evidenceOrderId,
+          exists: false
+        }, null, 2));
+        process.exitCode = 1;
+        return;
+      }
+      console.log(JSON.stringify({
+        evidence: true,
+        wrote: false,
+        orderId: evidenceOrderId,
+        note: result.note,
+        evidenceCount: result.evidenceCount,
+        folder,
+        files: result.files
+      }, null, 2));
+    } catch {
+      console.error('Evidence download failed. Nothing was written.');
+      process.exitCode = 1;
+    }
+    return;
+  }
+
   if (list) {
     const snap = await db.collection('marketplaceOrders').where('orderStatus', '==', 'payment_review').get();
     const reviews = [];
@@ -80,7 +124,7 @@ async function main() {
   const reason = argValue('--reason');
   const operator = argValue('--operator');
   if (!orderId || !outcome || !reason || !operator) {
-    console.error('Usage: node scripts/support/resolve-payment-review.js --list | --order <id> --outcome found|not_found|refund --reason <text> --operator <id> [--apply]');
+    console.error('Usage: node scripts/support/resolve-payment-review.js --list | --order <id> --evidence | --order <id> --outcome found|not_found|refund --reason <text> --operator <id> [--apply]');
     process.exit(1);
   }
 

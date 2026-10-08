@@ -6,6 +6,8 @@ const { isPoolEnabled, allocateOrderNumber } = require('./orderNumberPool');
 const notificationService = require('./notificationService');
 const { NotificationTemplateProcessor } = require('./notificationTemplates');
 const { appendEvent } = require('./marketplace/orderEvents');
+const { deductStock, restoreLines, cancelRestoresStock } = require('./marketplace/stock');
+const { toPaise, fromPaise } = require('../validators/marketplace');
 const {
   resolveEnforcement,
   readUnpaidRelease,
@@ -51,6 +53,50 @@ function httpError(status, code, message) {
 
 function alreadyProcessed(order) {
   return { alreadyProcessed: true, order };
+}
+
+function stockShortOpen(items) {
+  return (Array.isArray(items) ? items : []).some((line) => (
+    typeof line.stockDeducted === 'number'
+    && line.stockDeducted < Number(line.qty)
+    && line.unavailable !== true
+  ));
+}
+
+function receivedPaiseOf(data) {
+  const payment = (data && data.payment) || {};
+  if (payment.receivedAmountPaise != null && Number.isFinite(Number(payment.receivedAmountPaise))) {
+    return Number(payment.receivedAmountPaise);
+  }
+  if (payment.receivedAmount != null) {
+    return toPaise(payment.receivedAmount);
+  }
+  return 0;
+}
+
+function sumRefundPaise(docs) {
+  return (docs || []).reduce((sum, doc) => {
+    const amount = (doc.data() || {}).amount;
+    if (amount == null) {
+      return sum;
+    }
+    return sum + toPaise(amount);
+  }, 0);
+}
+
+function lineRefundPaise(line) {
+  const qty = Number(line && line.qty);
+  const count = Number.isFinite(qty) && qty > 0 ? Math.floor(qty) : 0;
+  return toPaise(line.price) * count;
+}
+
+function pushVariables(data, orderId) {
+  const snapshot = data.shopSnapshot && typeof data.shopSnapshot === 'object' ? data.shopSnapshot : {};
+  return {
+    displayId: displayIdService.formatDisplayId(data.displayId),
+    orderId,
+    shopName: typeof snapshot.name === 'string' ? snapshot.name : ''
+  };
 }
 
 function presentLocation(location) {
@@ -223,6 +269,8 @@ class ShopOrderService {
       shopId: data.shopId,
       customerId: data.customerId || null,
       items: Array.isArray(data.items) ? data.items : [],
+      stockShort: data.stockShort === true,
+      stockShortOpen: stockShortOpen(data.items),
       itemsTotal,
       deliveryFee: data.deliveryFee ?? 0,
       deliveryAddress: {
@@ -270,6 +318,7 @@ class ShopOrderService {
       review: presentShopReview(payment.review),
       cancellation: {
         reason: cancellation.reason ?? null,
+        shopReason: typeof cancellation.shopReason === 'string' ? cancellation.shopReason : null,
         cancelledAt: cancellation.cancelledAt || null,
         cancelledBy: cancellation.cancelledBy ?? null,
         paidCheck: typeof cancellation.paidCheck === 'string' ? cancellation.paidCheck : null,
@@ -471,6 +520,11 @@ class ShopOrderService {
           shopId: data.shopId
         })
         : null;
+      const stock = await deductStock(tx, ref.firestore, {
+        orderRef: ref,
+        items: data.items,
+        actor: { type: 'shop', id: shopId }
+      });
       if (release) {
         writeUnpaidRelease(tx, release, orderId, true);
       }
@@ -482,6 +536,9 @@ class ShopOrderService {
       return {
         updates: {
           orderStatus: 'preparing',
+          items: stock.items,
+          stockShort: stock.stockShort === true,
+          stockDeducted: stock.orderStockDeducted === true,
           'payment.status': 'confirmed',
           'payment.amount': data.itemsTotal,
           'payment.receivedAmount': data.expectedAmount != null ? data.expectedAmount : null,
@@ -855,6 +912,112 @@ class ShopOrderService {
     });
   }
 
+  async markUnavailable(shopId, orderId, payload = {}) {
+    const rawIds = payload && Array.isArray(payload.itemIds) ? payload.itemIds : null;
+    if (!rawIds) {
+      throw httpError(400, 'VALIDATION', 'itemIds is required');
+    }
+    const itemIds = [];
+    rawIds.forEach((id) => {
+      if (typeof id !== 'string' || id.trim() === '' || itemIds.includes(id)) {
+        return;
+      }
+      itemIds.push(id);
+    });
+    if (itemIds.length === 0) {
+      throw httpError(400, 'VALIDATION', 'itemIds is required');
+    }
+
+    const ref = this.orders().doc(orderId);
+    const result = await this.getDb().runTransaction(async (tx) => {
+      const snap = await tx.get(ref);
+      if (!snap.exists || snap.data().shopId !== shopId) {
+        throw httpError(404, 'ORDER_NOT_FOUND', 'Order not found');
+      }
+      const data = snap.data();
+      if (data.orderStatus !== 'preparing') {
+        throw httpError(409, 'INVALID_STATE', 'Items can only be marked unavailable while the order is preparing');
+      }
+      const items = Array.isArray(data.items) ? data.items : [];
+      const indexes = itemIds.map((id) => items.findIndex((line, index) => {
+        const stored = line && typeof line.id === 'string' && line.id.trim() !== ''
+          ? line.id
+          : `line${index}`;
+        return stored === id;
+      }));
+      if (indexes.some((index) => index < 0)) {
+        throw httpError(400, 'VALIDATION', 'Unknown item id');
+      }
+      const wouldAll = items.every((line, index) => line.unavailable === true || indexes.includes(index));
+      if (wouldAll) {
+        throw httpError(409, 'ALL_ITEMS_UNAVAILABLE', 'use cancel');
+      }
+      const targets = indexes.map((index) => items[index]);
+      if (targets.every((line) => line.unavailable === true)) {
+        return { alreadyProcessed: true };
+      }
+      if (targets.some((line) => line.unavailable === true)) {
+        throw httpError(409, 'ALREADY_UNAVAILABLE', 'A line is already unavailable');
+      }
+
+      const refundSnap = await tx.get(ref.collection('refunds'));
+      const amountPaise = indexes.reduce((sum, index) => sum + lineRefundPaise(items[index]), 0);
+      if (sumRefundPaise(refundSnap.docs || []) + amountPaise > receivedPaiseOf(data)) {
+        throw httpError(409, 'REFUND_CAP', 'Refund would exceed the amount received');
+      }
+      const restored = await restoreLines(tx, ref.firestore, {
+        orderRef: ref,
+        items,
+        actor: { type: 'shop', id: shopId },
+        indexes
+      });
+      const nextItems = restored.items.map((line, index) => (
+        indexes.includes(index) ? { ...line, unavailable: true } : line
+      ));
+      const marked = indexes.map((index) => nextItems[index]);
+      createRefund(tx, {
+        orderRef: ref,
+        data,
+        reason: 'stock_short',
+        amount: fromPaise(amountPaise),
+        items: marked,
+        actor: { type: 'shop', id: shopId },
+        resultingOrderStatus: 'preparing'
+      });
+      appendEvent(tx, ref, {
+        type: 'items_unavailable',
+        actor: { type: 'shop', id: shopId },
+        data: {
+          lines: marked.map((line) => ({
+            id: line.id,
+            productId: line.productId || null,
+            variantId: line.variantId || null,
+            qty: line.qty
+          }))
+        }
+      });
+      tx.update(ref, {
+        items: nextItems,
+        updatedAt: this.now()
+      });
+      return {
+        alreadyProcessed: false,
+        customerId: data.customerId || null,
+        variables: pushVariables(data, orderId)
+      };
+    });
+
+    if (!result.alreadyProcessed) {
+      await this.notifyCustomer(result.customerId, 'ITEMS_UNAVAILABLE', result.variables);
+      await this.notifyCustomer(result.customerId, 'REFUND_INITIATED', result.variables);
+    }
+    const fresh = await ref.get();
+    return {
+      alreadyProcessed: result.alreadyProcessed,
+      order: await this.presentOrder(fresh.id, fresh.data())
+    };
+  }
+
   async cancelOrder(shopId, orderId, payload = {}, enforcement) {
     const reason = typeof payload.reason === 'string' ? payload.reason.trim() : '';
     if (!reason) {
@@ -881,12 +1044,27 @@ class ShopOrderService {
       if (!decision.ok) {
         throw httpError(409, 'CANCEL_NOT_ALLOWED', 'This order cannot be cancelled');
       }
+      const db = ref.firestore;
       const release = data.orderStatus === 'awaiting_payment'
-        ? await readUnpaidRelease(tx, ref.firestore, {
+        ? await readUnpaidRelease(tx, db, {
           customerId: data.customerId,
           shopId: data.shopId
         })
         : null;
+      let refundDocs = [];
+      if (paid) {
+        const refundSnap = await tx.get(ref.collection('refunds'));
+        refundDocs = refundSnap.docs || [];
+      }
+      let nextItems = data.items;
+      if (cancelRestoresStock(data)) {
+        const restored = await restoreLines(tx, db, {
+          orderRef: ref,
+          items: data.items,
+          actor: { type: 'shop', id: shopId }
+        });
+        nextItems = restored.items;
+      }
       if (release) {
         writeUnpaidRelease(tx, release, orderId, true);
       }
@@ -896,52 +1074,59 @@ class ShopOrderService {
         reason
       });
 
+      const updates = {
+        orderStatus: 'cancelled',
+        closedReason: 'shop_cancelled',
+        'cancellation.reason': 'shop_cancelled',
+        'cancellation.shopReason': reason,
+        'cancellation.cancelledAt': this.now(),
+        'cancellation.cancelledBy': shopId
+      };
+      if (nextItems !== data.items) {
+        updates.items = nextItems;
+      }
+
       if (paid) {
-        const received = data.payment && data.payment.receivedAmount != null
-          ? data.payment.receivedAmount
-          : data.expectedAmount;
-        createRefund(tx, {
-          orderRef: ref,
-          data,
-          reason: 'shop_cancel',
-          amount: received != null ? received : null,
-          items: data.items,
-          actor: { type: 'shop', id: shopId },
-          eventReason: reason,
-          resultingOrderStatus: 'cancelled'
-        });
+        const receivedPaise = receivedPaiseOf(data);
+        const remainderPaise = Math.max(0, receivedPaise - sumRefundPaise(refundDocs));
+        if (remainderPaise > 0) {
+          createRefund(tx, {
+            orderRef: ref,
+            data,
+            reason: 'shop_cancel',
+            amount: fromPaise(remainderPaise),
+            items: nextItems,
+            actor: { type: 'shop', id: shopId },
+            eventReason: reason,
+            resultingOrderStatus: 'cancelled'
+          });
+        }
+        updates['payment.status'] = 'refund_pending';
         return {
-          updates: {
-            orderStatus: 'cancelled',
-            'payment.status': 'refund_pending',
-            'cancellation.reason': reason,
-            'cancellation.cancelledAt': this.now(),
-            'cancellation.cancelledBy': shopId
+          updates,
+          notify: {
+            type: remainderPaise > 0 ? 'REFUND_INITIATED' : 'ORDER_CANCELLED',
+            shopReason: reason
           },
-          notify: { type: 'REFUND_INITIATED', reason },
           extra: { refundRequired: true }
         };
       }
 
       return {
-        updates: {
-          orderStatus: 'cancelled',
-          'cancellation.reason': reason,
-          'cancellation.cancelledAt': this.now(),
-          'cancellation.cancelledBy': shopId
-        },
-        notify: { type: 'ORDER_CANCELLED', reason },
+        updates,
+        notify: { type: 'ORDER_CANCELLED', shopReason: reason },
         extra: { refundRequired: false }
       };
     });
 
     if (!result.alreadyProcessed && result.notify) {
+      const shopReason = result.notify.shopReason || '';
       const vars = {
         displayId: displayIdService.formatDisplayId(result.order.displayId),
         orderId: result.order.id,
         amount: result.order.payment.amount,
-        reason: result.notify.reason || '',
-        reasonLine: result.notify.reason ? ` Reason: ${result.notify.reason}` : ''
+        reason: shopReason,
+        reasonLine: shopReason ? ` Reason: ${shopReason}` : ''
       };
       await this.notifyCustomer(result.order.customerId, result.notify.type, vars);
     }

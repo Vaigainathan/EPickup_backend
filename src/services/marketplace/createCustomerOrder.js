@@ -167,6 +167,17 @@ function classifyOrderLines(items, productsById, shopId) {
   return { badLines, goodLines };
 }
 
+function storedOrderItems(goodLines) {
+  return goodLines.map((line, index) => ({
+    id: `line${index}`,
+    productId: line.productId,
+    variantId: line.variantId,
+    name: line.name,
+    price: line.price,
+    qty: line.qty
+  }));
+}
+
 function sumItemsTotalPaise(goodLines) {
   return goodLines.reduce((sum, line) => sum + line.linePaise, 0);
 }
@@ -491,13 +502,7 @@ async function createMarketplaceOrder({ customerId, idempotencyKey, body }) {
     const orderData = {
       shopId,
       customerId,
-      items: classified.goodLines.map((line) => ({
-        productId: line.productId,
-        variantId: line.variantId,
-        name: line.name,
-        price: line.price,
-        qty: line.qty
-      })),
+      items: storedOrderItems(classified.goodLines),
       itemsTotal,
       itemsTotalPaise,
       deliveryFee: 0,
@@ -600,6 +605,7 @@ module.exports = {
   orderIdFor,
   validateCreateInput,
   classifyOrderLines,
+  storedOrderItems,
   sumItemsTotalPaise,
   UNPAID_AMOUNT_STATUSES,
   chooseAmountAdjustment,

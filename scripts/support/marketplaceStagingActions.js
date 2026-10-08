@@ -125,6 +125,7 @@ function presentCancellation(cancellation) {
   const source = cancellation && typeof cancellation === 'object' ? cancellation : {};
   return {
     reason: source.reason ?? null,
+    shopReason: typeof source.shopReason === 'string' ? source.shopReason : null,
     cancelledAt: toIso(source.cancelledAt),
     cancelledBy: source.cancelledBy ?? null,
     paidCheck: source.paidCheck ?? null,
@@ -177,11 +178,36 @@ function presentEvent(data) {
     if (event.data.legacy === true) {
       shown.legacy = true;
     }
+    if (event.data.stockShort === true) {
+      shown.stockShort = true;
+    }
+    if (Array.isArray(event.data.lines)) {
+      shown.lines = event.data.lines.map((line) => {
+        const row = {
+          id: line.id ?? null,
+          productId: line.productId ?? null,
+          variantId: line.variantId ?? null
+        };
+        if (line.qty != null) {
+          row.qty = line.qty;
+        }
+        if (line.stockDeducted != null) {
+          row.stockDeducted = line.stockDeducted;
+        }
+        if (line.units != null) {
+          row.units = line.units;
+        }
+        if (line.missing === true) {
+          row.missing = true;
+        }
+        return row;
+      });
+    }
   }
   return shown;
 }
 
-function buildOrderShow({ orderId, data, events, lock, unpaidCount, refunds }) {
+function buildOrderShow({ orderId, data, events, lock, unpaidCount, refunds, lines }) {
   const source = data && typeof data === 'object' ? data : {};
   const payment = source.payment && typeof source.payment === 'object' ? source.payment : {};
   const shownEvents = (Array.isArray(events) ? events : []).map(presentEvent);
@@ -194,6 +220,8 @@ function buildOrderShow({ orderId, data, events, lock, unpaidCount, refunds }) {
     displayId: source.displayId ?? null,
     orderStatus: source.orderStatus ?? null,
     closedReason: source.closedReason ?? null,
+    stockShort: source.stockShort === true,
+    lines: Array.isArray(lines) ? lines : [],
     payment: {
       status: payment.status ?? null,
       receivedAmount: payment.receivedAmount ?? null,
@@ -216,10 +244,104 @@ function buildOrderShow({ orderId, data, events, lock, unpaidCount, refunds }) {
   };
 }
 
+const STAGING_CUSTOMER_ID = 'Ue51a7afbc981f1b92cf30be32ab';
+const STAGING_SHOP_ID = 'b7302f5d6343c1641d63811306eb';
+
+function assertStagingPair(customerId, shopId) {
+  if (customerId === STAGING_CUSTOMER_ID && shopId === STAGING_SHOP_ID) {
+    return { ok: true };
+  }
+  return {
+    ok: false,
+    message: 'This script only runs for shop b7302f5d6343c1641d63811306eb and customer Ue51a7afbc981f1b92cf30be32ab. Nothing was read or written.'
+  };
+}
+
+function parseItemsFlag(raw) {
+  if (typeof raw !== 'string' || raw.trim() === '') {
+    return {
+      ok: false,
+      message: '--items needs productId:qty,productId:qty. Nothing was written.'
+    };
+  }
+  const parts = raw.split(',').map((part) => part.trim()).filter(Boolean);
+  if (parts.length === 0) {
+    return {
+      ok: false,
+      message: '--items needs productId:qty,productId:qty. Nothing was written.'
+    };
+  }
+  const specs = [];
+  for (let index = 0; index < parts.length; index += 1) {
+    const spec = parts[index];
+    const splitAt = spec.lastIndexOf(':');
+    const productId = splitAt > 0 ? spec.slice(0, splitAt).trim() : '';
+    const qtyText = splitAt > 0 ? spec.slice(splitAt + 1).trim() : '';
+    if (!productId || !/^[1-9][0-9]*$/.test(qtyText)) {
+      return {
+        ok: false,
+        message: '--items needs productId:qty,productId:qty. Nothing was written.'
+      };
+    }
+    specs.push({ productId, qty: Number(qtyText) });
+  }
+  return { ok: true, specs };
+}
+
+function resolveCreateItems(raw, products) {
+  const parsed = parseItemsFlag(raw);
+  if (!parsed.ok) {
+    return parsed;
+  }
+  const catalogue = Array.isArray(products) ? products : [];
+  const lines = [];
+  for (let index = 0; index < parsed.specs.length; index += 1) {
+    const spec = parsed.specs[index];
+    const product = catalogue.find((row) => row && row.id === spec.productId && row.isActive !== false);
+    if (!product) {
+      return {
+        ok: false,
+        message: `Product ${spec.productId} is not an active product of this shop. Nothing was written.`
+      };
+    }
+    let price = product.price;
+    let variantId = null;
+    if (product.hasVariants === true) {
+      const variants = Array.isArray(product.variants) ? product.variants : [];
+      const variant = variants.find((row) => Number(row.stock) >= spec.qty) || variants[0];
+      if (!variant || !variant.id) {
+        return {
+          ok: false,
+          message: `Product ${spec.productId} has no variant. Nothing was written.`
+        };
+      }
+      variantId = variant.id;
+      if (typeof variant.priceOverride === 'number') {
+        price = variant.priceOverride;
+      }
+    }
+    const line = {
+      productId: spec.productId,
+      qty: spec.qty,
+      price
+    };
+    if (variantId) {
+      line.variantId = variantId;
+    }
+    lines.push(line);
+  }
+  return { ok: true, lines };
+}
+
 module.exports = {
   confirmRequestBody,
   shortCancelRefundPreview,
   refundStubAmount,
+  parseItemsFlag,
+  resolveCreateItems,
+  assertStagingPair,
+  STAGING_CUSTOMER_ID,
+  STAGING_SHOP_ID,
   reviewScriptWrites,
   buildOrderShow
 };

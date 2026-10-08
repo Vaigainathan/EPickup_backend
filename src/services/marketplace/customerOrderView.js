@@ -126,6 +126,7 @@ function presentCustomerOrder(order) {
     review: presentCustomerReview(source.payment && source.payment.review),
     cancellation: {
       reason: cancellation.reason ?? null,
+      shopReason: typeof cancellation.shopReason === 'string' ? cancellation.shopReason : null,
       cancelledAt: toIso(cancellation.cancelledAt),
       cancelledBy: cancellation.cancelledBy ?? null,
       paidCheck: typeof cancellation.paidCheck === 'string' ? cancellation.paidCheck : null,

@@ -889,6 +889,13 @@ describe('refund views and the legacy sent route', () => {
       { displayId: '#11', amount: 40 }
     );
     expect(initiated.body).toBe('Share your UPI ID to receive your refund.');
-    expect(initiated.data.variables.amount).toBeUndefined();
+    expect(initiated.data).toEqual({
+      type: 'refund_initiated',
+      orderId: '',
+      displayId: '#11',
+      shopName: '',
+      action: 'view_order'
+    });
+    expect(JSON.stringify(initiated.data)).not.toContain('40');
   });
 });

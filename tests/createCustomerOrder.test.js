@@ -2,6 +2,7 @@ const { MARKETPLACE_DEFAULTS } = require('../src/config/marketplaceDefaults');
 const {
   rupeesFromPaise,
   classifyOrderLines,
+  storedOrderItems,
   sumItemsTotalPaise,
   chooseAmountAdjustment,
   occupiedExpectedPaise,
@@ -83,6 +84,29 @@ describe('classifyOrderLines', () => {
     ]);
     expect(result.goodLines).toHaveLength(1);
     expect(sumItemsTotalPaise(result.goodLines)).toBe(8000);
+    expect(result.goodLines[0].price).toBe(80);
+  });
+
+  test('ids assigned at creation use the effective price', () => {
+    const products = new Map([
+      ['sized', product({
+        hasVariants: true,
+        stock: 0,
+        name: 'Rice',
+        variants: [{ id: 'v1', priceOverride: 80, stock: 3 }]
+      })]
+    ]);
+    const result = classifyOrderLines([
+      { productId: 'sized', variantId: 'v1', qty: 2, price: 80 }
+    ], products, SHOP);
+    expect(storedOrderItems(result.goodLines)).toEqual([{
+      id: 'line0',
+      productId: 'sized',
+      variantId: 'v1',
+      name: 'Rice',
+      price: 80,
+      qty: 2
+    }]);
   });
 });
 

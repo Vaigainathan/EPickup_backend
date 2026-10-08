@@ -172,6 +172,11 @@ const NOTIFICATION_TEMPLATES = {
       body: 'Your order {{displayId}} was cancelled.{{reasonLine}}',
       data: { type: 'order_cancelled', action: 'view_order' }
     },
+    ITEMS_UNAVAILABLE: {
+      title: 'Items unavailable',
+      body: 'Some items in order {{displayId}} are unavailable.',
+      data: { type: 'items_unavailable', action: 'view_order' }
+    },
     REFUND_INITIATED: {
       title: 'Refund pending',
       body: 'Share your UPI ID to receive your refund.',
@@ -349,7 +354,16 @@ class NotificationTemplateProcessor {
       delete cleanedVariables.utr;
     }
 
-    if (Object.keys(cleanedVariables).length > 0) {
+    if (dataType === 'items_unavailable' || dataType === 'refund_initiated') {
+      const text = (value) => (value == null ? '' : String(value));
+      processedTemplate.data = {
+        type: dataType,
+        orderId: text(cleanedVariables.orderId),
+        displayId: text(cleanedVariables.displayId),
+        shopName: text(cleanedVariables.shopName),
+        action: template.data.action
+      };
+    } else if (Object.keys(cleanedVariables).length > 0) {
       processedTemplate.data.variables = cleanedVariables;
     }
 

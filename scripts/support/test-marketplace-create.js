@@ -29,6 +29,20 @@
  * --amount-differs <rupees> [--order <id>] dry run prints utrLast4 and the body and
  * writes nothing. --amount-differs <rupees> --apply calls the service.
  * --payment-not-found [--order <id>] [--apply] calls reportNotFound.
+ * --set-stock <n> --product <productId> [--variant <id>] prints current stock
+ * then the new stock. Dry run writes nothing. --apply calls updateStock for
+ * this shop only and sets that stock absolutely.
+ * --mark-unavailable --order <id> --item-ids line0,line1 prints the lines.
+ * Dry run writes nothing. --apply calls markUnavailable.
+ * --shop-cancel --order <id> --reason "text" prints whether stock would be
+ * restored. Dry run writes nothing. --apply calls shopOrderService.cancelOrder.
+ * --items productId:qty,productId:qty builds the create body from those
+ * active products at the current price (variantId when the product has one).
+ * Dry run prints the lines and writes nothing. --apply sends that body.
+ * --enforce on that call uses new statuses. Without it, live settings apply.
+ * --confirm dry run also prints stockBefore, units, and stockAfter.
+ * --show prints each line's live stock, stockDeducted, stockRestored,
+ * unavailable, and the order stockShort. UTR stays last 4.
  * --confirm --fulfil false sends fulfil:false.
  * --evidence <local-file> --order <id> [--idempotency-key <uuid>] [--apply]
  * uploads one jpg or png. Dry run prints bytes and image type. Apply prints
@@ -82,7 +96,9 @@ const {
 const {
   confirmRequestBody,
   shortCancelRefundPreview,
-  buildOrderShow
+  buildOrderShow,
+  resolveCreateItems,
+  assertStagingPair
 } = require('./marketplaceStagingActions');
 
 assertStagingEnv();
@@ -114,6 +130,84 @@ async function requireOwnedOrder(db, customerId, shopId, orderId) {
     process.exit(1);
   }
   return data;
+}
+
+function liveStock(product, line) {
+  if (!product) {
+    return null;
+  }
+  if (line.variantId && Array.isArray(product.variants)) {
+    const variant = product.variants.find((row) => row.id === line.variantId);
+    return variant ? (variant.stock ?? null) : null;
+  }
+  return product.stock ?? null;
+}
+
+async function productMap(db, items, shopId) {
+  const wanted = new Set();
+  const rows = Array.isArray(items) ? items : [];
+  rows.forEach((line) => {
+    if (line && line.productId) {
+      wanted.add(line.productId);
+    }
+  });
+  const products = new Map();
+  if (!shopId || wanted.size === 0) {
+    return products;
+  }
+  const snap = await db.collection('products').where('shopId', '==', shopId).get();
+  snap.docs.forEach((doc) => {
+    if (wanted.has(doc.id)) {
+      products.set(doc.id, doc.data() || {});
+    }
+  });
+  return products;
+}
+
+function stockLineView(line, product) {
+  return {
+    id: line.id ?? null,
+    productId: line.productId ?? null,
+    variantId: line.variantId ?? null,
+    qty: line.qty ?? null,
+    stock: liveStock(product, line),
+    stockDeducted: typeof line.stockDeducted === 'number' ? line.stockDeducted : null,
+    stockRestored: line.stockRestored === true,
+    unavailable: line.unavailable === true
+  };
+}
+
+async function previewOrderStock(db, orderId, shopId) {
+  const { previewDeduction } = require('../../src/services/marketplace/stock');
+  const snap = await db.collection('marketplaceOrders').doc(orderId).get();
+  if (!snap.exists) {
+    return null;
+  }
+  const items = Array.isArray(snap.data().items) ? snap.data().items : [];
+  if (items.some((line) => typeof line.stockDeducted === 'number')) {
+    return {
+      alreadyDeducted: true,
+      lines: items.map((line) => stockLineView(line, null))
+    };
+  }
+  const products = await productMap(db, items, shopId);
+  const preview = previewDeduction(items, products);
+  return {
+    alreadyDeducted: false,
+    lines: preview.lines.map((line) => {
+      const product = line.productId ? products.get(line.productId) : null;
+      const before = liveStock(product, line);
+      return {
+        id: line.id,
+        productId: line.productId,
+        variantId: line.variantId,
+        qty: line.qty,
+        stockBefore: before,
+        units: line.stockDeducted,
+        stockAfter: typeof before === 'number' ? before - line.stockDeducted : null
+      };
+    })
+  };
 }
 
 function argValue(flag) {
@@ -583,6 +677,8 @@ async function printOrderShow(db, customerId, shopId, orderId) {
   const refundsSnap = await db.collection('marketplaceOrders').doc(orderId).collection('refunds').get();
   const lockSnap = await db.collection('marketplaceLocks').doc(`${customerId}_${shopId}`).get();
   const lock = lockSnap.exists ? (lockSnap.data() || {}) : null;
+  const items = Array.isArray(data.items) ? data.items : [];
+  const products = await productMap(db, items, shopId);
 
   console.log(JSON.stringify(buildOrderShow({
     orderId,
@@ -590,7 +686,8 @@ async function printOrderShow(db, customerId, shopId, orderId) {
     events: eventsSnap.docs.map((doc) => doc.data()),
     refunds: refundsSnap.docs.map((doc) => ({ id: doc.id, ...(doc.data() || {}) })),
     lock,
-    unpaidCount: await readUnpaidCount(db, customerId)
+    unpaidCount: await readUnpaidCount(db, customerId),
+    lines: items.map((line) => stockLineView(line, line.productId ? products.get(line.productId) : null))
   }), null, 2));
 }
 
@@ -600,7 +697,12 @@ async function main() {
   const apply = process.argv.includes('--apply');
   const cleanup = process.argv.includes('--cleanup');
   if (!customerId || !shopId) {
-    console.error('Usage: node scripts/support/test-marketplace-create.js --customer <id> --shop <id> [--apply] [--cleanup] [--order <id>] [--show --order <id>] [--utr [12-digits]] [--balance-utr <12-digits>] [--cancel] [--confirm] [--full-utr <12-digits>] [--fulfil false] [--payment-not-found] [--evidence <file> --order <id>] [--payment-report --order <id> --utr <12-digits>] [--enforce] [--amount-differs <rupees>] [--tick] [--refund-tick] [--refund-upi <upiId> --refund <refundId> --order <id>] [--save] [--refund-ack yes|no --refund <refundId> --order <id>] [--legacy-refund-sent --order <id>] [--now <ISO>] [--advance-minutes <N>]');
+    console.error('Usage: node scripts/support/test-marketplace-create.js --customer <id> --shop <id> [--apply] [--cleanup] [--order <id>] [--show --order <id>] [--set-stock <n> --product <productId>] [--variant <id>] [--items productId:qty,productId:qty] [--mark-unavailable --order <id> --item-ids line0,line1] [--shop-cancel --order <id> --reason text] [--utr [12-digits]] [--balance-utr <12-digits>] [--cancel] [--confirm] [--full-utr <12-digits>] [--fulfil false] [--payment-not-found] [--evidence <file> --order <id>] [--payment-report --order <id> --utr <12-digits>] [--enforce] [--amount-differs <rupees>] [--tick] [--refund-tick] [--refund-upi <upiId> --refund <refundId> --order <id>] [--save] [--refund-ack yes|no --refund <refundId> --order <id>] [--legacy-refund-sent --order <id>] [--now <ISO>] [--advance-minutes <N>]');
+    process.exit(1);
+  }
+  const pair = assertStagingPair(customerId, shopId);
+  if (!pair.ok) {
+    console.error(pair.message);
     process.exit(1);
   }
 
@@ -619,13 +721,186 @@ async function main() {
     return;
   }
 
+  if (process.argv.includes('--set-stock')) {
+    const raw = argValue('--set-stock');
+    const productId = argValue('--product');
+    const variantId = argValue('--variant');
+    const next = Number(raw);
+    if (!productId || raw === '' || !Number.isInteger(next) || next < 0) {
+      console.error('--set-stock needs --product <productId> and a whole number 0 or more. Nothing was written.');
+      process.exit(1);
+    }
+    const productSnap = await db.collection('products').doc(productId).get();
+    if (!productSnap.exists || (productSnap.data() || {}).shopId !== shopId) {
+      console.error('That product does not belong to this shop. Nothing was written.');
+      process.exit(1);
+    }
+    const product = productSnap.data() || {};
+    let current = null;
+    if (product.hasVariants === true) {
+      if (!variantId) {
+        console.error('This product has variants. Pass --variant <id>. Nothing was written.');
+        process.exit(1);
+      }
+      const variant = (Array.isArray(product.variants) ? product.variants : []).find((row) => row.id === variantId);
+      if (!variant) {
+        console.error('Variant not found. Nothing was written.');
+        process.exit(1);
+      }
+      current = variant.stock ?? null;
+    } else {
+      current = product.stock ?? null;
+    }
+    console.log(JSON.stringify({
+      setStock: true,
+      apply,
+      productId,
+      variantId: variantId || null,
+      current,
+      next,
+      wrote: false
+    }, null, 2));
+    if (!apply) {
+      console.log('Dry run. Re-run with --set-stock --apply to set stock.');
+      return;
+    }
+    const shopCatalogueService = require('../../src/services/shopCatalogueService');
+    const payload = product.hasVariants === true
+      ? { variantId, stock: next }
+      : { stock: next };
+    await shopCatalogueService.updateStock(shopId, productId, payload);
+    console.log(JSON.stringify({
+      setStock: true,
+      apply: true,
+      productId,
+      variantId: variantId || null,
+      stock: next,
+      wrote: true
+    }, null, 2));
+    return;
+  }
+
+  if (process.argv.includes('--mark-unavailable')) {
+    const orderId = argValue('--order');
+    const rawIds = argValue('--item-ids');
+    const itemIds = rawIds.split(',').map((id) => id.trim()).filter(Boolean);
+    if (!orderId || itemIds.length === 0) {
+      console.error('--mark-unavailable needs --order <id> and --item-ids line0,line1. Nothing was written.');
+      process.exit(1);
+    }
+    const data = await requireOwnedOrder(db, customerId, shopId, orderId);
+    const items = Array.isArray(data.items) ? data.items : [];
+    const products = await productMap(db, items, shopId);
+    const lines = items.map((line, index) => {
+      const id = line.id || `line${index}`;
+      const view = stockLineView(line, line.productId ? products.get(line.productId) : null);
+      return { ...view, id, selected: itemIds.includes(id) };
+    });
+    console.log(JSON.stringify({
+      markUnavailable: true,
+      apply,
+      orderId,
+      itemIds,
+      lines,
+      wrote: false
+    }, null, 2));
+    if (!apply) {
+      console.log('Dry run. Re-run with --mark-unavailable --apply to mark lines unavailable.');
+      return;
+    }
+    const shopOrderService = require('../../src/services/shopOrderService');
+    try {
+      const result = await shopOrderService.markUnavailable(shopId, orderId, { itemIds });
+      console.log(JSON.stringify({
+        markUnavailable: true,
+        apply: true,
+        alreadyProcessed: result.alreadyProcessed === true,
+        orderStatus: result.order.orderStatus,
+        stockShort: result.order.stockShort === true,
+        wrote: result.alreadyProcessed !== true
+      }, null, 2));
+    } catch (error) {
+      console.log(JSON.stringify({
+        markUnavailable: true,
+        apply: true,
+        wrote: false,
+        status: error.status || 500,
+        code: error.code || null,
+        message: error.message
+      }, null, 2));
+      process.exitCode = 1;
+    }
+    return;
+  }
+
+  if (process.argv.includes('--shop-cancel')) {
+    const orderId = argValue('--order');
+    const reason = argValue('--reason');
+    if (!orderId || !reason) {
+      console.error('--shop-cancel needs --order <id> and --reason <text>. Nothing was written.');
+      process.exit(1);
+    }
+    const data = await requireOwnedOrder(db, customerId, shopId, orderId);
+    const { cancelRestoresStock } = require('../../src/services/marketplace/stock');
+    const stage = data.delivery && data.delivery.stage ? data.delivery.stage : null;
+    console.log(JSON.stringify({
+      shopCancel: true,
+      apply,
+      orderId,
+      orderStatus: data.orderStatus || null,
+      stage,
+      restoresStock: cancelRestoresStock(data),
+      wrote: false
+    }, null, 2));
+    if (!apply) {
+      console.log('Dry run. Re-run with --shop-cancel --apply to cancel the order.');
+      return;
+    }
+    const shopOrderService = require('../../src/services/shopOrderService');
+    const enforcement = process.argv.includes('--enforce')
+      ? { newStatuses: true, utrBlocksReject: true }
+      : undefined;
+    try {
+      const result = await shopOrderService.cancelOrder(shopId, orderId, { reason }, enforcement);
+      console.log(JSON.stringify({
+        shopCancel: true,
+        apply: true,
+        wrote: true,
+        orderStatus: result.order.orderStatus,
+        reason: result.order.cancellation && result.order.cancellation.reason,
+        shopReason: result.order.cancellation && result.order.cancellation.shopReason
+      }, null, 2));
+    } catch (error) {
+      console.log(JSON.stringify({
+        shopCancel: true,
+        apply: true,
+        wrote: false,
+        status: error.status || 500,
+        code: error.code || null,
+        message: error.message
+      }, null, 2));
+      process.exitCode = 1;
+    }
+    return;
+  }
+
   const context = await loadContext(db, customerId, shopId, isShopOpenNow);
+  let createItems = null;
+  if (process.argv.includes('--items')) {
+    const resolved = resolveCreateItems(argValue('--items'), context.products);
+    if (!resolved.ok) {
+      console.error(resolved.message);
+      process.exit(1);
+    }
+    createItems = resolved.lines;
+  }
   const jobReport = await paymentJobReport(db, shopId);
   console.log(JSON.stringify({
     dryRun: !apply,
     customerId,
     shopId,
     ...context,
+    createItems,
     paymentJob: jobReport
   }, null, 2));
 
@@ -1221,13 +1496,17 @@ async function main() {
     const enforcement = process.argv.includes('--enforce')
       ? { newStatuses: true, utrBlocksReject: true }
       : undefined;
+    const stockPreview = !apply && preview.order
+      ? await previewOrderStock(db, preview.order.id, shopId)
+      : null;
     console.log(JSON.stringify({
       confirm: true,
       apply,
       enforce: Boolean(enforcement),
       order: preview.order,
       body: request.ok ? request.logBody : null,
-      message: request.ok ? null : request.message
+      message: request.ok ? null : request.message,
+      stockPreview
     }, null, 2));
     if (!apply) {
       console.log('Dry run. Re-run with --confirm --apply to confirm payment.');
@@ -1372,7 +1651,8 @@ async function main() {
     console.error('No saved address. --apply did not create an order.');
     process.exit(1);
   }
-  if (!context.line) {
+  const lines = createItems || (context.line ? [context.line] : []);
+  if (lines.length === 0) {
     console.error('No active product with stock. --apply did not create an order.');
     process.exit(1);
   }
@@ -1380,12 +1660,13 @@ async function main() {
   const body = {
     shopId,
     addressId: address.id,
-    items: [context.line]
+    items: lines
   };
+  const wrongLine = { ...lines[0], price: Number(lines[0].price) + 50 };
   const wrongBody = {
     shopId,
     addressId: address.id,
-    items: [context.wrongPriceLine]
+    items: [wrongLine]
   };
 
   const priceCase = await callCreate(createMarketplaceOrder, customerId, crypto.randomUUID(), wrongBody);

@@ -1,9 +1,15 @@
+const { spawnSync } = require('child_process');
+const path = require('path');
 const {
   confirmRequestBody,
   shortCancelRefundPreview,
   refundStubAmount,
   reviewScriptWrites,
-  buildOrderShow
+  buildOrderShow,
+  resolveCreateItems,
+  assertStagingPair,
+  STAGING_CUSTOMER_ID,
+  STAGING_SHOP_ID
 } = require('../scripts/support/marketplaceStagingActions');
 
 describe('staging confirm body', () => {
@@ -107,5 +113,65 @@ describe('resolve-payment-review writes', () => {
     expect(json).not.toContain('evidenceIds');
     expect(json).not.toContain('ev-secret');
     expect(json).not.toContain('marketplaceOrders/');
+  });
+});
+
+describe('create --items', () => {
+  const products = [
+    { id: 'statue', name: 'Balaji', price: 1540, stock: 5, hasVariants: false, isActive: true, variants: [] },
+    {
+      id: 'lamp',
+      name: 'Lamp',
+      price: 100,
+      stock: 0,
+      hasVariants: true,
+      isActive: true,
+      variants: [{ id: 'v1', stock: 2, priceOverride: 80 }]
+    }
+  ];
+
+  test('two product:qty pairs become two lines at the current price', () => {
+    const resolved = resolveCreateItems('statue:1,lamp:2', products);
+    expect(resolved.ok).toBe(true);
+    expect(resolved.lines).toEqual([
+      { productId: 'statue', qty: 1, price: 1540 },
+      { productId: 'lamp', variantId: 'v1', qty: 2, price: 80 }
+    ]);
+  });
+
+  test('a bad spec or an unknown product writes nothing', () => {
+    expect(resolveCreateItems('statue', products).ok).toBe(false);
+    expect(resolveCreateItems('statue:0', products).ok).toBe(false);
+    expect(resolveCreateItems('missing:1', products).ok).toBe(false);
+  });
+});
+
+describe('staging actor lock', () => {
+  test('only the staging shop and customer are accepted', () => {
+    expect(assertStagingPair(STAGING_CUSTOMER_ID, STAGING_SHOP_ID).ok).toBe(true);
+    expect(assertStagingPair(STAGING_CUSTOMER_ID, 'other-shop').ok).toBe(false);
+    expect(assertStagingPair('other-customer', STAGING_SHOP_ID).ok).toBe(false);
+  });
+
+  test('another shop id exits before Firestore', () => {
+    const result = spawnSync(process.execPath, [
+      path.join('scripts', 'support', 'test-marketplace-create.js'),
+      '--customer', STAGING_CUSTOMER_ID,
+      '--shop', 'other-shop'
+    ], {
+      cwd: path.join(__dirname, '..'),
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        FIREBASE_PROJECT_ID: 'epickup-app-staging',
+        FIREBASE_CLIENT_EMAIL: 'firebase-adminsdk@epickup-app-staging.iam.gserviceaccount.com',
+        FIREBASE_PRIVATE_KEY: '-----BEGIN PRIVATE KEY-----\nMIIB\n-----END PRIVATE KEY-----\n'
+      }
+    });
+    const output = `${result.stdout || ''}${result.stderr || ''}`;
+    expect(result.status).toBe(1);
+    expect(output).toContain('only runs for shop b7302f5d6343c1641d63811306eb');
+    expect(output).toContain('Nothing was read or written.');
+    expect(output).not.toContain('Initializing Firebase');
   });
 });

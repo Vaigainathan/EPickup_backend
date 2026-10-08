@@ -267,7 +267,10 @@ async function submitCustomerUtr({ customerId, orderId, idempotencyKey, utr, now
     await notifyCustomer(customerId, 'PAYMENT_UNDER_REVIEW', variables);
     await notifyShop(outcome.shopId, 'PAYMENT_REVIEW_SHOP', variables);
   } else if (!outcome.replay) {
-    await notifyShop(outcome.shopId, 'UTR_SUBMITTED', { displayId: outcome.displayId });
+    await notifyShop(outcome.shopId, 'UTR_SUBMITTED', {
+      displayId: outcome.displayId,
+      orderId
+    });
   }
   return orderResponse(200, outcome.data, orderId);
 }
@@ -340,7 +343,10 @@ async function submitBalanceUtr({ customerId, orderId, idempotencyKey, utr, nowM
   });
 
   if (!outcome.replay) {
-    await notifyShop(outcome.shopId, 'UTR_SUBMITTED', { displayId: outcome.displayId });
+    await notifyShop(outcome.shopId, 'UTR_SUBMITTED', {
+      displayId: outcome.displayId,
+      orderId
+    });
   }
   return orderResponse(200, outcome.data, orderId);
 }
@@ -497,8 +503,13 @@ async function cancelCustomerOrder({ customerId, orderId, idempotencyKey, nowMs 
   });
 
   if (!outcome.replay && outcome.shortRefund) {
+    const snapshot = outcome.data && outcome.data.shopSnapshot && typeof outcome.data.shopSnapshot === 'object'
+      ? outcome.data.shopSnapshot
+      : {};
     await notifyCustomer(customerId, 'REFUND_INITIATED', {
       displayId: outcome.displayId,
+      orderId,
+      shopName: typeof snapshot.name === 'string' ? snapshot.name : '',
       amount: outcome.refundAmount
     });
     return orderResponse(200, outcome.data, orderId, { refund: outcome.refund });
@@ -509,6 +520,7 @@ async function cancelCustomerOrder({ customerId, orderId, idempotencyKey, nowMs 
       : 'No payment was recorded.';
     await notifyShop(outcome.shopId, 'CUSTOMER_CANCELLED', {
       displayId: outcome.displayId,
+      orderId,
       detail
     });
   }

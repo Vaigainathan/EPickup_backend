@@ -120,6 +120,13 @@ router.post('/:id/confirm-handover', authMiddleware, requireRole(['shop']), asyn
   });
 });
 
+router.post('/:id/mark-unavailable', authMiddleware, requireRole(['shop']), async (req, res) => {
+  return withShop(req, res, async (shopId) => {
+    const result = await shopOrderService.markUnavailable(shopId, req.params.id, req.body || {});
+    return sendTransition(res, result, 'Items marked unavailable');
+  });
+});
+
 router.post('/:id/cancel', authMiddleware, requireRole(['shop']), async (req, res) => {
   return withShop(req, res, async (shopId) => {
     const result = await shopOrderService.cancelOrder(shopId, req.params.id, req.body || {});

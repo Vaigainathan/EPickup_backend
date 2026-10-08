@@ -251,8 +251,8 @@ describe('shop payment verification', () => {
     expect(storedConfirm.receivedAmount).toBe(1539.99);
     expect(storedConfirm.receivedAmountPaise).toBe(153999);
     const events = eventsFor('order-1');
-    expect(events).toHaveLength(1);
-    expect(events[0]).toMatchObject({
+    expect(events.map((event) => event.type)).toEqual(['stock_deducted', 'stock_short', 'shop_confirm']);
+    expect(events.find((event) => event.type === 'shop_confirm')).toMatchObject({
       type: 'shop_confirm',
       actor: { type: 'shop', id: 'shop-1' }
     });
@@ -1126,9 +1126,13 @@ describe('shop payment verification', () => {
     });
     expect(note.body).toBe('Share your UPI ID to receive your refund.');
     expect(note.body).not.toContain('40');
-    expect(note.data.variables.amount).toBeUndefined();
-    expect(note.data.variables.orderId).toBe('order-1');
-    expect(note.data.variables.displayId).toBe('#11');
+    expect(note.data).toEqual({
+      type: 'refund_initiated',
+      orderId: 'order-1',
+      displayId: '#11',
+      shopName: 'Vaigzz',
+      action: 'view_order'
+    });
   });
 
   test('UTR_CORRECTED body and data never contain a 12-digit UTR', () => {

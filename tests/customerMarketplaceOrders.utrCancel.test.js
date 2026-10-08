@@ -233,7 +233,7 @@ describe('customer UTR submit', () => {
       'shop-1',
       'MARKETPLACE',
       'UTR_SUBMITTED',
-      { displayId: '#62191' }
+      { displayId: '#62191', orderId: 'order-1' }
     );
 
     const replay = await postUtr('order-1', UTR);
@@ -423,7 +423,7 @@ describe('customer cancel', () => {
       'shop-1',
       'MARKETPLACE',
       'CUSTOMER_CANCELLED',
-      { displayId: '#62191', detail: 'No payment was recorded.' }
+      { displayId: '#62191', orderId: 'order-c1', detail: 'No payment was recorded.' }
     );
 
     const eventsBefore = pathsStarting('marketplaceOrders/order-c1/events/').length;
@@ -462,7 +462,7 @@ describe('customer cancel', () => {
       'shop-2',
       'MARKETPLACE',
       'CUSTOMER_CANCELLED',
-      { displayId: '#62191', detail: 'Check whether you received the payment.' }
+      { displayId: '#62191', orderId: 'order-c2', detail: 'Check whether you received the payment.' }
     );
     expect(JSON.stringify(response.body)).not.toContain('654321');
   });
@@ -477,6 +477,7 @@ describe('customer cancel', () => {
 
   test('a short order cancels once and refunds the amount received', async () => {
     seedOrder('order-short', {
+      shopSnapshot: { name: 'Vaigzz' },
       payment: {
         status: 'short',
         amount: 100,
@@ -509,8 +510,29 @@ describe('customer cancel', () => {
       'customer-test',
       'MARKETPLACE',
       'REFUND_INITIATED',
-      expect.objectContaining({ amount: 40 })
+      expect.objectContaining({
+        amount: 40,
+        orderId: 'order-short',
+        shopName: 'Vaigzz',
+        displayId: '#62191'
+      })
     );
+    const { NotificationTemplateProcessor } = require('../src/services/notificationTemplates');
+    const sent = mockSendTemplate.mock.calls.find((call) => call[2] === 'REFUND_INITIATED');
+    const processed = NotificationTemplateProcessor.process(
+      NotificationTemplateProcessor.getTemplate('MARKETPLACE', 'REFUND_INITIATED'),
+      sent[3]
+    );
+    expect(Object.keys(processed.data).sort()).toEqual(['action', 'displayId', 'orderId', 'shopName', 'type']);
+    expect(processed.data.orderId).toBe('order-short');
+    expect(processed.data.orderId).not.toBe('');
+    expect(processed.data).toEqual({
+      type: 'refund_initiated',
+      orderId: 'order-short',
+      displayId: '#62191',
+      shopName: 'Vaigzz',
+      action: 'view_order'
+    });
 
     const replay = await postCancel('order-short');
     expect(replay.status).toBe(200);
@@ -565,7 +587,7 @@ describe('balance UTR', () => {
       'shop-1',
       'MARKETPLACE',
       'UTR_SUBMITTED',
-      { displayId: '#62191' }
+      { displayId: '#62191', orderId: 'order-b1' }
     );
 
     const replay = await postBalance('order-b1', BALANCE);

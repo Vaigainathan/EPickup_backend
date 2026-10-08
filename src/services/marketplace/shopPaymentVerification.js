@@ -4,6 +4,7 @@ const { MARKETPLACE_DEFAULTS } = require('../../config/marketplaceDefaults');
 const marketplaceMoney = require('../../validators/marketplace');
 const { isValidUtr } = marketplaceMoney;
 const { appendEvent } = require('./orderEvents');
+const { deductStock } = require('./stock');
 const { createRefund, hasReason } = require('./refunds');
 const { getMarketplaceEnforcement } = require('./orderStateMachine');
 const displayIdService = require('../displayIdService');
@@ -76,9 +77,20 @@ function isPastPaymentGrace(endMs, nowMs, graceMs) {
   return nowMs > endMs + graceMs;
 }
 
-function stockDeductionHook() {
-  // MP-9 deducts stock in this confirm transaction. MP-5a writes nothing.
-  return null;
+async function deductOnPreparing(tx, db, { orderRef, data, actor }) {
+  return deductStock(tx, db, {
+    orderRef,
+    items: data && data.items,
+    actor
+  });
+}
+
+function stockOrderFields(result) {
+  return {
+    items: result.items,
+    stockShort: result.stockShort === true,
+    stockDeducted: result.orderStockDeducted === true
+  };
 }
 
 function matchOfficialUtr(payment, body) {
@@ -375,9 +387,14 @@ async function confirmOpenReview(tx, context) {
     };
   }
 
-  stockDeductionHook();
+  const stock = await deductOnPreparing(tx, db, {
+    orderRef,
+    data,
+    actor: { type: 'shop', id: shopId }
+  });
   const patch = {
     orderStatus: 'preparing',
+    ...stockOrderFields(stock),
     'payment.status': 'confirmed',
     'payment.officialUtr': matched.officialUtr,
     'payment.utrSource': matched.utrSource,
@@ -511,7 +528,11 @@ async function confirmShopPayment({ shopId, orderId, body, nowMs }) {
     const late = !attested && isPastPaymentGrace(endMs, now, graceMs);
     const at = Timestamp.fromMillis(now);
     assertRegistryAvailable(registrySnap, orderId);
-    stockDeductionHook();
+    const stock = await deductOnPreparing(tx, db, {
+      orderRef,
+      data,
+      actor: { type: 'shop', id: shopId }
+    });
     const userPatch = {};
     if (matched.corrected && release && release.userSnap && release.userSnap.exists) {
       const corrections = nestedNumber(release.userSnap.data(), ['customer', 'marketplace', 'stats', 'utrCorrections']);
@@ -520,6 +541,7 @@ async function confirmShopPayment({ shopId, orderId, body, nowMs }) {
 
     const patch = {
       orderStatus: 'preparing',
+      ...stockOrderFields(stock),
       'payment.status': 'confirmed',
       'payment.officialUtr': matched.officialUtr,
       'payment.utrSource': matched.utrSource,
@@ -787,7 +809,11 @@ async function confirmShortBalance(tx, context) {
       throw httpError(409, 'UTR_USED', 'This UTR is already used');
     }
   }
-  stockDeductionHook();
+  const stock = await deductOnPreparing(tx, db, {
+    orderRef,
+    data,
+    actor: { type: 'shop', id: shopId }
+  });
   const at = Timestamp.fromMillis(now);
   const receivedPaise = Number(payment.receivedAmountPaise) + Number(balance.amountPaise);
   const receivedAmount = marketplaceMoney.fromPaise(receivedPaise);
@@ -798,6 +824,7 @@ async function confirmShortBalance(tx, context) {
   }
   tx.update(orderRef, {
     orderStatus: 'preparing',
+    ...stockOrderFields(stock),
     'payment.status': 'confirmed',
     'payment.confirmedAt': at,
     'payment.confirmedByShopUid': shopId,
@@ -878,13 +905,18 @@ async function differOnOpenReview(tx, context) {
     officialUtr: matched.officialUtr
   });
   assertRegistryAvailable(reads.registrySnap, orderId);
-  stockDeductionHook();
+  const stock = await deductOnPreparing(tx, db, {
+    orderRef,
+    data,
+    actor: { type: 'shop', id: shopId }
+  });
   const receivedAmount = marketplaceMoney.fromPaise(receivedPaise);
   const storedReceived = receivedPaise === expectedPaise ? data.expectedAmount : receivedAmount;
   const disputed = shopHadDisputed(review);
   const variables = displayVariables(data, orderId);
   const patch = {
     orderStatus: 'preparing',
+    ...stockOrderFields(stock),
     'payment.status': 'confirmed',
     'payment.receivedAmount': storedReceived,
     'payment.receivedAmountPaise': receivedPaise,
@@ -1077,10 +1109,15 @@ async function reportAmountDiffers({ shopId, orderId, body, nowMs }) {
       };
     }
 
-    stockDeductionHook();
+    const stock = await deductOnPreparing(tx, db, {
+      orderRef,
+      data,
+      actor: { type: 'shop', id: shopId }
+    });
     const storedReceived = receivedPaise === expectedPaise ? data.expectedAmount : receivedAmount;
     const confirming = {
       orderStatus: 'preparing',
+      ...stockOrderFields(stock),
       'payment.status': 'confirmed',
       'payment.receivedAmount': storedReceived,
       'payment.receivedAmountPaise': receivedPaise,
@@ -1220,9 +1257,14 @@ async function resolvePaymentReview({ orderId, outcome, reason, operator }) {
       const registrySnap = await tx.get(registryRef);
       assertRegistryAvailable(registrySnap, orderId);
       const at = Timestamp.now();
-      stockDeductionHook();
+      const stock = await deductOnPreparing(tx, db, {
+        orderRef,
+        data,
+        actor
+      });
       tx.update(orderRef, {
         orderStatus: 'preparing',
+        ...stockOrderFields(stock),
         'payment.status': 'confirmed',
         'payment.officialUtr': officialUtr,
         'payment.utrSource': 'customer',
@@ -1370,6 +1412,5 @@ module.exports = {
   isShortBalanceExpired,
   assertReceivedAmountShape,
   shopCancelAllowed,
-  stockDeductionHook,
   httpError
 };

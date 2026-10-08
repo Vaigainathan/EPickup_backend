@@ -6,6 +6,7 @@ const { isPoolEnabled, allocateOrderNumber } = require('./orderNumberPool');
 const notificationService = require('./notificationService');
 const { NotificationTemplateProcessor } = require('./notificationTemplates');
 const { appendEvent } = require('./marketplace/orderEvents');
+const { fareFieldsFromCalculation } = require('./fareQuoteService');
 const { deductStock, restoreLines, cancelRestoresStock } = require('./marketplace/stock');
 const { toPaise, fromPaise } = require('../validators/marketplace');
 const {
@@ -124,6 +125,27 @@ function presentDriverInfo(raw) {
     return null;
   }
   return { name, phone, vehicle };
+}
+
+function marketplaceBookingFareFields(fareDetails, distanceKm) {
+  return fareFieldsFromCalculation(fareDetails, distanceKm);
+}
+
+function riderInstructions(orderData) {
+  const text = typeof orderData.riderNoteText === 'string' ? orderData.riderNoteText.trim() : '';
+  if (text) {
+    return text;
+  }
+  const notes = typeof orderData.riderNotes === 'string' ? orderData.riderNotes.trim() : '';
+  return notes || '';
+}
+
+function presentDelivery(delivery) {
+  const source = delivery && typeof delivery === 'object' ? delivery : {};
+  return {
+    stage: typeof source.stage === 'string' ? source.stage : null,
+    fare: typeof source.fare === 'number' ? source.fare : null
+  };
 }
 
 function toLatLng(location) {
@@ -273,6 +295,8 @@ class ShopOrderService {
       stockShortOpen: stockShortOpen(data.items),
       itemsTotal,
       deliveryFee: data.deliveryFee ?? 0,
+      readyAt: toIso(data.readyAt),
+      delivery: presentDelivery(data.delivery),
       deliveryAddress: {
         text: typeof address.text === 'string' ? address.text : '',
         coordinates: presentLocation(address.coordinates)
@@ -685,9 +709,10 @@ class ShopOrderService {
     return result;
   }
 
-  async markReady(shopId, orderId) {
+  async markReady(shopId, orderId, options = {}) {
+    const notifyDrivers = options.notifyDrivers !== false;
     const owned = await this.getOwnedOrder(shopId, orderId);
-    if (owned.data.orderStatus === 'ready' || owned.data.linkedBookingId) {
+    if (owned.data.orderStatus === 'ready' && owned.data.linkedBookingId) {
       return {
         alreadyProcessed: true,
         order: await this.presentOrder(owned.id, owned.data)
@@ -699,41 +724,80 @@ class ShopOrderService {
 
     const bookingFields = await this.buildMarketplaceBookingDoc(shopId, owned.id, owned.data);
     const orderRef = owned.ref;
+    const db = this.getDb();
 
-    const result = await this.getDb().runTransaction(async (tx) => {
+    const result = await db.runTransaction(async (tx) => {
       const snap = await tx.get(orderRef);
       if (!snap.exists || snap.data().shopId !== shopId) {
         throw httpError(404, 'ORDER_NOT_FOUND', 'Order not found');
       }
       const data = snap.data();
-      if (data.orderStatus === 'ready' || data.linkedBookingId) {
-        return {
-          alreadyProcessed: true,
-          order: await this.presentOrder(snap.id, data)
-        };
+      if (data.orderStatus === 'ready' && data.linkedBookingId) {
+        return { alreadyProcessed: true };
       }
       if (data.orderStatus !== 'preparing') {
         throw httpError(409, 'INVALID_TRANSITION', 'Order must be preparing before it can be marked ready');
       }
+      if (stockShortOpen(data.items)) {
+        throw httpError(409, 'STOCK_SHORT_UNRESOLVED', 'Resolve the stock short before marking the order ready');
+      }
 
-      const bookingRef = this.getDb().collection('bookings').doc();
+      const bookingRef = db.collection('bookings').doc();
       const now = new Date();
-      tx.set(bookingRef, {
+      const booking = {
         ...bookingFields,
+        id: bookingRef.id,
         createdAt: now,
         updatedAt: now
-      });
+      };
+      tx.set(bookingRef, booking);
       tx.update(orderRef, {
         orderStatus: 'ready',
+        readyAt: admin.firestore.FieldValue.serverTimestamp(),
         linkedBookingId: bookingRef.id,
+        deliveryFee: bookingFields.fare.totalFare,
+        delivery: {
+          stage: 'searching',
+          fare: bookingFields.fare.totalFare
+        },
         updatedAt: this.now()
       });
-      return { alreadyProcessed: false };
+      appendEvent(tx, orderRef, {
+        type: 'marked_ready',
+        actor: { type: 'shop', id: shopId },
+        data: { bookingId: bookingRef.id, stage: 'searching' }
+      });
+      return {
+        alreadyProcessed: false,
+        booking,
+        customerId: data.customerId,
+        variables: {
+          ...pushVariables(data, snap.id),
+          deliveryFee: bookingFields.fare.totalFare
+        }
+      };
     });
 
     if (result.alreadyProcessed) {
-      return result;
+      const fresh = await orderRef.get();
+      return {
+        alreadyProcessed: true,
+        order: await this.presentOrder(fresh.id, fresh.data())
+      };
     }
+
+    if (notifyDrivers) {
+      try {
+        const WebSocketEventHandler = require('./websocketEventHandler');
+        const handler = new WebSocketEventHandler();
+        await handler.initialize();
+        await handler.notifyDriversOfNewBooking(result.booking);
+      } catch (error) {
+        console.error('❌ [SHOP_ORDERS] Driver notify failed:', error.message);
+      }
+    }
+
+    await this.notifyCustomer(result.customerId, 'ORDER_PACKED', result.variables);
 
     const fresh = await orderRef.get();
     return {
@@ -804,11 +868,25 @@ class ShopOrderService {
       : 'Customer';
     const customerPhone = typeof customerData.phone === 'string' ? customerData.phone : '';
     const dropoffAddress = typeof delivery.text === 'string' ? delivery.text : '';
+    const instructions = riderInstructions(orderData);
+    const dropoff = {
+      name: customerName,
+      phone: customerPhone,
+      address: dropoffAddress,
+      coordinates: {
+        latitude: dropoffCoords.latitude,
+        longitude: dropoffCoords.longitude
+      }
+    };
+    if (instructions) {
+      dropoff.instructions = instructions;
+    }
 
     return {
       customerId: orderData.customerId || null,
       status: 'pending',
       driverId: null,
+      displayId: orderData.displayId,
       pickup: {
         name: shopName,
         phone: shopPhone,
@@ -818,41 +896,12 @@ class ShopOrderService {
           longitude: pickupCoords.longitude
         }
       },
-      dropoff: {
-        name: customerName,
-        phone: customerPhone,
-        address: dropoffAddress,
-        coordinates: {
-          latitude: dropoffCoords.latitude,
-          longitude: dropoffCoords.longitude
-        }
-      },
+      dropoff,
       package: {
         description: `Order ${displayId} — ${itemCount} items`,
         weight: 1
       },
-      fare: {
-        baseFare: fareDetails.baseFare,
-        distanceFare: fareDetails.baseFare,
-        totalFare: fareDetails.totalFare,
-        currency: 'INR',
-        commission: fareDetails.commission,
-        driverNet: fareDetails.driverEarnings,
-        companyRevenue: fareDetails.commission
-      },
-      pricing: {
-        baseFare: fareDetails.baseFare,
-        distanceFare: fareDetails.baseFare,
-        totalFare: fareDetails.totalFare,
-        currency: 'INR',
-        commission: fareDetails.commission,
-        driverNet: fareDetails.driverEarnings,
-        companyRevenue: fareDetails.commission
-      },
-      distance: distanceKm,
-      exactDistance: fareDetails.exactDistanceKm,
-      roundedDistance: fareDetails.roundedDistanceKm || Math.ceil(distanceKm || 0),
-      fareBreakdown: fareDetails.breakdown,
+      ...marketplaceBookingFareFields(fareDetails, distanceKm),
       paymentMethod: 'cash',
       paymentStatus: 'pending',
       sourceType: 'marketplace',
@@ -905,6 +954,17 @@ class ShopOrderService {
       const expectedDisplay = Number(data.displayId);
       if (otp !== expectedOtp || displayId !== expectedDisplay) {
         throw httpError(409, 'HANDOVER_MISMATCH', 'Order ID or OTP does not match');
+      }
+      const stage = data.delivery && data.delivery.stage;
+      if (stage === 'delivered') {
+        if (data.shopId) {
+          tx.set(this.getDb().collection('shops').doc(data.shopId), {
+            orderCount: admin.firestore.FieldValue.increment(1)
+          }, { merge: true });
+        }
+        return {
+          updates: { orderStatus: 'completed' }
+        };
       }
       return {
         updates: { orderStatus: 'handed_over' }
@@ -1291,4 +1351,6 @@ class ShopOrderService {
   }
 }
 
-module.exports = new ShopOrderService();
+const shopOrderService = new ShopOrderService();
+shopOrderService.marketplaceBookingFareFields = marketplaceBookingFareFields;
+module.exports = shopOrderService;

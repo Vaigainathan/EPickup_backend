@@ -207,7 +207,25 @@ function presentEvent(data) {
   return shown;
 }
 
-function buildOrderShow({ orderId, data, events, lock, unpaidCount, refunds, lines }) {
+function markReadyNotifiesDrivers(argv) {
+  return Array.isArray(argv) && argv.includes('--notify-drivers');
+}
+
+function buildOrderShow({
+  orderId,
+  data,
+  events,
+  lock,
+  unpaidCount,
+  refunds,
+  lines,
+  readyAt,
+  deliveryStage,
+  deliveryFare,
+  deliveryFee,
+  linkedBookingId,
+  booking
+}) {
   const source = data && typeof data === 'object' ? data : {};
   const payment = source.payment && typeof source.payment === 'object' ? source.payment : {};
   const shownEvents = (Array.isArray(events) ? events : []).map(presentEvent);
@@ -219,6 +237,20 @@ function buildOrderShow({ orderId, data, events, lock, unpaidCount, refunds, lin
     orderId,
     displayId: source.displayId ?? null,
     orderStatus: source.orderStatus ?? null,
+    readyAt: readyAt == null ? null : readyAt,
+    delivery: {
+      stage: deliveryStage == null ? null : deliveryStage,
+      fare: deliveryFare == null ? null : deliveryFare
+    },
+    deliveryFee: deliveryFee == null ? null : deliveryFee,
+    linkedBookingId: linkedBookingId == null ? null : linkedBookingId,
+    booking: booking && typeof booking === 'object'
+      ? {
+        displayId: booking.displayId ?? null,
+        status: booking.status ?? null,
+        totalFare: booking.totalFare ?? null
+      }
+      : null,
     closedReason: source.closedReason ?? null,
     stockShort: source.stockShort === true,
     lines: Array.isArray(lines) ? lines : [],
@@ -343,5 +375,6 @@ module.exports = {
   STAGING_CUSTOMER_ID,
   STAGING_SHOP_ID,
   reviewScriptWrites,
-  buildOrderShow
+  buildOrderShow,
+  markReadyNotifiesDrivers
 };

@@ -782,8 +782,8 @@ router.post('/bookings/:bookingId/cancel', [
 
     // Send notifications
     await Promise.all([
-      // Notify customer
-      notificationService.sendTemplateNotification(
+      // Parcel customers only. Marketplace orders use their own sync pushes.
+      bookingData.sourceType !== 'marketplace' && notificationService.sendTemplateNotification(
         bookingData.customerId,
         'CUSTOMER',
         'BOOKING_CANCELLED',

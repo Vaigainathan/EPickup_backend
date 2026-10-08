@@ -105,6 +105,11 @@ function presentCustomerOrder(order) {
     expectedAmount: source.expectedAmount ?? null,
     expectedAmountPaise: source.expectedAmountPaise ?? null,
     deliveryFee: source.deliveryFee ?? null,
+    readyAt: toIso(source.readyAt),
+    delivery: {
+      stage: source.delivery && typeof source.delivery.stage === 'string' ? source.delivery.stage : null,
+      fare: source.delivery && typeof source.delivery.fare === 'number' ? source.delivery.fare : null
+    },
     deliveryAddress: source.deliveryAddress ?? null,
     window: copyWindow(source.window),
     verifiedPayeeName: source.verifiedPayeeName ?? null,

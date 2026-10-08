@@ -8,6 +8,7 @@ const {
   buildOrderShow,
   resolveCreateItems,
   assertStagingPair,
+  markReadyNotifiesDrivers,
   STAGING_CUSTOMER_ID,
   STAGING_SHOP_ID
 } = require('../scripts/support/marketplaceStagingActions');
@@ -143,6 +144,26 @@ describe('create --items', () => {
     expect(resolveCreateItems('statue', products).ok).toBe(false);
     expect(resolveCreateItems('statue:0', products).ok).toBe(false);
     expect(resolveCreateItems('missing:1', products).ok).toBe(false);
+  });
+});
+
+describe('handover script', () => {
+  test('the OTP is masked and is not printed', () => {
+    const fs = require('fs');
+    const source = fs.readFileSync(path.join('scripts', 'support', 'test-marketplace-create.js'), 'utf8');
+    const start = source.indexOf("includes('--handover')");
+    const end = source.indexOf("includes('--set-stock')", start);
+    const handover = source.slice(start, end);
+    expect(handover).toContain("otp: '***'");
+    expect(handover).not.toContain('${storedOtp}');
+    expect(handover).not.toContain('otp: storedOtp');
+  });
+});
+
+describe('mark-ready driver notify', () => {
+  test('the default does not call notifyDriversOfNewBooking', () => {
+    expect(markReadyNotifiesDrivers(['node', 'script', '--mark-ready', '--order', 'abc', '--apply'])).toBe(false);
+    expect(markReadyNotifiesDrivers(['--mark-ready', '--notify-drivers', '--apply'])).toBe(true);
   });
 });
 

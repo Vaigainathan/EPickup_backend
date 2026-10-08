@@ -261,6 +261,26 @@ const NOTIFICATION_TEMPLATES = {
       title: 'Order cancelled',
       body: 'Order {{displayId}} was cancelled. {{detail}}',
       data: { type: 'customer_cancelled', action: 'view_order' }
+    },
+    ORDER_PACKED: {
+      title: 'Order packed',
+      body: 'Order {{displayId}} is packed. Delivery charge ₹{{deliveryFee}}.',
+      data: { type: 'order_packed', action: 'view_order' }
+    },
+    ORDER_ASSIGNED: {
+      title: 'Driver assigned',
+      body: 'A driver is assigned for order {{displayId}}.',
+      data: { type: 'order_assigned', action: 'view_order' }
+    },
+    DRIVER_AT_SHOP: {
+      title: 'Driver at the shop',
+      body: 'The driver is at the shop for order {{displayId}}.',
+      data: { type: 'driver_at_shop', action: 'view_order' }
+    },
+    ORDER_DELIVERED: {
+      title: 'Order delivered',
+      body: 'Order {{displayId}} was delivered.',
+      data: { type: 'order_delivered', action: 'view_order' }
     }
   },
 
@@ -354,7 +374,14 @@ class NotificationTemplateProcessor {
       delete cleanedVariables.utr;
     }
 
-    if (dataType === 'items_unavailable' || dataType === 'refund_initiated') {
+    if (
+      dataType === 'items_unavailable'
+      || dataType === 'refund_initiated'
+      || dataType === 'order_packed'
+      || dataType === 'order_assigned'
+      || dataType === 'driver_at_shop'
+      || dataType === 'order_delivered'
+    ) {
       const text = (value) => (value == null ? '' : String(value));
       processedTemplate.data = {
         type: dataType,

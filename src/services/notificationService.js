@@ -811,6 +811,9 @@ class NotificationService {
    */
   async notifyCustomerDriverAssigned(bookingData, driverData) {
     try {
+      if (bookingData && bookingData.sourceType === 'marketplace') {
+        return { success: true, skipped: true };
+      }
       const notification = NotificationBuilder.customerDriverAssigned(bookingData, driverData);
       // ✅ Add sound configuration
       return await this.sendToUser(bookingData.customerId, notification, {
@@ -866,6 +869,9 @@ class NotificationService {
    */
   async notifyCustomerPackageDelivered(bookingData) {
     try {
+      if (bookingData && bookingData.sourceType === 'marketplace') {
+        return { success: true, skipped: true };
+      }
       const notification = NotificationBuilder.customerPackageDelivered(bookingData);
       // ✅ Add sound configuration - Success sound for delivery
       return await this.sendToUser(bookingData.customerId, notification, {

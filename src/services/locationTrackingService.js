@@ -22,6 +22,10 @@ class LocationTrackingService {
    */
   async startTracking(bookingId, driverId, customerId) {
     try {
+      const bookingSnap = await this.db.collection('bookings').doc(bookingId).get();
+      if (bookingSnap.exists && bookingSnap.data().sourceType === 'marketplace') {
+        return { success: true, skipped: true };
+      }
       console.log(`📍 [LOCATION_TRACKING] Starting tracking for booking ${bookingId}`);
 
       const trackingData = {

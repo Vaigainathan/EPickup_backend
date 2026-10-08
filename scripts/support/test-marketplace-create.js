@@ -58,6 +58,16 @@
  * written by the job still use the server clock. --tick --enforce passes
  * { newStatuses: true } and does not write appSettings.
  * --show --order <id> reads that order and writes nothing. --apply is ignored.
+ * It also prints readyAt, delivery.stage, delivery.fare, deliveryFee,
+ * linkedBookingId, and the linked booking displayId, status, and fare.totalFare.
+ * --mark-ready --order <id> [--apply] marks the order ready. Dry run writes
+ * nothing and prints "driver notify skipped". --notify-drivers is off unless
+ * that flag is passed. Do not pass it until driver pushes are approved.
+ * --sync-booking --order <id> --booking-status <status> [--apply] runs the
+ * listener sync against an in-memory booking. It does not write the booking.
+ * --handover --order <id> [--apply] reads the private handover OTP and calls
+ * confirmHandover in this process. Dry run writes nothing. The OTP is never
+ * printed (otp: ***).
  * Timestamps are ISO. UTR values are the last 4 only.
  * --refund-upi <upiId> --refund <refundId> --order <id> [--save] calls
  * submitCustomerUpi with upiId and upiIdConfirm set to the same value.
@@ -98,7 +108,8 @@ const {
   shortCancelRefundPreview,
   buildOrderShow,
   resolveCreateItems,
-  assertStagingPair
+  assertStagingPair,
+  markReadyNotifiesDrivers
 } = require('./marketplaceStagingActions');
 
 assertStagingEnv();
@@ -572,6 +583,7 @@ async function cleanupPlan(db, customerId, shopId, explicitOrderId) {
     lockExists: lockSnap.exists,
     deleteLock,
     orderId,
+    linkedBookingId: owned && order.linkedBookingId ? order.linkedBookingId : null,
     orderOwned: owned,
     orderStatus: owned ? (order.orderStatus || null) : null,
     eventCount: eventsSnap ? eventsSnap.size : 0,
@@ -603,6 +615,9 @@ async function applyCleanup(db, customerId, shopId, plan) {
     batch.delete(orderRef.collection('private').doc('handover'));
     batch.delete(orderRef.collection('private').doc('paymentReport'));
     batch.delete(orderRef);
+    if (plan.linkedBookingId) {
+      batch.delete(db.collection('bookings').doc(plan.linkedBookingId));
+    }
     const { getStorage } = require('../../src/services/firebase');
     const bucket = getStorage().bucket();
     for (const item of plan.evidenceDocs) {
@@ -680,6 +695,20 @@ async function printOrderShow(db, customerId, shopId, orderId) {
   const items = Array.isArray(data.items) ? data.items : [];
   const products = await productMap(db, items, shopId);
 
+  const delivery = data.delivery && typeof data.delivery === 'object' ? data.delivery : {};
+  let booking = null;
+  if (data.linkedBookingId) {
+    const bookingSnap = await db.collection('bookings').doc(data.linkedBookingId).get();
+    if (bookingSnap.exists) {
+      const row = bookingSnap.data() || {};
+      booking = {
+        displayId: row.displayId ?? null,
+        status: row.status ?? null,
+        totalFare: row.fare && row.fare.totalFare != null ? row.fare.totalFare : null
+      };
+    }
+  }
+
   console.log(JSON.stringify(buildOrderShow({
     orderId,
     data,
@@ -687,7 +716,13 @@ async function printOrderShow(db, customerId, shopId, orderId) {
     refunds: refundsSnap.docs.map((doc) => ({ id: doc.id, ...(doc.data() || {}) })),
     lock,
     unpaidCount: await readUnpaidCount(db, customerId),
-    lines: items.map((line) => stockLineView(line, line.productId ? products.get(line.productId) : null))
+    lines: items.map((line) => stockLineView(line, line.productId ? products.get(line.productId) : null)),
+    readyAt: plain(data.readyAt) || null,
+    deliveryStage: delivery.stage || null,
+    deliveryFare: delivery.fare ?? null,
+    deliveryFee: data.deliveryFee ?? null,
+    linkedBookingId: data.linkedBookingId || null,
+    booking
   }), null, 2));
 }
 
@@ -718,6 +753,142 @@ async function main() {
       process.exit(1);
     }
     await printOrderShow(db, customerId, shopId, orderId);
+    return;
+  }
+
+  if (process.argv.includes('--mark-ready')) {
+    const orderId = argValue('--order');
+    const notifyDrivers = markReadyNotifiesDrivers(process.argv);
+    const data = await requireOwnedOrder(db, customerId, shopId, orderId);
+    console.log(JSON.stringify({
+      markReady: true,
+      apply,
+      orderId,
+      orderStatus: data.orderStatus || null,
+      driverNotify: notifyDrivers ? 'requested' : 'driver notify skipped'
+    }, null, 2));
+    if (!apply) {
+      const skipped = notifyDrivers ? '' : ' driver notify skipped';
+      console.log(`Dry run. Re-run with --mark-ready --apply to mark ready.${skipped}`);
+      return;
+    }
+    const shopOrderService = require('../../src/services/shopOrderService');
+    try {
+      const result = await shopOrderService.markReady(shopId, orderId, { notifyDrivers });
+      const delivery = result.order.delivery || {};
+      console.log(JSON.stringify({
+        markedReady: true,
+        alreadyProcessed: result.alreadyProcessed === true,
+        orderStatus: result.order.orderStatus,
+        linkedBookingId: result.order.linkedBookingId,
+        deliveryFee: result.order.deliveryFee,
+        stage: delivery.stage || null,
+        driverNotify: notifyDrivers ? 'sent' : 'driver notify skipped'
+      }, null, 2));
+    } catch (error) {
+      console.log(JSON.stringify({
+        markedReady: false,
+        status: error.status || 500,
+        code: error.code || null,
+        message: error.message
+      }, null, 2));
+      process.exitCode = 1;
+    }
+    return;
+  }
+
+  if (process.argv.includes('--sync-booking')) {
+    const orderId = argValue('--order');
+    const bookingStatus = argValue('--booking-status');
+    if (!orderId || !bookingStatus) {
+      console.error('--sync-booking needs --order <id> and --booking-status <status>. Nothing was written.');
+      process.exit(1);
+    }
+    const data = await requireOwnedOrder(db, customerId, shopId, orderId);
+    let stored = {};
+    if (data.linkedBookingId) {
+      const bookingSnap = await db.collection('bookings').doc(data.linkedBookingId).get();
+      if (bookingSnap.exists) {
+        stored = bookingSnap.data() || {};
+      }
+    }
+    const booking = {
+      ...stored,
+      status: bookingStatus,
+      sourceType: 'marketplace',
+      marketplaceOrderId: orderId
+    };
+    console.log(JSON.stringify({
+      syncBooking: true,
+      apply,
+      orderId,
+      bookingStatus,
+      writesBooking: false
+    }, null, 2));
+    if (!apply) {
+      console.log('Dry run. Re-run with --sync-booking --apply. The booking document is not written.');
+      return;
+    }
+    const marketplaceSyncService = require('../../src/services/marketplaceSyncService');
+    await marketplaceSyncService.syncBooking({
+      bookingId: data.linkedBookingId || null,
+      booking
+    });
+    console.log(JSON.stringify({
+      synced: true,
+      writesBooking: false,
+      bookingStatus
+    }, null, 2));
+    return;
+  }
+
+  if (process.argv.includes('--handover')) {
+    const orderId = argValue('--order');
+    const data = await requireOwnedOrder(db, customerId, shopId, orderId);
+    const privateSnap = await db.collection('marketplaceOrders').doc(orderId).collection('private').doc('handover').get();
+    const storedOtp = privateSnap.exists ? (privateSnap.data() || {}).otp : null;
+    const delivery = data.delivery && typeof data.delivery === 'object' ? data.delivery : {};
+    console.log(JSON.stringify({
+      handover: true,
+      apply,
+      orderId,
+      orderStatus: data.orderStatus || null,
+      stage: delivery.stage || null,
+      displayId: data.displayId ?? null,
+      otp: '***'
+    }, null, 2));
+    if (!apply) {
+      console.log('Dry run. Re-run with --handover --apply to confirm handover. otp: ***');
+      return;
+    }
+    if (storedOtp == null || storedOtp === '') {
+      console.error('No handover OTP on this order. Nothing was written. otp: ***');
+      process.exit(1);
+    }
+    const shopOrderService = require('../../src/services/shopOrderService');
+    try {
+      const result = await shopOrderService.confirmHandover(shopId, orderId, {
+        otp: String(storedOtp),
+        displayId: data.displayId
+      });
+      const resultDelivery = result.order.delivery || {};
+      console.log(JSON.stringify({
+        handedOver: true,
+        alreadyProcessed: result.alreadyProcessed === true,
+        orderStatus: result.order.orderStatus,
+        stage: resultDelivery.stage || null,
+        otp: '***'
+      }, null, 2));
+    } catch (error) {
+      console.log(JSON.stringify({
+        handedOver: false,
+        status: error.status || 500,
+        code: error.code || null,
+        message: error.message,
+        otp: '***'
+      }, null, 2));
+      process.exitCode = 1;
+    }
     return;
   }
 
@@ -1144,6 +1315,7 @@ async function main() {
         refunds: plan.refundCount,
         refundRegistry: plan.refundRegistryCount,
         privateHandover: plan.privateHandoverExists,
+        booking: plan.linkedBookingId || null,
         evidenceFiles: plan.evidenceDocs.length,
         utrRegistry: plan.registryDocs.map((doc) => ({
           last4: String(doc.id).slice(-4),

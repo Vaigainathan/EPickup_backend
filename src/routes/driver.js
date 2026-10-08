@@ -5330,7 +5330,9 @@ router.post('/bookings/:id/accept', idempotencyKeyMiddleware, requireDriver, asy
 
       // Push notifications: only notify customer (driver just accepted, no self-notification)
       try {
-        await notificationService.notifyCustomerDriverAssigned(updatedBookingData, driverData);
+        if (updatedBookingData.sourceType !== 'marketplace') {
+          await notificationService.notifyCustomerDriverAssigned(updatedBookingData, driverData);
+        }
       } catch (notifyErr) {
         console.warn('⚠️ [ACCEPT_BOOKING] Notification send failed:', notifyErr?.message);
       }
@@ -9112,7 +9114,7 @@ router.post('/complete-delivery', [
     }
 
     // ✅ Send push notification to customer about delivery completion
-    if (statusResult.booking?.customerId) {
+    if (statusResult.booking?.customerId && statusResult.booking.sourceType !== 'marketplace') {
       try {
         const notificationService = require('../services/notificationService');
         await notificationService.notifyCustomerPackageDelivered(statusResult.booking);

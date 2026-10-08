@@ -678,14 +678,11 @@ service cloud.firestore {
 
     // Refunds collection - secure refund data access
     match /refunds/{refundId} {
-      allow read, write: if request.auth != null && 
+      allow read: if request.auth != null && 
         (request.auth.uid == resource.data.refundedBy || 
          request.auth.token.role == 'admin' || 
          request.auth.token.userType == 'admin');
-      allow create: if request.auth != null && 
-        (request.auth.uid == request.resource.data.refundedBy || 
-         request.auth.token.role == 'admin' || 
-         request.auth.token.userType == 'admin');
+      allow write: if false;
     }
 
     // Commission transactions - driver and admin access
@@ -906,7 +903,7 @@ service cloud.firestore {
       );
     }
 
-    // Marketplace orders — shop/customer/admin reads; shop-only client updates.
+    // Marketplace orders — shop/customer/admin reads. No client writes.
     // shopId/customerId are role-based UIDs; isOwner() matches Firebase Auth uid
     // via users/{uid}.originalFirebaseUID. REST mutations use Admin SDK (bypass).
     match /marketplaceOrders/{orderId} {
@@ -916,10 +913,14 @@ service cloud.firestore {
         isAdmin()
       );
       allow create, delete: if false;
-      allow update: if isAuthenticated() && isOwner(resource.data.shopId);
+      allow update: if false;
 
       match /private/{docId} {
         allow read, write: if false;
+      }
+
+      match /{document=**} {
+        allow write: if false;
       }
     }
 

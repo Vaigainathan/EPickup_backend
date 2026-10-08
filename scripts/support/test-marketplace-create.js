@@ -27,6 +27,13 @@
  * writes nothing. --amount-differs <rupees> --apply calls the service.
  * --enforce passes { newStatuses: true, utrBlocksReject: true } into that
  * call only. It does not write appSettings.
+ * --tick runs the payment job for this customer and shop only. Dry run
+ * prints the actions and writes nothing. --tick --apply runs one tick.
+ * --now <ISO> or --advance-minutes <N> sets the comparison clock. Timestamps
+ * written by the job still use the server clock. --tick --enforce passes
+ * { newStatuses: true } and does not write appSettings.
+ * --show --order <id> reads that order and writes nothing. --apply is ignored.
+ * Timestamps are ISO. UTR values are the last 4 only.
  *
  * --apply case order. The price case is first, on this shop, so the unpaid
  * lock is not written yet:
@@ -99,6 +106,104 @@ function plain(value) {
     return out;
   }
   return value;
+}
+
+function toIso(value) {
+  if (value == null) {
+    return null;
+  }
+  if (typeof value.toDate === 'function') {
+    const date = value.toDate();
+    return date instanceof Date ? date.toISOString() : null;
+  }
+  if (value instanceof Date) {
+    return value.toISOString();
+  }
+  if (typeof value === 'string') {
+    return value;
+  }
+  return null;
+}
+
+function last4(value) {
+  if (typeof value !== 'string' || value.length < 4) {
+    return null;
+  }
+  return value.slice(-4);
+}
+
+function flagTimes(source) {
+  if (!source || typeof source !== 'object') {
+    return null;
+  }
+  const out = {};
+  Object.keys(source).forEach((key) => {
+    out[key] = toIso(source[key]);
+  });
+  return out;
+}
+
+function presentBalance(balance) {
+  if (!balance || typeof balance !== 'object') {
+    return null;
+  }
+  return {
+    status: balance.status ?? null,
+    dueBy: toIso(balance.dueBy),
+    officialUtrLast4: last4(balance.officialUtr)
+  };
+}
+
+function presentReview(payment) {
+  const review = payment && payment.review;
+  if (!review || typeof review !== 'object') {
+    return null;
+  }
+  return {
+    status: review.status ?? null,
+    openedAt: toIso(review.openedAt),
+    reason: review.reason ?? review.trigger ?? null
+  };
+}
+
+function presentCancellation(cancellation) {
+  const source = cancellation && typeof cancellation === 'object' ? cancellation : {};
+  return {
+    reason: source.reason ?? null,
+    cancelledAt: toIso(source.cancelledAt),
+    cancelledBy: source.cancelledBy ?? null,
+    paidCheck: source.paidCheck ?? null,
+    paidCheckAt: toIso(source.paidCheckAt),
+    paidCheckEscalatedAt: toIso(source.paidCheckEscalatedAt)
+  };
+}
+
+function presentRefund(refund) {
+  const source = refund && typeof refund === 'object' ? refund : {};
+  return {
+    id: source.id ?? null,
+    reason: source.reason ?? null,
+    status: source.status ?? null,
+    amount: source.amount ?? null,
+    createdAt: toIso(source.createdAt)
+  };
+}
+
+function presentEvent(data) {
+  const event = data && typeof data === 'object' ? data : {};
+  const actor = event.actor && typeof event.actor === 'object' ? event.actor : {};
+  const shown = {
+    type: event.type ?? null,
+    actor: {
+      type: actor.type ?? null,
+      id: actor.id ?? null
+    },
+    at: toIso(event.at)
+  };
+  if (event.data && event.data.mode != null) {
+    shown.mode = event.data.mode;
+  }
+  return shown;
 }
 
 function istClock(now = new Date()) {
@@ -474,13 +579,59 @@ async function utrCancelPreview(db, customerId, shopId, utr) {
   };
 }
 
+async function printOrderShow(db, customerId, shopId, orderId) {
+  const orderSnap = await db.collection('marketplaceOrders').doc(orderId).get();
+  if (!orderSnap.exists) {
+    console.log(JSON.stringify({ show: true, wrote: false, orderId, exists: false }, null, 2));
+    process.exitCode = 1;
+    return;
+  }
+  const data = orderSnap.data() || {};
+  if (data.customerId !== customerId || data.shopId !== shopId) {
+    console.error('That order does not belong to this customer and shop. Nothing was written.');
+    process.exitCode = 1;
+    return;
+  }
+  const payment = data.payment && typeof data.payment === 'object' ? data.payment : {};
+  const eventsSnap = await db.collection('marketplaceOrders').doc(orderId).collection('events').get();
+  const lockSnap = await db.collection('marketplaceLocks').doc(`${customerId}_${shopId}`).get();
+  const lock = lockSnap.exists ? (lockSnap.data() || {}) : null;
+  const events = eventsSnap.docs.map((doc) => presentEvent(doc.data()));
+  events.sort((left, right) => String(left.at || '').localeCompare(String(right.at || '')));
+
+  console.log(JSON.stringify({
+    show: true,
+    wrote: false,
+    orderId,
+    displayId: data.displayId ?? null,
+    orderStatus: data.orderStatus ?? null,
+    payment: {
+      status: payment.status ?? null,
+      receivedAmount: payment.receivedAmount ?? null,
+      officialUtrLast4: last4(payment.officialUtr),
+      balance: presentBalance(payment.balance),
+      nudges: flagTimes(payment.nudges),
+      remindersSent: flagTimes(payment.remindersSent)
+    },
+    review: presentReview(payment),
+    cancellation: presentCancellation(data.cancellation),
+    refunds: (Array.isArray(data.refunds) ? data.refunds : []).map(presentRefund),
+    events,
+    lock: {
+      exists: lockSnap.exists,
+      orderId: lock && lock.orderId ? lock.orderId : null
+    },
+    unpaidCount: await readUnpaidCount(db, customerId)
+  }, null, 2));
+}
+
 async function main() {
   const customerId = argValue('--customer');
   const shopId = argValue('--shop');
   const apply = process.argv.includes('--apply');
   const cleanup = process.argv.includes('--cleanup');
   if (!customerId || !shopId) {
-    console.error('Usage: node scripts/support/test-marketplace-create.js --customer <id> --shop <id> [--apply] [--cleanup] [--order <id>] [--utr [12-digits]] [--balance-utr <12-digits>] [--cancel] [--confirm] [--full-utr <12-digits>] [--enforce] [--amount-differs <rupees>]');
+    console.error('Usage: node scripts/support/test-marketplace-create.js --customer <id> --shop <id> [--apply] [--cleanup] [--order <id>] [--show --order <id>] [--utr [12-digits]] [--balance-utr <12-digits>] [--cancel] [--confirm] [--full-utr <12-digits>] [--enforce] [--amount-differs <rupees>] [--tick] [--now <ISO>] [--advance-minutes <N>]');
     process.exit(1);
   }
 
@@ -488,6 +639,16 @@ async function main() {
   const { isShopOpenNow } = require('../../src/services/marketplace/createCustomerOrder');
   const db = getFirestore();
   assertStagingAdmin();
+
+  if (process.argv.includes('--show')) {
+    const orderId = argValue('--order');
+    if (!orderId) {
+      console.error('--show needs --order <id>. Nothing was written.');
+      process.exit(1);
+    }
+    await printOrderShow(db, customerId, shopId, orderId);
+    return;
+  }
 
   const context = await loadContext(db, customerId, shopId, isShopOpenNow);
   const jobReport = await paymentJobReport(db, shopId);
@@ -498,6 +659,41 @@ async function main() {
     ...context,
     paymentJob: jobReport
   }, null, 2));
+
+  if (process.argv.includes('--tick')) {
+    const nowArg = argValue('--now');
+    const advanceArg = argValue('--advance-minutes');
+    if (nowArg && advanceArg) {
+      console.error('Pass either --now or --advance-minutes.');
+      process.exit(1);
+    }
+    const tickOptions = {
+      dryRun: !apply,
+      only: { customerId, shopId }
+    };
+    if (nowArg) {
+      const nowMs = Date.parse(nowArg);
+      if (!Number.isFinite(nowMs)) {
+        console.error('--now must be an ISO time.');
+        process.exit(1);
+      }
+      tickOptions.nowMs = nowMs;
+    } else if (advanceArg) {
+      const minutes = Number(advanceArg);
+      if (!Number.isFinite(minutes)) {
+        console.error('--advance-minutes must be a number.');
+        process.exit(1);
+      }
+      tickOptions.nowMs = Date.now() + (minutes * 60 * 1000);
+    }
+    if (process.argv.includes('--enforce')) {
+      tickOptions.enforcement = { newStatuses: true };
+    }
+    const marketplacePaymentTimeoutJob = require('../../src/services/marketplacePaymentTimeoutJob');
+    const result = await marketplacePaymentTimeoutJob.runTick(tickOptions);
+    console.log(JSON.stringify({ tick: true, applied: apply, ...result }, null, 2));
+    return;
+  }
 
   if (cleanup) {
     const explicitOrderId = argValue('--order');

@@ -61,4 +61,27 @@ describe('presentCustomerOrder', () => {
     expect(view.id).toBe('ord-1');
     expect(view.orderStatus).toBe('ready');
   });
+
+  test('balance.officialUtr is returned and balance.utrSource is omitted', () => {
+    const view = presentCustomerOrder({
+      id: 'ord-2',
+      payment: {
+        status: 'confirmed',
+        officialUtr: '123456789012',
+        utrSource: 'customer',
+        balance: {
+          amount: 60,
+          amountPaise: 6000,
+          utr: '555555555555',
+          officialUtr: '555555555555',
+          utrSource: 'customer'
+        }
+      }
+    });
+
+    expect(view.payment.balance.officialUtr).toBe('555555555555');
+    expect(view.payment.balance.utrSource).toBeUndefined();
+    expect(JSON.stringify(view)).not.toContain('utrSource');
+    expect(view.payment.officialUtr).toBe('123456789012');
+  });
 });

@@ -172,6 +172,26 @@ const NOTIFICATION_TEMPLATES = {
       body: 'Payment for order {{displayId}} timed out. The order was cancelled.',
       data: { type: 'payment_expired', action: 'view_order' }
     },
+    PAYMENT_NOT_CONFIRMED: {
+      title: 'Payment not confirmed',
+      body: 'Did you pay? Enter your UTR',
+      data: { type: 'payment_not_confirmed', action: 'view_order' }
+    },
+    UTR_NUDGE: {
+      title: 'Enter your UTR',
+      body: 'Enter your UTR so {{shopName}} can confirm faster',
+      data: { type: 'utr_nudge', action: 'view_order' }
+    },
+    PAYMENT_REMINDER: {
+      title: 'Payment still waiting',
+      body: 'Order {{displayId}} is still waiting for payment confirmation.',
+      data: { type: 'payment_reminder', action: 'view_order' }
+    },
+    ORDER_CLOSED_UNCONFIRMED: {
+      title: 'Order closed',
+      body: 'Shop order {{displayId}} closed — payment wasn\'t confirmed',
+      data: { type: 'order_closed_unconfirmed', action: 'view_order' }
+    },
     INCOMING_PAYMENT: {
       title: 'New order to confirm',
       body: 'Order {{displayId}} is waiting for a payment of ₹{{expectedAmount}}.',

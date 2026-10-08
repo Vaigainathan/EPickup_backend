@@ -1,7 +1,8 @@
 const {
   confirmRequestBody,
   shortCancelRefundPreview,
-  refundStubAmount
+  refundStubAmount,
+  reviewScriptWrites
 } = require('../scripts/support/marketplaceStagingActions');
 
 describe('staging confirm body', () => {
@@ -52,5 +53,14 @@ describe('short cancel refund amount', () => {
       { reason: 'amount_short_cancel', amount: 40 }
     ])).toBe(40);
     expect(refundStubAmount([])).toBeNull();
+  });
+});
+
+describe('resolve-payment-review writes', () => {
+  test('--list and a dry run write nothing', () => {
+    expect(reviewScriptWrites({ list: true, apply: true })).toBe(false);
+    expect(reviewScriptWrites({ list: true, apply: false })).toBe(false);
+    expect(reviewScriptWrites({ list: false, apply: false })).toBe(false);
+    expect(reviewScriptWrites({ list: false, apply: true })).toBe(true);
   });
 });

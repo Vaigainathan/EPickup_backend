@@ -1457,6 +1457,20 @@
       "queryScope": "COLLECTION",
       "fields": [
         {
+          "fieldPath": "orderStatus",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "payment.review.openedAt",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "marketplaceOrders",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
           "fieldPath": "customerId",
           "order": "ASCENDING"
         },

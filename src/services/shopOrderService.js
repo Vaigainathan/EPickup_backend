@@ -13,6 +13,7 @@ const {
   confirmShopPayment,
   reportAmountDiffers,
   reportPaymentNotFound,
+  resolvePaymentReview,
   answerPaidCheck,
   shopCancelAllowed
 } = require('./marketplace/shopPaymentVerification');
@@ -128,6 +129,27 @@ function toIso(value) {
   return null;
 }
 
+function presentShopReview(review) {
+  if (!review || typeof review !== 'object') {
+    return null;
+  }
+  const response = review.shopResponse && typeof review.shopResponse === 'object' ? review.shopResponse : null;
+  const outcome = review.outcome && typeof review.outcome === 'object' ? review.outcome : null;
+  return {
+    status: review.status ?? null,
+    openedAt: toIso(review.openedAt),
+    trigger: review.trigger ?? null,
+    shopResponse: response
+      ? {
+        result: response.result ?? null,
+        receivedAmount: response.receivedAmount ?? null,
+        at: toIso(response.at)
+      }
+      : null,
+    outcome: outcome ? { result: outcome.result ?? null } : null
+  };
+}
+
 function paymentStatus(data) {
   return data?.payment?.status || null;
 }
@@ -235,6 +257,7 @@ class ShopOrderService {
         refundedAt: payment.refundedAt || null,
         confirmedByShopUid: payment.confirmedByShopUid ?? null
       },
+      review: presentShopReview(payment.review),
       cancellation: {
         reason: cancellation.reason ?? null,
         cancelledAt: cancellation.cancelledAt || null,
@@ -279,6 +302,29 @@ class ShopOrderService {
     const notes = Array.isArray(notifies) ? notifies : [];
     for (let index = 0; index < notes.length; index += 1) {
       await this.notifyCustomer(customerId, notes[index].type, notes[index].variables || {});
+    }
+  }
+
+  async sendShopNotifies(shopId, notifies) {
+    const notes = Array.isArray(notifies) ? notifies : [];
+    if (!shopId || notes.length === 0) {
+      return;
+    }
+    for (let index = 0; index < notes.length; index += 1) {
+      try {
+        const note = notes[index];
+        const result = await notificationService.sendTemplateNotification(
+          shopId,
+          'MARKETPLACE',
+          note.type,
+          note.variables || {}
+        );
+        if (result && result.success === false) {
+          console.error('❌ [SHOP_ORDERS] Shop notification failed:', (result.error && result.error.code) || result.error);
+        }
+      } catch (error) {
+        console.error('❌ [SHOP_ORDERS] Shop notification failed:', error.message);
+      }
     }
   }
 
@@ -380,6 +426,7 @@ class ShopOrderService {
       const outcome = await confirmShopPayment({ shopId, orderId, body });
       if (!outcome.alreadyProcessed) {
         await this.sendNotifies(outcome.customerId, outcome.notifies);
+        await this.sendShopNotifies(shopId, outcome.shopNotifies);
       }
       const fresh = await this.orders().doc(orderId).get();
       return {
@@ -445,6 +492,7 @@ class ShopOrderService {
     const outcome = await reportAmountDiffers({ shopId, orderId, body });
     if (!outcome.alreadyProcessed) {
       await this.sendNotifies(outcome.customerId, outcome.notifies);
+      await this.sendShopNotifies(shopId, outcome.shopNotifies);
     }
     const fresh = await this.orders().doc(orderId).get();
     return {
@@ -457,12 +505,22 @@ class ShopOrderService {
     const outcome = await reportPaymentNotFound({ shopId, orderId });
     if (!outcome.alreadyProcessed) {
       await this.sendNotifies(outcome.customerId, outcome.notifies);
+      await this.sendShopNotifies(shopId, outcome.shopNotifies);
     }
     const fresh = await this.orders().doc(orderId).get();
     return {
       alreadyProcessed: outcome.alreadyProcessed,
       order: await this.presentOrder(fresh.id, fresh.data())
     };
+  }
+
+  async resolveReview({ orderId, outcome, reason, operator }) {
+    const result = await resolvePaymentReview({ orderId, outcome, reason, operator });
+    if (!result.alreadyProcessed) {
+      await this.sendNotifies(result.customerId, result.notifies);
+      await this.sendShopNotifies(result.shopId, result.shopNotifies);
+    }
+    return result;
   }
 
   async answerPaidCheck(shopId, orderId, body) {
@@ -481,6 +539,9 @@ class ShopOrderService {
     const flags = await resolveEnforcement(enforcement);
     const ref = this.orders().doc(orderId);
     const result = await this.runOwnedTransition(shopId, orderId, async (data, tx) => {
+      if (data.orderStatus === 'payment_review') {
+        throw httpError(409, 'INVALID_STATE', 'An open payment review cannot be rejected');
+      }
       if (wasPaymentConfirmed(data)) {
         throw httpError(
           409,
@@ -796,6 +857,9 @@ class ShopOrderService {
           alreadyProcessed: true,
           extra: { refundRequired: paid || refundPending }
         };
+      }
+      if (data.orderStatus === 'payment_review') {
+        throw httpError(409, 'INVALID_STATE', 'Use confirm-payment with fulfil false to leave a payment review');
       }
       const decision = shopCancelAllowed(data, flags);
       if (!decision.ok) {

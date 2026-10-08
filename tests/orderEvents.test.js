@@ -19,6 +19,7 @@ const BLUEPRINT_TYPES = [
   'review_opened',
   'shop_response',
   'review_resolved',
+  'review_escalated',
   'rejected',
   'cancelled',
   'items_unavailable',

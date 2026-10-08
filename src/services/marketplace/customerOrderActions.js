@@ -1,5 +1,5 @@
 const crypto = require('crypto');
-const { Timestamp } = require('firebase-admin/firestore');
+const { Timestamp, FieldValue } = require('firebase-admin/firestore');
 const { getFirestore } = require('../firebase');
 const { MARKETPLACE_DEFAULTS } = require('../../config/marketplaceDefaults');
 const { isValidUtr } = require('../../validators/marketplace');
@@ -179,6 +179,7 @@ async function submitCustomerUtr({ customerId, orderId, idempotencyKey, utr, now
     };
     let nextStatus = data.orderStatus;
     const events = ['utr_submitted'];
+    let openedReview = false;
 
     if (data.orderStatus === 'awaiting_payment' && payment.status === 'pending') {
       nextPayment.status = 'customer_claimed';
@@ -189,24 +190,45 @@ async function submitCustomerUtr({ customerId, orderId, idempotencyKey, utr, now
         throw httpError(409, 'UTR_WINDOW_CLOSED', 'The UTR window is closed');
       }
       nextPayment.status = 'under_review';
+      nextPayment.review = {
+        status: 'open',
+        openedAt: FieldValue.serverTimestamp(),
+        trigger: 'customer_report',
+        shopResponse: null,
+        outcome: null
+      };
       nextStatus = 'payment_review';
+      openedReview = true;
       events.push('review_opened');
     } else {
       throw httpError(409, 'INVALID_STATE', 'Order cannot accept a UTR in its current state');
     }
 
+    const shopRef = openedReview ? db.collection('shops').doc(data.shopId) : null;
+    const shopSnap = shopRef ? await tx.get(shopRef) : null;
     const patch = {
       orderStatus: nextStatus,
       payment: nextPayment,
       updatedAt: at
     };
-    tx.update(orderRef, {
+    const orderPatch = {
       orderStatus: nextStatus,
       'payment.customerUtr': utr,
       'payment.status': nextPayment.status,
       'payment.utrSubmittedAt': at,
       updatedAt: at
-    });
+    };
+    if (openedReview) {
+      orderPatch['payment.review'] = nextPayment.review;
+      if (shopSnap && shopSnap.exists) {
+        const stats = shopSnap.data().marketplaceStats || {};
+        const opened = Number(stats.reviewsOpened);
+        tx.update(shopRef, {
+          'marketplaceStats.reviewsOpened': (Number.isFinite(opened) ? opened : 0) + 1
+        });
+      }
+    }
+    tx.update(orderRef, orderPatch);
     tx.set(registryRef, {
       orderId,
       customerId,
@@ -217,18 +239,30 @@ async function submitCustomerUtr({ customerId, orderId, idempotencyKey, utr, now
       appendEvent(tx, orderRef, {
         type,
         actor: { type: 'customer', id: customerId },
-        data: { utr }
+        data: type === 'review_opened' ? { trigger: 'customer_report' } : { utr }
       });
     });
+    const snapshot = data.shopSnapshot && typeof data.shopSnapshot === 'object' ? data.shopSnapshot : {};
     return {
       replay: false,
+      openedReview,
       data: { ...data, ...patch },
       shopId: data.shopId,
-      displayId: displayLabel(data)
+      displayId: displayLabel(data),
+      orderId,
+      shopName: typeof snapshot.name === 'string' ? snapshot.name : ''
     };
   });
 
-  if (!outcome.replay) {
+  if (!outcome.replay && outcome.openedReview) {
+    const variables = {
+      displayId: outcome.displayId,
+      orderId: outcome.orderId,
+      shopName: outcome.shopName
+    };
+    await notifyCustomer(customerId, 'PAYMENT_UNDER_REVIEW', variables);
+    await notifyShop(outcome.shopId, 'PAYMENT_REVIEW_SHOP', variables);
+  } else if (!outcome.replay) {
     await notifyShop(outcome.shopId, 'UTR_SUBMITTED', { displayId: outcome.displayId });
   }
   return orderResponse(200, outcome.data, orderId);
@@ -318,6 +352,9 @@ async function cancelCustomerOrder({ customerId, orderId, idempotencyKey, nowMs 
     const data = ownedOrder(orderSnap, customerId);
     const payment = data.payment || {};
     const cancellation = data.cancellation || {};
+    if (data.orderStatus === 'payment_review') {
+      throw httpError(409, 'INVALID_STATE', 'An open payment review cannot be cancelled here');
+    }
     if (data.orderStatus === 'cancelled' && CUSTOMER_CANCEL_REASONS.has(cancellation.reason)) {
       return { replay: true, data };
     }

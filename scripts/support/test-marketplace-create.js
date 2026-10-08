@@ -7,12 +7,15 @@
  *   node scripts/support/test-marketplace-create.js --customer <id> --shop <id> --apply
  *   node scripts/support/test-marketplace-create.js --customer <id> --shop <id> --cleanup [--order <id>]
  *   node scripts/support/test-marketplace-create.js --customer <id> --shop <id> --cleanup --apply [--order <id>]
- *   node scripts/support/test-marketplace-create.js --customer <id> --shop <id> --utr [12-digits]
+ *   node scripts/support/test-marketplace-create.js --customer <id> --shop <id> --utr [12-digits] [--order <id>]
  *   node scripts/support/test-marketplace-create.js --customer <id> --shop <id> --balance-utr <12-digits>
  *   node scripts/support/test-marketplace-create.js --customer <id> --shop <id> --cancel
- *   node scripts/support/test-marketplace-create.js --customer <id> --shop <id> --confirm [--enforce] [--full-utr <12-digits>]
+ *   node scripts/support/test-marketplace-create.js --customer <id> --shop <id> --confirm [--order <id>] [--enforce] [--full-utr <12-digits>] [--fulfil false]
+ *   node scripts/support/test-marketplace-create.js --customer <id> --shop <id> --payment-not-found [--order <id>]
  *
- * --utr, --balance-utr, and --cancel use the order on marketplaceLocks/{customer}_{shop}.
+ * --utr, --balance-utr, --cancel, --confirm, --amount-differs, and --payment-not-found
+ * use the order on marketplaceLocks/{customer}_{shop}, unless --order <id> is set.
+ * --order is required once the lock is gone (payment_unconfirmed or payment_review).
  * --utr without a value uses 123456789012. Dry run prints that order and
  * does not write. Add --apply to call submitCustomerUtr or cancelCustomerOrder.
  * --balance-utr dry run prints the last 4 and writes nothing. --apply calls submitBalanceUtr.
@@ -23,8 +26,10 @@
  * calls confirmPayment. A short confirm needs --enforce. The confirm result
  * prints officialUtrLast4 for the first payment and balanceOfficialUtrLast4
  * for the balance match.
- * --amount-differs <rupees> dry run prints utrLast4 and the body and
+ * --amount-differs <rupees> [--order <id>] dry run prints utrLast4 and the body and
  * writes nothing. --amount-differs <rupees> --apply calls the service.
+ * --payment-not-found [--order <id>] [--apply] calls reportNotFound.
+ * --confirm --fulfil false sends fulfil:false.
  * --enforce passes { newStatuses: true, utrBlocksReject: true } into that
  * call only. It does not write appSettings.
  * --tick runs the payment job for this customer and shop only. Dry run
@@ -159,10 +164,17 @@ function presentReview(payment) {
   if (!review || typeof review !== 'object') {
     return null;
   }
+  const response = review.shopResponse && typeof review.shopResponse === 'object' ? review.shopResponse : null;
+  const outcome = review.outcome && typeof review.outcome === 'object' ? review.outcome : null;
   return {
     status: review.status ?? null,
     openedAt: toIso(review.openedAt),
-    reason: review.reason ?? review.trigger ?? null
+    escalatedAt: toIso(review.escalatedAt),
+    trigger: review.trigger ?? review.reason ?? null,
+    shopResponse: response
+      ? { result: response.result ?? null, receivedAmount: response.receivedAmount ?? null }
+      : null,
+    outcome: outcome ? { result: outcome.result ?? null } : null
   };
 }
 
@@ -200,8 +212,19 @@ function presentEvent(data) {
     },
     at: toIso(event.at)
   };
-  if (event.data && event.data.mode != null) {
-    shown.mode = event.data.mode;
+  if (event.data && typeof event.data === 'object') {
+    if (event.data.mode != null) {
+      shown.mode = event.data.mode;
+    }
+    if (event.data.trigger != null) {
+      shown.trigger = event.data.trigger;
+    }
+    if (event.data.hoursOpen != null) {
+      shown.hoursOpen = event.data.hoursOpen;
+    }
+    if (event.data.result != null) {
+      shown.result = event.data.result;
+    }
   }
   return shown;
 }
@@ -556,25 +579,32 @@ async function applyCleanup(db, customerId, shopId, plan) {
   await batch.commit();
 }
 
-async function utrCancelPreview(db, customerId, shopId, utr) {
+async function utrCancelPreview(db, customerId, shopId, utr, explicitOrderId) {
   const lockSnap = await db.collection('marketplaceLocks').doc(`${customerId}_${shopId}`).get();
-  const orderId = lockSnap.exists ? (lockSnap.data() || {}).orderId : null;
+  const lockOrderId = lockSnap.exists ? (lockSnap.data() || {}).orderId : null;
+  const orderId = explicitOrderId || lockOrderId;
   let order = null;
+  let owned = false;
   if (orderId) {
     const orderSnap = await db.collection('marketplaceOrders').doc(orderId).get();
     if (orderSnap.exists) {
       const data = orderSnap.data() || {};
-      order = {
-        id: orderId,
-        orderStatus: data.orderStatus || null,
-        paymentStatus: data.payment ? data.payment.status : null,
-        hasCustomerUtr: Boolean(data.payment && data.payment.customerUtr)
-      };
+      owned = data.customerId === customerId && data.shopId === shopId;
+      if (owned) {
+        order = {
+          id: orderId,
+          orderStatus: data.orderStatus || null,
+          paymentStatus: data.payment ? data.payment.status : null,
+          hasCustomerUtr: Boolean(data.payment && data.payment.customerUtr)
+        };
+      }
     }
   }
   return {
     lockExists: lockSnap.exists,
     order,
+    owned,
+    explicitOrderId: explicitOrderId || null,
     utr
   };
 }
@@ -605,6 +635,7 @@ async function printOrderShow(db, customerId, shopId, orderId) {
     orderId,
     displayId: data.displayId ?? null,
     orderStatus: data.orderStatus ?? null,
+    closedReason: data.closedReason ?? null,
     payment: {
       status: payment.status ?? null,
       receivedAmount: payment.receivedAmount ?? null,
@@ -631,7 +662,7 @@ async function main() {
   const apply = process.argv.includes('--apply');
   const cleanup = process.argv.includes('--cleanup');
   if (!customerId || !shopId) {
-    console.error('Usage: node scripts/support/test-marketplace-create.js --customer <id> --shop <id> [--apply] [--cleanup] [--order <id>] [--show --order <id>] [--utr [12-digits]] [--balance-utr <12-digits>] [--cancel] [--confirm] [--full-utr <12-digits>] [--enforce] [--amount-differs <rupees>] [--tick] [--now <ISO>] [--advance-minutes <N>]');
+    console.error('Usage: node scripts/support/test-marketplace-create.js --customer <id> --shop <id> [--apply] [--cleanup] [--order <id>] [--show --order <id>] [--utr [12-digits]] [--balance-utr <12-digits>] [--cancel] [--confirm] [--full-utr <12-digits>] [--fulfil false] [--payment-not-found] [--enforce] [--amount-differs <rupees>] [--tick] [--now <ISO>] [--advance-minutes <N>]');
     process.exit(1);
   }
 
@@ -738,6 +769,47 @@ async function main() {
     return;
   }
 
+  if (process.argv.includes('--payment-not-found')) {
+    const preview = await utrCancelPreview(db, customerId, shopId, null, argValue('--order'));
+    if (argValue('--order') && !preview.owned) {
+      console.error('That order does not belong to this customer and shop. Nothing was written.');
+      process.exit(1);
+    }
+    console.log(JSON.stringify({
+      paymentNotFound: true,
+      apply,
+      order: preview.order
+    }, null, 2));
+    if (!apply) {
+      console.log('Dry run. Re-run with --payment-not-found --apply to record it.');
+      return;
+    }
+    if (!preview.order) {
+      console.error('No order to mark not found. Pass --order <id> when the lock is gone.');
+      process.exit(1);
+    }
+    const shopOrderService = require('../../src/services/shopOrderService');
+    try {
+      const result = await shopOrderService.reportNotFound(shopId, preview.order.id);
+      console.log(JSON.stringify({
+        recorded: true,
+        alreadyProcessed: result.alreadyProcessed,
+        orderStatus: result.order.orderStatus,
+        paymentStatus: result.order.payment.status,
+        review: result.order.review
+      }, null, 2));
+    } catch (error) {
+      console.log(JSON.stringify({
+        recorded: false,
+        status: error.status || 500,
+        code: error.code || null,
+        message: error.message
+      }, null, 2));
+      process.exitCode = 1;
+    }
+    return;
+  }
+
   if (process.argv.includes('--amount-differs')) {
     const raw = argValue('--amount-differs');
     const receivedAmount = Number(raw);
@@ -745,7 +817,11 @@ async function main() {
       console.error('--amount-differs needs a positive rupee amount.');
       process.exit(1);
     }
-    const preview = await utrCancelPreview(db, customerId, shopId, null);
+    const preview = await utrCancelPreview(db, customerId, shopId, null, argValue('--order'));
+    if (argValue('--order') && !preview.owned) {
+      console.error('That order does not belong to this customer and shop. Nothing was written.');
+      process.exit(1);
+    }
     let utrLast4 = null;
     if (preview.order) {
       const orderSnap = await db.collection('marketplaceOrders').doc(preview.order.id).get();
@@ -849,7 +925,15 @@ async function main() {
     process.exit(1);
   }
   if (confirm) {
-    const preview = await utrCancelPreview(db, customerId, shopId, null);
+    if (process.argv.includes('--fulfil') && argValue('--fulfil') !== 'false') {
+      console.error('--fulfil only accepts false.');
+      process.exit(1);
+    }
+    const preview = await utrCancelPreview(db, customerId, shopId, null, argValue('--order'));
+    if (argValue('--order') && !preview.owned) {
+      console.error('That order does not belong to this customer and shop. Nothing was written.');
+      process.exit(1);
+    }
     const fullUtrRaw = process.argv.includes('--full-utr') ? argValue('--full-utr') : '';
     if (process.argv.includes('--full-utr')) {
       const { isValidUtr } = require('../../src/validators/marketplace');
@@ -864,6 +948,10 @@ async function main() {
       payment = orderSnap.exists ? (orderSnap.data().payment || {}) : null;
     }
     const request = confirmRequestBody({ payment, fullUtr: fullUtrRaw });
+    if (request.ok && argValue('--fulfil') === 'false') {
+      request.body.fulfil = false;
+      request.logBody.fulfil = false;
+    }
     const enforcement = process.argv.includes('--enforce')
       ? { newStatuses: true, utrBlocksReject: true }
       : undefined;
@@ -922,8 +1010,13 @@ async function main() {
       db,
       customerId,
       shopId,
-      submitUtr ? (argValue('--utr') || '123456789012') : null
+      submitUtr ? (argValue('--utr') || '123456789012') : null,
+      argValue('--order')
     );
+    if (argValue('--order') && !preview.owned) {
+      console.error('That order does not belong to this customer and shop. Nothing was written.');
+      process.exit(1);
+    }
     let refundAmount = null;
     if (cancelOrder && preview.order) {
       const orderSnap = await db.collection('marketplaceOrders').doc(preview.order.id).get();

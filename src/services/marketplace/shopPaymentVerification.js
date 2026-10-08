@@ -1,5 +1,5 @@
 const crypto = require('crypto');
-const { Timestamp } = require('firebase-admin/firestore');
+const { Timestamp, FieldValue } = require('firebase-admin/firestore');
 const { getFirestore } = require('../firebase');
 const { MARKETPLACE_DEFAULTS } = require('../../config/marketplaceDefaults');
 const marketplaceMoney = require('../../validators/marketplace');
@@ -221,9 +221,239 @@ function writeRegistry(tx, registrySnap, registryRef, { orderId, customerId, kin
 }
 
 function displayVariables(data, orderId) {
+  const snapshot = data.shopSnapshot && typeof data.shopSnapshot === 'object' ? data.shopSnapshot : {};
   return {
     displayId: displayIdService.formatDisplayId(data.displayId),
-    orderId
+    orderId,
+    shopName: typeof snapshot.name === 'string' ? snapshot.name : ''
+  };
+}
+
+function reviewOf(payment) {
+  return payment && payment.review && typeof payment.review === 'object' ? payment.review : null;
+}
+
+function shopHadDisputed(review) {
+  if (!review) {
+    return false;
+  }
+  if (review.trigger === 'shop_not_found') {
+    return true;
+  }
+  return Boolean(review.shopResponse && review.shopResponse.result === 'not_found');
+}
+
+function bumpShopStat(tx, shopSnap, shopRef, field) {
+  if (!shopSnap || !shopSnap.exists) {
+    return;
+  }
+  const current = nestedNumber(shopSnap.data(), ['marketplaceStats', field]);
+  tx.update(shopRef, { [`marketplaceStats.${field}`]: current + 1 });
+}
+
+function bumpCustomerStat(tx, userSnap, userRef, field) {
+  if (!userSnap || !userSnap.exists) {
+    return;
+  }
+  const current = nestedNumber(userSnap.data(), ['customer', 'marketplace', 'stats', field]);
+  tx.update(userRef, { [`customer.marketplace.stats.${field}`]: current + 1 });
+}
+
+function reviewRefundAmount(data, payment, review) {
+  const response = review && review.shopResponse;
+  if (response && response.result === 'short' && response.receivedAmount != null) {
+    return response.receivedAmount;
+  }
+  if (payment && payment.receivedAmount != null) {
+    return payment.receivedAmount;
+  }
+  return data.expectedAmount != null ? data.expectedAmount : null;
+}
+
+function arrivedAmountFields(amount, data) {
+  const sameAsExpected = amount === data.expectedAmount && data.expectedAmountPaise != null;
+  return {
+    'payment.receivedAmount': amount,
+    'payment.receivedAmountPaise': amount == null
+      ? null
+      : (sameAsExpected ? data.expectedAmountPaise : marketplaceMoney.toPaise(amount))
+  };
+}
+
+async function readReviewContext(tx, db, { shopId, customerId, officialUtr }) {
+  const registryRef = officialUtr ? db.collection('utrRegistry').doc(officialUtr) : null;
+  const shopRef = db.collection('shops').doc(shopId);
+  const userRef = customerId ? db.collection('users').doc(customerId) : null;
+  const settingsSnap = await tx.get(db.collection('appSettings').doc('marketplace'));
+  const registrySnap = registryRef ? await tx.get(registryRef) : null;
+  const shopSnap = await tx.get(shopRef);
+  const userSnap = userRef ? await tx.get(userRef) : null;
+  return {
+    registryRef, registrySnap, shopRef, shopSnap, userRef, userSnap, settingsSnap
+  };
+}
+
+function rememberUtrCorrection(tx, userSnap, userRef, corrected) {
+  if (!corrected || !userSnap || !userSnap.exists || !userRef) {
+    return;
+  }
+  const corrections = nestedNumber(userSnap.data(), ['customer', 'marketplace', 'stats', 'utrCorrections']);
+  tx.update(userRef, { 'customer.marketplace.stats.utrCorrections': corrections + 1 });
+}
+
+async function confirmOpenReview(tx, context) {
+  const { db, orderRef, shopId, orderId, data, payment, body, now } = context;
+  const review = reviewOf(payment);
+  if (!review || review.status !== 'open') {
+    throw httpError(409, 'INVALID_STATE', 'Order cannot be confirmed in its current state');
+  }
+  const matched = matchOfficialUtr(payment, body);
+  const reads = await readReviewContext(tx, db, {
+    shopId,
+    customerId: data.customerId,
+    officialUtr: matched.officialUtr
+  });
+  assertRegistryAvailable(reads.registrySnap, orderId);
+  const at = Timestamp.fromMillis(now);
+  const fulfil = !(body && body.fulfil === false);
+  const disputed = shopHadDisputed(review);
+  const variables = displayVariables(data, orderId);
+  const attested = body && body.withinWindowAttested === true;
+  const endMs = millisOf(data.window && data.window.end);
+  const graceMs = graceMsFrom(reads.settingsSnap.exists ? reads.settingsSnap.data() : null);
+  const late = !attested && isPastPaymentGrace(endMs, now, graceMs);
+  const shopNotifies = [{ type: 'REVIEW_RESOLVED', variables }];
+
+  if (!fulfil) {
+    const amount = reviewRefundAmount(data, payment, review);
+    const refund = refundStub('review_refund', amount, data.items, Timestamp.now());
+    tx.update(orderRef, {
+      orderStatus: 'cancelled',
+      closedReason: 'shop_cancelled',
+      'cancellation.reason': 'shop_cancelled',
+      'cancellation.cancelledAt': FieldValue.serverTimestamp(),
+      'cancellation.cancelledBy': shopId,
+      'payment.status': 'refund_pending',
+      ...arrivedAmountFields(amount, data),
+      'payment.officialUtr': matched.officialUtr,
+      'payment.utrSource': matched.utrSource,
+      'payment.review.status': 'resolved',
+      'payment.review.shopResponse': { result: 'received', at },
+      'payment.review.outcome': {
+        result: 'refund',
+        reason: 'shop_cancelled',
+        decidedBy: shopId,
+        decidedAt: FieldValue.serverTimestamp()
+      },
+      refunds: (Array.isArray(data.refunds) ? data.refunds : []).concat([refund])
+    });
+    writeRegistry(tx, reads.registrySnap, reads.registryRef, {
+      orderId,
+      customerId: data.customerId,
+      kind: matched.utrSource === 'shop' ? 'shop' : 'customer',
+      at
+    });
+    if (disputed) {
+      bumpShopStat(tx, reads.shopSnap, reads.shopRef, 'reviewsFoundAgainstShop');
+    }
+    rememberUtrCorrection(tx, reads.userSnap, reads.userRef, matched.corrected);
+    appendEvent(tx, orderRef, {
+      type: 'shop_confirm',
+      actor: { type: 'shop', id: shopId },
+      data: { officialUtr: matched.officialUtr, utrSource: matched.utrSource }
+    });
+    appendEvent(tx, orderRef, {
+      type: 'review_resolved',
+      actor: { type: 'shop', id: shopId },
+      data: { result: 'refund' }
+    });
+    appendEvent(tx, orderRef, {
+      type: 'cancelled',
+      actor: { type: 'shop', id: shopId },
+      reason: 'shop_cancelled'
+    });
+    return {
+      alreadyProcessed: false,
+      customerId: data.customerId || null,
+      notifies: [{ type: 'REFUND_INITIATED', variables: { ...variables, amount } }],
+      shopNotifies
+    };
+  }
+
+  stockDeductionHook();
+  const patch = {
+    orderStatus: 'preparing',
+    'payment.status': 'confirmed',
+    'payment.officialUtr': matched.officialUtr,
+    'payment.utrSource': matched.utrSource,
+    'payment.confirmedAt': at,
+    'payment.confirmedByShopUid': shopId,
+    'payment.review.status': 'resolved',
+    'payment.review.shopResponse': { result: 'received', at },
+    'payment.review.outcome': {
+      result: 'found',
+      reason: null,
+      decidedBy: shopId,
+      decidedAt: FieldValue.serverTimestamp()
+    },
+    ...expectedReceivedFields(data)
+  };
+  if (late) {
+    patch['payment.late'] = {
+      receivedAt: at,
+      confirmedByShopUid: shopId,
+      onCancelledOrder: false,
+      fulfilled: true
+    };
+  }
+  tx.update(orderRef, patch);
+  writeRegistry(tx, reads.registrySnap, reads.registryRef, {
+    orderId,
+    customerId: data.customerId,
+    kind: matched.utrSource === 'shop' ? 'shop' : 'customer',
+    at
+  });
+  if (disputed) {
+    bumpShopStat(tx, reads.shopSnap, reads.shopRef, 'reviewsFoundAgainstShop');
+  }
+  rememberUtrCorrection(tx, reads.userSnap, reads.userRef, matched.corrected);
+  appendEvent(tx, orderRef, {
+    type: 'shop_confirm',
+    actor: { type: 'shop', id: shopId },
+    data: { officialUtr: matched.officialUtr, utrSource: matched.utrSource }
+  });
+  if (matched.corrected) {
+    appendEvent(tx, orderRef, {
+      type: 'utr_corrected',
+      actor: { type: 'shop', id: shopId },
+      data: { officialUtr: matched.officialUtr }
+    });
+  }
+  if (late) {
+    appendEvent(tx, orderRef, {
+      type: 'payment_confirmed_late',
+      actor: { type: 'shop', id: shopId }
+    });
+  }
+  appendEvent(tx, orderRef, {
+    type: 'review_resolved',
+    actor: { type: 'shop', id: shopId },
+    data: { result: 'found' }
+  });
+  const notifies = [];
+  if (matched.corrected) {
+    notifies.push({ type: 'UTR_CORRECTED', variables: { ...variables, utr: matched.officialUtr } });
+  } else if (!late) {
+    notifies.push({ type: 'PAYMENT_CONFIRMED', variables });
+  }
+  if (late) {
+    notifies.push({ type: 'PAYMENT_LATE_ACCEPTED', variables });
+  }
+  return {
+    alreadyProcessed: false,
+    customerId: data.customerId || null,
+    notifies,
+    shopNotifies
   };
 }
 
@@ -239,8 +469,16 @@ async function confirmShopPayment({ shopId, orderId, body, nowMs }) {
     }
     const data = orderSnap.data() || {};
     const payment = data.payment || {};
+    if (payment.review && payment.review.status === 'resolved') {
+      throw httpError(409, 'INVALID_STATE', 'Order cannot be confirmed in its current state');
+    }
     if (payment.status === 'confirmed' && POST_CONFIRM_ORDER.has(data.orderStatus)) {
       return { alreadyProcessed: true, customerId: data.customerId || null };
+    }
+    if (data.orderStatus === 'payment_review') {
+      return confirmOpenReview(tx, {
+        db, orderRef, shopId, orderId, data, payment, body, now
+      });
     }
     if (payment.status === 'short') {
       if (data.orderStatus !== 'awaiting_payment') {
@@ -361,9 +599,24 @@ async function reportPaymentNotFound({ shopId, orderId, nowMs }) {
     }
     const data = orderSnap.data() || {};
     const payment = data.payment || {};
-    if (data.orderStatus === 'payment_review' && payment.status === 'under_review'
-      && payment.review && payment.review.trigger === 'shop_not_found') {
-      return { alreadyProcessed: true, customerId: data.customerId || null, notifies: [] };
+    if (data.orderStatus === 'payment_review') {
+      const review = reviewOf(payment);
+      if (!review || review.status !== 'open') {
+        throw httpError(409, 'INVALID_STATE', 'Payment review cannot be opened for this order');
+      }
+      if (review.shopResponse && review.shopResponse.result === 'not_found') {
+        return { alreadyProcessed: true, customerId: data.customerId || null, notifies: [], shopNotifies: [] };
+      }
+      const at = Timestamp.fromMillis(now);
+      tx.update(orderRef, {
+        'payment.review.shopResponse': { result: 'not_found', at }
+      });
+      appendEvent(tx, orderRef, {
+        type: 'shop_response',
+        actor: { type: 'shop', id: shopId },
+        data: { result: 'not_found' }
+      });
+      return { alreadyProcessed: false, customerId: data.customerId || null, notifies: [], shopNotifies: [] };
     }
     if (!payment.customerUtr) {
       throw httpError(409, 'NOT_FOUND_REQUIRES_UTR', 'Not found requires a customer UTR');
@@ -378,12 +631,12 @@ async function reportPaymentNotFound({ shopId, orderId, nowMs }) {
     });
     const shopRef = db.collection('shops').doc(shopId);
     const shopSnap = await tx.get(shopRef);
-    const at = Timestamp.fromMillis(now);
     tx.update(orderRef, {
       orderStatus: 'payment_review',
       'payment.status': 'under_review',
       'payment.review': {
-        openedAt: at,
+        status: 'open',
+        openedAt: FieldValue.serverTimestamp(),
         trigger: 'shop_not_found',
         shopResponse: null,
         outcome: null
@@ -399,13 +652,12 @@ async function reportPaymentNotFound({ shopId, orderId, nowMs }) {
       actor: { type: 'shop', id: shopId },
       data: { trigger: 'shop_not_found' }
     });
+    const variables = displayVariables(data, orderId);
     return {
       alreadyProcessed: false,
       customerId: data.customerId || null,
-      notifies: [{
-        type: 'PAYMENT_UNDER_REVIEW',
-        variables: displayVariables(data, orderId)
-      }]
+      notifies: [{ type: 'PAYMENT_UNDER_REVIEW', variables }],
+      shopNotifies: [{ type: 'PAYMENT_REVIEW_SHOP', variables }]
     };
   });
 }
@@ -587,6 +839,124 @@ async function confirmShortBalance(tx, context) {
   };
 }
 
+async function differOnOpenReview(tx, context) {
+  const { db, orderRef, shopId, orderId, data, payment, body, now, receivedPaise, rupees } = context;
+  const review = reviewOf(payment);
+  if (!review || review.status !== 'open') {
+    throw httpError(409, 'INVALID_STATE', 'Amount differs is not available for this order');
+  }
+  const expectedPaise = data.expectedAmountPaise;
+  if (!Number.isInteger(expectedPaise)) {
+    throw httpError(409, 'INVALID_STATE', 'Amount differs is not available for this order');
+  }
+  if (receivedPaise > expectedPaise * 2) {
+    throw httpError(400, 'VALIDATION', 'receivedAmount must be at most 2 times the expected amount');
+  }
+  const at = Timestamp.fromMillis(now);
+  if (receivedPaise < expectedPaise) {
+    const previous = review.shopResponse;
+    if (previous && previous.result === 'short' && Number(previous.receivedAmount) === rupees) {
+      return { alreadyProcessed: true, customerId: data.customerId || null, notifies: [], shopNotifies: [] };
+    }
+    tx.update(orderRef, {
+      'payment.review.shopResponse': { result: 'short', receivedAmount: rupees, at }
+    });
+    appendEvent(tx, orderRef, {
+      type: 'shop_response',
+      actor: { type: 'shop', id: shopId },
+      data: { result: 'short', receivedAmount: rupees }
+    });
+    appendEvent(tx, orderRef, {
+      type: 'amount_differs',
+      actor: { type: 'shop', id: shopId },
+      data: { receivedAmount: rupees, expectedAmount: data.expectedAmount ?? null }
+    });
+    return { alreadyProcessed: false, customerId: data.customerId || null, notifies: [], shopNotifies: [] };
+  }
+
+  const matched = matchOfficialUtr(payment, body);
+  const reads = await readReviewContext(tx, db, {
+    shopId,
+    customerId: data.customerId,
+    officialUtr: matched.officialUtr
+  });
+  assertRegistryAvailable(reads.registrySnap, orderId);
+  stockDeductionHook();
+  const receivedAmount = marketplaceMoney.fromPaise(receivedPaise);
+  const storedReceived = receivedPaise === expectedPaise ? data.expectedAmount : receivedAmount;
+  const disputed = shopHadDisputed(review);
+  const variables = displayVariables(data, orderId);
+  const patch = {
+    orderStatus: 'preparing',
+    'payment.status': 'confirmed',
+    'payment.receivedAmount': storedReceived,
+    'payment.receivedAmountPaise': receivedPaise,
+    'payment.officialUtr': matched.officialUtr,
+    'payment.utrSource': matched.utrSource,
+    'payment.confirmedAt': at,
+    'payment.confirmedByShopUid': shopId,
+    'payment.review.status': 'resolved',
+    'payment.review.shopResponse': { result: 'received', receivedAmount: rupees, at },
+    'payment.review.outcome': {
+      result: 'found',
+      reason: null,
+      decidedBy: shopId,
+      decidedAt: FieldValue.serverTimestamp()
+    }
+  };
+  const notifies = [];
+  if (receivedPaise > expectedPaise) {
+    const refundAmount = marketplaceMoney.fromPaise(receivedPaise - expectedPaise);
+    patch.refunds = (Array.isArray(data.refunds) ? data.refunds : []).concat([
+      refundStub('overpaid', refundAmount, data.items, at)
+    ]);
+    notifies.push({ type: 'REFUND_INITIATED', variables: { ...variables, amount: refundAmount } });
+  } else if (matched.corrected) {
+    notifies.push({ type: 'UTR_CORRECTED', variables: { ...variables, utr: matched.officialUtr } });
+  } else {
+    notifies.push({ type: 'PAYMENT_CONFIRMED', variables });
+  }
+  tx.update(orderRef, patch);
+  writeRegistry(tx, reads.registrySnap, reads.registryRef, {
+    orderId,
+    customerId: data.customerId,
+    kind: matched.utrSource === 'shop' ? 'shop' : 'customer',
+    at
+  });
+  if (disputed) {
+    bumpShopStat(tx, reads.shopSnap, reads.shopRef, 'reviewsFoundAgainstShop');
+  }
+  rememberUtrCorrection(tx, reads.userSnap, reads.userRef, matched.corrected);
+  appendEvent(tx, orderRef, {
+    type: 'amount_differs',
+    actor: { type: 'shop', id: shopId },
+    data: { receivedAmount: rupees, expectedAmount: data.expectedAmount ?? null }
+  });
+  appendEvent(tx, orderRef, {
+    type: 'shop_confirm',
+    actor: { type: 'shop', id: shopId },
+    data: { officialUtr: matched.officialUtr, utrSource: matched.utrSource }
+  });
+  if (matched.corrected) {
+    appendEvent(tx, orderRef, {
+      type: 'utr_corrected',
+      actor: { type: 'shop', id: shopId },
+      data: { officialUtr: matched.officialUtr }
+    });
+  }
+  appendEvent(tx, orderRef, {
+    type: 'review_resolved',
+    actor: { type: 'shop', id: shopId },
+    data: { result: 'found' }
+  });
+  return {
+    alreadyProcessed: false,
+    customerId: data.customerId || null,
+    notifies,
+    shopNotifies: [{ type: 'REVIEW_RESOLVED', variables }]
+  };
+}
+
 async function reportAmountDiffers({ shopId, orderId, body, nowMs }) {
   const payload = body && typeof body === 'object' ? body : {};
   const rupees = assertReceivedAmountShape(payload.receivedAmount);
@@ -601,10 +971,18 @@ async function reportAmountDiffers({ shopId, orderId, body, nowMs }) {
     }
     const data = orderSnap.data() || {};
     const payment = data.payment || {};
+    if (payment.review && payment.review.status === 'resolved') {
+      throw httpError(409, 'INVALID_STATE', 'Amount differs is not available for this order');
+    }
     if (payment.status === 'confirmed' && POST_CONFIRM_ORDER.has(data.orderStatus)) {
       return { alreadyProcessed: true, customerId: data.customerId || null, notifies: [] };
     }
-    // MP-7: amount differs on a late payment_unconfirmed order.
+    if (data.orderStatus === 'payment_review') {
+      return differOnOpenReview(tx, {
+        db, orderRef, shopId, orderId, data, payment, body, now, receivedPaise, rupees
+      });
+    }
+    // Amount differs on payment_unconfirmed stays unavailable.
     const allowed = data.orderStatus === 'awaiting_payment'
       && (payment.status === 'pending' || payment.status === 'customer_claimed');
     if (!allowed) {
@@ -767,6 +1145,167 @@ async function reportAmountDiffers({ shopId, orderId, body, nowMs }) {
   });
 }
 
+async function resolvePaymentReview({ orderId, outcome, reason, operator }) {
+  const result = outcome;
+  if (result !== 'found' && result !== 'not_found' && result !== 'refund') {
+    throw httpError(400, 'VALIDATION', 'outcome must be found, not_found, or refund');
+  }
+  const operatorId = typeof operator === 'string' ? operator.trim() : '';
+  if (!operatorId) {
+    throw httpError(400, 'VALIDATION', 'operator is required');
+  }
+  const note = typeof reason === 'string' ? reason.trim() : '';
+  if (!note) {
+    throw httpError(400, 'VALIDATION', 'reason is required');
+  }
+  const db = getFirestore();
+  const orderRef = db.collection('marketplaceOrders').doc(orderId);
+  return db.runTransaction(async (tx) => {
+    const orderSnap = await tx.get(orderRef);
+    if (!orderSnap.exists) {
+      throw httpError(404, 'ORDER_NOT_FOUND', 'Order not found');
+    }
+    const data = orderSnap.data() || {};
+    const payment = data.payment || {};
+    const review = reviewOf(payment);
+    if (data.orderStatus !== 'payment_review' || !review || review.status !== 'open') {
+      return { alreadyProcessed: true, wrote: false, customerId: data.customerId || null, shopId: data.shopId || null };
+    }
+    if (result === 'found' && review.shopResponse && review.shopResponse.result === 'short') {
+      throw httpError(409, 'REVIEW_SHORT', 'A short review cannot be closed as found. Use outcome refund.');
+    }
+    const shopRef = db.collection('shops').doc(data.shopId);
+    const userRef = data.customerId ? db.collection('users').doc(data.customerId) : null;
+    const shopSnap = data.shopId ? await tx.get(shopRef) : null;
+    const userSnap = userRef ? await tx.get(userRef) : null;
+    const actor = { type: 'support', id: operatorId };
+    const variables = displayVariables(data, orderId);
+    const disputed = shopHadDisputed(review);
+    const outcomeDoc = {
+      result,
+      reason: note,
+      decidedBy: operatorId,
+      decidedAt: FieldValue.serverTimestamp()
+    };
+
+    if (result === 'found') {
+      if (!payment.customerUtr) {
+        throw httpError(409, 'FULL_UTR_REQUIRED', 'Shop must confirm-payment with a full UTR');
+      }
+      const officialUtr = String(payment.customerUtr);
+      const registryRef = db.collection('utrRegistry').doc(officialUtr);
+      const registrySnap = await tx.get(registryRef);
+      assertRegistryAvailable(registrySnap, orderId);
+      const at = Timestamp.now();
+      stockDeductionHook();
+      tx.update(orderRef, {
+        orderStatus: 'preparing',
+        'payment.status': 'confirmed',
+        'payment.officialUtr': officialUtr,
+        'payment.utrSource': 'customer',
+        'payment.confirmedAt': at,
+        'payment.review.status': 'resolved',
+        'payment.review.outcome': outcomeDoc,
+        ...expectedReceivedFields(data)
+      });
+      writeRegistry(tx, registrySnap, registryRef, {
+        orderId,
+        customerId: data.customerId,
+        kind: 'customer',
+        at
+      });
+      if (disputed) {
+        bumpShopStat(tx, shopSnap, shopRef, 'reviewsFoundAgainstShop');
+      }
+      appendEvent(tx, orderRef, {
+        type: 'review_resolved',
+        actor,
+        reason: note,
+        data: { result: 'found' }
+      });
+      return {
+        alreadyProcessed: false,
+        wrote: true,
+        customerId: data.customerId || null,
+        shopId: data.shopId || null,
+        notifies: [{ type: 'PAYMENT_CONFIRMED', variables }],
+        shopNotifies: [{ type: 'REVIEW_RESOLVED', variables }]
+      };
+    }
+
+    if (result === 'not_found') {
+      // MP7-1: money found after support not_found is a refund only, never a reopen (MP-8/help).
+      tx.update(orderRef, {
+        orderStatus: 'cancelled',
+        closedReason: 'payment_not_verified',
+        'cancellation.reason': 'payment_not_verified',
+        'cancellation.cancelledAt': FieldValue.serverTimestamp(),
+        'cancellation.cancelledBy': 'support',
+        'payment.status': 'not_verified',
+        'payment.review.status': 'resolved',
+        'payment.review.outcome': outcomeDoc
+      });
+      bumpCustomerStat(tx, userSnap, userRef, 'reportsNotVerified');
+      appendEvent(tx, orderRef, {
+        type: 'review_resolved',
+        actor,
+        reason: note,
+        data: { result: 'not_found' }
+      });
+      appendEvent(tx, orderRef, {
+        type: 'cancelled',
+        actor,
+        reason: 'payment_not_verified'
+      });
+      return {
+        alreadyProcessed: false,
+        wrote: true,
+        customerId: data.customerId || null,
+        shopId: data.shopId || null,
+        notifies: [{ type: 'NOT_VERIFIED', variables }],
+        shopNotifies: [{ type: 'REVIEW_RESOLVED', variables }]
+      };
+    }
+
+    const amount = reviewRefundAmount(data, payment, review);
+    const refund = refundStub('review_refund', amount, data.items, Timestamp.now());
+    tx.update(orderRef, {
+      orderStatus: 'cancelled',
+      closedReason: 'support_cancelled',
+      'cancellation.reason': 'support_cancelled',
+      'cancellation.cancelledAt': FieldValue.serverTimestamp(),
+      'cancellation.cancelledBy': 'support',
+      'payment.status': 'refund_pending',
+      ...arrivedAmountFields(amount, data),
+      'payment.review.status': 'resolved',
+      'payment.review.outcome': outcomeDoc,
+      refunds: (Array.isArray(data.refunds) ? data.refunds : []).concat([refund])
+    });
+    if (disputed) {
+      bumpShopStat(tx, shopSnap, shopRef, 'reviewsFoundAgainstShop');
+    }
+    appendEvent(tx, orderRef, {
+      type: 'review_resolved',
+      actor,
+      reason: note,
+      data: { result: 'refund' }
+    });
+    appendEvent(tx, orderRef, {
+      type: 'cancelled',
+      actor,
+      reason: 'support_cancelled'
+    });
+    return {
+      alreadyProcessed: false,
+      wrote: true,
+      customerId: data.customerId || null,
+      shopId: data.shopId || null,
+      notifies: [{ type: 'REFUND_INITIATED', variables: { ...variables, amount } }],
+      shopNotifies: [{ type: 'REVIEW_RESOLVED', variables }]
+    };
+  });
+}
+
 function shopCancelAllowed(data, enforcement) {
   if (data.orderStatus === 'cancelled') {
     return { ok: true, already: true };
@@ -795,6 +1334,7 @@ module.exports = {
   confirmShopPayment,
   reportAmountDiffers,
   reportPaymentNotFound,
+  resolvePaymentReview,
   answerPaidCheck,
   isShortBalanceExpired,
   assertReceivedAmountShape,

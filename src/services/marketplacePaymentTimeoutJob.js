@@ -137,6 +137,12 @@ class MarketplacePaymentTimeoutJob {
       .get();
     closeSnap.docs.forEach((doc) => candidates.push({ doc, lane: 'unconfirmed' }));
 
+    const reviewSnap = await db.collection('marketplaceOrders')
+      .where('orderStatus', '==', 'payment_review')
+      .where('payment.review.openedAt', '<', admin.firestore.Timestamp.fromMillis(nowMs - settings.reviewEscalateMs))
+      .get();
+    reviewSnap.docs.forEach((doc) => candidates.push({ doc, lane: 'review' }));
+
     const actions = [];
     for (let index = 0; index < candidates.length; index += 1) {
       const item = candidates[index];
@@ -181,7 +187,9 @@ class MarketplacePaymentTimeoutJob {
       nudgeMs: minutesOf(data, 'UTR_NUDGE_MINUTES', MARKETPLACE_DEFAULTS.UTR_NUDGE_MINUTES) * 60 * 1000,
       reminderMinutes: reminderMinutesOf(data),
       paidCheckMs: hoursOf(data, 'PAID_CHECK_ESCALATE_HOURS', MARKETPLACE_DEFAULTS.PAID_CHECK_ESCALATE_HOURS) * 60 * 60 * 1000,
-      unconfirmedCloseMs: hoursOf(data, 'UNCONFIRMED_AUTO_CLOSE_HOURS', MARKETPLACE_DEFAULTS.UNCONFIRMED_AUTO_CLOSE_HOURS) * 60 * 60 * 1000
+      unconfirmedCloseMs: hoursOf(data, 'UNCONFIRMED_AUTO_CLOSE_HOURS', MARKETPLACE_DEFAULTS.UNCONFIRMED_AUTO_CLOSE_HOURS) * 60 * 60 * 1000,
+      reviewEscalateHours: hoursOf(data, 'REVIEW_ESCALATE_HOURS', MARKETPLACE_DEFAULTS.REVIEW_ESCALATE_HOURS),
+      reviewEscalateMs: hoursOf(data, 'REVIEW_ESCALATE_HOURS', MARKETPLACE_DEFAULTS.REVIEW_ESCALATE_HOURS) * 60 * 60 * 1000
     };
   }
 
@@ -256,8 +264,12 @@ class MarketplacePaymentTimeoutJob {
         ? db.collection('marketplaceLocks').doc(`${customerId}_${shopId}`)
         : null;
       const userRef = leavesAwaiting && customerId ? db.collection('users').doc(customerId) : null;
+      const shopRef = action.kind === 'timeout_review' && shopId
+        ? db.collection('shops').doc(shopId)
+        : null;
       const lockSnap = lockRef ? await tx.get(lockRef) : null;
       const userSnap = userRef ? await tx.get(userRef) : null;
+      const shopSnap = shopRef ? await tx.get(shopRef) : null;
       const at = serverStamp();
       const variables = pushVariables(data, orderRef.id);
       let notifies = [];
@@ -282,6 +294,7 @@ class MarketplacePaymentTimeoutJob {
           orderStatus: 'payment_review',
           'payment.status': 'under_review',
           'payment.review': {
+            status: 'open',
             openedAt: at,
             trigger: 'utr_timeout',
             shopResponse: null,
@@ -290,12 +303,22 @@ class MarketplacePaymentTimeoutJob {
           updatedAt: at
         });
         releaseLock(tx, lockRef, lockSnap, userRef, userSnap, orderRef.id);
+        if (shopSnap && shopSnap.exists) {
+          const stats = (shopSnap.data() || {}).marketplaceStats || {};
+          const opened = Number(stats.reviewsOpened);
+          tx.update(shopRef, {
+            'marketplaceStats.reviewsOpened': (Number.isFinite(opened) ? opened : 0) + 1
+          });
+        }
         appendEvent(tx, orderRef, {
           type: 'review_opened',
           actor: JOB_ACTOR,
           data: { trigger: 'utr_timeout' }
         });
-        notifies = [{ audience: 'customer', id: customerId, template: 'PAYMENT_UNDER_REVIEW', variables }];
+        notifies = [
+          { audience: 'customer', id: customerId, template: 'PAYMENT_UNDER_REVIEW', variables },
+          { audience: 'shop', id: shopId, template: 'PAYMENT_REVIEW_SHOP', variables }
+        ];
       } else if (action.kind === 'timeout_unconfirmed') {
         tx.update(orderRef, {
           orderStatus: 'payment_unconfirmed',
@@ -328,6 +351,7 @@ class MarketplacePaymentTimeoutJob {
           closedReason: 'balance_expired',
           'cancellation.reason': 'balance_expired',
           'cancellation.cancelledAt': at,
+          'cancellation.cancelledBy': 'system',
           'payment.status': 'refund_pending',
           refunds: (Array.isArray(data.refunds) ? data.refunds : []).concat([refund]),
           updatedAt: at
@@ -359,6 +383,7 @@ class MarketplacePaymentTimeoutJob {
           closedReason: 'unconfirmed_expired',
           'cancellation.reason': 'unconfirmed_expired',
           'cancellation.cancelledAt': at,
+          'cancellation.cancelledBy': 'system',
           updatedAt: at
         });
         appendEvent(tx, orderRef, {
@@ -368,6 +393,22 @@ class MarketplacePaymentTimeoutJob {
           data: { reason: 'unconfirmed_expired' }
         });
         notifies = [{ audience: 'customer', id: customerId, template: 'ORDER_CLOSED_UNCONFIRMED', variables }];
+      } else if (action.kind === 'review_escalated') {
+        tx.update(orderRef, {
+          'payment.review.escalatedAt': at,
+          updatedAt: at
+        });
+        appendEvent(tx, orderRef, {
+          type: 'review_escalated',
+          actor: JOB_ACTOR,
+          data: { hoursOpen: action.hoursOpen }
+        });
+        notifies = [{
+          audience: 'review',
+          id: orderRef.id,
+          displayId: data.displayId ?? null,
+          hoursOpen: action.hoursOpen
+        }];
       }
 
       return { changed: true, kind: action.kind, notifies };
@@ -380,6 +421,10 @@ class MarketplacePaymentTimeoutJob {
       const note = notes[index];
       if (note.audience === 'support') {
         alertPaidCheck(note.id, note.displayId);
+        continue;
+      }
+      if (note.audience === 'review') {
+        alertReviewEscalated(note.id, note.displayId, note.hoursOpen);
         continue;
       }
       if (note.audience === 'shop') {
@@ -531,6 +576,21 @@ function decidePaidCheck(data, nowMs, settings) {
   return { kind: 'paid_check_alert' };
 }
 
+function decideReview(data, nowMs, settings) {
+  if (data.orderStatus !== 'payment_review') {
+    return null;
+  }
+  const review = data.payment && data.payment.review ? data.payment.review : null;
+  if (!review || review.status !== 'open' || review.escalatedAt) {
+    return null;
+  }
+  const openedMs = millisOf(review.openedAt);
+  if (!Number.isFinite(openedMs) || nowMs <= openedMs + settings.reviewEscalateMs) {
+    return null;
+  }
+  return { kind: 'review_escalated', hoursOpen: settings.reviewEscalateHours };
+}
+
 function decideUnconfirmed(data, nowMs, settings) {
   if (data.orderStatus !== 'payment_unconfirmed') {
     return null;
@@ -555,7 +615,29 @@ function decideForLane(lane, data, nowMs, settings) {
   if (lane === 'unconfirmed') {
     return decideUnconfirmed(data, nowMs, settings);
   }
+  if (lane === 'review') {
+    return decideReview(data, nowMs, settings);
+  }
   return null;
+}
+
+function alertReviewEscalated(orderId, displayId, hoursOpen) {
+  console.warn('⚠️ [MARKETPLACE_TIMEOUT] Payment review open past the escalate window', {
+    orderId,
+    displayId,
+    hoursOpen
+  });
+  try {
+    const Sentry = require('../../instrument.js');
+    if (Sentry && typeof Sentry.captureMessage === 'function') {
+      Sentry.captureMessage('Marketplace payment review escalated', {
+        level: 'warning',
+        extra: { orderId, displayId, hoursOpen }
+      });
+    }
+  } catch (error) {
+    console.error('❌ [MARKETPLACE_TIMEOUT] Review escalate alert failed', error.message);
+  }
 }
 
 function alertPaidCheck(orderId, displayId) {

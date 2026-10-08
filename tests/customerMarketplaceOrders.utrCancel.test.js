@@ -110,7 +110,7 @@ jest.mock('../src/services/notificationService', () => ({
   sendTemplateNotification: (...args) => mockSendTemplate(...args)
 }));
 
-const { isWithinUtrWindow } = require('../src/services/marketplace/customerOrderActions');
+const { isWithinUtrWindow, submitCustomerUtr } = require('../src/services/marketplace/customerOrderActions');
 const customerMarketplaceOrderRoutes = require('../src/routes/customerMarketplaceOrders');
 
 const KEY = '11111111-1111-4111-8111-111111111111';
@@ -314,7 +314,86 @@ describe('customer UTR submit', () => {
   });
 });
 
+describe('customer UTR on payment_unconfirmed', () => {
+  test('opens one customer_report review and counts reviewsOpened once', async () => {
+    seedOrder('order-review', {
+      orderStatus: 'payment_unconfirmed',
+      shopSnapshot: { name: 'Vaigzz' },
+      payment: { status: 'expired', amount: 1540 }
+    });
+    mockDocs.set('shops/shop-1', { marketplaceStats: { reviewsOpened: 0 } });
+
+    const opened = await submitCustomerUtr({
+      customerId: 'customer-test',
+      orderId: 'order-review',
+      idempotencyKey: KEY,
+      utr: UTR
+    });
+    expect(opened.status).toBe(200);
+    expect(opened.body.data.order.orderStatus).toBe('payment_review');
+    expect(opened.body.data.order.payment.status).toBe('under_review');
+    expect(opened.body.data.order.review).toEqual({
+      status: 'open',
+      openedAt: null,
+      outcome: { result: null }
+    });
+    expect(opened.body.data.order.review.trigger).toBeUndefined();
+    const stored = mockDocs.get('marketplaceOrders/order-review');
+    expect(stored.payment.review.trigger).toBe('customer_report');
+    expect(stored.payment.review.status).toBe('open');
+    expect(mockDocs.get('shops/shop-1').marketplaceStats.reviewsOpened).toBe(1);
+    const events = pathsStarting('marketplaceOrders/order-review/events/').map((path) => mockDocs.get(path));
+    expect(events.filter((event) => event.type === 'review_opened')).toHaveLength(1);
+    expect(events.find((event) => event.type === 'review_opened').data).toEqual({ trigger: 'customer_report' });
+    expect(mockSendTemplate).toHaveBeenCalledWith(
+      'customer-test',
+      'MARKETPLACE',
+      'PAYMENT_UNDER_REVIEW',
+      expect.objectContaining({ orderId: 'order-review', shopName: 'Vaigzz' })
+    );
+    expect(mockSendTemplate).toHaveBeenCalledWith(
+      'shop-1',
+      'MARKETPLACE',
+      'PAYMENT_REVIEW_SHOP',
+      expect.objectContaining({ displayId: '#62191' })
+    );
+    expect(mockSendTemplate).not.toHaveBeenCalledWith(
+      'shop-1',
+      'MARKETPLACE',
+      'UTR_SUBMITTED',
+      expect.anything()
+    );
+
+    mockSendTemplate.mockClear();
+    const again = await submitCustomerUtr({
+      customerId: 'customer-test',
+      orderId: 'order-review',
+      idempotencyKey: KEY,
+      utr: UTR
+    });
+    expect(again.status).toBe(200);
+    expect(mockDocs.get('shops/shop-1').marketplaceStats.reviewsOpened).toBe(1);
+    expect(pathsStarting('marketplaceOrders/order-review/events/').length).toBe(events.length);
+    expect(mockSendTemplate).not.toHaveBeenCalled();
+  });
+});
+
 describe('customer cancel', () => {
+  test('cancel on payment_review is INVALID_STATE', async () => {
+    seedOrder('order-review-cancel', {
+      orderStatus: 'payment_review',
+      payment: {
+        status: 'under_review',
+        customerUtr: UTR,
+        review: { status: 'open', trigger: 'customer_report' }
+      }
+    });
+    const response = await postCancel('order-review-cancel');
+    expect(response.status).toBe(409);
+    expect(response.body.error.code).toBe('INVALID_STATE');
+    expect(mockDocs.get('marketplaceOrders/order-review-cancel').orderStatus).toBe('payment_review');
+  });
+
   test('cancel without a UTR releases the matching lock and does not go below zero', async () => {
     seedOrder('order-c1');
     seedLock('order-c1');

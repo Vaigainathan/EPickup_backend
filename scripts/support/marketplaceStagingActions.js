@@ -56,8 +56,16 @@ function refundStubAmount(refunds) {
   return stub.amount != null ? stub.amount : null;
 }
 
+function reviewScriptWrites({ list, apply }) {
+  if (list) {
+    return false;
+  }
+  return apply === true;
+}
+
 module.exports = {
   confirmRequestBody,
   shortCancelRefundPreview,
-  refundStubAmount
+  refundStubAmount,
+  reviewScriptWrites
 };

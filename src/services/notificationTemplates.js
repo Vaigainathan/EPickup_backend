@@ -152,6 +152,21 @@ const NOTIFICATION_TEMPLATES = {
       body: 'Payment for order {{displayId}} is under review.',
       data: { type: 'payment_under_review', action: 'view_order' }
     },
+    PAYMENT_REVIEW_SHOP: {
+      title: 'Payment under review',
+      body: 'Order {{displayId}} needs a payment check.',
+      data: { type: 'payment_review_shop', action: 'view_order' }
+    },
+    REVIEW_RESOLVED: {
+      title: 'Payment review closed',
+      body: 'The payment review for order {{displayId}} is closed.',
+      data: { type: 'review_resolved', action: 'view_order' }
+    },
+    NOT_VERIFIED: {
+      title: 'Payment not verified',
+      body: 'Payment for order {{displayId}} was not verified. The order is closed.',
+      data: { type: 'not_verified', action: 'view_order' }
+    },
     ORDER_CANCELLED: {
       title: 'Order cancelled',
       body: 'Your order {{displayId}} was cancelled.{{reasonLine}}',
@@ -282,6 +297,12 @@ class NotificationTemplateProcessor {
     };
 
     // Add cleaned variables to data for app processing (only if there are any)
+    // One place for every REFUND_INITIATED send. The body already has the rupee
+    // amount. The data payload must not.
+    if (template.data && template.data.type === 'refund_initiated') {
+      delete cleanedVariables.amount;
+    }
+
     if (Object.keys(cleanedVariables).length > 0) {
       processedTemplate.data.variables = cleanedVariables;
     }

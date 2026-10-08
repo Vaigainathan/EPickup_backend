@@ -491,6 +491,7 @@ describe('payment job modes', () => {
     expect(order.orderStatus).toBe('payment_review');
     expect(order.payment.status).toBe('under_review');
     expect(order.payment.review.trigger).toBe('utr_timeout');
+    expect(order.payment.review.status).toBe('open');
     expect(isServerStamp(order.payment.review.openedAt)).toBe(true);
     expect(eventsFor('order-1')[0]).toMatchObject({
       type: 'review_opened',
@@ -500,7 +501,10 @@ describe('payment job modes', () => {
     expect(mockNotifyCustomer).toHaveBeenCalledWith('cust-1', 'PAYMENT_UNDER_REVIEW', expect.objectContaining({
       orderId: 'order-1'
     }));
-    expect(mockSendTemplate).not.toHaveBeenCalled();
+    mockTimeoutDocs.set('shops/shop-1', { marketplaceStats: { reviewsOpened: 0 } });
+    expect(mockSendTemplate).toHaveBeenCalledWith('shop-1', 'MARKETPLACE', 'PAYMENT_REVIEW_SHOP', expect.objectContaining({
+      orderId: 'order-1'
+    }));
     expect(mockTimeoutDocs.has('marketplaceLocks/cust-1_shop-1')).toBe(false);
     expect(userUpdate().patch['customer.marketplace.unpaidCount']).toBe(0);
   });
@@ -552,6 +556,7 @@ describe('payment job modes', () => {
     expect(order.orderStatus).toBe('cancelled');
     expect(order.closedReason).toBe('balance_expired');
     expect(order.cancellation.reason).toBe('balance_expired');
+    expect(order.cancellation.cancelledBy).toBe('system');
     expect(isServerStamp(order.cancellation.cancelledAt)).toBe(true);
     expect(order.payment.status).toBe('refund_pending');
     expect(order.refunds).toHaveLength(1);
@@ -645,6 +650,7 @@ describe('payment job modes', () => {
     expect(order.orderStatus).toBe('cancelled');
     expect(order.closedReason).toBe('unconfirmed_expired');
     expect(order.cancellation.reason).toBe('unconfirmed_expired');
+    expect(order.cancellation.cancelledBy).toBe('system');
     expect(isServerStamp(order.cancellation.cancelledAt)).toBe(true);
     expect(eventsFor('order-1')[0]).toMatchObject({
       type: 'cancelled',
@@ -844,5 +850,65 @@ describe('simulated clock', () => {
     });
     const stored = JSON.stringify([nudge, reminder, review, opened, balance, paid, closed, eventTimes]);
     expect(stored).not.toContain(String(now));
+  });
+
+  test('an open review older than 24 hours writes review_escalated once', async () => {
+    const now = Date.UTC(2026, 8, 1);
+    const hour = 60 * 60 * 1000;
+    putOrder('order-1', {
+      displayId: 77,
+      orderStatus: 'payment_review',
+      payment: {
+        status: 'under_review',
+        review: {
+          status: 'open',
+          trigger: 'utr_timeout',
+          openedAt: stamp(now - (24 * hour) - 1000)
+        }
+      }
+    });
+
+    const first = await job.runTick({ nowMs: now, enforcement: ON });
+    const order = mockTimeoutDocs.get('marketplaceOrders/order-1');
+
+    expect(first.actions).toEqual([{ id: 'order-1', kind: 'review_escalated', changed: true }]);
+    expect(order.orderStatus).toBe('payment_review');
+    expect(order.payment.review.status).toBe('open');
+    expect(isServerStamp(order.payment.review.escalatedAt)).toBe(true);
+    expect(eventsFor('order-1')[0]).toMatchObject({
+      type: 'review_escalated',
+      data: { hoursOpen: 24 }
+    });
+    expect(mockCaptureMessage).toHaveBeenCalledWith('Marketplace payment review escalated', {
+      level: 'warning',
+      extra: { orderId: 'order-1', displayId: 77, hoursOpen: 24 }
+    });
+    expect(mockNotifyCustomer).not.toHaveBeenCalled();
+    expect(mockSendTemplate).not.toHaveBeenCalled();
+
+    const second = await job.runTick({ nowMs: now + hour, enforcement: ON });
+    expect(second.actions).toEqual([]);
+    expect(eventsFor('order-1')).toHaveLength(1);
+    expect(mockCaptureMessage).toHaveBeenCalledTimes(1);
+  });
+
+  test('a review that is exactly 24 hours old is not escalated', async () => {
+    const now = Date.UTC(2026, 8, 2);
+    putOrder('order-1', {
+      orderStatus: 'payment_review',
+      payment: {
+        status: 'under_review',
+        review: {
+          status: 'open',
+          openedAt: stamp(now - (24 * 60 * 60 * 1000))
+        }
+      }
+    });
+
+    const result = await job.runTick({ nowMs: now, enforcement: ON });
+
+    expect(result.actions).toEqual([]);
+    expect(mockTimeoutDocs.get('marketplaceOrders/order-1').payment.review.escalatedAt).toBeUndefined();
+    expect(eventsFor('order-1')).toHaveLength(0);
   });
 });

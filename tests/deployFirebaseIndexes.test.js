@@ -162,7 +162,7 @@ describe('firestore.indexes.json', () => {
   ));
 
   test('keeps one bookings status/driverId/createdAt index and adds the new definitions', () => {
-    expect(spec.indexes).toHaveLength(99);
+    expect(spec.indexes).toHaveLength(100);
     expect(spec.fieldOverrides).toHaveLength(18);
     const duplicates = spec.indexes.filter((index) =>
       index.collectionGroup === 'bookings'
@@ -219,6 +219,14 @@ describe('firestore.indexes.json', () => {
         fields: [
           { fieldPath: 'cancellation.paidCheck', order: 'ASCENDING' },
           { fieldPath: 'cancellation.paidCheckAt', order: 'ASCENDING' }
+        ]
+      }),
+      expect.objectContaining({
+        collectionGroup: 'marketplaceOrders',
+        queryScope: 'COLLECTION',
+        fields: [
+          { fieldPath: 'orderStatus', order: 'ASCENDING' },
+          { fieldPath: 'payment.review.openedAt', order: 'ASCENDING' }
         ]
       })
     ]));

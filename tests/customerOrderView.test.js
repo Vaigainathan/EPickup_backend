@@ -84,4 +84,28 @@ describe('presentCustomerOrder', () => {
     expect(JSON.stringify(view)).not.toContain('utrSource');
     expect(view.payment.officialUtr).toBe('123456789012');
   });
+
+  test('review shows status, openedAt, and outcome.result only', () => {
+    const view = presentCustomerOrder({
+      id: 'ord-3',
+      payment: {
+        status: 'under_review',
+        review: {
+          status: 'open',
+          openedAt: '2026-10-08T00:00:00.000Z',
+          trigger: 'shop_not_found',
+          shopResponse: { result: 'not_found', note: 'secret' },
+          outcome: null
+        }
+      }
+    });
+    expect(view.review).toEqual({
+      status: 'open',
+      openedAt: '2026-10-08T00:00:00.000Z',
+      outcome: { result: null }
+    });
+    expect(JSON.stringify(view.review)).not.toContain('shop_not_found');
+    expect(JSON.stringify(view.review)).not.toContain('not_found');
+    expect(JSON.stringify(view.review)).not.toContain('secret');
+  });
 });

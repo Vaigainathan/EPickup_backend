@@ -76,6 +76,18 @@ function copyBalance(payment) {
   };
 }
 
+function presentCustomerReview(review) {
+  if (!review || typeof review !== 'object') {
+    return null;
+  }
+  const outcome = review.outcome && typeof review.outcome === 'object' ? review.outcome : null;
+  return {
+    status: review.status ?? null,
+    openedAt: toIso(review.openedAt),
+    outcome: { result: outcome && outcome.result ? outcome.result : null }
+  };
+}
+
 function presentCustomerOrder(order) {
   const source = order && typeof order === 'object' ? order : {};
   const cancellation = source.cancellation && typeof source.cancellation === 'object'
@@ -110,6 +122,7 @@ function presentCustomerOrder(order) {
       ...copyPayment(source.payment),
       balance: copyBalance(source.payment)
     },
+    review: presentCustomerReview(source.payment && source.payment.review),
     cancellation: {
       reason: cancellation.reason ?? null,
       cancelledAt: toIso(cancellation.cancelledAt),

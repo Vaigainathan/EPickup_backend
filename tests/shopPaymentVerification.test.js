@@ -128,7 +128,8 @@ jest.mock('../src/services/notificationService', () => ({
   sendToUser: (...args) => mockSendToUser(...args)
 }));
 
-const { isPastPaymentGrace, isShortBalanceExpired } = require('../src/services/marketplace/shopPaymentVerification');
+const { isPastPaymentGrace, isShortBalanceExpired, resolvePaymentReview } = require('../src/services/marketplace/shopPaymentVerification');
+const { NotificationTemplateProcessor } = require('../src/services/notificationTemplates');
 const { presentCustomerOrder } = require('../src/services/marketplace/customerOrderView');
 const shopOrderService = require('../src/services/shopOrderService');
 const shopOrderRoutes = require('../src/routes/shopOrders');
@@ -782,6 +783,310 @@ describe('shop payment verification', () => {
     const response = await post('order-paid/paid-check', { received: true, utrLast4: '9012' });
     expect(response.status).toBe(200);
     expect(mockDocs.get('marketplaceOrders/order-paid').refunds[0].amount).toBe(40);
+  });
+
+  function seedOpenReview(id, reviewPatch = {}) {
+    seedOrder(id, {
+      orderStatus: 'payment_review',
+      expectedAmount: 100,
+      expectedAmountPaise: 10000,
+      items: [{ name: 'Statue', qty: 1, price: 100 }],
+      payment: {
+        status: 'under_review',
+        amount: 100,
+        customerUtr: UTR,
+        review: {
+          status: 'open',
+          openedAt: stamp(Date.now()),
+          trigger: 'utr_timeout',
+          shopResponse: null,
+          outcome: null,
+          ...reviewPatch
+        }
+      }
+    });
+    mockDocs.set(`utrRegistry/${UTR}`, { orderId: id, customerId: 'cust-1', kind: 'customer' });
+    mockDocs.set('users/cust-1', {
+      customer: { marketplace: { unpaidCount: 1, stats: { utrCorrections: 0, reportsNotVerified: 0 } } }
+    });
+    mockDocs.set('shops/shop-1', {
+      marketplaceStats: { reviewsOpened: 1, reviewsFoundAgainstShop: 0, rejections: 0 }
+    });
+  }
+
+  test('confirm from an open review does not touch unpaidCount and a shop UTR is registry kind shop', async () => {
+    mockGetEnforcement.mockResolvedValue(ON);
+    seedOpenReview('order-1');
+    mockDocs.set('marketplaceLocks/cust-1_shop-1', { orderId: 'order-1' });
+    const same = await post('order-1/confirm-payment', { utrLast4: '9012', withinWindowAttested: true });
+    expect(same.status).toBe(200);
+    expect(same.body.data.order.orderStatus).toBe('preparing');
+    expect(same.body.data.order.review.outcome.result).toBe('found');
+    expect(same.body.data.order.review.trigger).toBe('utr_timeout');
+    expect(mockDocs.get('users/cust-1').customer.marketplace.unpaidCount).toBe(1);
+    expect(mockDocs.get('marketplaceLocks/cust-1_shop-1').orderId).toBe('order-1');
+    expect(mockDocs.get('shops/shop-1').marketplaceStats.reviewsFoundAgainstShop).toBe(0);
+    expect(mockDocs.get(`utrRegistry/${UTR}`).kind).toBe('customer');
+
+    seedOpenReview('order-shop-utr');
+    const corrected = await post('order-shop-utr/confirm-payment', {
+      fullUtr: SHOP_UTR,
+      withinWindowAttested: true
+    });
+    expect(corrected.status).toBe(200);
+    const stored = mockDocs.get('marketplaceOrders/order-shop-utr');
+    expect(stored.payment.officialUtr).toBe(SHOP_UTR);
+    expect(stored.payment.utrSource).toBe('shop');
+    expect(mockDocs.get(`utrRegistry/${SHOP_UTR}`).kind).toBe('shop');
+    expect(mockDocs.get('users/cust-1').customer.marketplace.unpaidCount).toBe(1);
+  });
+
+  test('shop not_found then confirm counts reviewsFoundAgainstShop', async () => {
+    mockGetEnforcement.mockResolvedValue(ON);
+    seedOpenReview('order-1', { trigger: 'utr_timeout' });
+    const noted = await post('order-1/payment-not-found', {});
+    expect(noted.status).toBe(200);
+    expect(mockDocs.get('marketplaceOrders/order-1').payment.review.status).toBe('open');
+    expect(mockDocs.get('marketplaceOrders/order-1').payment.review.shopResponse.result).toBe('not_found');
+    expect(mockDocs.get('shops/shop-1').marketplaceStats.reviewsOpened).toBe(1);
+
+    const found = await post('order-1/confirm-payment', { utrLast4: '9012', withinWindowAttested: true });
+    expect(found.status).toBe(200);
+    expect(mockDocs.get('marketplaceOrders/order-1').payment.review.outcome.result).toBe('found');
+    expect(mockDocs.get('shops/shop-1').marketplaceStats.reviewsFoundAgainstShop).toBe(1);
+    expect(mockDocs.get('users/cust-1').customer.marketplace.unpaidCount).toBe(1);
+  });
+
+  test('fulfil false from review cancels with review_refund and shop_cancelled', async () => {
+    mockGetEnforcement.mockResolvedValue(ON);
+    seedOpenReview('order-1');
+    const response = await post('order-1/confirm-payment', {
+      utrLast4: '9012',
+      withinWindowAttested: true,
+      fulfil: false
+    });
+    expect(response.status).toBe(200);
+    const stored = mockDocs.get('marketplaceOrders/order-1');
+    expect(stored.orderStatus).toBe('cancelled');
+    expect(stored.closedReason).toBe('shop_cancelled');
+    expect(stored.cancellation.reason).toBe('shop_cancelled');
+    expect(stored.cancellation.cancelledBy).toBe('shop-1');
+    expect(stored.cancellation.cancelledAt).toBeTruthy();
+    expect(stored.payment.status).toBe('refund_pending');
+    expect(stored.payment.review.outcome.result).toBe('refund');
+    expect(stored.refunds).toHaveLength(1);
+    expect(stored.refunds[0].reason).toBe('review_refund');
+    expect(stored.refunds[0].amount).toBe(100);
+    expect(stored.payment.receivedAmount).toBe(stored.refunds[0].amount);
+    expect(stored.payment.receivedAmountPaise).toBe(10000);
+    expect(stored.refunds[0].reason).not.toBe('late_unfulfilled');
+    expect(mockDocs.get('shops/shop-1').marketplaceStats.reviewsFoundAgainstShop).toBe(0);
+  });
+
+  test('amount-differs on an open review: equal, over, and short', async () => {
+    mockGetEnforcement.mockResolvedValue(ON);
+    seedOpenReview('order-eq');
+    const equal = await post('order-eq/amount-differs', { receivedAmount: 100, utrLast4: '9012' });
+    expect(equal.status).toBe(200);
+    expect(mockDocs.get('marketplaceOrders/order-eq').orderStatus).toBe('preparing');
+    expect(mockDocs.get('marketplaceOrders/order-eq').payment.review.outcome.result).toBe('found');
+    expect(mockDocs.get('marketplaceOrders/order-eq').refunds).toBeUndefined();
+    expect(eventsFor('order-eq').find((event) => event.type === 'amount_differs').data).toEqual({
+      receivedAmount: 100,
+      expectedAmount: 100
+    });
+
+    seedOpenReview('order-over');
+    const over = await post('order-over/amount-differs', { receivedAmount: 140, utrLast4: '9012' });
+    expect(over.status).toBe(200);
+    const overStored = mockDocs.get('marketplaceOrders/order-over');
+    expect(overStored.orderStatus).toBe('preparing');
+    expect(overStored.refunds[0].reason).toBe('overpaid');
+    expect(overStored.refunds[0].amount).toBe(40);
+    expect(overStored.payment.balance).toBeUndefined();
+    expect(eventsFor('order-over').find((event) => event.type === 'amount_differs').data).toEqual({
+      receivedAmount: 140,
+      expectedAmount: 100
+    });
+
+    seedOpenReview('order-short');
+    const short = await post('order-short/amount-differs', { receivedAmount: 40, utrLast4: '9012' });
+    expect(short.status).toBe(200);
+    const shortStored = mockDocs.get('marketplaceOrders/order-short');
+    expect(shortStored.orderStatus).toBe('payment_review');
+    expect(shortStored.payment.review.status).toBe('open');
+    expect(shortStored.payment.review.shopResponse).toMatchObject({ result: 'short', receivedAmount: 40 });
+    expect(shortStored.payment.balance).toBeUndefined();
+    expect(shortStored.refunds).toBeUndefined();
+    const shortEvents = eventsFor('order-short');
+    expect(shortEvents.find((event) => event.type === 'shop_response').data).toEqual({
+      result: 'short',
+      receivedAmount: 40
+    });
+    expect(shortEvents.find((event) => event.type === 'amount_differs').data).toEqual({
+      receivedAmount: 40,
+      expectedAmount: 100
+    });
+  });
+
+  test('amount-differs on payment_unconfirmed stays 409', async () => {
+    mockGetEnforcement.mockResolvedValue(ON);
+    seedOrder('order-late', {
+      orderStatus: 'payment_unconfirmed',
+      expectedAmountPaise: 10000,
+      payment: { status: 'expired', customerUtr: UTR, amount: 100 }
+    });
+    const response = await post('order-late/amount-differs', { receivedAmount: 80, utrLast4: '9012' });
+    expect(response.status).toBe(409);
+    expect(response.body.error.code).toBe('INVALID_STATE');
+  });
+
+  test('confirm and amount-differs on a resolved review are 409', async () => {
+    mockGetEnforcement.mockResolvedValue(ON);
+    seedOpenReview('order-1', {
+      status: 'resolved',
+      outcome: { result: 'found' }
+    });
+    mockDocs.set('marketplaceOrders/order-1', {
+      ...mockDocs.get('marketplaceOrders/order-1'),
+      orderStatus: 'preparing',
+      payment: {
+        ...mockDocs.get('marketplaceOrders/order-1').payment,
+        status: 'confirmed'
+      }
+    });
+    const confirm = await post('order-1/confirm-payment', { utrLast4: '9012', withinWindowAttested: true });
+    expect(confirm.status).toBe(409);
+    expect(confirm.body.error.code).toBe('INVALID_STATE');
+    const amount = await post('order-1/amount-differs', { receivedAmount: 100, utrLast4: '9012' });
+    expect(amount.status).toBe(409);
+    expect(amount.body.error.code).toBe('INVALID_STATE');
+  });
+
+  test('customer-facing exits are closed: shop reject and shop cancel on payment_review are 409', async () => {
+    seedOpenReview('order-1');
+    const rejected = await post('order-1/reject');
+    expect(rejected.status).toBe(409);
+    expect(rejected.body.error.code).toBe('INVALID_STATE');
+    const cancelled = await post('order-1/cancel', { reason: 'out of stock' });
+    expect(cancelled.status).toBe(409);
+    expect(cancelled.body.error.code).toBe('INVALID_STATE');
+    expect(mockDocs.get('marketplaceOrders/order-1').orderStatus).toBe('payment_review');
+  });
+
+  test('support not_found counts reportsNotVerified only, and a second close is a no-op', async () => {
+    seedOpenReview('order-1');
+    const first = await resolvePaymentReview({
+      orderId: 'order-1',
+      outcome: 'not_found',
+      reason: 'bank has no credit',
+      operator: 'ops-1'
+    });
+    expect(first.wrote).toBe(true);
+    const stored = mockDocs.get('marketplaceOrders/order-1');
+    expect(stored.orderStatus).toBe('cancelled');
+    expect(stored.closedReason).toBe('payment_not_verified');
+    expect(stored.cancellation.reason).toBe('payment_not_verified');
+    expect(stored.cancellation.cancelledBy).toBe('support');
+    expect(stored.payment.status).toBe('not_verified');
+    expect(stored.refunds).toBeUndefined();
+    expect(mockDocs.get('users/cust-1').customer.marketplace.stats.reportsNotVerified).toBe(1);
+    expect(mockDocs.get('shops/shop-1').marketplaceStats.reviewsFoundAgainstShop).toBe(0);
+    const second = await resolvePaymentReview({
+      orderId: 'order-1',
+      outcome: 'not_found',
+      reason: 'again',
+      operator: 'ops-1'
+    });
+    expect(second.alreadyProcessed).toBe(true);
+    expect(mockDocs.get('users/cust-1').customer.marketplace.stats.reportsNotVerified).toBe(1);
+    expect(eventsFor('order-1').filter((event) => event.type === 'review_resolved')).toHaveLength(1);
+    const cancelled = eventsFor('order-1').filter((event) => event.type === 'cancelled');
+    expect(cancelled).toHaveLength(1);
+    expect(cancelled[0].actor).toEqual({ type: 'support', id: 'ops-1' });
+    expect(cancelled[0].reason).toBe('payment_not_verified');
+  });
+
+  test('support close and shop confirm: one wins', async () => {
+    mockGetEnforcement.mockResolvedValue(ON);
+    seedOpenReview('order-1', {
+      trigger: 'shop_not_found',
+      shopResponse: { result: 'not_found', at: stamp(Date.now()) }
+    });
+    await resolvePaymentReview({
+      orderId: 'order-1',
+      outcome: 'not_found',
+      reason: 'still missing',
+      operator: 'ops-1'
+    });
+    const confirm = await post('order-1/confirm-payment', { utrLast4: '9012', withinWindowAttested: true });
+    expect(confirm.status).toBe(409);
+    expect(confirm.body.error.code).toBe('INVALID_STATE');
+    expect(mockDocs.get('shops/shop-1').marketplaceStats.reviewsFoundAgainstShop).toBe(0);
+
+    seedOpenReview('order-race', { trigger: 'shop_not_found' });
+    const won = await post('order-race/confirm-payment', { utrLast4: '9012', withinWindowAttested: true });
+    expect(won.status).toBe(200);
+    const lost = await resolvePaymentReview({
+      orderId: 'order-race',
+      outcome: 'refund',
+      reason: 'too late',
+      operator: 'ops-1'
+    });
+    expect(lost.alreadyProcessed).toBe(true);
+    expect(mockDocs.get('marketplaceOrders/order-race').orderStatus).toBe('preparing');
+    expect(mockDocs.get('shops/shop-1').marketplaceStats.reviewsFoundAgainstShop).toBe(1);
+  });
+
+  test('support found is refused when the shop said short, and refund uses that amount', async () => {
+    seedOpenReview('order-1', {
+      trigger: 'shop_not_found',
+      shopResponse: { result: 'short', receivedAmount: 40, at: stamp(Date.now()) }
+    });
+    await expect(resolvePaymentReview({
+      orderId: 'order-1',
+      outcome: 'found',
+      reason: 'looks paid',
+      operator: 'ops-1'
+    })).rejects.toMatchObject({ code: 'REVIEW_SHORT' });
+    expect(mockDocs.get('marketplaceOrders/order-1').orderStatus).toBe('payment_review');
+    expect(mockDocs.get('marketplaceOrders/order-1').payment.review.status).toBe('open');
+
+    const refunded = await resolvePaymentReview({
+      orderId: 'order-1',
+      outcome: 'refund',
+      reason: 'return the short amount',
+      operator: 'ops-1'
+    });
+    expect(refunded.wrote).toBe(true);
+    const stored = mockDocs.get('marketplaceOrders/order-1');
+    expect(stored.closedReason).toBe('support_cancelled');
+    expect(stored.cancellation.reason).toBe('support_cancelled');
+    expect(stored.cancellation.cancelledBy).toBe('support');
+    expect(stored.refunds[0].reason).toBe('review_refund');
+    expect(stored.refunds[0].amount).toBe(40);
+    expect(stored.payment.receivedAmount).toBe(40);
+    expect(stored.payment.receivedAmount).toBe(stored.payment.review.shopResponse.receivedAmount);
+    expect(stored.payment.receivedAmountPaise).toBe(4000);
+    const cancelled = eventsFor('order-1').filter((event) => event.type === 'cancelled');
+    expect(cancelled).toHaveLength(1);
+    expect(cancelled[0].actor).toEqual({ type: 'support', id: 'ops-1' });
+    expect(cancelled[0].reason).toBe('support_cancelled');
+    expect(mockDocs.get('shops/shop-1').marketplaceStats.reviewsFoundAgainstShop).toBe(1);
+  });
+
+  test('REFUND_INITIATED keeps the rupee amount in the body and strips it from data.variables', () => {
+    const template = NotificationTemplateProcessor.getTemplate('MARKETPLACE', 'REFUND_INITIATED');
+    const note = NotificationTemplateProcessor.process(template, {
+      displayId: '#11',
+      orderId: 'order-1',
+      shopName: 'Vaigzz',
+      amount: 40
+    });
+    expect(note.body).toContain('₹40');
+    expect(note.data.variables.amount).toBeUndefined();
+    expect(note.data.variables.orderId).toBe('order-1');
+    expect(note.data.variables.displayId).toBe('#11');
   });
 
   test('a short balance is expired at dueBy and not before', () => {

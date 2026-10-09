@@ -77,6 +77,17 @@ function copyBalance(payment) {
   };
 }
 
+function presentCustomerRating(rating) {
+  if (!rating || typeof rating !== 'object') {
+    return null;
+  }
+  return {
+    shopStars: rating.shopStars ?? null,
+    driverStars: rating.driverStars ?? null,
+    ratedAt: toIso(rating.ratedAt)
+  };
+}
+
 function presentCustomerReview(review) {
   if (!review || typeof review !== 'object') {
     return null;
@@ -140,6 +151,7 @@ function presentCustomerOrder(order) {
     createdAt: toIso(source.createdAt),
     updatedAt: toIso(source.updatedAt),
     hasOpenRefund: source.hasOpenRefund === true,
+    rating: presentCustomerRating(source.rating),
     refunds: (Array.isArray(source.refunds) ? source.refunds : []).map(presentCustomerRefund)
   };
 }
@@ -159,7 +171,8 @@ function presentCustomerOrderSummary(order) {
     expectedAmount: view.expectedAmount,
     expectedAmountPaise: view.expectedAmountPaise,
     createdAt: view.createdAt,
-    window: view.window
+    window: view.window,
+    rating: view.rating
   };
 }
 

@@ -2447,51 +2447,31 @@ router.post('/bookings/:id/rate', authenticateToken, async (req, res) => {
       });
     }
     
-    // Check if rating already exists
-    const existingRatingQuery = await db.collection('ratings')
-      .where('bookingId', '==', bookingId)
-      .where('customerId', '==', userId)
-      .limit(1)
-      .get();
-    
-    if (!existingRatingQuery.empty) {
-      return res.status(400).json({
-        success: false,
-        error: 'Rating already submitted for this booking'
+    const { addBookingDriverRating } = require('../services/bookingDriverRating');
+    let ratingResult;
+    try {
+      ratingResult = await addBookingDriverRating(db, {
+        bookingId,
+        customerId: userId,
+        driverId: bookingData.driverId,
+        rating,
+        feedback,
+        categories
       });
+    } catch (ratingError) {
+      if (ratingError.code === 'DRIVER_ALREADY_RATED') {
+        return res.status(400).json({
+          success: false,
+          error: 'Rating already submitted for this booking'
+        });
+      }
+      throw ratingError;
     }
-    
-    // Create rating record
-    const ratingData = {
-      bookingId,
-      customerId: userId,
-      driverId: bookingData.driverId,
-      rating: parseInt(rating),
-      feedback: feedback || '',
-      categories: categories || {},
-      createdAt: new Date(),
-      updatedAt: new Date()
-    };
-    
-    // Add rating record
-    const ratingRef = await db.collection('ratings').add(ratingData);
-    
-    // Update driver's average rating
-    const driverRatingsQuery = await db.collection('ratings')
-      .where('driverId', '==', bookingData.driverId)
-      .get();
-    
-    const ratings = driverRatingsQuery.docs.map(doc => doc.data().rating);
-    const averageRating = ratings.reduce((sum, rating) => sum + rating, 0) / ratings.length;
-    
-    await db.collection('users').doc(bookingData.driverId).update({
-      'driver.averageRating': averageRating,
-      'driver.totalRatings': ratings.length,
-      updatedAt: new Date()
-    });
+
+    const { ratingRef, ratingData, averageRating, totalRatings } = ratingResult;
     
     console.log(`✅ [RATING] Rating submitted for booking ${bookingId}: ${rating} stars`);
-    console.log(`⭐ [RATING] Updated driver ${bookingData.driverId} average rating: ${averageRating} (from ${ratings.length} total ratings)`);
+    console.log(`⭐ [RATING] Updated driver ${bookingData.driverId} average rating: ${averageRating} (from ${totalRatings} total ratings)`);
     
     // ✅ CRITICAL FIX: Emit real-time rating update to admin dashboard (driver isolated)
     try {
@@ -2504,7 +2484,7 @@ router.post('/bookings/:id/rate', authenticateToken, async (req, res) => {
           action: 'added',
           rating: parseInt(rating),
           newAverageRating: averageRating,
-          totalRatings: ratings.length,
+          totalRatings,
           timestamp: new Date().toISOString()
         });
         console.log(`📤 [RATING] Sent driver rating update event to admin dashboard for driver ${bookingData.driverId}`);

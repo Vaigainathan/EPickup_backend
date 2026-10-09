@@ -11,6 +11,7 @@ const { getCustomerDriverLocation } = require('../services/marketplace/customerD
 const { submitCustomerUtr, submitBalanceUtr, cancelCustomerOrder } = require('../services/marketplace/customerOrderActions');
 const { uploadPaymentEvidence, submitPaymentReport } = require('../services/marketplace/paymentEvidence');
 const { submitCustomerUpi, acknowledgeRefund } = require('../services/marketplace/refunds');
+const { submitOrderRating } = require('../services/marketplace/submitOrderRating');
 
 const evidenceUpload = multer({
   storage: multer.memoryStorage(),
@@ -71,6 +72,11 @@ const driverLocationLimiter = userRateLimiter({
   windowMs: 60000,
   max: 30,
   name: 'marketplace-order-driver-location-minute'
+});
+const ratingLimiter = userRateLimiter({
+  windowMs: 60 * 1000,
+  max: 10,
+  name: 'marketplace-order-rating-minute'
 });
 
 function handleEvidenceUpload(req, res, next) {
@@ -296,6 +302,25 @@ router.post(
       return res.status(result.status).json(result.body);
     } catch (error) {
       return sendError(res, error, 'Failed to acknowledge refund');
+    }
+  }
+);
+
+router.post(
+  '/marketplace-orders/:id/rating',
+  authenticateToken,
+  requireRole(['customer']),
+  ratingLimiter,
+  async (req, res) => {
+    try {
+      const result = await submitOrderRating({
+        customerId: req.user.uid,
+        orderId: req.params.id,
+        body: req.body || {}
+      });
+      return res.status(result.status).json(result.body);
+    } catch (error) {
+      return sendError(res, error, 'Failed to submit rating');
     }
   }
 );

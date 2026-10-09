@@ -1,6 +1,8 @@
 const {
   validateOpeningHours,
   isShopOpenNow,
+  shopOpenToggleIsOn,
+  isShopOpenForMarketplaceOrder,
   WEEKDAYS
 } = require('../src/utils/shopOpeningHours');
 const {
@@ -77,6 +79,26 @@ describe('MP-12 shop profile', () => {
         saturday: { closed: true },
         sunday: { closed: true }
       })).toThrow(/invalid field/);
+    });
+  });
+
+  describe('shop open toggle source', () => {
+    it('reads users.shop.isOpen only, not shops profile top-level isOpen', () => {
+      expect(shopOpenToggleIsOn({ isOpen: true })).toBe(true);
+      expect(shopOpenToggleIsOn({ isOpen: false })).toBe(false);
+      expect(shopOpenToggleIsOn({})).toBe(false);
+      const hours = fullWeek({ monday: { closed: false, open: '00:00', close: '23:59' } });
+      const now = istDate('monday', 12, 0);
+      expect(isShopOpenForMarketplaceOrder({
+        shopIdentity: { isOpen: true },
+        shopProfile: { storefront: { openingHours: hours } },
+        now
+      })).toBe(true);
+      expect(isShopOpenForMarketplaceOrder({
+        shopIdentity: { isOpen: false },
+        shopProfile: { isOpen: true, storefront: { openingHours: hours } },
+        now
+      })).toBe(false);
     });
   });
 

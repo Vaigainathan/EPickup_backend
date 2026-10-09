@@ -383,10 +383,9 @@ async function loadContext(db, customerId, shopId, isShopOpenNow) {
   const identity = shopUser && shopUser.shop ? shopUser.shop : {};
   const shop = shopSnap.exists ? (shopSnap.data() || {}) : null;
   const bank = shop && shop.bank ? shop.bank : {};
-  const openingHours = shop && shop.storefront && shop.storefront.openingHours !== undefined
-    ? shop.storefront.openingHours
-    : null;
-  const isOpen = identity.isOpen === true;
+  const { shopOpenToggleIsOn, openingHoursFromShopProfile } = require('../../src/utils/shopOpeningHours');
+  const openingHours = openingHoursFromShopProfile(shop);
+  const isOpen = shopOpenToggleIsOn(identity);
   const products = productsSnap.docs
     .map((doc) => productSummary(doc.id, doc.data() || {}))
     .filter((row) => row.isActive);

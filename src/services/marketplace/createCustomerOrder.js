@@ -223,7 +223,7 @@ function policyGroupFor(shopType, policyGroupA) {
   return list.includes(shopType) ? 'A' : 'B';
 }
 
-const { isShopOpenNow } = require('../../utils/shopOpeningHours');
+const { isShopOpenForMarketplaceOrder, isShopOpenNow } = require('../../utils/shopOpeningHours');
 
 function addressText(address) {
   const candidates = [address.text, address.address, address.addressLine, address.fullAddress];
@@ -369,10 +369,7 @@ async function createMarketplaceOrder({ customerId, idempotencyKey, body }) {
       throw httpError(404, 'SHOP_NOT_FOUND', 'Shop not found');
     }
     const shopProfile = shopSnap.data() || {};
-    const openingHours = shopProfile.storefront && shopProfile.storefront.openingHours !== undefined
-      ? shopProfile.storefront.openingHours
-      : null;
-    if (!isShopOpenNow({ isOpen: shopIdentity.isOpen === true, openingHours })) {
+    if (!isShopOpenForMarketplaceOrder({ shopIdentity, shopProfile })) {
       throw httpError(409, 'SHOP_CLOSED', 'Shop is closed');
     }
     const bank = shopProfile.bank || {};

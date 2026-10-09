@@ -132,6 +132,36 @@ function istParts(now) {
   };
 }
 
+/**
+ * Open toggle on users/{shopId}.shop — written by PUT /api/shop/status (shop.isOpen).
+ * Not shops/{id}.isOpen (that field is not used by the backend).
+ */
+function shopOpenToggleIsOn(shopIdentity) {
+  if (!shopIdentity || typeof shopIdentity !== 'object') {
+    return false;
+  }
+  return shopIdentity.isOpen === true;
+}
+
+function openingHoursFromShopProfile(shopProfile) {
+  if (!shopProfile || typeof shopProfile !== 'object') {
+    return null;
+  }
+  const storefront = shopProfile.storefront;
+  if (!storefront || typeof storefront !== 'object') {
+    return null;
+  }
+  return storefront.openingHours !== undefined ? storefront.openingHours : null;
+}
+
+function isShopOpenForMarketplaceOrder({ shopIdentity, shopProfile, now = new Date() }) {
+  return isShopOpenNow({
+    isOpen: shopOpenToggleIsOn(shopIdentity),
+    openingHours: openingHoursFromShopProfile(shopProfile),
+    now
+  });
+}
+
 function isShopOpenNow({ isOpen, openingHours, now = new Date() }) {
   if (isOpen !== true) {
     return false;
@@ -184,5 +214,8 @@ module.exports = {
   formatClock,
   validateOpeningHours,
   istParts,
+  shopOpenToggleIsOn,
+  openingHoursFromShopProfile,
+  isShopOpenForMarketplaceOrder,
   isShopOpenNow
 };

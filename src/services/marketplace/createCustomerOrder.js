@@ -223,62 +223,7 @@ function policyGroupFor(shopType, policyGroupA) {
   return list.includes(shopType) ? 'A' : 'B';
 }
 
-function istParts(now) {
-  const formatter = new Intl.DateTimeFormat('en-US', {
-    timeZone: 'Asia/Kolkata',
-    weekday: 'long',
-    hour: '2-digit',
-    minute: '2-digit',
-    hourCycle: 'h23'
-  });
-  const parts = {};
-  formatter.formatToParts(now).forEach((part) => {
-    parts[part.type] = part.value;
-  });
-  let hour = Number(parts.hour);
-  if (hour === 24) {
-    hour = 0;
-  }
-  const minute = Number(parts.minute);
-  return {
-    weekday: String(parts.weekday || '').toLowerCase(),
-    minutes: (hour * 60) + minute
-  };
-}
-
-function parseClock(value) {
-  const match = /^([01]?\d|2[0-3]):([0-5]\d)$/.exec(String(value || '').trim());
-  if (!match) {
-    return null;
-  }
-  return (Number(match[1]) * 60) + Number(match[2]);
-}
-
-function isShopOpenNow({ isOpen, openingHours, now = new Date() }) {
-  if (isOpen !== true) {
-    return false;
-  }
-  if (openingHours == null) {
-    return true;
-  }
-  if (typeof openingHours !== 'object' || Array.isArray(openingHours)) {
-    return false;
-  }
-  const clock = istParts(now);
-  const today = openingHours[clock.weekday];
-  if (!today || typeof today !== 'object') {
-    return false;
-  }
-  const start = parseClock(today.start);
-  const end = parseClock(today.end);
-  if (start == null || end == null) {
-    return false;
-  }
-  if (end >= start) {
-    return clock.minutes >= start && clock.minutes < end;
-  }
-  return clock.minutes >= start || clock.minutes < end;
-}
+const { isShopOpenNow } = require('../../utils/shopOpeningHours');
 
 function addressText(address) {
   const candidates = [address.text, address.address, address.addressLine, address.fullAddress];

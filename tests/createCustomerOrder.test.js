@@ -218,11 +218,11 @@ describe('isShopOpenNow', () => {
   });
 
   test('requires the IST clock to fall inside today when hours exist', () => {
-    const hours = { wednesday: { start: '09:00', end: '18:00' } };
+    const hours = { monday: { closed: true }, tuesday: { closed: true }, wednesday: { closed: false, open: '09:00', close: '18:00' }, thursday: { closed: true }, friday: { closed: true }, saturday: { closed: true }, sunday: { closed: true } };
     expect(isShopOpenNow({ isOpen: true, openingHours: hours, now: tenAmIst })).toBe(true);
     expect(isShopOpenNow({
       isOpen: true,
-      openingHours: { wednesday: { start: '11:00', end: '18:00' } },
+      openingHours: { monday: { closed: true }, tuesday: { closed: true }, wednesday: { closed: false, open: '11:00', close: '18:00' }, thursday: { closed: true }, friday: { closed: true }, saturday: { closed: true }, sunday: { closed: true } },
       now: tenAmIst
     })).toBe(false);
     expect(isShopOpenNow({ isOpen: false, openingHours: hours, now: tenAmIst })).toBe(false);

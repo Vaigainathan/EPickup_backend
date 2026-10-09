@@ -474,14 +474,11 @@ class ShopOnboardingService {
     }
 
     const now = this.now();
+    const { mergeBankAfterUpiVerify } = require('../utils/shopBankMerge');
+    const bank = mergeBankAfterUpiVerify(ctx.shopProfile.bank || {}, normalized, now);
 
     await ctx.shopRef.set({
-      bank: {
-        ...(ctx.shopProfile.bank || {}),
-        upiId: normalized,
-        upiVerified: true,
-        upiVerifiedAt: now
-      },
+      bank,
       updatedAt: now,
       ...(ctx.shopExists ? {} : { createdAt: now })
     }, { merge: true });
@@ -555,16 +552,16 @@ class ShopOnboardingService {
     }
 
     const now = this.now();
-    const bank = {
+    const { mergeBankAfterSaveDetails } = require('../utils/shopBankMerge');
+    const bank = mergeBankAfterSaveDetails(existingBank, {
       accountHolderName,
       bankName,
       accountNumberEncrypted,
       accountNumberLast4: accountNumber.slice(-4),
       ifsc,
       upiId,
-      upiVerified: true,
       upiVerifiedAt: existingBank.upiVerifiedAt || now
-    };
+    });
 
     await ctx.shopRef.set({
       bank,

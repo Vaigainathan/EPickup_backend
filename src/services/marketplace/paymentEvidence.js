@@ -475,6 +475,7 @@ async function downloadOrderEvidence(db, orderId, destDir) {
 module.exports = {
   MAX_BYTES,
   imageExt,
+  contentTypeFor,
   uploadPaymentEvidence,
   submitPaymentReport,
   downloadOrderEvidence

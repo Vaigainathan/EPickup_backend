@@ -122,6 +122,31 @@ class ShopSettingsService {
     return this.getProfile(shopId);
   }
 
+  async updateUpiRegisteredName(shopId, payload) {
+    const raw = payload && payload.upiRegisteredName;
+    if (typeof raw !== 'string') {
+      throw httpError(400, 'INVALID_UPI_NAME', 'upiRegisteredName is required');
+    }
+    const upiRegisteredName = raw.trim();
+    if (upiRegisteredName.length < 1 || upiRegisteredName.length > 100) {
+      throw httpError(400, 'INVALID_UPI_NAME', 'upiRegisteredName must be between 1 and 100 characters');
+    }
+
+    const { mergeBankAfterUpiRegisteredName, isVerified } = require('../utils/shopBankMerge');
+    const ctx = await shopOnboardingService.loadShopContext(shopId);
+    const bank = mergeBankAfterUpiRegisteredName(ctx.shopProfile.bank || {}, upiRegisteredName);
+
+    await ctx.shopRef.set({
+      bank,
+      updatedAt: this.now()
+    }, { merge: true });
+
+    return {
+      upiRegisteredName,
+      verified: isVerified(bank)
+    };
+  }
+
   /**
    * True if this shop has any marketplace order still in preparing, ready, or handed_over.
    */

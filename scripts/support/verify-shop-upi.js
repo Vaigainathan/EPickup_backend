@@ -12,6 +12,7 @@ require('dotenv').config();
 
 const { FieldValue } = require('firebase-admin/firestore');
 const { assertStagingEnv, assertStagingAdmin } = require('../assertStagingFirebase');
+const { assertStagingShopId } = require('./approveShopActions');
 
 assertStagingEnv();
 
@@ -34,6 +35,12 @@ async function main() {
 
   if (!shopId || !verifiedName) {
     console.error('Usage: node scripts/support/verify-shop-upi.js --shop <id> --name "<verified name>" [--apply]');
+    process.exit(1);
+  }
+
+  const lock = assertStagingShopId(shopId);
+  if (!lock.ok) {
+    console.error(lock.message);
     process.exit(1);
   }
 

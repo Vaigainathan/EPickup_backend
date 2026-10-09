@@ -7,7 +7,31 @@ const shopCatalogueService = require('../services/shopCatalogueService');
 const shopDashboardService = require('../services/shopDashboardService');
 const shopSettingsService = require('../services/shopSettingsService');
 const shopOrderService = require('../services/shopOrderService');
+const shopStorefrontService = require('../services/shopStorefrontService');
 const { handleDocumentUpload, pickDocumentFiles } = require('../middleware/shopDocumentUpload');
+const multer = require('multer');
+const { fileUploadLimiter } = require('../middleware/rateLimit');
+
+const storefrontUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 5 * 1024 * 1024 }
+});
+
+function handleStorefrontMulter(req, res, next) {
+  storefrontUpload.single('photo')(req, res, (err) => {
+    if (err) {
+      const isLimit = err.code === 'LIMIT_FILE_SIZE';
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: isLimit ? 'FILE_TOO_LARGE' : 'UPLOAD_ERROR',
+          message: isLimit ? 'Photo must be 5MB or smaller' : 'Failed to upload photo'
+        }
+      });
+    }
+    next();
+  });
+}
 
 function sendError(res, error) {
   const status = error.status || 500;
@@ -106,6 +130,65 @@ router.post('/verify-upi', authMiddleware, requireRole(['shop']), async (req, re
   return withShop(req, res, async (shopId) => {
     const data = await shopSettingsService.verifyUpi(shopId, req.body?.upiId);
     return res.json({ success: true, data, message: 'UPI ID verified' });
+  });
+});
+
+/**
+ * GET /api/shop/storefront
+ */
+router.get('/storefront', authMiddleware, requireRole(['shop']), async (req, res) => {
+  return withShop(req, res, async (shopId) => {
+    const data = await shopStorefrontService.getStorefront(shopId);
+    return res.json({ success: true, data });
+  });
+});
+
+/**
+ * PUT /api/shop/storefront
+ * Body: { tagline, openingHours }
+ */
+router.put('/storefront', authMiddleware, requireRole(['shop']), async (req, res) => {
+  return withShop(req, res, async (shopId) => {
+    const data = await shopStorefrontService.updateStorefront(shopId, req.body || {});
+    return res.json({ success: true, data, message: 'Storefront updated' });
+  });
+});
+
+/**
+ * POST /api/shop/storefront/photo
+ */
+router.post(
+  '/storefront/photo',
+  authMiddleware,
+  requireRole(['shop']),
+  fileUploadLimiter,
+  handleStorefrontMulter,
+  async (req, res) => {
+    return withShop(req, res, async (shopId) => {
+      const data = await shopStorefrontService.uploadStorefrontPhoto(shopId, req.file);
+      return res.json({ success: true, data, message: 'Storefront photo updated' });
+    });
+  }
+);
+
+/**
+ * DELETE /api/shop/storefront/photo
+ */
+router.delete('/storefront/photo', authMiddleware, requireRole(['shop']), async (req, res) => {
+  return withShop(req, res, async (shopId) => {
+    const data = await shopStorefrontService.deleteStorefrontPhoto(shopId);
+    return res.json({ success: true, data, message: 'Storefront photo removed' });
+  });
+});
+
+/**
+ * PUT /api/shop/bank/upi-name
+ * Body: { upiRegisteredName }
+ */
+router.put('/bank/upi-name', authMiddleware, requireRole(['shop']), async (req, res) => {
+  return withShop(req, res, async (shopId) => {
+    const data = await shopSettingsService.updateUpiRegisteredName(shopId, req.body || {});
+    return res.json({ success: true, data, message: 'UPI registered name updated' });
   });
 });
 

@@ -208,6 +208,71 @@ function isShopOpenNow({ isOpen, openingHours, now = new Date() }) {
   return clock.minutes >= open && clock.minutes < close;
 }
 
+function dayOpenMinutes(entry) {
+  if (!entry || typeof entry !== 'object') {
+    return null;
+  }
+  if (entry.closed === true) {
+    return null;
+  }
+  const hasLegacy = entry.start != null || entry.end != null;
+  const hasNew = entry.closed != null || entry.open != null || entry.close != null;
+  if (hasLegacy && !hasNew) {
+    return parseClock(entry.start);
+  }
+  return parseClock(entry.open);
+}
+
+function istYmdFromDate(date) {
+  const formatter = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Kolkata',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit'
+  });
+  const text = formatter.format(date);
+  const [year, month, day] = text.split('-').map((part) => Number(part));
+  return { year, month, day };
+}
+
+function istOpenIso(date, dayOffset, openMinutes) {
+  const shifted = new Date(date.getTime() + dayOffset * 24 * 60 * 60 * 1000);
+  const { year, month, day } = istYmdFromDate(shifted);
+  const hour = Math.floor(openMinutes / 60);
+  const minute = openMinutes % 60;
+  const mm = String(month).padStart(2, '0');
+  const dd = String(day).padStart(2, '0');
+  const hh = String(hour).padStart(2, '0');
+  const min = String(minute).padStart(2, '0');
+  return `${year}-${mm}-${dd}T${hh}:${min}:00+05:30`;
+}
+
+/**
+ * Next scheduled opening from openingHours within 7 IST calendar days, or null.
+ * Returns full ISO-8601 with +05:30 offset.
+ */
+function nextOpensAt({ openingHours, now = new Date() }) {
+  if (openingHours == null || typeof openingHours !== 'object' || Array.isArray(openingHours)) {
+    return null;
+  }
+  const nowMs = now.getTime();
+  for (let dayOffset = 0; dayOffset < 7; dayOffset += 1) {
+    const shifted = new Date(now.getTime() + dayOffset * 24 * 60 * 60 * 1000);
+    const clock = istParts(shifted);
+    const entry = openingHours[clock.weekday];
+    const openMinutes = dayOpenMinutes(entry);
+    if (openMinutes == null) {
+      continue;
+    }
+    const candidate = istOpenIso(now, dayOffset, openMinutes);
+    const candidateMs = Date.parse(candidate);
+    if (Number.isFinite(candidateMs) && candidateMs > nowMs) {
+      return candidate;
+    }
+  }
+  return null;
+}
+
 module.exports = {
   WEEKDAYS,
   parseClock,
@@ -217,5 +282,6 @@ module.exports = {
   shopOpenToggleIsOn,
   openingHoursFromShopProfile,
   isShopOpenForMarketplaceOrder,
-  isShopOpenNow
+  isShopOpenNow,
+  nextOpensAt
 };

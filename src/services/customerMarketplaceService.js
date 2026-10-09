@@ -1,6 +1,20 @@
 const { getFirestore } = require('./firebase');
 const locationService = require('./locationService');
 const shopCatalogueService = require('./shopCatalogueService');
+const { MARKETPLACE_DEFAULTS } = require('../config/marketplaceDefaults');
+const { policyGroupFor } = require('./marketplace/createCustomerOrder');
+const {
+  isShopOpenNow,
+  shopOpenToggleIsOn,
+  openingHoursFromShopProfile,
+  nextOpensAt
+} = require('../utils/shopOpeningHours');
+const {
+  ratingFromProfile,
+  applyRankingMetrics,
+  sortShops,
+  parseSortParam
+} = require('./marketplace/browseRanking');
 const {
   MARKETPLACE_SHOP_TYPES,
   isMarketplaceShopType
@@ -12,6 +26,19 @@ const SEARCH_CAP = 20;
 const SHOP_ID_IN_LIMIT = 10;
 const GET_ALL_LIMIT = 50;
 const MIN_SEARCH_LENGTH = 2;
+const MAX_SEARCH_LENGTH = 50;
+
+const LEGACY_CARD_FIELDS = [
+  'id',
+  'shopName',
+  'shopType',
+  'address',
+  'location',
+  'distanceKm',
+  'etaMinutes',
+  'isOpen',
+  'orderCount'
+];
 
 function httpError(status, code, message) {
   const error = new Error(message);
@@ -64,14 +91,7 @@ function parseLimit(value) {
 }
 
 function parseSort(value) {
-  if (value === undefined || value === null || String(value).trim() === '') {
-    return 'distance';
-  }
-  const sort = String(value).trim();
-  if (sort !== 'distance' && sort !== 'orders') {
-    throw httpError(400, 'INVALID_SORT', 'sort must be distance or orders');
-  }
-  return sort;
+  return parseSortParam(value);
 }
 
 function parseCategory(value) {
@@ -83,6 +103,30 @@ function parseCategory(value) {
     throw httpError(400, 'INVALID_CATEGORY', 'category is not a marketplace shop type');
   }
   return category;
+}
+
+function parseSearchQuery(raw) {
+  const q = typeof raw === 'string' ? raw.trim() : '';
+  if (q.length < MIN_SEARCH_LENGTH || q.length > MAX_SEARCH_LENGTH) {
+    throw httpError(
+      400,
+      'INVALID_QUERY',
+      `q must be between ${MIN_SEARCH_LENGTH} and ${MAX_SEARCH_LENGTH} characters`
+    );
+  }
+  return q.toLowerCase();
+}
+
+function parseMinRating(query) {
+  const raw = query.minRating ?? query.ratingMin;
+  if (raw === undefined || raw === null || String(raw).trim() === '') {
+    return null;
+  }
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n < 0) {
+    throw httpError(400, 'INVALID_RATING_FILTER', 'minRating must be a number');
+  }
+  return n;
 }
 
 function nameMatches(name, q) {
@@ -107,59 +151,146 @@ function decodeCursor(value, sort) {
   }
   try {
     const parsed = JSON.parse(Buffer.from(String(value), 'base64url').toString('utf8'));
-    if (!parsed || parsed.sort !== sort || typeof parsed.id !== 'string') {
-      throw new Error('mismatch');
+    if (!parsed || typeof parsed !== 'object') {
+      throw new Error('invalid');
     }
-    if (typeof parsed.distanceKm !== 'number' || typeof parsed.orderCount !== 'number') {
-      throw new Error('mismatch');
+    if (parsed.sort !== sort) {
+      return { sort, offset: 0, now: typeof parsed.now === 'string' ? parsed.now : new Date().toISOString() };
     }
-    return parsed;
+    if (typeof parsed.offset !== 'number' || !Number.isInteger(parsed.offset) || parsed.offset < 0) {
+      throw new Error('invalid');
+    }
+    if (typeof parsed.now !== 'string' || !parsed.now) {
+      throw new Error('invalid');
+    }
+    return { sort, offset: parsed.offset, now: parsed.now };
   } catch {
     throw httpError(400, 'INVALID_CURSOR', 'Invalid cursor');
   }
 }
 
-function compareDistance(a, b) {
-  if (a.distanceKm !== b.distanceKm) {
-    return a.distanceKm - b.distanceKm;
-  }
-  return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
-}
-
-function compareOrders(a, b) {
-  if (a.orderCount !== b.orderCount) {
-    return b.orderCount - a.orderCount;
-  }
-  return compareDistance(a, b);
-}
-
-function pageShops(shops, sort, limit, cursor) {
-  let start = 0;
-  if (cursor) {
-    const idx = shops.findIndex((shop) => (
-      shop.id === cursor.id
-      && shop.distanceKm === cursor.distanceKm
-      && shop.orderCount === cursor.orderCount
-    ));
-    if (idx < 0) {
-      throw httpError(400, 'INVALID_CURSOR', 'Cursor does not match the current result set');
-    }
-    start = idx + 1;
-  }
-  const slice = shops.slice(start, start + limit);
-  const last = slice[slice.length - 1];
-  const hasMore = start + slice.length < shops.length;
+function pageShops(shops, sort, limit, cursor, nowIso) {
+  const offset = cursor ? cursor.offset : 0;
+  const slice = shops.slice(offset, offset + limit);
+  const nextOffset = offset + slice.length;
+  const hasMore = nextOffset < shops.length;
   return {
     shops: slice,
-    nextCursor: hasMore && last
-      ? encodeCursor({
-        sort,
-        id: last.id,
-        distanceKm: last.distanceKm,
-        orderCount: last.orderCount
-      })
+    nextCursor: hasMore
+      ? encodeCursor({ sort, offset: nextOffset, now: nowIso })
       : null
   };
+}
+
+function hasVerifiedUpiName(profile) {
+  const bank = profile && profile.bank ? profile.bank : {};
+  const verified = bank.upiNameVerification && typeof bank.upiNameVerification.verifiedName === 'string'
+    ? bank.upiNameVerification.verifiedName.trim()
+    : '';
+  return verified.length > 0;
+}
+
+function toDate(value) {
+  if (value == null) {
+    return null;
+  }
+  if (value instanceof Date) {
+    return value;
+  }
+  if (typeof value.toDate === 'function') {
+    const date = value.toDate();
+    return date instanceof Date ? date : null;
+  }
+  if (typeof value === 'string' || typeof value === 'number') {
+    const date = new Date(value);
+    return Number.isFinite(date.getTime()) ? date : null;
+  }
+  return null;
+}
+
+function readBrowseSettings(settingsData) {
+  const source = settingsData && typeof settingsData === 'object' ? settingsData : {};
+  function pick(key) {
+    return Object.prototype.hasOwnProperty.call(source, key) ? source[key] : MARKETPLACE_DEFAULTS[key];
+  }
+  const weights = pick('RANKING_WEIGHTS');
+  return {
+    weights: weights && typeof weights === 'object'
+      ? weights
+      : MARKETPLACE_DEFAULTS.RANKING_WEIGHTS,
+    boostDays: Number(pick('NEW_SHOP_BOOST_DAYS')) || MARKETPLACE_DEFAULTS.NEW_SHOP_BOOST_DAYS,
+    priorWeight: Number(pick('RATING_PRIOR_WEIGHT')) || MARKETPLACE_DEFAULTS.RATING_PRIOR_WEIGHT,
+    policyGroupA: pick('POLICY_GROUP_A')
+  };
+}
+
+function productCreatedMs(data) {
+  const created = data.createdAt;
+  if (created && typeof created.toDate === 'function') {
+    return created.toDate().getTime();
+  }
+  if (created instanceof Date) {
+    return created.getTime();
+  }
+  return 0;
+}
+
+function productHasPhoto(data) {
+  const path = data.photoFilePath;
+  const url = data.photoUrl;
+  return (typeof path === 'string' && path.trim() !== '')
+    || (typeof url === 'string' && url.trim() !== '');
+}
+
+function pickEarliestProductPhoto(docs) {
+  let best = null;
+  let bestMs = Infinity;
+  for (let i = 0; i < docs.length; i += 1) {
+    const doc = docs[i];
+    const data = doc.data || doc;
+    if (data.isActive === false || !productHasPhoto(data)) {
+      continue;
+    }
+    const ms = productCreatedMs(data);
+    if (ms < bestMs) {
+      bestMs = ms;
+      best = data;
+    }
+  }
+  if (!best) {
+    return null;
+  }
+  return {
+    photoFilePath: best.photoFilePath,
+    photoUrl: best.photoUrl
+  };
+}
+
+function buildCategoryTagline(names) {
+  const sorted = [...names].sort((a, b) => String(a).localeCompare(String(b)));
+  return sorted.slice(0, 3).join(', ');
+}
+
+function presentRatingDisplay(ratingCount, ratingAverage) {
+  if (!ratingCount) {
+    return { rating: null, isNew: true };
+  }
+  return {
+    rating: { average: ratingAverage, count: ratingCount },
+    isNew: false
+  };
+}
+
+function stripInternalCardFields(card) {
+  const out = { ...card };
+  delete out.ratingSum;
+  delete out.ratingCount;
+  delete out.ratingAverage;
+  delete out.fairRating;
+  delete out.relevanceScore;
+  delete out.approvedAt;
+  delete out.openingHours;
+  return out;
 }
 
 class CustomerMarketplaceService {
@@ -174,34 +305,117 @@ class CustomerMarketplaceService {
     return { distanceKm, etaMinutes };
   }
 
-  async presentCustomerProduct(data, id) {
-    const full = await shopCatalogueService.presentProduct(data, id);
-    const variants = Array.isArray(full.variants) ? full.variants : [];
+  async loadMarketplaceSettings() {
+    const snap = await this.getDb().collection('appSettings').doc('marketplace').get();
+    return readBrowseSettings(snap.exists ? snap.data() : null);
+  }
+
+  async loadFallbackMaps(shopIds) {
+    const db = this.getDb();
+    const productDocsByShop = new Map();
+    const categoryNamesByShop = new Map();
+
+    for (const ids of chunk(shopIds, SHOP_ID_IN_LIMIT)) {
+      if (ids.length === 0) {
+        continue;
+      }
+      const [productSnap, categorySnap] = await Promise.all([
+        db.collection('products').where('shopId', 'in', ids).get(),
+        db.collection('categories').where('shopId', 'in', ids).get()
+      ]);
+      productSnap.docs.forEach((doc) => {
+        const data = doc.data() || {};
+        const shopId = data.shopId;
+        if (!shopId) {
+          return;
+        }
+        const list = productDocsByShop.get(shopId) || [];
+        list.push({ id: doc.id, ...data });
+        productDocsByShop.set(shopId, list);
+      });
+      categorySnap.docs.forEach((doc) => {
+        const data = doc.data() || {};
+        const shopId = data.shopId;
+        if (!shopId || typeof data.name !== 'string') {
+          return;
+        }
+        const list = categoryNamesByShop.get(shopId) || [];
+        list.push(data.name);
+        categoryNamesByShop.set(shopId, list);
+      });
+    }
+
+    const productPhotoByShop = new Map();
+    productDocsByShop.forEach((docs, shopId) => {
+      const picked = pickEarliestProductPhoto(docs);
+      if (picked) {
+        productPhotoByShop.set(shopId, picked);
+      }
+    });
+
+    const taglineByShop = new Map();
+    categoryNamesByShop.forEach((names, shopId) => {
+      const tagline = buildCategoryTagline(names);
+      if (tagline) {
+        taglineByShop.set(shopId, tagline);
+      }
+    });
+
+    return { productPhotoByShop, taglineByShop };
+  }
+
+  async presentShopCard(row, { productPhotoByShop, taglineByShop, policyGroupA, now }) {
+    const toggleOpen = row.isOpen;
+    const openingHours = row.openingHours;
+    const isOpenNow = isShopOpenNow({ isOpen: toggleOpen, openingHours, now });
+    const opensAt = isOpenNow
+      ? null
+      : nextOpensAt({ openingHours, now });
+
+    const storefront = row.storefront || {};
+    let photoUrl = null;
+    if (typeof storefront.photoPath === 'string' && storefront.photoPath.trim() !== '') {
+      photoUrl = await shopCatalogueService.resolvePhotoUrl(storefront.photoPath, null);
+    }
+    if (!photoUrl) {
+      const fallback = productPhotoByShop.get(row.id);
+      if (fallback) {
+        photoUrl = await shopCatalogueService.resolvePhotoUrl(fallback.photoFilePath, fallback.photoUrl);
+      }
+    }
+
+    let tagline = typeof storefront.tagline === 'string' ? storefront.tagline.trim() : '';
+    if (!tagline) {
+      tagline = taglineByShop.get(row.id) || '';
+    }
+
+    const { rating, isNew } = presentRatingDisplay(row.ratingCount, row.ratingAverage);
+
     return {
-      id: full.id,
-      shopId: full.shopId,
-      categoryId: full.categoryId,
-      name: full.name,
-      description: full.description ?? null,
-      price: full.price,
-      unitType: full.unitType,
-      weight: full.weight ?? null,
-      photoUrl: full.photoUrl,
-      stock: full.stock ?? 0,
-      hasVariants: full.hasVariants === true,
-      variants: variants.map((row) => ({
-        id: row.id,
-        attributeLabel: row.attributeLabel,
-        value: row.value,
-        stock: row.stock ?? 0,
-        priceOverride: row.priceOverride ?? null,
-        unitType: row.unitType
-      }))
+      id: row.id,
+      shopName: row.shopName,
+      shopType: row.shopType,
+      address: row.address,
+      location: row.location,
+      distanceKm: row.distanceKm,
+      etaMinutes: row.etaMinutes,
+      isOpen: toggleOpen,
+      orderCount: row.orderCount,
+      photoUrl,
+      tagline,
+      isOpenNow,
+      opensAt,
+      rating,
+      isNew,
+      policyGroup: policyGroupFor(row.shopType, policyGroupA),
+      fairRating: row.fairRating,
+      relevanceScore: row.relevanceScore
     };
   }
 
-  async loadEligibleShops(origin) {
+  async buildEligibleShopRows(origin, now) {
     const db = this.getDb();
+    const settings = await this.loadMarketplaceSettings();
     const usersSnap = await db.collection('users').where('userType', '==', 'shop').get();
     const users = usersSnap.docs.filter((doc) => {
       const data = doc.data() || {};
@@ -217,7 +431,7 @@ class CustomerMarketplaceService {
     }
     const shopById = new Map(shopSnaps.map((snap) => [snap.id, snap]));
 
-    const cards = [];
+    const rows = [];
     for (const userDoc of users) {
       const userData = userDoc.data() || {};
       const identity = userData.shop || {};
@@ -226,6 +440,9 @@ class CustomerMarketplaceService {
         continue;
       }
       const profile = shopSnap.data() || {};
+      if (!hasVerifiedUpiName(profile)) {
+        continue;
+      }
       const location = presentLocation(profile.location);
       if (!location) {
         continue;
@@ -234,7 +451,11 @@ class CustomerMarketplaceService {
       const orderCount = Number.isFinite(Number(profile.orderCount))
         ? Math.max(0, Math.floor(Number(profile.orderCount)))
         : 0;
-      cards.push({
+      const ratingParts = ratingFromProfile(profile);
+      const storefront = profile.storefront && typeof profile.storefront === 'object'
+        ? profile.storefront
+        : {};
+      rows.push({
         id: userDoc.id,
         shopName: typeof identity.shopName === 'string' ? identity.shopName : '',
         shopType: typeof identity.shopType === 'string' ? identity.shopType : '',
@@ -242,11 +463,36 @@ class CustomerMarketplaceService {
         location,
         distanceKm: travel.distanceKm,
         etaMinutes: travel.etaMinutes,
-        isOpen: identity.isOpen === true,
-        orderCount
+        isOpen: shopOpenToggleIsOn(identity),
+        orderCount,
+        ratingSum: ratingParts.sum,
+        ratingCount: ratingParts.count,
+        ratingAverage: ratingParts.count > 0 ? ratingParts.average : 0,
+        approvedAt: toDate(profile.approvedAt),
+        openingHours: openingHoursFromShopProfile(profile),
+        storefront
       });
     }
-    return cards;
+
+    const shopIds = rows.map((row) => row.id);
+    const { productPhotoByShop, taglineByShop } = await this.loadFallbackMaps(shopIds);
+
+    const ranked = applyRankingMetrics(rows, settings, now, { globalShops: rows });
+    const cards = await Promise.all(
+      ranked.map((row) => this.presentShopCard(row, {
+        productPhotoByShop,
+        taglineByShop,
+        policyGroupA: settings.policyGroupA,
+        now
+      }))
+    );
+
+    return { shops: cards, settings };
+  }
+
+  async loadEligibleShops(origin, now = new Date()) {
+    const { shops } = await this.buildEligibleShopRows(origin, now);
+    return shops.map((shop) => stripInternalCardFields(shop));
   }
 
   async loadShopRecord(shopId) {
@@ -264,7 +510,7 @@ class CustomerMarketplaceService {
       return null;
     }
     const profile = shopSnap.data() || {};
-    if (!presentLocation(profile.location)) {
+    if (!presentLocation(profile.location) || !hasVerifiedUpiName(profile)) {
       return null;
     }
     return { identity, profile };
@@ -278,8 +524,8 @@ class CustomerMarketplaceService {
     return record;
   }
 
-  async getShopOrThrow(shopId, origin) {
-    const shops = await this.loadEligibleShops(origin);
+  async getShopOrThrow(shopId, origin, now = new Date()) {
+    const shops = await this.loadEligibleShops(origin, now);
     const shop = shops.find((row) => row.id === shopId);
     if (!shop) {
       throw httpError(404, 'SHOP_NOT_FOUND', 'Shop not found');
@@ -321,16 +567,30 @@ class CustomerMarketplaceService {
     const limit = parseLimit(query.limit);
     const cursor = decodeCursor(query.cursor, sort);
     const openNow = String(query.openNow || '').toLowerCase() === 'true';
+    const minRating = parseMinRating(query);
 
-    let shops = await this.loadEligibleShops(origin);
+    const nowIso = cursor ? cursor.now : new Date().toISOString();
+    const now = new Date(nowIso);
+
+    const { shops: eligible } = await this.buildEligibleShopRows(origin, now);
+
+    let shops = eligible;
     if (category) {
       shops = shops.filter((shop) => shop.shopType === category);
     }
     if (openNow) {
-      shops = shops.filter((shop) => shop.isOpen === true);
+      shops = shops.filter((shop) => shop.isOpenNow === true);
     }
-    shops.sort(sort === 'orders' ? compareOrders : compareDistance);
-    return pageShops(shops, sort, limit, cursor);
+    if (minRating != null) {
+      shops = shops.filter((shop) => shop.rating && shop.rating.average >= minRating);
+    }
+
+    shops = sortShops(shops, sort);
+    const paged = pageShops(shops, sort, limit, cursor, nowIso);
+    return {
+      shops: paged.shops.map((shop) => stripInternalCardFields(shop)),
+      nextCursor: paged.nextCursor
+    };
   }
 
   async getShop(shopId, query) {
@@ -382,29 +642,57 @@ class CustomerMarketplaceService {
     return { product: await this.presentCustomerProduct(data, snap.id) };
   }
 
+  async presentCustomerProduct(data, id) {
+    const full = await shopCatalogueService.presentProduct(data, id);
+    const variants = Array.isArray(full.variants) ? full.variants : [];
+    return {
+      id: full.id,
+      shopId: full.shopId,
+      categoryId: full.categoryId,
+      name: full.name,
+      description: full.description ?? null,
+      price: full.price,
+      unitType: full.unitType,
+      weight: full.weight ?? null,
+      photoUrl: full.photoUrl,
+      stock: full.stock ?? 0,
+      hasVariants: full.hasVariants === true,
+      variants: variants.map((row) => ({
+        id: row.id,
+        attributeLabel: row.attributeLabel,
+        value: row.value,
+        stock: row.stock ?? 0,
+        priceOverride: row.priceOverride ?? null,
+        unitType: row.unitType
+      }))
+    };
+  }
+
   async search(query) {
     const origin = parseOrigin(query);
-    const q = typeof query.q === 'string' ? query.q.trim().toLowerCase() : '';
-    if (q.length < MIN_SEARCH_LENGTH) {
-      throw httpError(400, 'INVALID_QUERY', `q must be at least ${MIN_SEARCH_LENGTH} characters`);
-    }
+    const q = parseSearchQuery(query.q);
+    const now = new Date();
 
-    const shops = await this.loadEligibleShops(origin);
-    const shopHits = shops
-      .filter((shop) => nameMatches(shop.shopName, q))
-      .sort(compareDistance)
-      .slice(0, SEARCH_CAP);
+    const { shops: eligible } = await this.buildEligibleShopRows(origin, now);
+    const eligibleIds = new Set(eligible.map((shop) => shop.id));
+
+    const shopHits = sortShops(
+      eligible.filter((shop) => nameMatches(shop.shopName, q)),
+      'relevance'
+    )
+      .slice(0, SEARCH_CAP)
+      .map((shop) => stripInternalCardFields(shop));
 
     const products = [];
-    const shopNameById = new Map(shops.map((shop) => [shop.id, shop.shopName]));
-    for (const ids of chunk(shops.map((shop) => shop.id), SHOP_ID_IN_LIMIT)) {
+    const shopNameById = new Map(eligible.map((shop) => [shop.id, shop.shopName]));
+    for (const ids of chunk([...eligibleIds], SHOP_ID_IN_LIMIT)) {
       if (ids.length === 0) {
         continue;
       }
       const snapshot = await this.getDb().collection('products').where('shopId', 'in', ids).get();
       for (const doc of snapshot.docs) {
         const data = doc.data() || {};
-        if (data.isActive === false || !nameMatches(data.name, q)) {
+        if (!eligibleIds.has(data.shopId) || data.isActive === false || !nameMatches(data.name, q)) {
           continue;
         }
         const product = await this.presentCustomerProduct(data, doc.id);
@@ -423,4 +711,14 @@ class CustomerMarketplaceService {
   }
 }
 
-module.exports = new CustomerMarketplaceService();
+const service = new CustomerMarketplaceService();
+
+module.exports = service;
+module.exports.CustomerMarketplaceService = CustomerMarketplaceService;
+module.exports.LEGACY_CARD_FIELDS = LEGACY_CARD_FIELDS;
+module.exports.parseSort = parseSort;
+module.exports.decodeCursor = decodeCursor;
+module.exports.encodeCursor = encodeCursor;
+module.exports.pageShops = pageShops;
+module.exports.hasVerifiedUpiName = hasVerifiedUpiName;
+module.exports.stripInternalCardFields = stripInternalCardFields;

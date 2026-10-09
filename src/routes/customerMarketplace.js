@@ -2,7 +2,19 @@ const express = require('express');
 const router = express.Router();
 
 const { authMiddleware, requireRole } = require('../middleware/auth');
+const { userRateLimiter } = require('../middleware/userRateLimiter');
 const customerMarketplaceService = require('../services/customerMarketplaceService');
+
+const browseLimiter = userRateLimiter({
+  windowMs: 60 * 1000,
+  max: 120,
+  name: 'marketplace-browse'
+});
+const searchLimiter = userRateLimiter({
+  windowMs: 60 * 1000,
+  max: 120,
+  name: 'marketplace-search'
+});
 
 function sendError(res, error) {
   const status = error.status || 500;
@@ -18,7 +30,7 @@ function sendError(res, error) {
   });
 }
 
-router.get('/categories', authMiddleware, requireRole(['customer']), async (req, res) => {
+router.get('/categories', authMiddleware, requireRole(['customer']), browseLimiter, async (req, res) => {
   try {
     const data = await customerMarketplaceService.listCategories(req.query);
     return res.json({ success: true, data });
@@ -27,7 +39,7 @@ router.get('/categories', authMiddleware, requireRole(['customer']), async (req,
   }
 });
 
-router.get('/shops', authMiddleware, requireRole(['customer']), async (req, res) => {
+router.get('/shops', authMiddleware, requireRole(['customer']), browseLimiter, async (req, res) => {
   try {
     const data = await customerMarketplaceService.listShops(req.query);
     return res.json({ success: true, data });
@@ -63,7 +75,7 @@ router.get('/products/:productId', authMiddleware, requireRole(['customer']), as
   }
 });
 
-router.get('/search', authMiddleware, requireRole(['customer']), async (req, res) => {
+router.get('/search', authMiddleware, requireRole(['customer']), searchLimiter, async (req, res) => {
   try {
     const data = await customerMarketplaceService.search(req.query);
     return res.json({ success: true, data });

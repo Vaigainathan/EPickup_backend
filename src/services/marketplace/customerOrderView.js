@@ -164,6 +164,7 @@ function presentCustomerOrderSummary(order) {
 }
 
 module.exports = {
+  copyWindow,
   presentCustomerOrder,
   presentCustomerOrderSummary
 };

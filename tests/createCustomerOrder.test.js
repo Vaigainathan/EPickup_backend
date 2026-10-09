@@ -12,6 +12,9 @@ const {
   paymentDetailsFromStored,
   validateCreateInput
 } = require('../src/services/marketplace/createCustomerOrder');
+const { presentCustomerOrder } = require('../src/services/marketplace/customerOrderView');
+
+const ISO = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
 
 const SHOP = 'shop-1';
 
@@ -53,6 +56,29 @@ describe('money conversion', () => {
       window: { start: 's', end: 'e' }
     });
     expect(details.expectedAmount.toFixed(2)).toBe('150.01');
+  });
+
+  test('a timestamp window matches the customer order ISO window', () => {
+    const start = new Date('2026-10-07T11:16:06.661Z');
+    const end = new Date('2026-10-07T11:31:06.661Z');
+    const stored = {
+      expectedAmount: 1540,
+      expectedAmountPaise: 154000,
+      verifiedPayeeName: 'VAIGAINATHAN R',
+      window: {
+        start: { toDate: () => start },
+        end: { toDate: () => end }
+      },
+      payment: { shopUpiId: 'shop@upi' }
+    };
+    const details = paymentDetailsFromStored(stored);
+    expect(details.window).toEqual(presentCustomerOrder(stored).window);
+    expect(details.window.start).toMatch(ISO);
+    expect(details.window.end).toMatch(ISO);
+    expect(details.window).toEqual({
+      start: '2026-10-07T11:16:06.661Z',
+      end: '2026-10-07T11:31:06.661Z'
+    });
   });
 });
 

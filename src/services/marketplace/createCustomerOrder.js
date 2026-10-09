@@ -3,7 +3,7 @@ const { GeoPoint, Timestamp, FieldValue } = require('firebase-admin/firestore');
 const { getFirestore } = require('../firebase');
 const { MARKETPLACE_DEFAULTS } = require('../../config/marketplaceDefaults');
 const { toPaise, isPositiveIntQuantity } = require('../../validators/marketplace');
-const { presentCustomerOrder } = require('./customerOrderView');
+const { presentCustomerOrder, copyWindow } = require('./customerOrderView');
 const { appendEvent } = require('./orderEvents');
 const { isPoolEnabled, allocateInTransaction } = require('../orderNumberPool');
 const displayIdService = require('../displayIdService');
@@ -330,7 +330,7 @@ function paymentDetailsFromStored(data) {
     expectedAmount: short ? (balance.amount ?? null) : (data ? data.expectedAmount ?? null : null),
     expectedAmountPaise: short ? (balance.amountPaise ?? null) : (data ? data.expectedAmountPaise ?? null : null),
     verifiedPayeeName: data ? data.verifiedPayeeName ?? null : null,
-    window: data ? data.window ?? null : null
+    window: copyWindow(data ? data.window : null)
   };
   if (short) {
     details.dueBy = isoStamp(balance.dueBy);

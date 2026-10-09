@@ -96,9 +96,7 @@ async function getCustomerOrder(db, customerId, orderId) {
   const order = presentCustomerOrder({ ...data, id: snapshot.id, refunds });
   const body = { order };
   if (PAYMENT_DETAILS_STATUSES.includes(order.orderStatus)) {
-    const details = paymentDetailsFromStored(data);
-    details.window = order.window;
-    body.paymentDetails = details;
+    body.paymentDetails = paymentDetailsFromStored(data);
   }
   return body;
 }

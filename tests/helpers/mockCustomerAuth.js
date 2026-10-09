@@ -1,6 +1,16 @@
+const authState = { uid: 'customer-test' };
+
 function authMiddleware(req, res, next) {
-  req.user = { uid: 'customer-test', userType: 'customer' };
+  req.user = { uid: authState.uid, userType: 'customer' };
   next();
+}
+
+function setTestUid(uid) {
+  authState.uid = uid;
+}
+
+function resetTestUid() {
+  authState.uid = 'customer-test';
 }
 
 function requireRole() {
@@ -12,5 +22,7 @@ function requireRole() {
 module.exports = {
   authMiddleware,
   authenticateToken: authMiddleware,
-  requireRole
+  requireRole,
+  setTestUid,
+  resetTestUid
 };

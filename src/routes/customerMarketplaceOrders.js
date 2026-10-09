@@ -7,6 +7,7 @@ const { userRateLimiter } = require('../middleware/userRateLimiter');
 const { getFirestore } = require('../services/firebase');
 const { createMarketplaceOrder } = require('../services/marketplace/createCustomerOrder');
 const { listCustomerOrders, getCustomerOrder } = require('../services/marketplace/customerOrderRead');
+const { getCustomerDriverLocation } = require('../services/marketplace/customerDriverLocation');
 const { submitCustomerUtr, submitBalanceUtr, cancelCustomerOrder } = require('../services/marketplace/customerOrderActions');
 const { uploadPaymentEvidence, submitPaymentReport } = require('../services/marketplace/paymentEvidence');
 const { submitCustomerUpi, acknowledgeRefund } = require('../services/marketplace/refunds');
@@ -65,6 +66,11 @@ const refundLimiter = userRateLimiter({
   windowMs: 60 * 1000,
   max: 10,
   name: 'marketplace-order-refund-minute'
+});
+const driverLocationLimiter = userRateLimiter({
+  windowMs: 60000,
+  max: 30,
+  name: 'marketplace-order-driver-location-minute'
 });
 
 function handleEvidenceUpload(req, res, next) {
@@ -290,6 +296,21 @@ router.post(
       return res.status(result.status).json(result.body);
     } catch (error) {
       return sendError(res, error, 'Failed to acknowledge refund');
+    }
+  }
+);
+
+router.get(
+  '/marketplace-orders/:id/driver-location',
+  authenticateToken,
+  requireRole(['customer']),
+  driverLocationLimiter,
+  async (req, res) => {
+    try {
+      const data = await getCustomerDriverLocation(getFirestore(), req.user.uid, req.params.id);
+      return res.json({ success: true, data });
+    } catch (error) {
+      return sendError(res, error, 'Failed to load driver location');
     }
   }
 );

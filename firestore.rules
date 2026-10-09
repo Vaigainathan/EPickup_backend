@@ -903,15 +903,11 @@ service cloud.firestore {
       );
     }
 
-    // Marketplace orders — shop/customer/admin reads. No client writes.
-    // shopId/customerId are role-based UIDs; isOwner() matches Firebase Auth uid
-    // via users/{uid}.originalFirebaseUID. REST mutations use Admin SDK (bypass).
+    // Marketplace orders — admin reads the order and refunds. Customers and shops
+    // use the API. signal/{docId} is the only client read, via isOwner(customerId),
+    // which matches users/{id}.originalFirebaseUID. No client writes.
     match /marketplaceOrders/{orderId} {
-      allow read: if isAuthenticated() && (
-        isOwner(resource.data.shopId) ||
-        isOwner(resource.data.customerId) ||
-        isAdmin()
-      );
+      allow read: if isAuthenticated() && isAdmin();
       allow create, delete: if false;
       allow update: if false;
 
@@ -920,11 +916,12 @@ service cloud.firestore {
       }
 
       match /refunds/{refundId} {
-        allow read: if isAuthenticated() && (
-          isOwner(get(/databases/$(database)/documents/marketplaceOrders/$(orderId)).data.shopId) ||
-          isOwner(get(/databases/$(database)/documents/marketplaceOrders/$(orderId)).data.customerId) ||
-          isAdmin()
-        );
+        allow read: if isAuthenticated() && isAdmin();
+        allow write: if false;
+      }
+
+      match /signal/{docId} {
+        allow read: if isAuthenticated() && isOwner(resource.data.customerId);
         allow write: if false;
       }
 

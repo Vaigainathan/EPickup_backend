@@ -1,6 +1,6 @@
 const admin = require('firebase-admin');
 const { getFirestore } = require('./firebase');
-const { appendEvent } = require('./marketplace/orderEvents');
+const { appendEvent, touchOrderSignal } = require('./marketplace/orderEvents');
 const notificationService = require('./notificationService');
 const displayIdService = require('./displayIdService');
 
@@ -296,7 +296,10 @@ class MarketplaceSyncService {
           type: 'delivery_stage',
           actor: { type: 'system', id: 'marketplace-sync' },
           data: plan.event
-        });
+        }, order.customerId);
+      } else if (Object.keys(updates).length > 0) {
+        const signalType = (plan.driverInfo || plan.clearDriverInfo) ? 'delivery_driver' : 'delivery_fare';
+        touchOrderSignal(transaction, orderRef, order.customerId, signalType);
       }
 
       return { wrote: true, plan, order, orderId: orderSnap.id };

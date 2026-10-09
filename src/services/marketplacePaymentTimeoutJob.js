@@ -233,7 +233,7 @@ class MarketplacePaymentTimeoutJob {
         type: 'timed_out',
         actor: JOB_ACTOR,
         data: { mode: 'legacy' }
-      });
+      }, data.customerId);
       return {
         expired: true,
         customerId: data.customerId || null,
@@ -276,7 +276,7 @@ class MarketplacePaymentTimeoutJob {
 
       if (action.kind === 'nudge') {
         tx.update(orderRef, { 'payment.nudges.utr3min': at, updatedAt: at });
-        appendEvent(tx, orderRef, { type: 'utr_nudge', actor: JOB_ACTOR, data: null });
+        appendEvent(tx, orderRef, { type: 'utr_nudge', actor: JOB_ACTOR, data: null }, data.customerId);
         notifies = [{ audience: 'customer', id: customerId, template: 'UTR_NUDGE', variables }];
       } else if (action.kind === 'reminder') {
         tx.update(orderRef, {
@@ -287,7 +287,7 @@ class MarketplacePaymentTimeoutJob {
           type: 'reminder_sent',
           actor: JOB_ACTOR,
           data: { minute: action.minute }
-        });
+        }, data.customerId);
         notifies = [{ audience: 'shop', id: shopId, template: 'PAYMENT_REMINDER', variables }];
       } else if (action.kind === 'timeout_review') {
         tx.update(orderRef, {
@@ -314,7 +314,7 @@ class MarketplacePaymentTimeoutJob {
           type: 'review_opened',
           actor: JOB_ACTOR,
           data: { trigger: 'utr_timeout' }
-        });
+        }, data.customerId);
         notifies = [
           { audience: 'customer', id: customerId, template: 'PAYMENT_UNDER_REVIEW', variables },
           { audience: 'shop', id: shopId, template: 'PAYMENT_REVIEW_SHOP', variables }
@@ -331,7 +331,7 @@ class MarketplacePaymentTimeoutJob {
           type: 'timed_out',
           actor: JOB_ACTOR,
           data: { mode: 'unconfirmed' }
-        });
+        }, data.customerId);
         notifies = [{ audience: 'customer', id: customerId, template: 'PAYMENT_NOT_CONFIRMED', variables }];
       } else if (action.kind === 'balance_expired') {
         const payment = data.payment || {};
@@ -360,7 +360,7 @@ class MarketplacePaymentTimeoutJob {
           actor: JOB_ACTOR,
           reason: 'balance_expired',
           data: { reason: 'balance_expired' }
-        });
+        }, data.customerId);
         notifies = [{
           audience: 'customer',
           id: customerId,
@@ -373,7 +373,7 @@ class MarketplacePaymentTimeoutJob {
           type: 'paid_check',
           actor: JOB_ACTOR,
           data: { escalated: true }
-        });
+        }, data.customerId);
         notifies = [{ audience: 'support', id: orderRef.id, displayId: data.displayId ?? null }];
       } else if (action.kind === 'unconfirmed_close') {
         tx.update(orderRef, {
@@ -389,7 +389,7 @@ class MarketplacePaymentTimeoutJob {
           actor: JOB_ACTOR,
           reason: 'unconfirmed_expired',
           data: { reason: 'unconfirmed_expired' }
-        });
+        }, data.customerId);
         notifies = [{ audience: 'customer', id: customerId, template: 'ORDER_CLOSED_UNCONFIRMED', variables }];
       } else if (action.kind === 'review_escalated') {
         tx.update(orderRef, {
@@ -400,7 +400,7 @@ class MarketplacePaymentTimeoutJob {
           type: 'review_escalated',
           actor: JOB_ACTOR,
           data: { hoursOpen: action.hoursOpen }
-        });
+        }, data.customerId);
         notifies = [{
           audience: 'review',
           id: orderRef.id,

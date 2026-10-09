@@ -137,7 +137,7 @@ function previewDeduction(items, productsById) {
   };
 }
 
-async function deductStock(tx, db, { orderRef, items, actor }) {
+async function deductStock(tx, db, { orderRef, items, actor, customerId }) {
   const source = Array.isArray(items) ? items : [];
   if (deductionAlreadyRan(source)) {
     return {
@@ -201,13 +201,13 @@ async function deductStock(tx, db, { orderRef, items, actor }) {
       stockShort,
       lines: next.map(publicLine)
     }
-  });
+  }, customerId);
   if (stockShort) {
     appendEvent(tx, orderRef, {
       type: 'stock_short',
       actor,
       data: { stockShort: true }
-    });
+    }, customerId);
   }
   return {
     items: next,
@@ -229,7 +229,7 @@ function cancelRestoresStock(data) {
   return !LEFT_SHOP.has(stage);
 }
 
-async function restoreLines(tx, db, { orderRef, items, actor, indexes }) {
+async function restoreLines(tx, db, { orderRef, items, actor, indexes, customerId }) {
   const source = Array.isArray(items) ? items : [];
   const selected = new Set(Array.isArray(indexes) ? indexes : source.map((_, index) => index));
   const next = source.map((line, index) => ({ ...line, id: lineId(line, index) }));
@@ -317,7 +317,7 @@ async function restoreLines(tx, db, { orderRef, items, actor, indexes }) {
     type: 'stock_restored',
     actor,
     data: { lines: eventLines }
-  });
+  }, customerId);
   return { items: next, wrote: true };
 }
 

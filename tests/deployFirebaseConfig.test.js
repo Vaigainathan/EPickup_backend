@@ -8,6 +8,7 @@ describe('planConfigDeploy', () => {
     const plan = planConfigDeploy(['--project', 'epickup-app-staging']);
     expect(plan.error).toBeUndefined();
     expect(plan.apply).toBe(false);
+    expect(plan.acceptDiff).toBe(false);
     expect(plan.commands).toEqual([
       'firebase deploy --only firestore:rules --project epickup-app-staging --non-interactive',
       'firebase deploy --only storage --project epickup-app-staging --non-interactive',
@@ -26,6 +27,16 @@ describe('planConfigDeploy', () => {
     expect(plan.commands[2]).toContain('--only firestore:indexes');
     expect(plan.commands.every((command) => command.includes('--project epickup-app-staging'))).toBe(true);
     expect(plan.commands.every((command) => command.includes('--non-interactive'))).toBe(true);
+    expect(plan.commands.some((command) => command.includes('--force'))).toBe(false);
+    expect(plan.acceptDiff).toBe(false);
+  });
+
+  test('--accept-diff is recorded and is not passed to firebase', () => {
+    const plan = planConfigDeploy(['--project', 'epickup-app-staging', '--apply', '--accept-diff']);
+    expect(plan.error).toBeUndefined();
+    expect(plan.acceptDiff).toBe(true);
+    expect(plan.apply).toBe(true);
+    expect(plan.commands.some((command) => command.includes('accept-diff'))).toBe(false);
     expect(plan.commands.some((command) => command.includes('--force'))).toBe(false);
   });
 

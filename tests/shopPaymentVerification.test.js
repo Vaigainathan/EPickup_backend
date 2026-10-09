@@ -257,6 +257,10 @@ describe('shop payment verification', () => {
       type: 'shop_confirm',
       actor: { type: 'shop', id: 'shop-1' }
     });
+    expect(mockDocs.get('marketplaceOrders/order-1/signal/latest')).toMatchObject({
+      customerId: 'cust-1',
+      type: 'stock_deducted'
+    });
   });
 
   test('switches off: reject with a customer UTR stays customer_claimed and opens paid-check', async () => {

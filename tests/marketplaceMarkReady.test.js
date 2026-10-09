@@ -291,6 +291,10 @@ describe('markReady', () => {
     expect(order('order-1').delivery.stage).toBe('searching');
     expect(order('order-1').readyAt.constructor.name).toBe('ServerTimestampTransform');
     expect(events('order-1').map((event) => event.type)).toEqual(['marked_ready']);
+    const readySignal = mockDocs.get('marketplaceOrders/order-1/signal/latest');
+    expect(Object.keys(readySignal).sort()).toEqual(['customerId', 'type', 'updatedAt']);
+    expect(readySignal).toMatchObject({ customerId: 'cust-1', type: 'marked_ready' });
+    expect(mockSets.filter((entry) => entry.path === 'marketplaceOrders/order-1/signal/latest')).toHaveLength(1);
     expect(events('order-1')[0].data).toEqual({ bookingId: booking.id, stage: 'searching' });
     expect(WebSocketEventHandler.notifyDriversOfNewBooking).toHaveBeenCalledTimes(1);
     expect(notificationService.sendTemplateNotification).toHaveBeenCalledWith(
@@ -416,6 +420,8 @@ describe('delivery sync', () => {
     expect(ready.plan.complete).toBe(false);
     expect(order('order-ready').orderStatus).toBe('ready');
     expect(order('order-ready').delivery.stage).toBe('delivered');
+    expect(events('order-ready').map((event) => event.type)).toEqual(['delivery_stage']);
+    expect(mockDocs.get('marketplaceOrders/order-ready/signal/latest').type).toBe('delivery_stage');
     expect(mockDocs.get('bookings/book-1').status).toBe('pending');
     expect(mockDocs.get('shops/shop-1').orderCount).toBe(3);
 
@@ -473,6 +479,10 @@ describe('delivery sync', () => {
     expect(order('order-1').delivery.fare).toBe(55);
     expect(order('order-1').delivery.stage).toBe('on_the_way');
     expect(events('order-1')).toHaveLength(0);
+    expect(mockDocs.get('marketplaceOrders/order-1/signal/latest')).toMatchObject({
+      customerId: 'cust-1',
+      type: 'delivery_fare'
+    });
 
     const same = await marketplaceSyncService.syncBooking({
       bookingId: 'book-1',
@@ -483,6 +493,28 @@ describe('delivery sync', () => {
       }
     });
     expect(same.wrote).toBe(false);
+  });
+
+  test('a driver change without a stage change touches the signal and writes no event', async () => {
+    seedOrder('order-1', {
+      orderStatus: 'ready',
+      delivery: { stage: 'on_the_way', fare: 40 },
+      deliveryFee: 40
+    });
+    const changed = await marketplaceSyncService.syncBooking({
+      bookingId: 'book-1',
+      booking: {
+        status: 'in_transit',
+        marketplaceOrderId: 'order-1',
+        fare: { totalFare: 55 },
+        driverInfo: { name: 'Ravi', phone: '9000000000', vehicleNumber: 'TN01' }
+      }
+    });
+    expect(changed.wrote).toBe(true);
+    expect(events('order-1')).toHaveLength(0);
+    expect(order('order-1').driverInfo).toEqual({ name: 'Ravi', phone: '9000000000', vehicle: 'TN01' });
+    expect(order('order-1').delivery.fare).toBe(55);
+    expect(mockDocs.get('marketplaceOrders/order-1/signal/latest').type).toBe('delivery_driver');
   });
 
   test('the initial pending add and a removal are ignored', async () => {
@@ -514,12 +546,38 @@ describe('confirmHandover completion', () => {
       displayId: 12
     });
     expect(result.order.orderStatus).toBe('completed');
+    expect(events('order-1').map((event) => event.type)).toEqual(['completed']);
+    expect(events('order-1')[0].actor).toEqual({ type: 'shop', id: 'shop-1' });
+    expect(mockDocs.get('marketplaceOrders/order-1/signal/latest')).toMatchObject({
+      customerId: 'cust-1',
+      type: 'completed'
+    });
     expect(mockDocs.get('shops/shop-1').orderCount.constructor.name).toBe('NumericIncrementTransform');
 
     await expect(shopOrderService.confirmHandover('shop-1', 'order-1', {
       otp: '123456',
       displayId: 12
     })).rejects.toMatchObject({ status: 409, code: 'INVALID_TRANSITION' });
+  });
+
+  test('handover before delivery writes handed_over and one signal', async () => {
+    seedOrder('order-2', {
+      orderStatus: 'ready',
+      displayId: 12,
+      delivery: { stage: 'at_shop', fare: 40 },
+      deliveryFee: 40
+    });
+    mockDocs.set('marketplaceOrders/order-2/private/handover', { otp: '123456' });
+    const result = await shopOrderService.confirmHandover('shop-1', 'order-2', {
+      otp: '123456',
+      displayId: 12
+    });
+    expect(result.order.orderStatus).toBe('handed_over');
+    expect(events('order-2').map((event) => event.type)).toEqual(['handed_over']);
+    expect(mockDocs.get('marketplaceOrders/order-2/signal/latest')).toMatchObject({
+      customerId: 'cust-1',
+      type: 'handed_over'
+    });
   });
 });
 

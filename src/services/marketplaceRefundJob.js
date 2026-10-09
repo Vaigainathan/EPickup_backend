@@ -131,7 +131,7 @@ class MarketplaceRefundJob {
         if (action.kind === 'auto_close') {
           tx.update(refund.ref, { status: 'closed', autoClosedAt: stamp, updatedAt: stamp });
           refund.data.status = 'closed';
-          appendEvent(tx, orderRef, { type: 'refund_auto_closed', actor: JOB_ACTOR, data: null });
+          appendEvent(tx, orderRef, { type: 'refund_auto_closed', actor: JOB_ACTOR, data: null }, data.customerId);
           notifies.push({ template: 'REFUND_CLOSED', customerId: data.customerId, shopId: data.shopId });
         } else if (action.kind === 'upi7d') {
           reminders.upiAlert7d = true;
@@ -141,7 +141,7 @@ class MarketplaceRefundJob {
             type: 'refund_reminder',
             actor: JOB_ACTOR,
             data: { which: 'upi7d' }
-          });
+          }, data.customerId);
           row.alert = true;
         } else if (action.kind === 'due48') {
           reminders.due48 = true;
@@ -156,7 +156,7 @@ class MarketplaceRefundJob {
             type: 'refund_reminder',
             actor: JOB_ACTOR,
             data: { which: 'due48' }
-          });
+          }, data.customerId);
           notifies.push({ template: 'REFUND_OVERDUE', customerId: data.customerId, shopId: data.shopId });
         } else {
           reminders[action.kind] = true;
@@ -167,7 +167,7 @@ class MarketplaceRefundJob {
             type: 'refund_reminder',
             actor: JOB_ACTOR,
             data: { which }
-          });
+          }, data.customerId);
           if (which === 'upi24' || which === 'upi72') {
             notifies.push({ template: 'REFUND_UPI_REMINDER', customerId: data.customerId, shopId: null });
           } else if (which === 'due24') {

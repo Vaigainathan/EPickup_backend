@@ -558,7 +558,8 @@ class ShopOrderService {
       const stock = await deductStock(tx, ref.firestore, {
         orderRef: ref,
         items: data.items,
-        actor: { type: 'shop', id: shopId }
+        actor: { type: 'shop', id: shopId },
+        customerId: data.customerId
       });
       if (release) {
         writeUnpaidRelease(tx, release, orderId, true);
@@ -566,7 +567,7 @@ class ShopOrderService {
       appendEvent(tx, ref, {
         type: 'shop_confirm',
         actor: { type: 'shop', id: shopId }
-      });
+      }, data.customerId);
 
       return {
         updates: {
@@ -687,7 +688,7 @@ class ShopOrderService {
         type: 'rejected',
         actor: { type: 'shop', id: shopId },
         data: !flags.utrBlocksReject && hasCustomerUtr ? { hadCustomerUtr: true } : null
-      });
+      }, data.customerId);
       const updates = {
         orderStatus: 'cancelled',
         closedReason: 'shop_rejected',
@@ -777,7 +778,7 @@ class ShopOrderService {
         type: 'marked_ready',
         actor: { type: 'shop', id: shopId },
         data: { bookingId: bookingRef.id, stage: 'searching' }
-      });
+      }, data.customerId);
       return {
         alreadyProcessed: false,
         booking,
@@ -966,6 +967,7 @@ class ShopOrderService {
       if (otp !== expectedOtp || displayId !== expectedDisplay) {
         throw httpError(409, 'HANDOVER_MISMATCH', 'Order ID or OTP does not match');
       }
+      const orderRef = this.orders().doc(orderId);
       const stage = data.delivery && data.delivery.stage;
       if (stage === 'delivered') {
         if (data.shopId) {
@@ -973,10 +975,18 @@ class ShopOrderService {
             orderCount: admin.firestore.FieldValue.increment(1)
           }, { merge: true });
         }
+        appendEvent(tx, orderRef, {
+          type: 'completed',
+          actor: { type: 'shop', id: shopId }
+        }, data.customerId);
         return {
           updates: { orderStatus: 'completed' }
         };
       }
+      appendEvent(tx, orderRef, {
+        type: 'handed_over',
+        actor: { type: 'shop', id: shopId }
+      }, data.customerId);
       return {
         updates: { orderStatus: 'handed_over' }
       };
@@ -1040,7 +1050,8 @@ class ShopOrderService {
         orderRef: ref,
         items,
         actor: { type: 'shop', id: shopId },
-        indexes
+        indexes,
+        customerId: data.customerId
       });
       const nextItems = restored.items.map((line, index) => (
         indexes.includes(index) ? { ...line, unavailable: true } : line
@@ -1066,7 +1077,7 @@ class ShopOrderService {
             qty: line.qty
           }))
         }
-      });
+      }, data.customerId);
       tx.update(ref, {
         items: nextItems,
         updatedAt: this.now()
@@ -1132,7 +1143,8 @@ class ShopOrderService {
         const restored = await restoreLines(tx, db, {
           orderRef: ref,
           items: data.items,
-          actor: { type: 'shop', id: shopId }
+          actor: { type: 'shop', id: shopId },
+          customerId: data.customerId
         });
         nextItems = restored.items;
       }
@@ -1143,7 +1155,7 @@ class ShopOrderService {
         type: 'cancelled',
         actor: { type: 'shop', id: shopId },
         reason
-      });
+      }, data.customerId);
 
       const updates = {
         orderStatus: 'cancelled',
@@ -1274,7 +1286,8 @@ class ShopOrderService {
         const restored = await restoreLines(tx, db, {
           orderRef,
           items: data.items,
-          actor: { type: 'support', id: operatorId }
+          actor: { type: 'support', id: operatorId },
+          customerId: data.customerId
         });
         nextItems = restored.items;
       }
@@ -1317,7 +1330,7 @@ class ShopOrderService {
         type: 'cancelled',
         actor: { type: 'support', id: operatorId },
         data: { reason }
-      });
+      }, data.customerId);
       let refundCreated = false;
       let refundAmount = null;
       if (remainder.remainderPaise > 0) {
@@ -1418,8 +1431,14 @@ class ShopOrderService {
           type: 'refund_auto_closed',
           actor: { type: 'shop', id: shopId },
           data: { legacy: true }
-        });
+        }, data.customerId);
       });
+      if (openDocs.length === 0) {
+        appendEvent(tx, orderRef, {
+          type: 'payment_refunded',
+          actor: { type: 'shop', id: shopId }
+        }, data.customerId);
+      }
       return {
         updates: {
           'payment.status': 'refunded',

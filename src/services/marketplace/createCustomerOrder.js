@@ -566,7 +566,7 @@ async function createMarketplaceOrder({ customerId, idempotencyKey, body }) {
       type: 'created',
       actor: { type: 'customer', id: customerId },
       data: { orderId: resolvedOrderId, shopId }
-    });
+    }, customerId);
     appendEvent(tx, orderRef, {
       type: 'payment_details_issued',
       actor: { type: 'system', id: 'marketplace' },
@@ -575,7 +575,7 @@ async function createMarketplaceOrder({ customerId, idempotencyKey, body }) {
         expectedAmountPaise: adjustment.expectedAmountPaise,
         upiId: shopUpiId
       }
-    });
+    }, customerId);
 
     return { replay: false, data: orderData, shopId, displayId };
   });

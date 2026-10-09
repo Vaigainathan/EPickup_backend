@@ -208,6 +208,7 @@ describe('deductStock', () => {
     const result = await db.runTransaction((tx) => deductStock(tx, db, {
       orderRef: orderRef('order-1'),
       actor: ACTOR,
+      customerId: 'cust-1',
       items: [
         { productId: 'rice', qty: 2, price: 10 },
         { productId: 'missing', qty: 1, price: 10 }
@@ -230,6 +231,7 @@ describe('deductStock', () => {
     const result = await db.runTransaction((tx) => deductStock(tx, db, {
       orderRef: orderRef('order-1'),
       actor: ACTOR,
+      customerId: 'cust-1',
       items: [
         { id: 'line0', productId: 'rice', variantId: 'v1', qty: 2, price: 8 },
         { id: 'line1', productId: 'rice', variantId: 'v1', qty: 2, price: 8 }
@@ -246,6 +248,7 @@ describe('deductStock', () => {
     const result = await db.runTransaction((tx) => deductStock(tx, db, {
       orderRef: orderRef('order-1'),
       actor: ACTOR,
+      customerId: 'cust-1',
       items: [{ productId: 'rice', qty: 1, price: 10 }]
     }));
     expect(result.items[0].stockDeducted).toBe(1);
@@ -260,6 +263,7 @@ describe('deductStock', () => {
     const result = await db.runTransaction((tx) => deductStock(tx, db, {
       orderRef: orderRef('order-1'),
       actor: ACTOR,
+      customerId: 'cust-1',
       items
     }));
     expect(result.wrote).toBe(false);
@@ -274,11 +278,13 @@ describe('deductStock', () => {
     const first = await db.runTransaction((tx) => deductStock(tx, db, {
       orderRef: orderRef('order-a'),
       actor: ACTOR,
+      customerId: 'cust-1',
       items: [{ id: 'line0', productId: 'rice', qty: 1, price: 10 }]
     }));
     const second = await db.runTransaction((tx) => deductStock(tx, db, {
       orderRef: orderRef('order-b'),
       actor: ACTOR,
+      customerId: 'cust-1',
       items: [{ id: 'line0', productId: 'rice', qty: 1, price: 10 }]
     }));
     expect(first.items[0].stockDeducted).toBe(1);
@@ -313,6 +319,7 @@ describe('restoreLines', () => {
     const first = await db.runTransaction((tx) => restoreLines(tx, db, {
       orderRef: orderRef('order-1'),
       actor: ACTOR,
+      customerId: 'cust-1',
       items
     }));
     expect(first.items[0].stockRestored).toBe(true);
@@ -320,6 +327,7 @@ describe('restoreLines', () => {
     const second = await db.runTransaction((tx) => restoreLines(tx, db, {
       orderRef: orderRef('order-1'),
       actor: ACTOR,
+      customerId: 'cust-1',
       items: first.items
     }));
     expect(second.wrote).toBe(false);
@@ -331,6 +339,7 @@ describe('restoreLines', () => {
     const result = await db.runTransaction((tx) => restoreLines(tx, db, {
       orderRef: orderRef('order-1'),
       actor: ACTOR,
+      customerId: 'cust-1',
       items: [{ id: 'line0', productId: 'gone', qty: 1, price: 10, stockDeducted: 1 }]
     }));
     expect(result.items[0].stockRestored).toBe(true);

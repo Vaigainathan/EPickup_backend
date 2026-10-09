@@ -81,7 +81,8 @@ async function deductOnPreparing(tx, db, { orderRef, data, actor }) {
   return deductStock(tx, db, {
     orderRef,
     items: data && data.items,
-    actor
+    actor,
+    customerId: data && data.customerId
   });
 }
 
@@ -282,19 +283,19 @@ async function confirmLateUnfulfilled(tx, {
     type: 'shop_confirm',
     actor: { type: 'shop', id: shopId },
     data: { officialUtr: matched.officialUtr, utrSource: matched.utrSource }
-  });
+  }, data.customerId);
   if (matched.corrected) {
     appendEvent(tx, orderRef, {
       type: 'utr_corrected',
       actor: { type: 'shop', id: shopId },
       data: { officialUtr: matched.officialUtr }
-    });
+    }, data.customerId);
   }
   appendEvent(tx, orderRef, {
     type: 'cancelled',
     actor: { type: 'shop', id: shopId },
     data: { reason }
-  });
+  }, data.customerId);
   const variables = displayVariables(data, orderId);
   const notifies = [];
   if (matched.corrected) {
@@ -370,7 +371,7 @@ async function confirmPaidOnCancelled(tx, {
     type: 'shop_confirm',
     actor: { type: 'shop', id: shopId },
     data: { officialUtr: matched.officialUtr, utrSource: matched.utrSource }
-  });
+  }, data.customerId);
   const notifies = [];
   if (remainder.remainderPaise > 0) {
     const amount = marketplaceMoney.fromPaise(remainder.remainderPaise);
@@ -595,17 +596,17 @@ async function confirmOpenReview(tx, context) {
       type: 'shop_confirm',
       actor: { type: 'shop', id: shopId },
       data: { officialUtr: matched.officialUtr, utrSource: matched.utrSource }
-    });
+    }, data.customerId);
     appendEvent(tx, orderRef, {
       type: 'review_resolved',
       actor: { type: 'shop', id: shopId },
       data: { result: 'refund' }
-    });
+    }, data.customerId);
     appendEvent(tx, orderRef, {
       type: 'cancelled',
       actor: { type: 'shop', id: shopId },
       reason: 'shop_cancelled'
-    });
+    }, data.customerId);
     return {
       alreadyProcessed: false,
       customerId: data.customerId || null,
@@ -660,25 +661,25 @@ async function confirmOpenReview(tx, context) {
     type: 'shop_confirm',
     actor: { type: 'shop', id: shopId },
     data: { officialUtr: matched.officialUtr, utrSource: matched.utrSource }
-  });
+  }, data.customerId);
   if (matched.corrected) {
     appendEvent(tx, orderRef, {
       type: 'utr_corrected',
       actor: { type: 'shop', id: shopId },
       data: { officialUtr: matched.officialUtr }
-    });
+    }, data.customerId);
   }
   if (late) {
     appendEvent(tx, orderRef, {
       type: 'payment_confirmed_late',
       actor: { type: 'shop', id: shopId }
-    });
+    }, data.customerId);
   }
   appendEvent(tx, orderRef, {
     type: 'review_resolved',
     actor: { type: 'shop', id: shopId },
     data: { result: 'found' }
-  });
+  }, data.customerId);
   const notifies = [];
   if (matched.corrected) {
     notifies.push({ type: 'UTR_CORRECTED', variables: { ...variables, utr: matched.officialUtr } });
@@ -812,19 +813,19 @@ async function confirmShopPayment({ shopId, orderId, body, nowMs }) {
       type: 'shop_confirm',
       actor: { type: 'shop', id: shopId },
       data: { officialUtr: matched.officialUtr, utrSource: matched.utrSource }
-    });
+    }, data.customerId);
     if (matched.corrected) {
       appendEvent(tx, orderRef, {
         type: 'utr_corrected',
         actor: { type: 'shop', id: shopId },
         data: { officialUtr: matched.officialUtr }
-      });
+      }, data.customerId);
     }
     if (late) {
       appendEvent(tx, orderRef, {
         type: 'payment_confirmed_late',
         actor: { type: 'shop', id: shopId }
-      });
+      }, data.customerId);
     }
     const variables = displayVariables(data, orderId);
     const notifies = [];
@@ -875,7 +876,7 @@ async function reportPaymentNotFound({ shopId, orderId, nowMs }) {
         type: 'shop_response',
         actor: { type: 'shop', id: shopId },
         data: { result: 'not_found' }
-      });
+      }, data.customerId);
       return { alreadyProcessed: false, customerId: data.customerId || null, notifies: [], shopNotifies: [] };
     }
     if (!payment.customerUtr) {
@@ -911,7 +912,7 @@ async function reportPaymentNotFound({ shopId, orderId, nowMs }) {
       type: 'review_opened',
       actor: { type: 'shop', id: shopId },
       data: { trigger: 'shop_not_found' }
-    });
+    }, data.customerId);
     const variables = displayVariables(data, orderId);
     return {
       alreadyProcessed: false,
@@ -977,7 +978,7 @@ async function answerPaidCheck({ shopId, orderId, body, nowMs }) {
         type: 'paid_check',
         actor: { type: 'shop', id: shopId },
         data: { received: false }
-      });
+      }, data.customerId);
       return { alreadyProcessed: false, customerId: data.customerId || null, notifies: [] };
     }
 
@@ -1018,7 +1019,7 @@ async function answerPaidCheck({ shopId, orderId, body, nowMs }) {
       type: 'paid_check',
       actor: { type: 'shop', id: shopId },
       data: { received: true, officialUtr: matched.officialUtr }
-    });
+    }, data.customerId);
     return {
       alreadyProcessed: false,
       customerId: data.customerId || null,
@@ -1088,13 +1089,13 @@ async function confirmShortBalance(tx, context) {
     type: 'balance_confirmed',
     actor: { type: 'shop', id: shopId },
     data: { officialUtr: matched.officialUtr, utrSource: matched.utrSource }
-  });
+  }, data.customerId);
   if (matched.corrected) {
     appendEvent(tx, orderRef, {
       type: 'utr_corrected',
       actor: { type: 'shop', id: shopId },
       data: { officialUtr: matched.officialUtr }
-    });
+    }, data.customerId);
   }
   return {
     alreadyProcessed: false,
@@ -1132,12 +1133,12 @@ async function differOnOpenReview(tx, context) {
       type: 'shop_response',
       actor: { type: 'shop', id: shopId },
       data: { result: 'short', receivedAmount: rupees }
-    });
+    }, data.customerId);
     appendEvent(tx, orderRef, {
       type: 'amount_differs',
       actor: { type: 'shop', id: shopId },
       data: { receivedAmount: rupees, expectedAmount: data.expectedAmount ?? null }
-    });
+    }, data.customerId);
     return { alreadyProcessed: false, customerId: data.customerId || null, notifies: [], shopNotifies: [] };
   }
 
@@ -1212,24 +1213,24 @@ async function differOnOpenReview(tx, context) {
     type: 'amount_differs',
     actor: { type: 'shop', id: shopId },
     data: { receivedAmount: rupees, expectedAmount: data.expectedAmount ?? null }
-  });
+  }, data.customerId);
   appendEvent(tx, orderRef, {
     type: 'shop_confirm',
     actor: { type: 'shop', id: shopId },
     data: { officialUtr: matched.officialUtr, utrSource: matched.utrSource }
-  });
+  }, data.customerId);
   if (matched.corrected) {
     appendEvent(tx, orderRef, {
       type: 'utr_corrected',
       actor: { type: 'shop', id: shopId },
       data: { officialUtr: matched.officialUtr }
-    });
+    }, data.customerId);
   }
   appendEvent(tx, orderRef, {
     type: 'review_resolved',
     actor: { type: 'shop', id: shopId },
     data: { result: 'found' }
-  });
+  }, data.customerId);
   return {
     alreadyProcessed: false,
     customerId: data.customerId || null,
@@ -1337,7 +1338,7 @@ async function reportAmountDiffers({ shopId, orderId, body, nowMs }) {
         type: 'amount_differs',
         actor: { type: 'shop', id: shopId },
         data: { receivedAmountPaise: receivedPaise, balanceAmountPaise: balancePaise }
-      });
+      }, data.customerId);
       return {
         alreadyProcessed: false,
         customerId: data.customerId || null,
@@ -1420,25 +1421,25 @@ async function reportAmountDiffers({ shopId, orderId, body, nowMs }) {
         type: 'amount_differs',
         actor: { type: 'shop', id: shopId },
         data: { receivedAmount: rupees, expectedAmount: data.expectedAmount ?? null }
-      });
+      }, data.customerId);
     }
     appendEvent(tx, orderRef, {
       type: 'shop_confirm',
       actor: { type: 'shop', id: shopId },
       data: { officialUtr: matched.officialUtr, utrSource: matched.utrSource }
-    });
+    }, data.customerId);
     if (matched.corrected) {
       appendEvent(tx, orderRef, {
         type: 'utr_corrected',
         actor: { type: 'shop', id: shopId },
         data: { officialUtr: matched.officialUtr }
-      });
+      }, data.customerId);
     }
     if (late) {
       appendEvent(tx, orderRef, {
         type: 'payment_confirmed_late',
         actor: { type: 'shop', id: shopId }
-      });
+      }, data.customerId);
     }
     return {
       alreadyProcessed: false,
@@ -1530,7 +1531,7 @@ async function resolvePaymentReview({ orderId, outcome, reason, operator }) {
         actor,
         reason: note,
         data: { result: 'found' }
-      });
+      }, data.customerId);
       return {
         alreadyProcessed: false,
         wrote: true,
@@ -1559,12 +1560,12 @@ async function resolvePaymentReview({ orderId, outcome, reason, operator }) {
         actor,
         reason: note,
         data: { result: 'not_found' }
-      });
+      }, data.customerId);
       appendEvent(tx, orderRef, {
         type: 'cancelled',
         actor,
         reason: 'payment_not_verified'
-      });
+      }, data.customerId);
       return {
         alreadyProcessed: false,
         wrote: true,
@@ -1605,12 +1606,12 @@ async function resolvePaymentReview({ orderId, outcome, reason, operator }) {
       actor,
       reason: note,
       data: { result: 'refund' }
-    });
+    }, data.customerId);
     appendEvent(tx, orderRef, {
       type: 'cancelled',
       actor,
       reason: 'support_cancelled'
-    });
+    }, data.customerId);
     return {
       alreadyProcessed: false,
       wrote: true,

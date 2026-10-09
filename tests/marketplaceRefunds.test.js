@@ -642,6 +642,10 @@ describe('support resend and a found refund', () => {
     const stored = [...mockDocs.entries()].find(([docPath]) => docPath.startsWith('marketplaceOrders/order-1/refunds/'));
     expect(stored[1].reason).toBe('support_decision');
     expect(eventsOf('order-1').find((event) => event.type === 'refund_created').reason).toBe('Bank statement shows the payment');
+    expect(mockDocs.get('marketplaceOrders/order-1/signal/latest')).toMatchObject({
+      customerId: 'cust-1',
+      type: 'refund_created'
+    });
 
     await expect(recordFoundRefund({
       orderId: 'order-1',
@@ -859,6 +863,7 @@ describe('refund views and the legacy sent route', () => {
     const closedEvents = eventsOf('order-1').filter((event) => event.type === 'refund_auto_closed');
     expect(closedEvents).toHaveLength(4);
     expect(closedEvents.every((event) => event.data && event.data.legacy === true)).toBe(true);
+    expect(mockDocs.get('marketplaceOrders/order-1/signal/latest').type).toBe('refund_auto_closed');
 
     putOrder('order-on', {
       orderStatus: 'cancelled',
@@ -871,6 +876,22 @@ describe('refund views and the legacy sent route', () => {
     expect(orderOf('order-on').hasOpenRefund).toBe(true);
     expect(orderOf('order-on').payment.status).toBe('refund_pending');
     expect(refundOf('order-on', 'refund-1').status).toBe('upi_needed');
+  });
+
+  test('OFF legacy refund-sent with no open refund writes payment_refunded and one signal', async () => {
+    putOrder('order-empty', {
+      orderStatus: 'cancelled',
+      payment: { status: 'refund_pending', amount: 40 },
+      hasOpenRefund: false
+    });
+    const result = await shopOrderService.refundSent('shop-1', 'order-empty', { newStatuses: false });
+    expect(result.alreadyProcessed).toBe(false);
+    expect(orderOf('order-empty').payment.status).toBe('refunded');
+    expect(eventsOf('order-empty').map((event) => event.type)).toEqual(['payment_refunded']);
+    expect(eventsOf('order-empty')[0].actor).toEqual({ type: 'shop', id: 'shop-1' });
+    const signal = mockDocs.get('marketplaceOrders/order-empty/signal/latest');
+    expect(Object.keys(signal).sort()).toEqual(['customerId', 'type', 'updatedAt']);
+    expect(signal).toMatchObject({ customerId: 'cust-1', type: 'payment_refunded' });
   });
 
   test('REFUND_SENT shows the last 4 and the payload has no full UTR or amount', () => {

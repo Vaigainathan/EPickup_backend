@@ -404,7 +404,7 @@ async function submitPaymentReport({ customerId, orderId, idempotencyKey, body, 
         type: 'utr_submitted',
         actor: { type: 'customer', id: customerId },
         data: { utr }
-      });
+      }, data.customerId);
     }
     if (shopSnap && shopSnap.exists) {
       const stats = shopSnap.data().marketplaceStats || {};
@@ -417,7 +417,7 @@ async function submitPaymentReport({ customerId, orderId, idempotencyKey, body, 
       type: 'review_opened',
       actor: { type: 'customer', id: customerId },
       data: { trigger: 'customer_report' }
-    });
+    }, data.customerId);
     const snapshot = data.shopSnapshot && typeof data.shopSnapshot === 'object' ? data.shopSnapshot : {};
     return {
       openedReview: true,

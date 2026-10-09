@@ -256,7 +256,7 @@ async function submitCustomerUtr({ customerId, orderId, idempotencyKey, utr, now
         type,
         actor: { type: 'customer', id: customerId },
         data: type === 'review_opened' ? { trigger: 'customer_report' } : { utr }
-      });
+      }, data.customerId);
     });
     const snapshot = data.shopSnapshot && typeof data.shopSnapshot === 'object' ? data.shopSnapshot : {};
     return {
@@ -341,7 +341,7 @@ async function submitBalanceUtr({ customerId, orderId, idempotencyKey, utr, nowM
       type: 'balance_utr',
       actor: { type: 'customer', id: customerId },
       data: { utr }
-    });
+    }, data.customerId);
     return {
       replay: false,
       data: {
@@ -428,7 +428,7 @@ async function cancelCustomerOrder({ customerId, orderId, idempotencyKey, nowMs 
         type: 'cancelled',
         actor: { type: 'customer', id: customerId },
         data: { reason }
-      });
+      }, data.customerId);
       return {
         replay: false,
         shortRefund: true,
@@ -462,7 +462,8 @@ async function cancelCustomerOrder({ customerId, orderId, idempotencyKey, nowMs 
       const restored = await restoreLines(tx, db, {
         orderRef,
         items: data.items,
-        actor: { type: 'customer', id: customerId }
+        actor: { type: 'customer', id: customerId },
+        customerId: data.customerId
       });
       const at = Timestamp.fromMillis(now);
       const reason = 'customer_cancel';
@@ -501,7 +502,7 @@ async function cancelCustomerOrder({ customerId, orderId, idempotencyKey, nowMs 
         type: 'cancelled',
         actor: { type: 'customer', id: customerId },
         data: { reason }
-      });
+      }, data.customerId);
       return {
         replay: false,
         groupB: true,
@@ -567,7 +568,7 @@ async function cancelCustomerOrder({ customerId, orderId, idempotencyKey, nowMs 
       type: 'cancelled',
       actor: { type: 'customer', id: customerId },
       data: { reason }
-    });
+    }, data.customerId);
     return {
       replay: false,
       hasUtr,

@@ -1,4 +1,4 @@
-// The customer app can read the main marketplaceOrders document directly via Firestore rules; never store shop-internal or secret data on it — use private/ subdocuments.
+// Customers read marketplace orders through the API. The signal document is the only client-readable change notice.
 const { presentCustomerRefund } = require('./refunds');
 
 const PAYMENT_FIELDS = [

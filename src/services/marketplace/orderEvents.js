@@ -1,4 +1,5 @@
-// The customer app can read the main marketplaceOrders document directly via Firestore rules; never store shop-internal or secret data on it — use private/ subdocuments.
+// Customers and shops read marketplace orders through the API. The signal
+// document is the only client-readable change notice. Secrets stay in private/.
 const admin = require('firebase-admin');
 
 const EVENT_TYPES = [
@@ -38,7 +39,9 @@ const EVENT_TYPES = [
   'marked_ready',
   'delivery_stage',
   'handed_over',
+  'completed',
   'delivered',
+  'payment_refunded',
   'rated',
   'help_request',
   'help_resolved',
@@ -46,14 +49,50 @@ const EVENT_TYPES = [
 ];
 
 const EVENT_TYPE_SET = new Set(EVENT_TYPES);
+const signalTouched = new WeakMap();
 
-function appendEvent(transaction, orderRef, event) {
+function requireCustomerId(customerId) {
+  if (typeof customerId !== 'string' || customerId.trim() === '') {
+    const error = new Error('Marketplace signal requires customerId');
+    error.code = 'MISSING_CUSTOMER';
+    throw error;
+  }
+  return customerId;
+}
+
+function touchOrderSignal(transaction, orderRef, customerId, type) {
+  const id = requireCustomerId(customerId);
+  if (typeof type !== 'string' || type.trim() === '') {
+    const error = new Error('Marketplace signal requires a type');
+    error.code = 'MISSING_SIGNAL_TYPE';
+    throw error;
+  }
+  let touched = signalTouched.get(transaction);
+  if (!touched) {
+    touched = new Set();
+    signalTouched.set(transaction, touched);
+  }
+  const key = (orderRef && (orderRef.path || orderRef.id)) || 'order';
+  if (touched.has(key)) {
+    return false;
+  }
+  touched.add(key);
+  transaction.set(orderRef.collection('signal').doc('latest'), {
+    customerId: id,
+    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    type
+  });
+  return true;
+}
+
+function appendEvent(transaction, orderRef, event, customerId) {
   const type = event && event.type;
   if (!EVENT_TYPE_SET.has(type)) {
     const error = new Error(`Unknown marketplace event type: ${type}`);
     error.code = 'UNKNOWN_EVENT_TYPE';
     throw error;
   }
+  requireCustomerId(customerId);
 
   const actor = event.actor || {};
   const storedActor = {
@@ -72,10 +111,12 @@ function appendEvent(transaction, orderRef, event) {
     reason: event.reason === undefined ? null : event.reason,
     at: admin.firestore.FieldValue.serverTimestamp()
   });
+  touchOrderSignal(transaction, orderRef, customerId, type);
   return ref.id;
 }
 
 module.exports = {
   EVENT_TYPES,
-  appendEvent
+  appendEvent,
+  touchOrderSignal
 };

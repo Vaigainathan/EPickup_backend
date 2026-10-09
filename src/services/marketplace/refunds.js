@@ -186,7 +186,7 @@ function createRefund(tx, {
     actor,
     reason: eventReason == null ? null : eventReason,
     data: { reason }
-  });
+  }, data.customerId);
   return { refundId, amount };
 }
 
@@ -329,7 +329,7 @@ async function submitCustomerUpi({
       type: 'refund_upi',
       actor: { type: 'customer', id: customerId },
       data: null
-    });
+    }, data.customerId);
     return {
       replay: false,
       data,
@@ -413,7 +413,7 @@ async function acknowledgeRefund({
       type: nextStatus === 'confirmed' ? 'refund_ack' : 'refund_disputed',
       actor: { type: 'customer', id: customerId },
       data: nextStatus === 'confirmed' ? { received: true } : { late }
-    });
+    }, data.customerId);
     const variables = displayVariables(data, orderId);
     const notifies = nextStatus === 'confirmed'
       ? [{ template: 'REFUND_CLOSED', variables }]
@@ -512,7 +512,7 @@ async function markRefundSent({
       actor,
       reason: eventReason == null ? null : eventReason,
       data: { refundUtrLast4: last4(refundUtr) }
-    });
+    }, data.customerId);
     return { alreadyProcessed: false, data, refund: { ...refund, status: 'sent', refundUtr, sentAmount: amount } };
   });
 
@@ -569,7 +569,7 @@ async function resolveRefundDispute({
         type: 'refund_ack',
         actor,
         data: { received: true }
-      });
+      }, data.customerId);
       return { data, template: 'REFUND_CLOSED', refund: { ...refund, status: 'confirmed' } };
     }
     const reminders = {
@@ -607,7 +607,7 @@ async function resolveRefundDispute({
         refundUtrLast4: last4(refund.refundUtr),
         sentAt: toIso(refund.sentAt)
       }
-    });
+    }, data.customerId);
     tx.update(refundRef, patch);
     tx.update(orderRef, { ...mirrorPatch(data, true), updatedAt: stamp });
     return { data, template: null, refund: { ...refund, ...patch, id: refundId } };

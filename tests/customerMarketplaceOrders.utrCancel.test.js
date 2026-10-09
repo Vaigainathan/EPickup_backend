@@ -249,6 +249,10 @@ describe('customer UTR submit', () => {
     expect(typeof registry.at.toMillis).toBe('function');
     expect(pathsStarting('utrRegistry/')).toHaveLength(1);
     expect(pathsStarting('marketplaceOrders/order-1/events/')).toHaveLength(1);
+    expect(mockDocs.get('marketplaceOrders/order-1/signal/latest')).toMatchObject({
+      customerId: 'customer-test',
+      type: 'utr_submitted'
+    });
     expect(mockDocs.has('marketplaceLocks/customer-test_shop-1')).toBe(true);
     expect(mockDocs.get('users/customer-test').customer.marketplace.unpaidCount).toBe(1);
     expect(mockSendTemplate).toHaveBeenCalledWith(
@@ -437,6 +441,10 @@ describe('customer cancel', () => {
     expect(response.body.data.order.orderStatus).toBe('cancelled');
     expect(response.body.data.order.payment.status).toBe('cancelled');
     expect(response.body.data.order.cancellation.reason).toBe('customer_unpaid_cancel');
+    expect(mockDocs.get('marketplaceOrders/order-c1/signal/latest')).toMatchObject({
+      customerId: 'customer-test',
+      type: 'cancelled'
+    });
     expect(response.body.data.order.cancellation.paidCheck).toBeNull();
     expect(JSON.stringify(response.body)).not.toContain('654321');
     expect(mockDocs.has('marketplaceLocks/customer-test_shop-1')).toBe(false);

@@ -148,6 +148,7 @@ jest.mock('../src/services/notificationService', () => ({
 }));
 
 const { isPastPaymentGrace, isShortBalanceExpired, resolvePaymentReview } = require('../src/services/marketplace/shopPaymentVerification');
+const { recordFoundRefund } = require('../src/services/marketplace/refunds');
 const { NotificationTemplateProcessor } = require('../src/services/notificationTemplates');
 const { presentCustomerOrder } = require('../src/services/marketplace/customerOrderView');
 const shopOrderService = require('../src/services/shopOrderService');
@@ -1157,5 +1158,316 @@ describe('shop payment verification', () => {
     expect(isShortBalanceExpired(data, due - 1)).toBe(false);
     expect(isShortBalanceExpired(data, due)).toBe(true);
     expect(isShortBalanceExpired({ payment: { status: 'pending', balance: { dueBy: stamp(due) } } }, due)).toBe(false);
+  });
+
+  test('payment_unconfirmed with fulfil false cancels as late_unfulfilled and does not touch stock', async () => {
+    mockGetEnforcement.mockResolvedValue(ON);
+    mockDocs.set('products/prod-1', { stock: 10, hasVariants: false });
+    seedOrder('order-late-no', {
+      orderStatus: 'payment_unconfirmed',
+      expectedAmount: 1540,
+      expectedAmountPaise: 154000,
+      items: [{ id: 'line-1', productId: 'prod-1', qty: 1, name: 'Controller' }],
+      payment: { status: 'expired', amount: 1540 }
+    });
+    const late = await post('order-late-no/confirm-payment', { fullUtr: UTR, fulfil: false });
+    expect(late.status).toBe(200);
+    const stored = mockDocs.get('marketplaceOrders/order-late-no');
+    expect(stored.orderStatus).toBe('cancelled');
+    expect(stored.closedReason).toBe('late_unfulfilled');
+    expect(stored.cancellation.reason).toBe('late_unfulfilled');
+    expect(stored.cancellation.cancelledBy).toBe('shop-1');
+    expect(stored.payment.receivedAmount).toBe(1540);
+    expect(stored.payment.receivedAmountPaise).toBe(154000);
+    expect(stored.payment.late).toMatchObject({ onCancelledOrder: false, fulfilled: false });
+    expect(mockDocs.get('products/prod-1').stock).toBe(10);
+    expect(eventsFor('order-late-no').some((event) => event.type === 'stock_deducted')).toBe(false);
+    expect(eventsFor('order-late-no').some((event) => event.type === 'cancelled' && event.data.reason === 'late_unfulfilled')).toBe(true);
+    expect(refundDocs('order-late-no')).toHaveLength(1);
+    expect(refundDocs('order-late-no')[0].reason).toBe('late_unfulfilled');
+    expect(mockSendTemplate.mock.calls.some((call) => call[2] === 'PAYMENT_LATE_ACCEPTED')).toBe(false);
+    expect(mockSendTemplate.mock.calls.some((call) => call[2] === 'REFUND_INITIATED')).toBe(true);
+
+    const again = await post('order-late-no/confirm-payment', { fullUtr: UTR, fulfil: false });
+    expect(again.status).toBe(200);
+    expect(refundDocs('order-late-no')).toHaveLength(1);
+  });
+
+  test('fulfil false during the open payment window is refused', async () => {
+    mockGetEnforcement.mockResolvedValue(ON);
+    seedOrder('order-open', { payment: { status: 'pending', amount: 1540 } });
+    const refused = await post('order-open/confirm-payment', { fullUtr: UTR, fulfil: false });
+    expect(refused.status).toBe(409);
+    expect(refused.body.error.code).toBe('INVALID_STATE');
+    expect(mockDocs.get('marketplaceOrders/order-open').orderStatus).toBe('awaiting_payment');
+    expect(refundDocs('order-open')).toHaveLength(0);
+  });
+
+  test('a qualifying cancelled order records paid_on_cancelled once and does not touch stock', async () => {
+    mockGetEnforcement.mockResolvedValue(ON);
+    mockDocs.set('products/prod-1', { stock: 10, hasVariants: false });
+    seedOrder('order-poc', {
+      orderStatus: 'cancelled',
+      closedReason: 'customer_unpaid_cancel',
+      cancellation: { reason: 'customer_unpaid_cancel' },
+      expectedAmount: 1540,
+      expectedAmountPaise: 154000,
+      items: [{ id: 'line-1', productId: 'prod-1', qty: 1, name: 'Controller' }],
+      payment: { status: 'cancelled', amount: 1540 }
+    });
+    const paid = await post('order-poc/confirm-payment', { fullUtr: UTR });
+    expect(paid.status).toBe(200);
+    const stored = mockDocs.get('marketplaceOrders/order-poc');
+    expect(stored.orderStatus).toBe('cancelled');
+    expect(stored.payment.late).toMatchObject({ onCancelledOrder: true, fulfilled: false });
+    expect(stored.payment.receivedAmount).toBe(1540);
+    expect(mockDocs.get('products/prod-1').stock).toBe(10);
+    expect(refundDocs('order-poc')).toHaveLength(1);
+    expect(refundDocs('order-poc')[0].reason).toBe('paid_on_cancelled');
+    expect(eventsFor('order-poc').some((event) => event.type === 'stock_deducted')).toBe(false);
+
+    const again = await post('order-poc/confirm-payment', { fullUtr: UTR });
+    expect(again.status).toBe(200);
+    expect(refundDocs('order-poc')).toHaveLength(1);
+  });
+
+  test('a legacy timeout with no closedReason can be paid on the cancelled order', async () => {
+    mockGetEnforcement.mockResolvedValue(ON);
+    seedOrder('order-legacy', {
+      orderStatus: 'cancelled',
+      expectedAmount: 1540,
+      expectedAmountPaise: 154000,
+      payment: { status: 'expired', amount: 1540 }
+    });
+    const paid = await post('order-legacy/confirm-payment', { fullUtr: UTR });
+    expect(paid.status).toBe(200);
+    expect(mockDocs.get('marketplaceOrders/order-legacy').orderStatus).toBe('cancelled');
+    expect(mockDocs.get('marketplaceOrders/order-legacy').payment.late.onCancelledOrder).toBe(true);
+    expect(refundDocs('order-legacy')[0].reason).toBe('paid_on_cancelled');
+  });
+
+  test('paid-check, balance_expired, and payment_not_verified stay on their own refund paths', async () => {
+    mockGetEnforcement.mockResolvedValue(ON);
+    seedOrder('order-check', {
+      orderStatus: 'cancelled',
+      closedReason: 'customer_cancel',
+      expectedAmount: 40,
+      cancellation: { reason: 'customer_cancel', paidCheck: 'pending' },
+      payment: { status: 'customer_claimed', customerUtr: UTR, amount: 1540, receivedAmount: 40 }
+    });
+    const blocked = await post('order-check/confirm-payment', { fullUtr: UTR });
+    expect(blocked.status).toBe(409);
+    expect(blocked.body.error.code).toBe('INVALID_STATE');
+    const checked = await post('order-check/paid-check', { received: true, utrLast4: '9012' });
+    expect(checked.status).toBe(200);
+    expect(refundDocs('order-check')).toHaveLength(1);
+    expect(refundDocs('order-check')[0].reason).toBe('customer_cancel');
+
+    seedOrder('order-bal', {
+      orderStatus: 'cancelled',
+      closedReason: 'balance_expired',
+      cancellation: { reason: 'balance_expired' },
+      payment: { status: 'cancelled', amount: 100, receivedAmount: 40, receivedAmountPaise: 4000 }
+    });
+    mockDocs.set('marketplaceOrders/order-bal/refunds/existing', {
+      reason: 'balance_expired',
+      amount: 40,
+      status: 'upi_needed'
+    });
+    const balance = await post('order-bal/confirm-payment', { fullUtr: SHOP_UTR });
+    expect(balance.status).toBe(409);
+    expect(refundDocs('order-bal')).toHaveLength(1);
+
+    seedOrder('order-nv', {
+      orderStatus: 'cancelled',
+      closedReason: 'payment_not_verified',
+      cancellation: { reason: 'payment_not_verified' },
+      payment: { status: 'not_verified', amount: 40 }
+    });
+    const notVerified = await post('order-nv/confirm-payment', { fullUtr: SHOP_UTR });
+    expect(notVerified.status).toBe(409);
+    const found = await recordFoundRefund({
+      orderId: 'order-nv',
+      amount: 40,
+      operator: 'ops-1',
+      reason: 'Bank statement shows the payment'
+    });
+    expect(found.orderStatus).toBe('cancelled');
+    expect(refundDocs('order-nv')).toHaveLength(1);
+    expect(refundDocs('order-nv')[0].reason).toBe('support_decision');
+  });
+
+  test('a cancelled confirm whose refunds already equal the received amount adds no refund', async () => {
+    mockGetEnforcement.mockResolvedValue(ON);
+    seedOrder('order-zero', {
+      orderStatus: 'cancelled',
+      closedReason: 'customer_unpaid_cancel',
+      cancellation: { reason: 'customer_unpaid_cancel' },
+      payment: { status: 'cancelled', amount: 1540, receivedAmount: 40, receivedAmountPaise: 4000 }
+    });
+    mockDocs.set('marketplaceOrders/order-zero/refunds/existing', {
+      reason: 'customer_cancel',
+      amount: 40,
+      status: 'upi_needed'
+    });
+    const paid = await post('order-zero/confirm-payment', { fullUtr: UTR });
+    expect(paid.status).toBe(200);
+    expect(refundDocs('order-zero')).toHaveLength(1);
+    expect(refundDocs('order-zero')[0].reason).toBe('customer_cancel');
+    expect(mockDocs.get('marketplaceOrders/order-zero').payment.late.onCancelledOrder).toBe(true);
+    expect(mockSendTemplate.mock.calls.some((call) => call[2] === 'REFUND_INITIATED')).toBe(false);
+  });
+
+  test('support cancel frees an assigned driver once and hides the operator note', async () => {
+    mockDocs.set('products/prod-1', { stock: 9, hasVariants: false });
+    seedOrder('order-support', {
+      orderStatus: 'ready',
+      shopSnapshot: { name: 'Vaigzz' },
+      delivery: { stage: 'assigned' },
+      linkedBookingId: 'book-1',
+      items: [{ id: 'line-1', productId: 'prod-1', qty: 1, stockDeducted: 1, name: 'Controller' }],
+      payment: { status: 'confirmed', amount: 1540, receivedAmount: 1540, receivedAmountPaise: 154000 }
+    });
+    mockDocs.set('bookings/book-1', {
+      status: 'assigned',
+      driverId: 'driver-1',
+      sourceType: 'marketplace'
+    });
+    mockDocs.set('users/driver-1', { driver: { activeBookings: 2 } });
+
+    const cancelled = await shopOrderService.supportCancelBeforeHandover({
+      orderId: 'order-support',
+      operator: 'ops-1',
+      note: 'customer asked'
+    });
+    expect(cancelled.wrote).toBe(true);
+    const stored = mockDocs.get('marketplaceOrders/order-support');
+    expect(stored.orderStatus).toBe('cancelled');
+    expect(stored.closedReason).toBe('support_cancelled');
+    expect(stored.cancellation.reason).toBe('support_cancelled');
+    expect(stored.cancellation.shopReason).toBeUndefined();
+    expect(stored.cancellation.support).toEqual({ operator: 'ops-1', note: 'customer asked' });
+    expect(stored.delivery.stage).toBe('cancelled');
+    expect(mockDocs.get('bookings/book-1').status).toBe('cancelled');
+    expect(mockDocs.get('users/driver-1').driver.activeBookings).toBe(1);
+    expect(mockDocs.get('products/prod-1').stock).toBe(10);
+    expect(refundDocs('order-support')[0].reason).toBe('support_cancelled');
+    const driverCalls = mockSendTemplate.mock.calls.filter((call) => call[1] === 'DRIVER' && call[2] === 'BOOKING_CANCELLED');
+    expect(driverCalls).toHaveLength(1);
+    expect(driverCalls[0][0]).toBe('driver-1');
+    expect(mockSendTemplate.mock.calls.some((call) => call[1] === 'CUSTOMER' && call[2] === 'BOOKING_CANCELLED')).toBe(false);
+
+    const shopView = await shopOrderService.presentOrder('order-support', stored);
+    const customerView = presentCustomerOrder({ ...stored, id: 'order-support' });
+    expect(shopView.cancellation.support).toBeUndefined();
+    expect(customerView.cancellation.support).toBeUndefined();
+    expect(JSON.stringify(shopView)).not.toContain('customer asked');
+    expect(JSON.stringify(customerView)).not.toContain('customer asked');
+
+    const again = await shopOrderService.supportCancelBeforeHandover({
+      orderId: 'order-support',
+      operator: 'ops-1',
+      note: 'customer asked'
+    });
+    expect(again.alreadyProcessed).toBe(true);
+    expect(mockDocs.get('users/driver-1').driver.activeBookings).toBe(1);
+    expect(mockSendTemplate.mock.calls.filter((call) => call[1] === 'DRIVER')).toHaveLength(1);
+    expect(refundDocs('order-support')).toHaveLength(1);
+  });
+
+  test('support cancel from preparing restores stock when no booking exists', async () => {
+    mockDocs.set('products/prod-1', { stock: 9, hasVariants: false });
+    seedOrder('order-prep-support', {
+      orderStatus: 'preparing',
+      items: [{ id: 'line-1', productId: 'prod-1', qty: 1, stockDeducted: 1, name: 'Controller' }],
+      payment: { status: 'confirmed', amount: 1540, receivedAmount: 1540, receivedAmountPaise: 154000 }
+    });
+    const cancelled = await shopOrderService.supportCancelBeforeHandover({
+      orderId: 'order-prep-support',
+      operator: 'ops-1',
+      note: 'before ready'
+    });
+    expect(cancelled.wrote).toBe(true);
+    const stored = mockDocs.get('marketplaceOrders/order-prep-support');
+    expect(stored.orderStatus).toBe('cancelled');
+    expect(stored.closedReason).toBe('support_cancelled');
+    expect(stored.delivery && stored.delivery.stage).not.toBe('cancelled');
+    expect(mockDocs.get('products/prod-1').stock).toBe(10);
+    expect(refundDocs('order-prep-support')[0].reason).toBe('support_cancelled');
+  });
+
+  test('support cancel refuses photo_captured and picked_up without writing', async () => {
+    seedOrder('order-photo', {
+      orderStatus: 'ready',
+      delivery: { stage: 'assigned' },
+      linkedBookingId: 'book-photo',
+      payment: { status: 'confirmed', amount: 1540, receivedAmount: 1540, receivedAmountPaise: 154000 }
+    });
+    mockDocs.set('bookings/book-photo', { status: 'photo_captured', driverId: 'driver-1' });
+    mockDocs.set('users/driver-1', { driver: { activeBookings: 2 } });
+    await expect(shopOrderService.supportCancelBeforeHandover({
+      orderId: 'order-photo',
+      operator: 'ops-1',
+      note: 'too late'
+    })).rejects.toMatchObject({ status: 409, code: 'CANCEL_NOT_ALLOWED' });
+    expect(mockDocs.get('marketplaceOrders/order-photo').orderStatus).toBe('ready');
+    expect(mockDocs.get('bookings/book-photo').status).toBe('photo_captured');
+    expect(mockDocs.get('users/driver-1').driver.activeBookings).toBe(2);
+    expect(refundDocs('order-photo')).toHaveLength(0);
+
+    seedOrder('order-picked', {
+      orderStatus: 'ready',
+      delivery: { stage: 'picked_up' },
+      linkedBookingId: 'book-picked',
+      payment: { status: 'confirmed', amount: 1540 }
+    });
+    mockDocs.set('bookings/book-picked', { status: 'picked_up', driverId: 'driver-1' });
+    await expect(shopOrderService.supportCancelBeforeHandover({
+      orderId: 'order-picked',
+      operator: 'ops-1',
+      note: 'too late'
+    })).rejects.toMatchObject({ status: 409 });
+    expect(mockDocs.get('marketplaceOrders/order-picked').orderStatus).toBe('ready');
+    expect(mockDocs.get('bookings/book-picked').status).toBe('picked_up');
+  });
+
+  test('order_cancelled and customer_cancelled data payloads are the five ids', () => {
+    const cancelled = NotificationTemplateProcessor.process(
+      NotificationTemplateProcessor.getTemplate('MARKETPLACE', 'ORDER_CANCELLED'),
+      {
+        displayId: '#11',
+        orderId: 'order-1',
+        shopName: 'Vaigzz',
+        amount: 40,
+        reason: 'customer asked',
+        reasonLine: ' Reason: customer asked'
+      }
+    );
+    expect(cancelled.data).toEqual({
+      type: 'order_cancelled',
+      orderId: 'order-1',
+      displayId: '#11',
+      shopName: 'Vaigzz',
+      action: 'view_order'
+    });
+    const customer = NotificationTemplateProcessor.process(
+      NotificationTemplateProcessor.getTemplate('MARKETPLACE', 'CUSTOMER_CANCELLED'),
+      {
+        displayId: '#11',
+        orderId: 'order-1',
+        shopName: 'Vaigzz',
+        detail: 'The order was cancelled while preparing.',
+        amount: 40
+      }
+    );
+    expect(customer.data).toEqual({
+      type: 'customer_cancelled',
+      orderId: 'order-1',
+      displayId: '#11',
+      shopName: 'Vaigzz',
+      action: 'view_order'
+    });
+    expect(JSON.stringify(customer.data)).not.toContain('40');
+    expect(JSON.stringify(cancelled.data)).not.toContain('customer asked');
   });
 });

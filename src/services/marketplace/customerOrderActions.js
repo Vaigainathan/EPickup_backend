@@ -1,10 +1,11 @@
 const { Timestamp, FieldValue } = require('firebase-admin/firestore');
 const { getFirestore } = require('../firebase');
 const { MARKETPLACE_DEFAULTS } = require('../../config/marketplaceDefaults');
-const { isValidUtr } = require('../../validators/marketplace');
+const { isValidUtr, toPaise, fromPaise } = require('../../validators/marketplace');
 const { presentCustomerOrder } = require('./customerOrderView');
 const { appendEvent } = require('./orderEvents');
-const { createRefund } = require('./refunds');
+const { createRefund, refundRemainder } = require('./refunds');
+const { restoreLines } = require('./stock');
 const displayIdService = require('../displayIdService');
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -141,6 +142,17 @@ async function notifyShop(shopId, template, variables) {
 
 function displayLabel(data) {
   return displayIdService.formatDisplayId(data.displayId);
+}
+
+function receivedPaiseOf(data) {
+  const payment = data && data.payment ? data.payment : {};
+  if (payment.receivedAmountPaise != null && Number.isFinite(Number(payment.receivedAmountPaise))) {
+    return Number(payment.receivedAmountPaise);
+  }
+  if (payment.receivedAmount != null) {
+    return toPaise(payment.receivedAmount);
+  }
+  return 0;
 }
 
 async function submitCustomerUtr({ customerId, orderId, idempotencyKey, utr, nowMs }) {
@@ -439,6 +451,76 @@ async function cancelCustomerOrder({ customerId, orderId, idempotencyKey, nowMs 
         }
       };
     }
+    if (data.orderStatus === 'preparing') {
+      if (data.policyGroup !== 'B') {
+        throw httpError(409, 'CANCEL_NOT_ALLOWED', 'This order cannot be cancelled');
+      }
+      const userRef = db.collection('users').doc(customerId);
+      await tx.get(userRef);
+      const paise = receivedPaiseOf(data);
+      const remainder = await refundRemainder(tx, orderRef, paise);
+      const restored = await restoreLines(tx, db, {
+        orderRef,
+        items: data.items,
+        actor: { type: 'customer', id: customerId }
+      });
+      const at = Timestamp.fromMillis(now);
+      const reason = 'customer_cancel';
+      const nextCancellation = {
+        reason,
+        cancelledBy: 'customer',
+        cancelledAt: at
+      };
+      tx.update(orderRef, {
+        orderStatus: 'cancelled',
+        closedReason: reason,
+        items: restored.items,
+        cancellation: nextCancellation,
+        updatedAt: at
+      });
+      let refund = null;
+      let refundAmount = null;
+      if (remainder.remainderPaise > 0) {
+        refundAmount = fromPaise(remainder.remainderPaise);
+        const created = createRefund(tx, {
+          orderRef,
+          data,
+          reason,
+          amount: refundAmount,
+          items: restored.items,
+          actor: { type: 'customer', id: customerId },
+          resultingOrderStatus: 'cancelled'
+        });
+        refund = {
+          id: created.refundId,
+          amount: created.amount,
+          status: 'upi_needed'
+        };
+      }
+      appendEvent(tx, orderRef, {
+        type: 'cancelled',
+        actor: { type: 'customer', id: customerId },
+        data: { reason }
+      });
+      return {
+        replay: false,
+        groupB: true,
+        refund,
+        refundAmount,
+        shopId: data.shopId,
+        displayId: displayLabel(data),
+        data: {
+          ...data,
+          orderStatus: 'cancelled',
+          closedReason: reason,
+          items: restored.items,
+          cancellation: nextCancellation,
+          hasOpenRefund: Boolean(refund),
+          payment: refund ? { ...payment, status: 'refund_pending' } : payment,
+          updatedAt: at
+        }
+      };
+    }
     if (data.orderStatus !== 'awaiting_payment') {
       throw httpError(409, 'CANCEL_NOT_ALLOWED', 'This order cannot be cancelled');
     }
@@ -502,6 +584,34 @@ async function cancelCustomerOrder({ customerId, orderId, idempotencyKey, nowMs 
     };
   });
 
+  if (!outcome.replay && outcome.groupB) {
+    const snapshot = outcome.data && outcome.data.shopSnapshot && typeof outcome.data.shopSnapshot === 'object'
+      ? outcome.data.shopSnapshot
+      : {};
+    const shopName = typeof snapshot.name === 'string' ? snapshot.name : '';
+    if (outcome.refund) {
+      await notifyCustomer(customerId, 'REFUND_INITIATED', {
+        displayId: outcome.displayId,
+        orderId,
+        shopName,
+        amount: outcome.refundAmount
+      });
+    } else {
+      await notifyCustomer(customerId, 'ORDER_CANCELLED', {
+        displayId: outcome.displayId,
+        orderId,
+        shopName,
+        reasonLine: ''
+      });
+    }
+    await notifyShop(outcome.shopId, 'CUSTOMER_CANCELLED', {
+      displayId: outcome.displayId,
+      orderId,
+      shopName,
+      detail: 'The order was cancelled while preparing.'
+    });
+    return orderResponse(200, outcome.data, orderId, outcome.refund ? { refund: outcome.refund } : null);
+  }
   if (!outcome.replay && outcome.shortRefund) {
     const snapshot = outcome.data && outcome.data.shopSnapshot && typeof outcome.data.shopSnapshot === 'object'
       ? outcome.data.shopSnapshot

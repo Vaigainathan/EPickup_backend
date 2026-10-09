@@ -57,10 +57,29 @@ function mockRef(path) {
       };
     },
     collection(name) {
+      const prefix = `${path}/${name}/`;
       return {
         doc(subId) {
           const child = subId || `auto-${mockEventSeq += 1}`;
           return mockRef(`${path}/${name}/${child}`);
+        },
+        listDocs() {
+          const docs = [];
+          mockDocs.forEach((data, docPath) => {
+            if (!docPath.startsWith(prefix)) {
+              return;
+            }
+            const rest = docPath.slice(prefix.length);
+            if (!rest || rest.includes('/')) {
+              return;
+            }
+            docs.push({
+              id: rest,
+              ref: mockRef(docPath),
+              data: () => mockClone(data)
+            });
+          });
+          return { docs, empty: docs.length === 0, size: docs.length };
         }
       };
     }
@@ -79,6 +98,9 @@ function mockBuildDb() {
     async runTransaction(fn) {
       const tx = {
         async get(ref) {
+          if (ref && typeof ref.listDocs === 'function') {
+            return ref.listDocs();
+          }
           const data = mockDocs.get(ref.path);
           return {
             exists: data !== undefined,
@@ -110,7 +132,7 @@ jest.mock('../src/services/notificationService', () => ({
   sendTemplateNotification: (...args) => mockSendTemplate(...args)
 }));
 
-const { isWithinUtrWindow, submitCustomerUtr } = require('../src/services/marketplace/customerOrderActions');
+const { isWithinUtrWindow, submitCustomerUtr, cancelCustomerOrder } = require('../src/services/marketplace/customerOrderActions');
 const customerMarketplaceOrderRoutes = require('../src/routes/customerMarketplaceOrders');
 
 function refundDocs(orderId) {
@@ -631,5 +653,103 @@ describe('balance UTR', () => {
     expect(response.body.data.paymentDetails.upiId).toBeNull();
     expect(response.body.data.order.payment.balance.amount).toBe(60);
     expect(JSON.stringify(response.body)).not.toContain('654321');
+  });
+});
+
+describe('group B cancel while preparing', () => {
+  function seedPreparing(id, overrides = {}) {
+    seedOrder(id, {
+      orderStatus: 'preparing',
+      policyGroup: 'B',
+      shopSnapshot: { name: 'Vaigzz' },
+      expectedAmount: 1540,
+      items: [{ id: 'line-1', productId: 'prod-1', qty: 1, stockDeducted: 1, name: 'Controller' }],
+      payment: {
+        status: 'confirmed',
+        amount: 1540,
+        receivedAmount: 1540,
+        receivedAmountPaise: 154000
+      },
+      ...overrides
+    });
+  }
+
+  function cancelDirect(id) {
+    return cancelCustomerOrder({
+      customerId: 'customer-test',
+      orderId: id,
+      idempotencyKey: KEY
+    });
+  }
+
+  test('group B preparing restores stock and refunds the remainder once', async () => {
+    mockDocs.set('products/prod-1', { stock: 9, hasVariants: false });
+    seedPreparing('order-bprep');
+    seedLock('order-bprep');
+    const cancelled = await cancelDirect('order-bprep');
+    expect(cancelled.status).toBe(200);
+    const stored = mockDocs.get('marketplaceOrders/order-bprep');
+    expect(stored.orderStatus).toBe('cancelled');
+    expect(stored.closedReason).toBe('customer_cancel');
+    expect(stored.cancellation.reason).toBe('customer_cancel');
+    expect(stored.cancellation.cancelledBy).toBe('customer');
+    expect(mockDocs.get('products/prod-1').stock).toBe(10);
+    expect(refundDocs('order-bprep')).toHaveLength(1);
+    expect(refundDocs('order-bprep')[0].reason).toBe('customer_cancel');
+    expect(refundDocs('order-bprep')[0].amount).toBe(1540);
+    expect(mockDocs.has('marketplaceLocks/customer-test_shop-1')).toBe(true);
+    expect(cancelled.body.data.order.cancellation.support).toBeUndefined();
+    expect(mockSendTemplate).toHaveBeenCalledWith(
+      'customer-test',
+      'MARKETPLACE',
+      'REFUND_INITIATED',
+      expect.objectContaining({ orderId: 'order-bprep', shopName: 'Vaigzz' })
+    );
+    expect(mockSendTemplate).toHaveBeenCalledWith(
+      'shop-1',
+      'MARKETPLACE',
+      'CUSTOMER_CANCELLED',
+      expect.objectContaining({ orderId: 'order-bprep' })
+    );
+
+    const again = await cancelDirect('order-bprep');
+    expect(again.status).toBe(200);
+    expect(refundDocs('order-bprep')).toHaveLength(1);
+    expect(mockDocs.get('products/prod-1').stock).toBe(10);
+    expect(mockSendTemplate).toHaveBeenCalledTimes(2);
+  });
+
+  test('group A preparing and group B ready are refused', async () => {
+    mockDocs.set('products/prod-1', { stock: 9, hasVariants: false });
+    seedPreparing('order-a', { policyGroup: 'A' });
+    await expect(cancelDirect('order-a')).rejects.toMatchObject({ status: 409, code: 'CANCEL_NOT_ALLOWED' });
+    expect(mockDocs.get('marketplaceOrders/order-a').orderStatus).toBe('preparing');
+    expect(mockDocs.get('products/prod-1').stock).toBe(9);
+
+    seedPreparing('order-ready', { orderStatus: 'ready', delivery: { stage: 'searching' } });
+    await expect(cancelDirect('order-ready')).rejects.toMatchObject({ status: 409, code: 'CANCEL_NOT_ALLOWED' });
+    expect(mockDocs.get('marketplaceOrders/order-ready').orderStatus).toBe('ready');
+  });
+
+  test('a zero remainder still cancels and restores stock without a refund doc', async () => {
+    mockDocs.set('products/prod-1', { stock: 9, hasVariants: false });
+    seedPreparing('order-zero');
+    mockDocs.set('marketplaceOrders/order-zero/refunds/existing', {
+      reason: 'review_refund',
+      amount: 1540,
+      status: 'upi_needed'
+    });
+    const cancelled = await cancelDirect('order-zero');
+    expect(cancelled.status).toBe(200);
+    expect(mockDocs.get('marketplaceOrders/order-zero').orderStatus).toBe('cancelled');
+    expect(mockDocs.get('products/prod-1').stock).toBe(10);
+    expect(refundDocs('order-zero')).toHaveLength(1);
+    expect(refundDocs('order-zero')[0].reason).toBe('review_refund');
+    expect(mockSendTemplate).toHaveBeenCalledWith(
+      'customer-test',
+      'MARKETPLACE',
+      'ORDER_CANCELLED',
+      expect.objectContaining({ orderId: 'order-zero' })
+    );
   });
 });

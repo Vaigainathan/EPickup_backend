@@ -101,6 +101,25 @@ async function readRefundDocs(tx, orderRef) {
   }));
 }
 
+function sumStoredRefundPaise(refunds) {
+  return refunds.reduce((sum, refund) => {
+    const amount = refund.data ? refund.data.amount : null;
+    if (typeof amount !== 'number' || !Number.isFinite(amount)) {
+      return sum;
+    }
+    return sum + toPaise(amount);
+  }, 0);
+}
+
+async function refundRemainder(tx, orderRef, receivedPaise) {
+  const refunds = await readRefundDocs(tx, orderRef);
+  const base = Number.isFinite(receivedPaise) ? receivedPaise : 0;
+  return {
+    refunds,
+    remainderPaise: Math.max(0, base - sumStoredRefundPaise(refunds))
+  };
+}
+
 function statusAfter(refunds, refundId, nextStatus) {
   return refunds.some((refund) => {
     const status = refund.id === refundId ? nextStatus : refund.data.status;
@@ -710,6 +729,7 @@ module.exports = {
   OPEN_STATUSES,
   createRefund,
   hasReason,
+  refundRemainder,
   presentCustomerRefund,
   presentShopRefund,
   loadRefundDocs,

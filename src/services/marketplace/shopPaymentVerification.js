@@ -5,7 +5,7 @@ const marketplaceMoney = require('../../validators/marketplace');
 const { isValidUtr } = marketplaceMoney;
 const { appendEvent } = require('./orderEvents');
 const { deductStock } = require('./stock');
-const { createRefund, hasReason } = require('./refunds');
+const { createRefund, hasReason, refundRemainder } = require('./refunds');
 const { getMarketplaceEnforcement } = require('./orderStateMachine');
 const displayIdService = require('../displayIdService');
 
@@ -165,6 +165,233 @@ function expectedReceivedFields(data) {
   return {
     'payment.receivedAmount': data.expectedAmount != null ? data.expectedAmount : null,
     'payment.receivedAmountPaise': data.expectedAmountPaise != null ? data.expectedAmountPaise : null
+  };
+}
+
+function receivedPaise(data) {
+  const payment = data && data.payment ? data.payment : {};
+  if (payment.receivedAmountPaise != null && Number.isFinite(Number(payment.receivedAmountPaise))) {
+    return Number(payment.receivedAmountPaise);
+  }
+  if (payment.receivedAmount != null) {
+    return marketplaceMoney.toPaise(payment.receivedAmount);
+  }
+  if (data && data.expectedAmountPaise != null && Number.isFinite(Number(data.expectedAmountPaise))) {
+    return Number(data.expectedAmountPaise);
+  }
+  if (data && data.expectedAmount != null) {
+    return marketplaceMoney.toPaise(data.expectedAmount);
+  }
+  return 0;
+}
+
+function receivedWrite(data) {
+  const payment = data && data.payment ? data.payment : {};
+  if (payment.receivedAmount != null || payment.receivedAmountPaise != null) {
+    return {};
+  }
+  return expectedReceivedFields(data);
+}
+
+const PAID_ON_CANCELLED_REASONS = new Set([
+  'customer_unpaid_cancel',
+  'unconfirmed_expired',
+  'shop_rejected'
+]);
+const PAID_ON_CANCELLED_BLOCKED = new Set([
+  'customer_cancel',
+  'balance_expired',
+  'payment_not_verified',
+  'shop_cancelled',
+  'late_unfulfilled',
+  'support_cancelled'
+]);
+const BLOCKED_PAID_PAYMENT = new Set(['confirmed', 'refund_pending', 'refunded']);
+
+function paidOnCancelledKind(data) {
+  const payment = data.payment || {};
+  const cancellation = data.cancellation || {};
+  const reason = cancellation.reason || null;
+  const closed = data.closedReason || null;
+  if (payment.late && payment.late.onCancelledOrder === true) {
+    return 'done';
+  }
+  if (BLOCKED_PAID_PAYMENT.has(payment.status)) {
+    return 'refuse';
+  }
+  if (PAID_ON_CANCELLED_BLOCKED.has(reason) || PAID_ON_CANCELLED_BLOCKED.has(closed)) {
+    return 'refuse';
+  }
+  const legacyTimeout = payment.status === 'expired' && !closed && !reason;
+  const qualifying = PAID_ON_CANCELLED_REASONS.has(reason)
+    || PAID_ON_CANCELLED_REASONS.has(closed)
+    || legacyTimeout;
+  if (!qualifying) {
+    return 'refuse';
+  }
+  return 'allow';
+}
+
+async function confirmLateUnfulfilled(tx, {
+  db, orderRef, shopId, orderId, data, payment, body, now
+}) {
+  const matched = matchOfficialUtr(payment, body);
+  const registryRef = db.collection('utrRegistry').doc(matched.officialUtr);
+  const registrySnap = await tx.get(registryRef);
+  const release = await readUnpaidRelease(tx, db, {
+    customerId: data.customerId,
+    shopId: data.shopId
+  });
+  const paise = receivedPaise(data);
+  const remainder = await refundRemainder(tx, orderRef, paise);
+  assertRegistryAvailable(registrySnap, orderId);
+  const at = Timestamp.fromMillis(now);
+  const userPatch = {};
+  if (matched.corrected && release && release.userSnap && release.userSnap.exists) {
+    const corrections = nestedNumber(release.userSnap.data(), ['customer', 'marketplace', 'stats', 'utrCorrections']);
+    userPatch['customer.marketplace.stats.utrCorrections'] = corrections + 1;
+  }
+  const reason = 'late_unfulfilled';
+  tx.update(orderRef, {
+    orderStatus: 'cancelled',
+    closedReason: reason,
+    'cancellation.reason': reason,
+    'cancellation.cancelledAt': at,
+    'cancellation.cancelledBy': shopId,
+    'payment.officialUtr': matched.officialUtr,
+    'payment.utrSource': matched.utrSource,
+    'payment.confirmedAt': at,
+    'payment.confirmedByShopUid': shopId,
+    'payment.late': {
+      receivedAt: at,
+      confirmedByShopUid: shopId,
+      onCancelledOrder: false,
+      fulfilled: false
+    },
+    ...receivedWrite(data),
+    updatedAt: at
+  });
+  writeRegistry(tx, registrySnap, registryRef, {
+    orderId,
+    customerId: data.customerId,
+    kind: matched.utrSource === 'shop' ? 'shop' : 'customer',
+    at
+  });
+  writeUnpaidRelease(tx, release, orderId, false, userPatch);
+  appendEvent(tx, orderRef, {
+    type: 'shop_confirm',
+    actor: { type: 'shop', id: shopId },
+    data: { officialUtr: matched.officialUtr, utrSource: matched.utrSource }
+  });
+  if (matched.corrected) {
+    appendEvent(tx, orderRef, {
+      type: 'utr_corrected',
+      actor: { type: 'shop', id: shopId },
+      data: { officialUtr: matched.officialUtr }
+    });
+  }
+  appendEvent(tx, orderRef, {
+    type: 'cancelled',
+    actor: { type: 'shop', id: shopId },
+    data: { reason }
+  });
+  const variables = displayVariables(data, orderId);
+  const notifies = [];
+  if (matched.corrected) {
+    notifies.push({
+      type: 'UTR_CORRECTED',
+      variables: { ...variables, utr: matched.officialUtr }
+    });
+  }
+  if (remainder.remainderPaise > 0) {
+    const amount = marketplaceMoney.fromPaise(remainder.remainderPaise);
+    createRefund(tx, {
+      orderRef,
+      data,
+      reason,
+      amount,
+      items: data.items,
+      actor: { type: 'shop', id: shopId },
+      resultingOrderStatus: 'cancelled'
+    });
+    notifies.push({
+      type: 'REFUND_INITIATED',
+      variables: { ...variables, amount }
+    });
+  } else {
+    notifies.push({ type: 'ORDER_CANCELLED', variables });
+  }
+  return {
+    alreadyProcessed: false,
+    customerId: data.customerId || null,
+    notifies
+  };
+}
+
+async function confirmPaidOnCancelled(tx, {
+  db, orderRef, shopId, orderId, data, payment, body, now
+}) {
+  const kind = paidOnCancelledKind(data);
+  if (kind === 'refuse') {
+    throw httpError(409, 'INVALID_STATE', 'Order cannot be confirmed in its current state');
+  }
+  const paise = receivedPaise(data);
+  const remainder = await refundRemainder(tx, orderRef, paise);
+  const alreadyRefunded = remainder.refunds.some((refund) => refund.data.reason === 'paid_on_cancelled');
+  if (kind === 'done' || alreadyRefunded) {
+    return { alreadyProcessed: true, customerId: data.customerId || null, notifies: [] };
+  }
+  const matched = matchOfficialUtr(payment, body);
+  const registryRef = db.collection('utrRegistry').doc(matched.officialUtr);
+  const registrySnap = await tx.get(registryRef);
+  assertRegistryAvailable(registrySnap, orderId);
+  const at = Timestamp.fromMillis(now);
+  tx.update(orderRef, {
+    'payment.officialUtr': matched.officialUtr,
+    'payment.utrSource': matched.utrSource,
+    'payment.confirmedAt': at,
+    'payment.confirmedByShopUid': shopId,
+    'payment.late': {
+      receivedAt: at,
+      confirmedByShopUid: shopId,
+      onCancelledOrder: true,
+      fulfilled: false
+    },
+    ...receivedWrite(data),
+    updatedAt: at
+  });
+  writeRegistry(tx, registrySnap, registryRef, {
+    orderId,
+    customerId: data.customerId,
+    kind: matched.utrSource === 'shop' ? 'shop' : 'customer',
+    at
+  });
+  appendEvent(tx, orderRef, {
+    type: 'shop_confirm',
+    actor: { type: 'shop', id: shopId },
+    data: { officialUtr: matched.officialUtr, utrSource: matched.utrSource }
+  });
+  const notifies = [];
+  if (remainder.remainderPaise > 0) {
+    const amount = marketplaceMoney.fromPaise(remainder.remainderPaise);
+    createRefund(tx, {
+      orderRef,
+      data,
+      reason: 'paid_on_cancelled',
+      amount,
+      items: data.items,
+      actor: { type: 'shop', id: shopId },
+      resultingOrderStatus: 'cancelled'
+    });
+    notifies.push({
+      type: 'REFUND_INITIATED',
+      variables: { ...displayVariables(data, orderId), amount }
+    });
+  }
+  return {
+    alreadyProcessed: false,
+    customerId: data.customerId || null,
+    notifies
   };
 }
 
@@ -487,10 +714,21 @@ async function confirmShopPayment({ shopId, orderId, body, nowMs }) {
     if (payment.status === 'confirmed' && POST_CONFIRM_ORDER.has(data.orderStatus)) {
       return { alreadyProcessed: true, customerId: data.customerId || null };
     }
+    if (data.orderStatus === 'cancelled' && data.closedReason === 'late_unfulfilled') {
+      return { alreadyProcessed: true, customerId: data.customerId || null, notifies: [] };
+    }
     if (data.orderStatus === 'payment_review') {
       return confirmOpenReview(tx, {
         db, orderRef, shopId, orderId, data, payment, body, now
       });
+    }
+    if (body && body.fulfil === false) {
+      if (data.orderStatus === 'payment_unconfirmed') {
+        return confirmLateUnfulfilled(tx, {
+          db, orderRef, shopId, orderId, data, payment, body, now
+        });
+      }
+      throw httpError(409, 'INVALID_STATE', 'Order cannot be confirmed in its current state');
     }
     if (payment.status === 'short') {
       if (data.orderStatus !== 'awaiting_payment') {
@@ -505,6 +743,11 @@ async function confirmShopPayment({ shopId, orderId, body, nowMs }) {
         payment,
         body,
         now
+      });
+    }
+    if (data.orderStatus === 'cancelled') {
+      return confirmPaidOnCancelled(tx, {
+        db, orderRef, shopId, orderId, data, payment, body, now
       });
     }
     const allowed = (data.orderStatus === 'awaiting_payment'

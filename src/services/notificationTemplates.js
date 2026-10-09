@@ -381,6 +381,8 @@ class NotificationTemplateProcessor {
       || dataType === 'order_assigned'
       || dataType === 'driver_at_shop'
       || dataType === 'order_delivered'
+      || dataType === 'order_cancelled'
+      || dataType === 'customer_cancelled'
     ) {
       const text = (value) => (value == null ? '' : String(value));
       processedTemplate.data = {

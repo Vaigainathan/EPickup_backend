@@ -160,6 +160,25 @@ describe('handover script', () => {
   });
 });
 
+describe('cancel-order script', () => {
+  test('dry run is the default and the script does not print an OTP or UTR', () => {
+    const fs = require('fs');
+    const source = fs.readFileSync(path.join('scripts', 'support', 'cancel-order.js'), 'utf8');
+    expect(source).toContain('assertStagingEnv');
+    expect(source).toContain('assertStagingPair');
+    expect(source).toContain("includes('--apply')");
+    expect(source).toContain('supportCancelBeforeHandover');
+    expect(source).toContain('Nothing was written.');
+    expect(source).not.toContain('handoverOtp');
+    expect(source).not.toContain('officialUtr');
+    expect(source).not.toContain('customerUtr');
+    const applyAt = source.indexOf('if (!apply)');
+    const callAt = source.indexOf('supportCancelBeforeHandover');
+    expect(applyAt).toBeGreaterThan(-1);
+    expect(callAt).toBeGreaterThan(applyAt);
+  });
+});
+
 describe('mark-ready driver notify', () => {
   test('the default does not call notifyDriversOfNewBooking', () => {
     expect(markReadyNotifiesDrivers(['node', 'script', '--mark-ready', '--order', 'abc', '--apply'])).toBe(false);

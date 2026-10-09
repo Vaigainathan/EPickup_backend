@@ -25,10 +25,21 @@ const {
   createRefund,
   listShopRefunds,
   loadRefundDocs,
-  presentShopRefund
+  presentShopRefund,
+  refundRemainder
 } = require('./marketplace/refunds');
 
 const COLLECTION = 'marketplaceOrders';
+const PAST_PICKUP_BOOKING = new Set([
+  'photo_captured',
+  'picked_up',
+  'in_transit',
+  'at_dropoff',
+  'delivered',
+  'money_collection',
+  'completed'
+]);
+const SUPPORT_READY_STAGES = new Set(['searching', 'assigned', 'at_shop']);
 const DISPLAY_ID_ATTEMPTS = 8;
 
 const ORDER_STATUSES = new Set([
@@ -1196,6 +1207,185 @@ class ShopOrderService {
     }
 
     return result;
+  }
+
+  async supportCancelBeforeHandover({ orderId, operator, note }) {
+    if (typeof operator !== 'string' || operator.trim() === ''
+      || typeof note !== 'string' || note.trim() === '') {
+      throw httpError(400, 'VALIDATION', 'operator and reason are required');
+    }
+    const operatorId = operator.trim();
+    const noteText = note.trim();
+    const db = this.getDb();
+    const orderRef = this.orders().doc(orderId);
+    const outcome = await db.runTransaction(async (tx) => {
+      const orderSnap = await tx.get(orderRef);
+      if (!orderSnap.exists) {
+        throw httpError(404, 'ORDER_NOT_FOUND', 'Order not found');
+      }
+      const data = orderSnap.data() || {};
+      if (data.orderStatus === 'cancelled' && (
+        data.closedReason === 'support_cancelled'
+        || (data.cancellation && data.cancellation.reason === 'support_cancelled')
+      )) {
+        return { alreadyProcessed: true, data };
+      }
+      const stage = data.delivery && data.delivery.stage;
+      const stageBlocked = stage === 'picked_up' || stage === 'on_the_way' || stage === 'delivered';
+      const statusBlocked = data.orderStatus === 'handed_over' || data.orderStatus === 'completed';
+      const allowed = data.orderStatus === 'preparing'
+        || (data.orderStatus === 'ready' && (stage == null || SUPPORT_READY_STAGES.has(stage)));
+      if (statusBlocked || stageBlocked || !allowed) {
+        throw httpError(409, 'CANCEL_NOT_ALLOWED', 'This order cannot be cancelled');
+      }
+
+      let booking = null;
+      let bookingRef = null;
+      if (data.linkedBookingId) {
+        bookingRef = db.collection('bookings').doc(data.linkedBookingId);
+        const bookingSnap = await tx.get(bookingRef);
+        if (bookingSnap.exists) {
+          booking = bookingSnap.data() || {};
+          if (PAST_PICKUP_BOOKING.has(booking.status)) {
+            throw httpError(409, 'CANCEL_NOT_ALLOWED', 'This order cannot be cancelled');
+          }
+        } else {
+          bookingRef = null;
+        }
+      }
+
+      const payment = data.payment || {};
+      const receivedPaise = payment.receivedAmountPaise != null
+        && Number.isFinite(Number(payment.receivedAmountPaise))
+        ? Number(payment.receivedAmountPaise)
+        : (payment.receivedAmount != null ? toPaise(payment.receivedAmount) : 0);
+      const remainder = await refundRemainder(tx, orderRef, receivedPaise);
+
+      let driverRef = null;
+      let driverSnap = null;
+      const driverId = booking && booking.driverId ? booking.driverId : null;
+      if (driverId) {
+        driverRef = db.collection('users').doc(driverId);
+        driverSnap = await tx.get(driverRef);
+      }
+
+      let nextItems = data.items;
+      if (cancelRestoresStock(data)) {
+        const restored = await restoreLines(tx, db, {
+          orderRef,
+          items: data.items,
+          actor: { type: 'support', id: operatorId }
+        });
+        nextItems = restored.items;
+      }
+
+      const at = new Date();
+      if (bookingRef) {
+        tx.update(bookingRef, {
+          status: 'cancelled',
+          cancellationReason: 'Marketplace order cancelled',
+          cancelledBy: 'support',
+          cancelledAt: at,
+          updatedAt: at
+        });
+      }
+      if (driverRef && driverSnap && driverSnap.exists) {
+        const driverData = driverSnap.data() || {};
+        const active = driverData.driver && driverData.driver.activeBookings;
+        tx.update(driverRef, {
+          'driver.activeBookings': Math.max((active || 1) - 1, 0),
+          updatedAt: at
+        });
+      }
+
+      const reason = 'support_cancelled';
+      const orderPatch = {
+        orderStatus: 'cancelled',
+        closedReason: reason,
+        items: nextItems,
+        'cancellation.reason': reason,
+        'cancellation.cancelledAt': admin.firestore.FieldValue.serverTimestamp(),
+        'cancellation.cancelledBy': 'support',
+        'cancellation.support': { operator: operatorId, note: noteText },
+        updatedAt: admin.firestore.FieldValue.serverTimestamp()
+      };
+      if (bookingRef) {
+        orderPatch['delivery.stage'] = 'cancelled';
+      }
+      tx.update(orderRef, orderPatch);
+      appendEvent(tx, orderRef, {
+        type: 'cancelled',
+        actor: { type: 'support', id: operatorId },
+        data: { reason }
+      });
+      let refundCreated = false;
+      let refundAmount = null;
+      if (remainder.remainderPaise > 0) {
+        refundAmount = fromPaise(remainder.remainderPaise);
+        createRefund(tx, {
+          orderRef,
+          data,
+          reason,
+          amount: refundAmount,
+          items: nextItems,
+          actor: { type: 'support', id: operatorId },
+          resultingOrderStatus: 'cancelled'
+        });
+        refundCreated = true;
+      }
+      return {
+        alreadyProcessed: false,
+        data,
+        customerId: data.customerId || null,
+        displayId: data.displayId,
+        shopName: data.shopSnapshot && typeof data.shopSnapshot.name === 'string'
+          ? data.shopSnapshot.name
+          : '',
+        driverId,
+        bookingId: data.linkedBookingId || null,
+        refundCreated,
+        refundAmount
+      };
+    });
+
+    if (outcome.alreadyProcessed) {
+      return { alreadyProcessed: true, wrote: false };
+    }
+
+    const variables = {
+      displayId: displayIdService.formatDisplayId(outcome.displayId),
+      orderId,
+      shopName: outcome.shopName,
+      reasonLine: ''
+    };
+    try {
+      if (outcome.refundCreated) {
+        await this.notifyCustomer(outcome.customerId, 'REFUND_INITIATED', {
+          ...variables,
+          amount: outcome.refundAmount
+        });
+      } else {
+        await this.notifyCustomer(outcome.customerId, 'ORDER_CANCELLED', variables);
+      }
+    } catch (error) {
+      console.error('❌ [SHOP_ORDERS] Support cancel notification failed:', error.message);
+    }
+    if (outcome.driverId && outcome.bookingId) {
+      try {
+        await notificationService.sendTemplateNotification(
+          outcome.driverId,
+          'DRIVER',
+          'BOOKING_CANCELLED',
+          {
+            bookingId: outcome.bookingId,
+            reason: 'Booking cancelled by admin'
+          }
+        );
+      } catch (error) {
+        console.error('❌ [SHOP_ORDERS] Driver cancel notification failed:', error.message);
+      }
+    }
+    return { alreadyProcessed: false, wrote: true };
   }
 
   async refundSent(shopId, orderId, enforcement) {

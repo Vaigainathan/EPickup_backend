@@ -12,6 +12,8 @@ const { submitCustomerUtr, submitBalanceUtr, cancelCustomerOrder } = require('..
 const { uploadPaymentEvidence, submitPaymentReport } = require('../services/marketplace/paymentEvidence');
 const { submitCustomerUpi, acknowledgeRefund } = require('../services/marketplace/refunds');
 const { submitOrderRating } = require('../services/marketplace/submitOrderRating');
+const { uploadHelpEvidence } = require('../services/marketplace/helpEvidence');
+const { submitMarketplaceHelp } = require('../services/marketplace/helpRequests');
 
 const evidenceUpload = multer({
   storage: multer.memoryStorage(),
@@ -77,6 +79,16 @@ const ratingLimiter = userRateLimiter({
   windowMs: 60 * 1000,
   max: 10,
   name: 'marketplace-order-rating-minute'
+});
+const helpEvidenceLimiter = userRateLimiter({
+  windowMs: 60 * 1000,
+  max: 10,
+  name: 'marketplace-order-help-evidence-minute'
+});
+const helpSubmitLimiter = userRateLimiter({
+  windowMs: 60 * 1000,
+  max: 10,
+  name: 'marketplace-order-help-minute'
 });
 
 function handleEvidenceUpload(req, res, next) {
@@ -302,6 +314,47 @@ router.post(
       return res.status(result.status).json(result.body);
     } catch (error) {
       return sendError(res, error, 'Failed to acknowledge refund');
+    }
+  }
+);
+
+router.post(
+  '/marketplace-orders/:id/help/evidence',
+  authenticateToken,
+  requireRole(['customer']),
+  helpEvidenceLimiter,
+  handleEvidenceUpload,
+  async (req, res) => {
+    try {
+      const result = await uploadHelpEvidence({
+        customerId: req.user.uid,
+        orderId: req.params.id,
+        idempotencyKey: req.get('Idempotency-Key'),
+        file: req.file
+      });
+      return res.json({ success: true, data: { evidenceId: result.evidenceId } });
+    } catch (error) {
+      return sendError(res, error, 'Failed to upload help evidence');
+    }
+  }
+);
+
+router.post(
+  '/marketplace-orders/:id/help',
+  authenticateToken,
+  requireRole(['customer']),
+  helpSubmitLimiter,
+  async (req, res) => {
+    try {
+      const result = await submitMarketplaceHelp({
+        customerId: req.user.uid,
+        orderId: req.params.id,
+        idempotencyKey: req.get('Idempotency-Key'),
+        body: req.body || {}
+      });
+      return res.json({ success: true, data: result });
+    } catch (error) {
+      return sendError(res, error, 'Failed to submit help request');
     }
   }
 );

@@ -67,9 +67,28 @@ function emptyPlan(stage) {
     event: null,
     complete: false,
     orderStatus: null,
+    deliveredAt: null,
+    completedAt: null,
     push: null,
     supportAlert: null
   };
+}
+
+function deliveryTimestampFromBooking(booking) {
+  const timing = booking && booking.timing && typeof booking.timing === 'object' ? booking.timing : {};
+  const raw = timing.deliveredAt || (booking && booking.deliveredAt);
+  if (raw != null) {
+    if (typeof raw.toDate === 'function') {
+      const date = raw.toDate();
+      if (date instanceof Date && !Number.isNaN(date.getTime())) {
+        return admin.firestore.Timestamp.fromDate(date);
+      }
+    }
+    if (raw instanceof Date && !Number.isNaN(raw.getTime())) {
+      return admin.firestore.Timestamp.fromDate(raw);
+    }
+  }
+  return admin.firestore.Timestamp.now();
 }
 
 function hasDriverInfo(raw) {
@@ -161,6 +180,13 @@ function planDeliverySync(order, booking) {
     if (PUSH_BY_STAGE[mapped]) {
       plan.push = mapped;
     }
+    if (mapped === 'delivered') {
+      const existingDelivered = source.delivery
+        && source.delivery.deliveredAt != null;
+      if (!existingDelivered) {
+        plan.deliveredAt = deliveryTimestampFromBooking(booking);
+      }
+    }
   }
 
   applyDriver(plan, source, booking);
@@ -170,6 +196,7 @@ function planDeliverySync(order, booking) {
   if (!terminal && finalStage === 'delivered' && source.orderStatus === 'handed_over' && plan.event) {
     plan.complete = true;
     plan.orderStatus = 'completed';
+    plan.completedAt = admin.firestore.FieldValue.serverTimestamp();
   }
 
   return plan;
@@ -179,7 +206,7 @@ function planWrites(plan, order) {
   if (!plan) {
     return false;
   }
-  if (plan.event || plan.complete || plan.clearDriverInfo || plan.driverInfo) {
+  if (plan.event || plan.complete || plan.clearDriverInfo || plan.driverInfo || plan.deliveredAt) {
     return true;
   }
   if (plan.fare !== undefined) {
@@ -269,6 +296,12 @@ class MarketplaceSyncService {
       const stageNow = currentStageOf(order);
       if (plan.stage && plan.stage !== stageNow) {
         updates['delivery.stage'] = plan.stage;
+      }
+      if (plan.deliveredAt) {
+        updates['delivery.deliveredAt'] = plan.deliveredAt;
+      }
+      if (plan.completedAt) {
+        updates.completedAt = plan.completedAt;
       }
       if (plan.clearDriverInfo) {
         updates.driverInfo = admin.firestore.FieldValue.delete();
@@ -367,5 +400,6 @@ const marketplaceSyncService = new MarketplaceSyncService();
 marketplaceSyncService.planDeliverySync = planDeliverySync;
 marketplaceSyncService.STATUS_TO_STAGE = STATUS_TO_STAGE;
 marketplaceSyncService.planWrites = planWrites;
+marketplaceSyncService.deliveryTimestampFromBooking = deliveryTimestampFromBooking;
 
 module.exports = marketplaceSyncService;

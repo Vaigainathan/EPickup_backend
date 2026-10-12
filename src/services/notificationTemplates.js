@@ -281,6 +281,11 @@ const NOTIFICATION_TEMPLATES = {
       title: 'Order delivered',
       body: 'Order {{displayId}} was delivered.',
       data: { type: 'order_delivered', action: 'view_order' }
+    },
+    HELP_UPDATE: {
+      title: 'Help request update',
+      body: 'Support needs your response on Shop order {{displayId}}.',
+      data: { type: 'help_update', action: 'help' }
     }
   },
 

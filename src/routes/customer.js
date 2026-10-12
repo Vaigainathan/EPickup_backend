@@ -2078,15 +2078,17 @@ router.get('/support/tickets', authenticateToken, async (req, res) => {
 router.post('/support/tickets', authenticateToken, async (req, res) => {
   try {
     const { uid: userId } = req.user;
-    const ticketData = req.body;
+    const { pickSupportTicketInput } = require('../services/customerSupportTicketInput');
+    const ticketData = pickSupportTicketInput(req.body);
     const db = getFirestore();
     
     console.log(`🎫 Creating support ticket for customer: ${userId}`);
     
-    // Add customer ID to ticket data
     const newTicket = {
       ...ticketData,
+      userId,
       customerId: userId,
+      userType: 'customer',
       status: 'open',
       createdAt: new Date(),
       updatedAt: new Date()

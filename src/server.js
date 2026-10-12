@@ -894,6 +894,10 @@ async function initializeServices() {
     marketplaceRefundJob.start();
     console.log('✅ Marketplace refund cron scheduled');
 
+    const marketplaceHelpJob = require('./services/marketplaceHelpJob');
+    marketplaceHelpJob.start();
+    console.log('✅ Marketplace help cron scheduled');
+
     // Performance monitoring handled by monitoringService
     console.log('✅ Performance monitoring consolidated into monitoringService');
     

@@ -151,6 +151,8 @@ function presentCustomerOrder(order) {
     createdAt: toIso(source.createdAt),
     updatedAt: toIso(source.updatedAt),
     hasOpenRefund: source.hasOpenRefund === true,
+    hasOpenHelp: source.hasOpenHelp === true,
+    help: source.help && typeof source.help === 'object' ? source.help : null,
     rating: presentCustomerRating(source.rating),
     refunds: (Array.isArray(source.refunds) ? source.refunds : []).map(presentCustomerRefund)
   };
@@ -172,7 +174,8 @@ function presentCustomerOrderSummary(order) {
     expectedAmountPaise: view.expectedAmountPaise,
     createdAt: view.createdAt,
     window: view.window,
-    rating: view.rating
+    rating: view.rating,
+    hasOpenHelp: view.hasOpenHelp === true
   };
 }
 

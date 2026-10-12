@@ -3,7 +3,7 @@ const { getStorage } = require('./firebase');
 const shopCatalogueService = require('./shopCatalogueService');
 const shopOnboardingService = require('./shopOnboardingService');
 const { validateOpeningHours } = require('../utils/shopOpeningHours');
-const { imageExt, contentTypeFor } = require('./marketplace/paymentEvidence');
+const { imageExt, contentTypeFor } = require('./marketplace/evidenceCommon');
 
 const MAX_PHOTO_BYTES = 5 * 1024 * 1024;
 
@@ -145,22 +145,18 @@ class ShopStorefrontService {
     const existing = ctx.shopProfile.storefront || {};
     const previousPath = typeof existing.photoPath === 'string' ? existing.photoPath : null;
 
-    const { photoPath, ...rest } = existing; // eslint-disable-line no-unused-vars
-    const storefront = {
-      ...rest,
+    await ctx.shopRef.update({
+      'storefront.photoPath': admin.firestore.FieldValue.delete(),
+      'storefront.updatedAt': this.now(),
       updatedAt: this.now()
-    };
-
-    await ctx.shopRef.set({
-      storefront,
-      updatedAt: this.now()
-    }, { merge: true });
+    });
 
     if (previousPath) {
       await deleteStorageObject(previousPath);
     }
 
-    return this.presentStorefront(storefront);
+    const refreshed = await shopOnboardingService.loadShopContext(shopId);
+    return this.presentStorefront(refreshed.shopProfile.storefront || {});
   }
 }
 

@@ -68,6 +68,13 @@
  * --handover --order <id> [--apply] reads the private handover OTP and calls
  * confirmHandover in this process. Dry run writes nothing. The OTP is never
  * printed (otp: ***).
+ * --help-evidence <local-file> --order <id> [--idempotency-key <uuid>] [--apply]
+ * uploads help evidence (purpose help). Dry run prints bytes and image type.
+ * --help-submit --order <id> --problem <code> [--description text]
+ * [--evidence-ids a,b] [--idempotency-key <uuid>] [--apply] submits a ticket.
+ * --help-cleanup --order <id> [--apply] removes marketplace_order tickets,
+ * help evidenceUploads and Storage files, support_decision refunds, and clears
+ * hasOpenHelp/helpTicketIds on the order (dry run by default).
  * Timestamps are ISO. UTR values are the last 4 only.
  * --refund-upi <upiId> --refund <refundId> --order <id> [--save] calls
  * submitCustomerUpi with upiId and upiIdConfirm set to the same value.
@@ -515,6 +522,65 @@ async function recentOrders(db, customerId, shopId) {
   return recentOrdersForCleanup(orders, shopId, 5);
 }
 
+async function helpCleanupPlan(db, customerId, shopId, orderId) {
+  const data = await requireOwnedOrder(db, customerId, shopId, orderId);
+  const ticketsSnap = await db.collection('supportTickets').where('orderId', '==', orderId).get();
+  const tickets = ticketsSnap.docs
+    .map((doc) => ({ id: doc.id, ...(doc.data() || {}) }))
+    .filter((row) => row.category === 'marketplace_order');
+  const evidenceSnap = await db.collection('evidenceUploads').where('orderId', '==', orderId).get();
+  const helpEvidence = evidenceSnap.docs
+    .map((doc) => ({ id: doc.id, ...(doc.data() || {}) }))
+    .filter((row) => row.purpose === 'help');
+  const orderRef = db.collection('marketplaceOrders').doc(orderId);
+  const refundsSnap = await orderRef.collection('refunds').get();
+  const supportRefunds = refundsSnap.docs
+    .map((doc) => ({ id: doc.id, ...(doc.data() || {}) }))
+    .filter((row) => row.reason === 'support_decision');
+  return {
+    orderId,
+    tickets: tickets.map((row) => row.id),
+    helpEvidence: helpEvidence.map((row) => ({
+      id: row.id,
+      path: typeof row.path === 'string' ? row.path : null
+    })),
+    supportRefunds: supportRefunds.map((row) => row.id),
+    clearsOrderFields: ['hasOpenHelp', 'helpTicketIds'],
+    privateHelpSubmit: true
+  };
+}
+
+async function applyHelpCleanup(db, customerId, shopId, plan) {
+  const { FieldValue } = require('firebase-admin/firestore');
+  const { getStorage } = require('../../src/services/firebase');
+  const bucket = getStorage().bucket();
+  const batch = db.batch();
+  for (const item of plan.helpEvidence) {
+    if (item.path) {
+      try {
+        await bucket.file(item.path).delete();
+      } catch {
+        console.error('Help evidence file delete failed.');
+      }
+    }
+    batch.delete(db.collection('evidenceUploads').doc(item.id));
+  }
+  plan.tickets.forEach((ticketId) => {
+    batch.delete(db.collection('supportTickets').doc(ticketId));
+  });
+  const orderRef = db.collection('marketplaceOrders').doc(plan.orderId);
+  plan.supportRefunds.forEach((refundId) => {
+    batch.delete(orderRef.collection('refunds').doc(refundId));
+  });
+  batch.delete(orderRef.collection('private').doc('helpSubmit'));
+  batch.update(orderRef, {
+    hasOpenHelp: FieldValue.delete(),
+    helpTicketIds: FieldValue.delete(),
+    updatedAt: new Date()
+  });
+  await batch.commit();
+}
+
 async function registryDocsForOrder(db, orderId) {
   const snap = await db.collection('utrRegistry').where('orderId', '==', orderId).get();
   return snap.docs.map((doc) => ({
@@ -817,6 +883,13 @@ async function main() {
       sourceType: 'marketplace',
       marketplaceOrderId: orderId
     };
+    if (bookingStatus === 'delivered' || bookingStatus === 'completed') {
+      const admin = require('firebase-admin');
+      const deliveredAt = stored.timing && stored.timing.deliveredAt
+        ? stored.timing.deliveredAt
+        : admin.firestore.Timestamp.now();
+      booking.timing = { ...(stored.timing || {}), deliveredAt };
+    }
     console.log(JSON.stringify({
       syncBooking: true,
       apply,
@@ -838,6 +911,126 @@ async function main() {
       writesBooking: false,
       bookingStatus
     }, null, 2));
+    return;
+  }
+
+  if (process.argv.includes('--help-cleanup')) {
+    const orderId = argValue('--order');
+    const plan = await helpCleanupPlan(db, customerId, shopId, orderId);
+    console.log(JSON.stringify({
+      helpCleanup: true,
+      apply,
+      plan
+    }, null, 2));
+    if (!apply) {
+      console.log('Dry run. Re-run with --help-cleanup --apply to delete help artifacts.');
+      return;
+    }
+    await applyHelpCleanup(db, customerId, shopId, plan);
+    console.log(JSON.stringify({ helpCleanup: true, applied: true, orderId }, null, 2));
+    return;
+  }
+
+  if (process.argv.includes('--help-evidence')) {
+    const filePath = argValue('--help-evidence');
+    const orderId = argValue('--order');
+    if (!filePath || !orderId) {
+      console.error('--help-evidence needs a local file and --order <id>. Nothing was written.');
+      process.exit(1);
+    }
+    await requireOwnedOrder(db, customerId, shopId, orderId);
+    const fs = require('fs/promises');
+    const { MAX_BYTES, imageExt } = require('../../src/services/marketplace/evidenceCommon');
+    const { uploadHelpEvidence } = require('../../src/services/marketplace/helpEvidence');
+    let stat;
+    try {
+      stat = await fs.stat(filePath);
+    } catch {
+      console.error('Evidence file could not be read. Nothing was written.');
+      process.exit(1);
+    }
+    const header = Buffer.alloc(8);
+    const handle = await fs.open(filePath, 'r');
+    try {
+      await handle.read(header, 0, 8, 0);
+    } finally {
+      await handle.close();
+    }
+    const ext = imageExt(header);
+    const key = argValue('--idempotency-key') || crypto.randomUUID();
+    console.log(JSON.stringify({
+      helpEvidence: true,
+      apply,
+      orderId,
+      bytes: stat.size,
+      image: ext || 'invalid',
+      idempotencyKey: key
+    }, null, 2));
+    if (!apply) {
+      console.log('Dry run. Re-run with --help-evidence --apply to upload.');
+      return;
+    }
+    if (stat.size > MAX_BYTES || !ext) {
+      console.error('FILE_INVALID');
+      process.exit(1);
+    }
+    const buffer = await fs.readFile(filePath);
+    const result = await uploadHelpEvidence({
+      customerId,
+      orderId,
+      idempotencyKey: key,
+      file: { buffer }
+    });
+    console.log(JSON.stringify({
+      uploaded: true,
+      evidenceId: result.evidenceId,
+      replay: result.replay === true
+    }, null, 2));
+    return;
+  }
+
+  if (process.argv.includes('--help-submit')) {
+    const orderId = argValue('--order');
+    const problem = argValue('--problem');
+    const description = argValue('--description') || 'Staging help request';
+    const rawIds = argValue('--evidence-ids');
+    const evidenceIds = rawIds ? rawIds.split(',').map((id) => id.trim()).filter(Boolean) : [];
+    if (!orderId || !problem) {
+      console.error('--help-submit needs --order <id> and --problem <code>. Nothing was written.');
+      process.exit(1);
+    }
+    await requireOwnedOrder(db, customerId, shopId, orderId);
+    const key = argValue('--idempotency-key') || crypto.randomUUID();
+    console.log(JSON.stringify({
+      helpSubmit: true,
+      apply,
+      orderId,
+      problem,
+      evidenceCount: evidenceIds.length,
+      idempotencyKey: key
+    }, null, 2));
+    if (!apply) {
+      console.log('Dry run. Re-run with --help-submit --apply to create the ticket.');
+      return;
+    }
+    const { submitMarketplaceHelp } = require('../../src/services/marketplace/helpRequests');
+    try {
+      const result = await submitMarketplaceHelp({
+        customerId,
+        orderId,
+        idempotencyKey: key,
+        body: { problem, description, evidenceIds }
+      });
+      console.log(JSON.stringify({ submitted: true, ticket: result.ticket }, null, 2));
+    } catch (error) {
+      console.log(JSON.stringify({
+        submitted: false,
+        status: error.status || 500,
+        code: error.code || null,
+        message: error.message
+      }, null, 2));
+      process.exitCode = 1;
+    }
     return;
   }
 

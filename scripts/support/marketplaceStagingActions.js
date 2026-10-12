@@ -266,6 +266,8 @@ function buildOrderShow({
     review: presentReview(payment),
     cancellation: presentCancellation(source.cancellation),
     hasOpenRefund: source.hasOpenRefund === true,
+    hasOpenHelp: source.hasOpenHelp === true,
+    helpTicketIds: Array.isArray(source.helpTicketIds) ? source.helpTicketIds : [],
     refunds: (Array.isArray(refunds) ? refunds : []).map(presentRefund),
     events: shownEvents,
     lock: {

@@ -362,7 +362,32 @@ class ShopOrderService {
       createdAt: data.createdAt || null,
       updatedAt: data.updatedAt || null,
       hasOpenRefund: data.hasOpenRefund === true,
+      help: await this.presentOrderHelp(id, data),
       refunds: loaded.map((refund) => presentShopRefund(refund, id))
+    };
+  }
+
+  async presentOrderHelp(orderId, data) {
+    const base = {
+      hasOpenHelp: data.hasOpenHelp === true,
+      status: null
+    };
+    if (!base.hasOpenHelp) {
+      return base;
+    }
+    const ids = Array.isArray(data.helpTicketIds) ? data.helpTicketIds : [];
+    const ticketId = ids.length > 0 ? ids[ids.length - 1] : null;
+    if (!ticketId) {
+      return base;
+    }
+    const snap = await getFirestore().collection('supportTickets').doc(ticketId).get();
+    if (!snap.exists) {
+      return base;
+    }
+    const ticket = snap.data() || {};
+    return {
+      hasOpenHelp: true,
+      status: typeof ticket.status === 'string' ? ticket.status : null
     };
   }
 

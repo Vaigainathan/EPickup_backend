@@ -4,6 +4,8 @@
  * Usage:
  *   node scripts/backfill-booking-sourcetype.js            (dry run)
  *   node scripts/backfill-booking-sourcetype.js --apply    (writes)
+ *   node scripts/backfill-booking-sourcetype.js --apply --confirm-production
+ *   node scripts/backfill-booking-sourcetype.js --limit 500 --start-after <bookingId>
  */
 
 const PAGE_SIZE = 300;
@@ -47,15 +49,15 @@ function formatValue(value) {
 }
 
 function parseMode(argv) {
-  const args = argv.slice(2);
-  const unknown = args.filter((arg) => arg !== '--apply');
-  if (unknown.length > 0) {
-    return { error: `Unknown flag: ${unknown.join(' ')}` };
+  const { parseMigrationArgv } = require('./migrationEnv');
+  const parsed = parseMigrationArgv(argv.slice(2));
+  if (parsed.error) {
+    return parsed;
   }
-  return { apply: args.includes('--apply') };
+  return parsed;
 }
 
-async function scanBookings(db) {
+async function scanBookings(db, options = {}) {
   const { FieldPath } = require('firebase-admin/firestore');
   const counts = {
     total: 0,
@@ -66,11 +68,28 @@ async function scanBookings(db) {
   };
   const missingDocs = [];
   let lastDoc = null;
+  let processed = 0;
+  let stoppedEarly = false;
+  const startAfterId = options.startAfter || null;
+  const limit = options.limit;
 
   while (true) {
-    let query = db.collection('bookings').orderBy(FieldPath.documentId()).limit(PAGE_SIZE);
+    const pageLimit = limit != null
+      ? Math.min(PAGE_SIZE, limit - processed)
+      : PAGE_SIZE;
+    if (limit != null && pageLimit <= 0) {
+      stoppedEarly = true;
+      break;
+    }
+
+    let query = db.collection('bookings').orderBy(FieldPath.documentId()).limit(pageLimit);
     if (lastDoc) {
       query = query.startAfter(lastDoc);
+    } else if (startAfterId) {
+      const cursorSnap = await db.collection('bookings').doc(startAfterId).get();
+      if (cursorSnap.exists) {
+        query = query.startAfter(cursorSnap);
+      }
     }
     const snapshot = await query.get();
     if (snapshot.empty) {
@@ -81,6 +100,7 @@ async function scanBookings(db) {
       const data = doc.data() || {};
       const kind = classifyBookingSourceType(data);
       counts.total += 1;
+      processed += 1;
       if (kind === 'other') {
         counts.other.push({ id: doc.id, value: data.sourceType });
       } else {
@@ -93,15 +113,24 @@ async function scanBookings(db) {
           updateTime: doc.updateTime
         });
       }
+      lastDoc = doc;
     });
 
-    lastDoc = snapshot.docs[snapshot.docs.length - 1];
-    if (snapshot.size < PAGE_SIZE) {
+    if (limit != null && processed >= limit) {
+      stoppedEarly = true;
+      break;
+    }
+    if (snapshot.size < pageLimit) {
       break;
     }
   }
 
-  return { counts, missingDocs };
+  return {
+    counts,
+    missingDocs,
+    lastProcessedId: lastDoc ? lastDoc.id : startAfterId,
+    stoppedEarly
+  };
 }
 
 async function updateOne(db, id) {
@@ -178,7 +207,7 @@ async function applyMissing(db, missingDocs) {
   return result;
 }
 
-function printReport(apply, counts, writeResult) {
+function printReport(apply, counts, writeResult, progress) {
   console.log(`total scanned: ${counts.total}`);
   console.log(`parcel: ${counts.parcel}`);
   console.log(`marketplace: ${counts.marketplace}`);
@@ -187,6 +216,9 @@ function printReport(apply, counts, writeResult) {
   counts.other.forEach((entry) => {
     console.log(`  id=${entry.id} value=${formatValue(entry.value)}`);
   });
+  if (progress) {
+    console.log(`progress: lastId=${progress.lastProcessedId || '(none)'} stoppedEarly=${progress.stoppedEarly}`);
+  }
   if (apply) {
     console.log(`updated: ${writeResult.updated}`);
     console.log(`skipped (changed): ${writeResult.skipped}`);
@@ -199,14 +231,14 @@ function printReport(apply, counts, writeResult) {
 
 async function main() {
   require('dotenv').config();
-  const { assertStagingEnv, assertStagingAdmin } = require('./assertStagingFirebase');
-  assertStagingEnv();
-
+  const { assertMigrationEnv, assertMigrationAdmin } = require('./migrationEnv');
   const mode = parseMode(process.argv);
   if (mode.error) {
     console.error(mode.error);
     process.exit(1);
   }
+
+  assertMigrationEnv({ confirmProduction: mode.confirmProduction });
 
   console.log(`projectId: ${process.env.FIREBASE_PROJECT_ID}`);
   console.log(`clientEmail: ${process.env.FIREBASE_CLIENT_EMAIL}`);
@@ -214,14 +246,25 @@ async function main() {
 
   const { getFirestore } = require('../src/services/firebase');
   const db = getFirestore();
-  assertStagingAdmin();
+  assertMigrationAdmin({ confirmProduction: mode.confirmProduction });
 
-  const { counts, missingDocs } = await scanBookings(db);
+  const scan = await scanBookings(db, {
+    startAfter: mode.startAfter,
+    limit: mode.limit
+  });
   const writeResult = mode.apply
-    ? await applyMissing(db, missingDocs)
+    ? await applyMissing(db, scan.missingDocs)
     : { updated: 0, skipped: 0, failed: [] };
 
-  printReport(mode.apply, counts, writeResult);
+  printReport(mode.apply, scan.counts, writeResult, {
+    lastProcessedId: scan.lastProcessedId,
+    stoppedEarly: scan.stoppedEarly
+  });
+
+  if (scan.stoppedEarly) {
+    console.log(`Resume: node scripts/backfill-booking-sourcetype.js --start-after ${scan.lastProcessedId}${mode.limit ? ` --limit ${mode.limit}` : ''}`);
+  }
+
   process.exit(writeResult.failed.length > 0 ? 1 : 0);
 }
 
@@ -233,5 +276,6 @@ if (require.main === module) {
 }
 
 module.exports = {
-  classifyBookingSourceType
+  classifyBookingSourceType,
+  scanBookings
 };

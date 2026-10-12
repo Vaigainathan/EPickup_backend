@@ -9,6 +9,11 @@ describe('order number pool monitor decisions', () => {
     expect(computePoolUsedRatio(45000, 90000)).toBe(0.5);
   });
 
+  test('includes legacyRegistered in used share', () => {
+    expect(computePoolUsedRatio(70000, 90000, 2000)).toBeCloseTo(0.8, 5);
+    expect(computePoolUsedRatio(0, 90000, 45000)).toBe(0.5);
+  });
+
   test('claims alert once per IST day (check-and-set semantics)', () => {
     const istDay = '2026-10-12';
     const first = claimPoolAlertDay({

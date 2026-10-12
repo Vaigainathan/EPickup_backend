@@ -106,13 +106,16 @@ function shouldMaskRefundUpi(refund, nowMs, retentionMs) {
   return nowMs - finalizedMs > retentionMs;
 }
 
-function computePoolUsedRatio(totalAllocated, poolSize) {
+function computePoolUsedRatio(totalAllocated, poolSize, legacyRegistered = 0) {
   const allocated = Number(totalAllocated);
+  const legacy = Number(legacyRegistered);
   const size = Number(poolSize);
-  if (!Number.isFinite(allocated) || allocated < 0 || !Number.isFinite(size) || size <= 0) {
+  const used = (Number.isFinite(allocated) && allocated >= 0 ? allocated : 0)
+    + (Number.isFinite(legacy) && legacy >= 0 ? legacy : 0);
+  if (!Number.isFinite(size) || size <= 0) {
     return 0;
   }
-  return allocated / size;
+  return used / size;
 }
 
 function shouldAlertPoolUsage(usedRatio, threshold) {

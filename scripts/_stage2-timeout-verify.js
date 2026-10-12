@@ -52,7 +52,8 @@ async function recentPaymentExpired(db, customerId, orderId, sinceMs) {
     .map((d) => ({ id: d.id, ...d.data() }))
     .filter((n) => {
       const type = (n.data && n.data.type) || n.type || '';
-      const forOrder = n.data && n.data.variables && n.data.variables.orderId === orderId;
+      const oid = n.data && (n.data.orderId ?? n.data.variables?.orderId);
+      const forOrder = oid === orderId;
       const raw = n.createdAt || n.sentAt;
       const created = raw && raw.toDate ? raw.toDate() : raw;
       const inWindow = !created || new Date(created) >= since;

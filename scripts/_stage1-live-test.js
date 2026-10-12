@@ -458,7 +458,10 @@ function dataType(n) {
 }
 
 function noticesForOrder(notices, orderId) {
-  return notices.filter((n) => n.data && n.data.variables && n.data.variables.orderId === orderId);
+  return notices.filter((n) => {
+    const oid = n.data && (n.data.orderId ?? n.data.variables?.orderId);
+    return oid === orderId;
+  });
 }
 
 async function seed(shopId, customerId) {

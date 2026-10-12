@@ -85,7 +85,8 @@ class MarketplaceOrderNumberPoolJob {
     const counterSnap = await db.collection(COUNTER_COLLECTION).doc(COUNTER_DOC).get();
     const counter = counterSnap.exists ? (counterSnap.data() || {}) : {};
     const totalAllocated = Number(counter.totalAllocated) || 0;
-    const usedRatio = computePoolUsedRatio(totalAllocated, ORDER_NUMBER_POOL_SIZE);
+    const legacyRegistered = Number(counter.legacyRegistered) || 0;
+    const usedRatio = computePoolUsedRatio(totalAllocated, ORDER_NUMBER_POOL_SIZE, legacyRegistered);
     const istDay = istCalendarDay(nowMs);
 
     if (options.dryRun) {
@@ -102,6 +103,7 @@ class MarketplaceOrderNumberPoolJob {
         dryRun: true,
         nowMs,
         totalAllocated,
+        legacyRegistered,
         usedRatio,
         alerted: false,
         wouldAlert: preview.claim === true
@@ -136,6 +138,7 @@ class MarketplaceOrderNumberPoolJob {
         dryRun: false,
         nowMs,
         totalAllocated,
+        legacyRegistered,
         usedRatio,
         alerted: false,
         reason: claim.reason || null
@@ -148,6 +151,7 @@ class MarketplaceOrderNumberPoolJob {
       dryRun: false,
       nowMs,
       totalAllocated,
+      legacyRegistered,
       usedRatio,
       alerted: true
     };

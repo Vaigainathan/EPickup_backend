@@ -13,12 +13,8 @@ const {
 } = require('../src/config/marketplaceDefaults');
 
 function parseMode(argv) {
-  const args = argv.slice(2);
-  const unknown = args.filter((arg) => arg !== '--apply');
-  if (unknown.length > 0) {
-    return { error: `Unknown flag: ${unknown.join(' ')}` };
-  }
-  return { apply: args.includes('--apply') };
+  const { parseMigrationArgv } = require('./migrationEnv');
+  return parseMigrationArgv(argv.slice(2));
 }
 
 function printPlan(docExists, plan) {
@@ -41,8 +37,7 @@ function printPlan(docExists, plan) {
 
 async function main() {
   require('dotenv').config();
-  const { assertStagingEnv, assertStagingAdmin } = require('./assertStagingFirebase');
-  assertStagingEnv();
+  const { assertMigrationEnv, assertMigrationAdmin } = require('./migrationEnv');
 
   const mode = parseMode(process.argv);
   if (mode.error) {
@@ -50,13 +45,15 @@ async function main() {
     process.exit(1);
   }
 
+  assertMigrationEnv({ confirmProduction: mode.confirmProduction });
+
   console.log(`projectId: ${process.env.FIREBASE_PROJECT_ID}`);
   console.log(`clientEmail: ${process.env.FIREBASE_CLIENT_EMAIL}`);
   console.log(`mode: ${mode.apply ? 'APPLY' : 'DRY RUN'}`);
 
   const { getFirestore } = require('../src/services/firebase');
   const db = getFirestore();
-  assertStagingAdmin();
+  assertMigrationAdmin({ confirmProduction: mode.confirmProduction });
 
   const ref = db.collection('appSettings').doc('marketplace');
   const snap = await ref.get();

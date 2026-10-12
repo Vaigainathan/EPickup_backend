@@ -2,9 +2,9 @@ const crypto = require('crypto');
 const admin = require('firebase-admin');
 const { getFirestore } = require('./firebase');
 const displayIdService = require('./displayIdService');
+const { marketplacePushVariables, digitsDisplayId } = require('./marketplace/marketplacePush');
 const { isPoolEnabled, allocateOrderNumber } = require('./orderNumberPool');
 const notificationService = require('./notificationService');
-const { NotificationTemplateProcessor } = require('./notificationTemplates');
 const { appendEvent } = require('./marketplace/orderEvents');
 const { fareFieldsFromCalculation } = require('./fareQuoteService');
 const { deductStock, restoreLines, cancelRestoresStock } = require('./marketplace/stock');
@@ -103,12 +103,15 @@ function lineRefundPaise(line) {
 }
 
 function pushVariables(data, orderId) {
-  const snapshot = data.shopSnapshot && typeof data.shopSnapshot === 'object' ? data.shopSnapshot : {};
-  return {
-    displayId: displayIdService.formatDisplayId(data.displayId),
-    orderId,
-    shopName: typeof snapshot.name === 'string' ? snapshot.name : ''
-  };
+  return marketplacePushVariables(data, orderId);
+}
+
+function shouldSendOutForDeliveryPush(order) {
+  if (!order || order.orderStatus !== 'handed_over') {
+    return false;
+  }
+  const stage = order.delivery && order.delivery.stage;
+  return stage !== 'delivered';
 }
 
 function presentLocation(location) {
@@ -396,20 +399,6 @@ class ShopOrderService {
       return;
     }
     try {
-      if (type === 'UTR_CORRECTED' || type === 'AMOUNT_SHORT') {
-        const template = NotificationTemplateProcessor.getTemplate('MARKETPLACE', type);
-        const notification = NotificationTemplateProcessor.process(template, variables);
-        if (notification.data && notification.data.variables) {
-          delete notification.data.variables.utr;
-          delete notification.data.variables.receivedAmount;
-          delete notification.data.variables.balanceAmount;
-        }
-        const result = await notificationService.sendToUser(customerId, notification);
-        if (result && result.success === false) {
-          console.error('❌ [SHOP_ORDERS] Notification failed:', (result.error && result.error.code) || result.error);
-        }
-        return;
-      }
       const result = await notificationService.sendTemplateNotification(customerId, 'MARKETPLACE', type, variables);
       if (result && result.success === false) {
         console.error('❌ [SHOP_ORDERS] Notification failed:', (result.error && result.error.code) || result.error);
@@ -530,7 +519,8 @@ class ShopOrderService {
       return {
         alreadyProcessed: false,
         notify: applied.notify || null,
-        extra: applied.extra || {}
+        extra: applied.extra || {},
+        handoverSource: applied.handoverSource || null
       };
     });
 
@@ -613,7 +603,7 @@ class ShopOrderService {
 
     if (!result.alreadyProcessed && result.notify) {
       await this.notifyCustomer(result.order.customerId, result.notify.type, {
-        displayId: displayIdService.formatDisplayId(result.order.displayId),
+        displayId: digitsDisplayId(result.order.displayId),
         orderId: result.order.id,
         amount: result.order.payment.amount
       });
@@ -737,7 +727,7 @@ class ShopOrderService {
 
     if (!result.alreadyProcessed && result.notify) {
       await this.notifyCustomer(result.order.customerId, 'ORDER_CANCELLED', {
-        displayId: displayIdService.formatDisplayId(result.order.displayId),
+        displayId: digitsDisplayId(result.order.displayId),
         orderId: result.order.id,
         reasonLine: ' '
       });
@@ -976,7 +966,7 @@ class ShopOrderService {
       throw httpError(400, 'INVALID_HANDOVER', 'otp and displayId are required');
     }
 
-    return this.runOwnedTransition(shopId, orderId, async (data, tx) => {
+    const result = await this.runOwnedTransition(shopId, orderId, async (data, tx) => {
       if (data.orderStatus === 'handed_over') {
         return alreadyProcessed(data);
       }
@@ -1013,9 +1003,22 @@ class ShopOrderService {
         actor: { type: 'shop', id: shopId }
       }, data.customerId);
       return {
-        updates: { orderStatus: 'handed_over' }
+        updates: { orderStatus: 'handed_over' },
+        handoverSource: data
       };
     });
+
+    if (!result.alreadyProcessed && result.order && shouldSendOutForDeliveryPush(result.order)) {
+      const source = result.handoverSource || {};
+      const deliveryFee = result.order.deliveryFee
+        ?? (result.order.delivery && result.order.delivery.fare);
+      await this.notifyCustomer(result.order.customerId, 'OUT_FOR_DELIVERY', {
+        ...pushVariables(source, orderId),
+        deliveryFee
+      });
+    }
+
+    return result;
   }
 
   async markUnavailable(shopId, orderId, payload = {}) {
@@ -1230,7 +1233,7 @@ class ShopOrderService {
     if (!result.alreadyProcessed && result.notify) {
       const shopReason = result.notify.shopReason || '';
       const vars = {
-        displayId: displayIdService.formatDisplayId(result.order.displayId),
+        displayId: digitsDisplayId(result.order.displayId),
         orderId: result.order.id,
         amount: result.order.payment.amount,
         reason: shopReason,
@@ -1391,7 +1394,7 @@ class ShopOrderService {
     }
 
     const variables = {
-      displayId: displayIdService.formatDisplayId(outcome.displayId),
+      displayId: digitsDisplayId(outcome.displayId),
       orderId,
       shopName: outcome.shopName,
       reasonLine: ''
@@ -1476,7 +1479,7 @@ class ShopOrderService {
 
     if (!result.alreadyProcessed && result.notify) {
       await this.notifyCustomer(result.order.customerId, 'REFUND_SENT', {
-        displayId: displayIdService.formatDisplayId(result.order.displayId),
+        displayId: digitsDisplayId(result.order.displayId),
         orderId: result.order.id,
         amount: result.order.payment.amount
       });
@@ -1587,4 +1590,5 @@ class ShopOrderService {
 
 const shopOrderService = new ShopOrderService();
 shopOrderService.marketplaceBookingFareFields = marketplaceBookingFareFields;
+shopOrderService.shouldSendOutForDeliveryPush = shouldSendOutForDeliveryPush;
 module.exports = shopOrderService;

@@ -259,7 +259,7 @@ describe('customer UTR submit', () => {
       'shop-1',
       'MARKETPLACE',
       'UTR_SUBMITTED',
-      { displayId: '#62191', orderId: 'order-1' }
+      { displayId: '62191', orderId: 'order-1' }
     );
 
     const replay = await postUtr('order-1', UTR);
@@ -392,7 +392,7 @@ describe('customer UTR on payment_unconfirmed', () => {
       'shop-1',
       'MARKETPLACE',
       'PAYMENT_REVIEW_SHOP',
-      expect.objectContaining({ displayId: '#62191' })
+      expect.objectContaining({ displayId: '62191' })
     );
     expect(mockSendTemplate).not.toHaveBeenCalledWith(
       'shop-1',
@@ -453,7 +453,7 @@ describe('customer cancel', () => {
       'shop-1',
       'MARKETPLACE',
       'CUSTOMER_CANCELLED',
-      { displayId: '#62191', orderId: 'order-c1', detail: 'No payment was recorded.' }
+      { displayId: '62191', orderId: 'order-c1', detail: 'No payment was recorded.' }
     );
 
     const eventsBefore = pathsStarting('marketplaceOrders/order-c1/events/').length;
@@ -492,7 +492,7 @@ describe('customer cancel', () => {
       'shop-2',
       'MARKETPLACE',
       'CUSTOMER_CANCELLED',
-      { displayId: '#62191', orderId: 'order-c2', detail: 'Check whether you received the payment.' }
+      { displayId: '62191', orderId: 'order-c2', detail: 'Check whether you received the payment.' }
     );
     expect(JSON.stringify(response.body)).not.toContain('654321');
   });
@@ -544,14 +544,15 @@ describe('customer cancel', () => {
         amount: 40,
         orderId: 'order-short',
         shopName: 'Vaigzz',
-        displayId: '#62191'
+        displayId: '62191'
       })
     );
     const { NotificationTemplateProcessor } = require('../src/services/notificationTemplates');
     const sent = mockSendTemplate.mock.calls.find((call) => call[2] === 'REFUND_INITIATED');
     const processed = NotificationTemplateProcessor.process(
       NotificationTemplateProcessor.getTemplate('MARKETPLACE', 'REFUND_INITIATED'),
-      sent[3]
+      sent[3],
+      { category: 'MARKETPLACE', templateKey: 'REFUND_INITIATED' }
     );
     expect(Object.keys(processed.data).sort()).toEqual(['action', 'displayId', 'orderId', 'shopName', 'type']);
     expect(processed.data.orderId).toBe('order-short');
@@ -559,9 +560,9 @@ describe('customer cancel', () => {
     expect(processed.data).toEqual({
       type: 'refund_initiated',
       orderId: 'order-short',
-      displayId: '#62191',
+      displayId: '62191',
       shopName: 'Vaigzz',
-      action: 'view_order'
+      action: 'refund'
     });
 
     const replay = await postCancel('order-short');
@@ -617,7 +618,7 @@ describe('balance UTR', () => {
       'shop-1',
       'MARKETPLACE',
       'UTR_SUBMITTED',
-      { displayId: '#62191', orderId: 'order-b1' }
+      { displayId: '62191', orderId: 'order-b1' }
     );
 
     const replay = await postBalance('order-b1', BALANCE);

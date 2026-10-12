@@ -1,6 +1,10 @@
 const admin = require('firebase-admin');
 const { getFirestore } = require('./firebase');
 const { NotificationBuilder, NotificationTemplateProcessor } = require('./notificationTemplates');
+const {
+  isMarketplacePushData,
+  MARKETPLACE_PUSH_DATA_KEYS
+} = require('./marketplace/marketplacePush');
 const expoPushService = require('./expoPushService');
 
 /**
@@ -13,6 +17,30 @@ class NotificationService {
     this.db = getFirestore();
     this.messaging = admin.messaging();
     this.expoService = expoPushService;
+  }
+
+  buildFcmDataPayload(notification, options = {}) {
+    const cleaned = notification.data
+      ? NotificationTemplateProcessor.removeUndefinedValues(notification.data)
+      : {};
+    const marketplace = options.marketplace
+      || notification.marketplace
+      || isMarketplacePushData(cleaned);
+    if (marketplace) {
+      const out = {};
+      MARKETPLACE_PUSH_DATA_KEYS.forEach((key) => {
+        out[key] = cleaned[key] == null ? '' : String(cleaned[key]);
+      });
+      return out;
+    }
+    // Parcel / non-marketplace FCM: unchanged from pre–MP-18 (top-level ids only; no template data merge).
+    return {
+      type: notification.type,
+      bookingId: notification.bookingId || '',
+      driverId: notification.driverId || '',
+      paymentId: notification.paymentId || '',
+      timestamp: new Date().toISOString()
+    };
   }
 
   /**
@@ -80,6 +108,8 @@ class NotificationService {
         };
       }
 
+      const fcmData = this.buildFcmDataPayload(notification, options);
+
       // Send notification
       const message = {
         token,
@@ -87,13 +117,7 @@ class NotificationService {
           title: notification.title,
           body: notification.body
         },
-        data: {
-          type: notification.type,
-          bookingId: notification.bookingId || '',
-          driverId: notification.driverId || '',
-          paymentId: notification.paymentId || '',
-          timestamp: new Date().toISOString()
-        },
+        data: fcmData,
         android: {
           notification: {
             sound: options.sound || 'default', // ✅ FIX: Use options parameter
@@ -915,12 +939,17 @@ class NotificationService {
   async sendTemplateNotification(userId, category, type, variables = {}) {
     try {
       const template = NotificationTemplateProcessor.getTemplate(category, type);
-      const notification = NotificationTemplateProcessor.process(template, variables);
-      // ✅ FIX: Add bookingId at top level if it exists in variables
-      if (variables.bookingId) {
+      const notification = NotificationTemplateProcessor.process(template, variables, {
+        category,
+        templateKey: type
+      });
+      const options = {};
+      if (category === 'MARKETPLACE') {
+        options.marketplace = true;
+      } else if (variables.bookingId) {
         notification.bookingId = variables.bookingId;
       }
-      return await this.sendToUser(userId, notification);
+      return await this.sendToUser(userId, notification, options);
     } catch (error) {
       console.error('Error sending template notification:', error);
       return { success: false, error: error.message };
@@ -933,15 +962,20 @@ class NotificationService {
   async sendTemplateNotificationToMultiple(userIds, category, type, variables = {}) {
     try {
       const template = NotificationTemplateProcessor.getTemplate(category, type);
-      const notification = NotificationTemplateProcessor.process(template, variables);
-      // ✅ FIX: Add bookingId at top level if it exists in variables
-      if (variables.bookingId) {
+      const notification = NotificationTemplateProcessor.process(template, variables, {
+        category,
+        templateKey: type
+      });
+      const options = {};
+      if (category === 'MARKETPLACE') {
+        options.marketplace = true;
+      } else if (variables.bookingId) {
         notification.bookingId = variables.bookingId;
       }
-      
+
       const results = [];
       for (const userId of userIds) {
-        const result = await this.sendToUser(userId, notification);
+        const result = await this.sendToUser(userId, notification, options);
         results.push({ userId, result });
       }
 

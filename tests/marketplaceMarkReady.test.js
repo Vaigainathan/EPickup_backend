@@ -585,12 +585,11 @@ describe('marketplace push data', () => {
   test.each(['ORDER_PACKED', 'ORDER_ASSIGNED', 'DRIVER_AT_SHOP', 'ORDER_DELIVERED'])('%s data is the five ids', (name) => {
     const template = NotificationTemplateProcessor.getTemplate('MARKETPLACE', name);
     const notification = NotificationTemplateProcessor.process(template, {
-      displayId: '#22036',
+      displayId: 22036,
       orderId: 'order-1',
       shopName: 'Vaigzz',
-      action: 'view_order',
       deliveryFee: 40
-    });
+    }, { category: 'MARKETPLACE', templateKey: name });
     expect(Object.keys(notification.data).sort()).toEqual(['action', 'displayId', 'orderId', 'shopName', 'type']);
     expect(notification.data.variables).toBeUndefined();
     if (name === 'ORDER_PACKED') {

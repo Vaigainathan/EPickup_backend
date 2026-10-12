@@ -6,7 +6,7 @@ const { presentCustomerOrder } = require('./customerOrderView');
 const { appendEvent } = require('./orderEvents');
 const { createRefund, refundRemainder } = require('./refunds');
 const { restoreLines } = require('./stock');
-const displayIdService = require('../displayIdService');
+const { digitsDisplayId } = require('./marketplacePush');
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const CUSTOMER_CANCEL_REASONS = new Set([
@@ -140,10 +140,6 @@ async function notifyShop(shopId, template, variables) {
   }
 }
 
-function displayLabel(data) {
-  return displayIdService.formatDisplayId(data.displayId);
-}
-
 function receivedPaiseOf(data) {
   const payment = data && data.payment ? data.payment : {};
   if (payment.receivedAmountPaise != null && Number.isFinite(Number(payment.receivedAmountPaise))) {
@@ -264,7 +260,7 @@ async function submitCustomerUtr({ customerId, orderId, idempotencyKey, utr, now
       openedReview,
       data: { ...data, ...patch },
       shopId: data.shopId,
-      displayId: displayLabel(data),
+      displayId: digitsDisplayId(data.displayId),
       orderId,
       shopName: typeof snapshot.name === 'string' ? snapshot.name : ''
     };
@@ -350,7 +346,7 @@ async function submitBalanceUtr({ customerId, orderId, idempotencyKey, utr, nowM
         updatedAt: at
       },
       shopId: data.shopId,
-      displayId: displayLabel(data)
+      displayId: digitsDisplayId(data.displayId)
     };
   });
 
@@ -439,7 +435,7 @@ async function cancelCustomerOrder({ customerId, orderId, idempotencyKey, nowMs 
           status: 'upi_needed'
         },
         shopId: data.shopId,
-        displayId: displayLabel(data),
+        displayId: digitsDisplayId(data.displayId),
         data: {
           ...data,
           orderStatus: 'cancelled',
@@ -509,7 +505,7 @@ async function cancelCustomerOrder({ customerId, orderId, idempotencyKey, nowMs 
         refund,
         refundAmount,
         shopId: data.shopId,
-        displayId: displayLabel(data),
+        displayId: digitsDisplayId(data.displayId),
         data: {
           ...data,
           orderStatus: 'cancelled',
@@ -573,7 +569,7 @@ async function cancelCustomerOrder({ customerId, orderId, idempotencyKey, nowMs 
       replay: false,
       hasUtr,
       shopId: data.shopId,
-      displayId: displayLabel(data),
+      displayId: digitsDisplayId(data.displayId),
       data: {
         ...data,
         orderStatus: 'cancelled',

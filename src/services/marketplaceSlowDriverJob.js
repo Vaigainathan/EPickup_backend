@@ -1,7 +1,6 @@
 const cron = require('node-cron');
 const { FieldValue } = require('firebase-admin/firestore');
 const { getFirestore } = require('./firebase');
-const displayIdService = require('./displayIdService');
 const { readMp17Settings } = require('./marketplace/jobSettings');
 const {
   claimSlowDriverInTransaction,
@@ -122,18 +121,12 @@ class MarketplaceSlowDriverJob {
         'delivery.slowNotifiedAt': FieldValue.serverTimestamp(),
         'delivery.updatedAt': FieldValue.serverTimestamp()
       });
-      const snapshot = data.shopSnapshot && typeof data.shopSnapshot === 'object' ? data.shopSnapshot : {};
+      const { marketplacePushVariables } = require('./marketplace/marketplacePush');
       return {
         claimed: true,
         notify: decision.notify,
         customerId: data.customerId || null,
-        variables: {
-          type: 'DRIVER_SLOW',
-          orderId: orderRef.id,
-          displayId: displayIdService.formatDisplayId(data.displayId),
-          shopName: typeof snapshot.name === 'string' ? snapshot.name : '',
-          action: 'view_order'
-        }
+        variables: marketplacePushVariables(data, orderRef.id)
       };
     });
   }

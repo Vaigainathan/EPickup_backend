@@ -360,7 +360,7 @@ describe('shop payment verification', () => {
       'cust-1',
       'MARKETPLACE',
       'PAYMENT_CONFIRMED',
-      expect.objectContaining({ displayId: '#62191', orderId: 'order-1' })
+      expect.objectContaining({ displayId: '62191', orderId: 'order-1' })
     );
 
     const replay = await post('order-1/confirm-payment', { utrLast4: '9012', withinWindowAttested: true });
@@ -388,8 +388,13 @@ describe('shop payment verification', () => {
       .filter((path) => path.startsWith('marketplaceOrders/order-shop/events/'))
       .map((path) => mockDocs.get(path).type);
     expect(events).toEqual(expect.arrayContaining(['shop_confirm', 'utr_corrected']));
-    expect(mockSendToUser).toHaveBeenCalled();
-    const sent = mockSendToUser.mock.calls[0][1];
+    const utrCall = mockSendTemplate.mock.calls.find((call) => call[2] === 'UTR_CORRECTED');
+    expect(utrCall).toBeDefined();
+    const sent = NotificationTemplateProcessor.process(
+      NotificationTemplateProcessor.getTemplate('MARKETPLACE', 'UTR_CORRECTED'),
+      utrCall[3],
+      { category: 'MARKETPLACE', templateKey: 'UTR_CORRECTED' }
+    );
     expect(sent.body).toBe('Payment confirmed with UTR 9999.');
     expect(JSON.stringify(sent)).not.toMatch(/\d{12}/);
     expect(JSON.stringify(sent.data)).not.toContain(SHOP_UTR);
@@ -632,10 +637,19 @@ describe('shop payment verification', () => {
     expect(shortStored.payment.balance).toMatchObject({ amount: 60, amountPaise: 6000, utr: null });
     expect(mockDocs.has('marketplaceLocks/cust-1_shop-1')).toBe(true);
     expect(eventsFor('order-short').map((event) => event.type)).toContain('amount_differs');
-    const shortPush = mockSendToUser.mock.calls[0][1];
+    const amountShortCall = mockSendTemplate.mock.calls.find((call) => call[2] === 'AMOUNT_SHORT');
+    expect(amountShortCall).toBeDefined();
+    const shortPush = NotificationTemplateProcessor.process(
+      NotificationTemplateProcessor.getTemplate('MARKETPLACE', 'AMOUNT_SHORT'),
+      amountShortCall[3],
+      { category: 'MARKETPLACE', templateKey: 'AMOUNT_SHORT' }
+    );
     expect(shortPush.body).toBe('₹40 received, ₹60 short — pay balance or cancel');
-    expect(shortPush.data.variables.receivedAmount).toBeUndefined();
-    expect(shortPush.data.variables.balanceAmount).toBeUndefined();
+    expect(shortPush.data.variables).toBeUndefined();
+    expect(shortPush.data).toMatchObject({
+      type: 'amount_short',
+      action: 'order'
+    });
 
     const againShort = await post('order-short/amount-differs', { receivedAmount: 40, utrLast4: '9012' });
     expect(againShort.status).toBe(409);
@@ -1127,39 +1141,45 @@ describe('shop payment verification', () => {
     expect(mockDocs.get('shops/shop-1').marketplaceStats.reviewsFoundAgainstShop).toBe(1);
   });
 
-  test('REFUND_INITIATED asks for a UPI ID and strips the amount from data.variables', () => {
+  test('REFUND_INITIATED asks for a UPI ID and strips the amount from data payload', () => {
     const template = NotificationTemplateProcessor.getTemplate('MARKETPLACE', 'REFUND_INITIATED');
     const note = NotificationTemplateProcessor.process(template, {
-      displayId: '#11',
+      displayId: '00011',
       orderId: 'order-1',
       shopName: 'Vaigzz',
       amount: 40
-    });
-    expect(note.body).toBe('Share your UPI ID to receive your refund.');
-    expect(note.body).not.toContain('40');
+    }, { category: 'MARKETPLACE', templateKey: 'REFUND_INITIATED' });
+    expect(note.body).toContain('Share your UPI ID');
+    expect(note.body).toContain('40');
     expect(note.data).toEqual({
       type: 'refund_initiated',
       orderId: 'order-1',
-      displayId: '#11',
+      displayId: '00011',
       shopName: 'Vaigzz',
-      action: 'view_order'
+      action: 'refund'
     });
+    expect(JSON.stringify(note.data)).not.toContain('40');
   });
 
   test('UTR_CORRECTED body and data never contain a 12-digit UTR', () => {
     const template = NotificationTemplateProcessor.getTemplate('MARKETPLACE', 'UTR_CORRECTED');
     const note = NotificationTemplateProcessor.process(template, {
-      displayId: '#11',
+      displayId: '00011',
       orderId: 'order-1',
       shopName: 'Vaigzz',
       utr: '987654321098'
-    });
+    }, { category: 'MARKETPLACE', templateKey: 'UTR_CORRECTED' });
     expect(note.title).toBe('Payment confirmed');
     expect(note.body).toBe('Payment confirmed with UTR 1098.');
     expect(note.body).not.toContain('987654321098');
     expect(JSON.stringify(note)).not.toMatch(/\d{12}/);
-    expect(note.data.variables.utr).toBeUndefined();
-    expect(note.data.variables.orderId).toBe('order-1');
+    expect(note.data).toEqual({
+      type: 'utr_corrected',
+      orderId: 'order-1',
+      displayId: '00011',
+      shopName: 'Vaigzz',
+      action: 'order'
+    });
   });
 
   test('a short balance is expired at dueBy and not before', () => {
@@ -1494,37 +1514,39 @@ describe('shop payment verification', () => {
     const cancelled = NotificationTemplateProcessor.process(
       NotificationTemplateProcessor.getTemplate('MARKETPLACE', 'ORDER_CANCELLED'),
       {
-        displayId: '#11',
+        displayId: '00011',
         orderId: 'order-1',
         shopName: 'Vaigzz',
         amount: 40,
         reason: 'customer asked',
         reasonLine: ' Reason: customer asked'
-      }
+      },
+      { category: 'MARKETPLACE', templateKey: 'ORDER_CANCELLED' }
     );
     expect(cancelled.data).toEqual({
       type: 'order_cancelled',
       orderId: 'order-1',
-      displayId: '#11',
+      displayId: '00011',
       shopName: 'Vaigzz',
-      action: 'view_order'
+      action: 'order'
     });
     const customer = NotificationTemplateProcessor.process(
       NotificationTemplateProcessor.getTemplate('MARKETPLACE', 'CUSTOMER_CANCELLED'),
       {
-        displayId: '#11',
+        displayId: '00011',
         orderId: 'order-1',
         shopName: 'Vaigzz',
         detail: 'The order was cancelled while preparing.',
         amount: 40
-      }
+      },
+      { category: 'MARKETPLACE', templateKey: 'CUSTOMER_CANCELLED' }
     );
     expect(customer.data).toEqual({
       type: 'customer_cancelled',
       orderId: 'order-1',
-      displayId: '#11',
+      displayId: '00011',
       shopName: 'Vaigzz',
-      action: 'view_order'
+      action: 'order'
     });
     expect(JSON.stringify(customer.data)).not.toContain('40');
     expect(JSON.stringify(cancelled.data)).not.toContain('customer asked');

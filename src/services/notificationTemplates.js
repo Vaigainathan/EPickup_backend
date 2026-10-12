@@ -3,6 +3,11 @@
  * Centralized template management for all notifications
  */
 
+const {
+  buildMarketplacePushData,
+  digitsDisplayId
+} = require('./marketplace/marketplacePush');
+
 const formatNotificationVariableValue = (variableName, value) => {
   if (value === undefined || value === null) return value;
 
@@ -134,163 +139,183 @@ const NOTIFICATION_TEMPLATES = {
   MARKETPLACE: {
     PAYMENT_CONFIRMED: {
       title: 'Payment confirmed',
-      body: 'Your order {{displayId}} was accepted. The shop is preparing it.',
-      data: { type: 'payment_confirmed', action: 'view_order' }
+      body: 'Payment confirmed — {{shopName}} is preparing your order',
+      data: { type: 'payment_confirmed', action: 'tracking' }
     },
     UTR_CORRECTED: {
       title: 'Payment confirmed',
       body: 'Payment confirmed with UTR {{utr}}.',
-      data: { type: 'utr_corrected', action: 'view_order' }
+      data: { type: 'utr_corrected', action: 'order' }
     },
     PAYMENT_LATE_ACCEPTED: {
       title: 'Payment confirmed',
-      body: 'Your late payment for order {{displayId}} was accepted. The shop is preparing it.',
-      data: { type: 'payment_late_accepted', action: 'view_order' }
+      body: '{{shopName}} received your payment — your order is back on',
+      data: { type: 'payment_late_accepted', action: 'order' }
     },
     PAYMENT_UNDER_REVIEW: {
       title: 'Payment under review',
-      body: 'Payment for order {{displayId}} is under review.',
-      data: { type: 'payment_under_review', action: 'view_order' }
+      body: 'Your payment to {{shopName}} is under review',
+      data: { type: 'payment_under_review', action: 'order' }
     },
     PAYMENT_REVIEW_SHOP: {
       title: 'Payment under review',
-      body: 'Order {{displayId}} needs a payment check.',
-      data: { type: 'payment_review_shop', action: 'view_order' }
+      body: 'Check UTR for shop order {{displayId}} — Received / Not found',
+      data: { type: 'payment_review_shop', action: 'order' }
     },
     REVIEW_RESOLVED: {
       title: 'Payment review closed',
-      body: 'The payment review for order {{displayId}} is closed.',
-      data: { type: 'review_resolved', action: 'view_order' }
+      body: 'The payment review for shop order {{displayId}} is closed.',
+      data: { type: 'review_resolved', action: 'order' }
     },
     NOT_VERIFIED: {
       title: 'Payment not verified',
-      body: 'Payment for order {{displayId}} was not verified. The order is closed.',
-      data: { type: 'not_verified', action: 'view_order' }
+      body: 'We couldn\'t verify your payment for Shop order {{displayId}}',
+      data: { type: 'not_verified', action: 'order' }
     },
     ORDER_CANCELLED: {
       title: 'Order cancelled',
-      body: 'Your order {{displayId}} was cancelled.{{reasonLine}}',
-      data: { type: 'order_cancelled', action: 'view_order' }
+      body: '{{shopName}} cancelled your order{{reasonLine}}',
+      data: { type: 'order_cancelled', action: 'order' }
     },
     ITEMS_UNAVAILABLE: {
       title: 'Items unavailable',
-      body: 'Some items in order {{displayId}} are unavailable.',
-      data: { type: 'items_unavailable', action: 'view_order' }
+      body: '{{shopName}} couldn\'t supply some items — ₹{{amount}} refund',
+      data: { type: 'items_unavailable', action: 'refund' }
     },
     REFUND_INITIATED: {
       title: 'Refund pending',
-      body: 'Share your UPI ID to receive your refund.',
-      data: { type: 'refund_initiated', action: 'view_order' }
+      body: 'Share your UPI ID to get ₹{{amount}} back from {{shopName}}',
+      data: { type: 'refund_initiated', action: 'refund' }
     },
     REFUND_UPI_REMINDER: {
       title: 'Refund pending',
-      body: 'Share your UPI ID to receive your refund for order {{displayId}}.',
-      data: { type: 'refund_upi_reminder', action: 'view_order' }
+      body: 'Share your UPI ID to receive your refund for shop order {{displayId}}.',
+      data: { type: 'refund_upi_reminder', action: 'refund' }
     },
     REFUND_DUE: {
       title: 'Refund due',
-      body: 'A refund is due for order {{displayId}}. Pay it within 24 hours.',
-      data: { type: 'refund_due', action: 'view_order' }
+      body: 'Refund ₹{{amount}} due to {{customerName}} by {{dueBy}}',
+      data: { type: 'refund_due', action: 'refund' }
     },
     REFUND_OVERDUE: {
       title: 'Refund overdue',
-      body: 'The refund for order {{displayId}} is overdue.',
-      data: { type: 'refund_overdue', action: 'view_order' }
+      body: 'Overdue — support notified for shop order {{displayId}}',
+      data: { type: 'refund_overdue', action: 'refund' }
     },
     REFUND_SENT: {
       title: 'Refund sent',
-      body: 'The shop has sent your refund for order {{displayId}}. UTR ending {{refundUtr}}.',
-      data: { type: 'refund_sent', action: 'view_order' }
+      body: '₹{{amount}} refunded — UTR {{refundUtr}}. Did you get it?',
+      data: { type: 'refund_sent', action: 'refund' }
     },
     REFUND_ACK_REMINDER: {
       title: 'Confirm your refund',
-      body: 'Confirm whether you received the refund for order {{displayId}}.',
-      data: { type: 'refund_ack_reminder', action: 'view_order' }
+      body: 'Did you get your ₹{{amount}} refund?',
+      data: { type: 'refund_ack_reminder', action: 'refund' }
     },
     REFUND_CLOSED: {
       title: 'Refund closed',
-      body: 'The refund for order {{displayId}} is closed.',
-      data: { type: 'refund_closed', action: 'view_order' }
+      body: 'The refund for shop order {{displayId}} is closed.',
+      data: { type: 'refund_closed', action: 'refund' }
     },
     REFUND_DISPUTED: {
       title: 'Refund under review',
-      body: 'The refund for order {{displayId}} is under review.',
-      data: { type: 'refund_disputed', action: 'view_order' }
+      body: 'The refund for shop order {{displayId}} is under review.',
+      data: { type: 'refund_disputed', action: 'refund' }
     },
     PAYMENT_EXPIRED: {
-      title: 'Payment expired',
-      body: 'Payment for order {{displayId}} timed out. The order was cancelled.',
-      data: { type: 'payment_expired', action: 'view_order' }
+      title: 'Payment not confirmed',
+      body: 'Did you pay? Enter your UTR',
+      data: { type: 'payment_not_confirmed', action: 'pay' }
     },
     PAYMENT_NOT_CONFIRMED: {
       title: 'Payment not confirmed',
       body: 'Did you pay? Enter your UTR',
-      data: { type: 'payment_not_confirmed', action: 'view_order' }
+      data: { type: 'payment_not_confirmed', action: 'pay' }
     },
     UTR_NUDGE: {
       title: 'Enter your UTR',
       body: 'Enter your UTR so {{shopName}} can confirm faster',
-      data: { type: 'utr_nudge', action: 'view_order' }
+      data: { type: 'utr_nudge', action: 'pay' }
     },
     PAYMENT_REMINDER: {
       title: 'Payment still waiting',
-      body: 'Order {{displayId}} is still waiting for payment confirmation.',
-      data: { type: 'payment_reminder', action: 'view_order' }
+      body: 'Shop order {{displayId}} is still waiting for payment confirmation.',
+      data: { type: 'payment_reminder', action: 'order' }
     },
     ORDER_CLOSED_UNCONFIRMED: {
       title: 'Order closed',
       body: 'Shop order {{displayId}} closed — payment wasn\'t confirmed',
-      data: { type: 'order_closed_unconfirmed', action: 'view_order' }
+      data: { type: 'order_closed_unconfirmed', action: 'order' }
     },
     INCOMING_PAYMENT: {
       title: 'New order to confirm',
-      body: 'Order {{displayId}} is waiting for a payment of ₹{{expectedAmount}}.',
-      data: { type: 'incoming_payment', action: 'view_order' }
+      body: '₹{{expectedAmount}} incoming from {{customerName}} — confirm when received',
+      data: { type: 'incoming_payment', action: 'order' }
     },
     UTR_SUBMITTED: {
       title: 'UTR entered',
-      body: 'Order {{displayId}} has a UTR to check.',
-      data: { type: 'utr_submitted', action: 'view_order' }
+      body: '{{customerName}} paid ₹{{amount}} — UTR ends {{utr}}. Check and confirm',
+      data: { type: 'utr_submitted', action: 'order' }
     },
     AMOUNT_SHORT: {
       title: 'Payment short',
       body: '₹{{receivedAmount}} received, ₹{{balanceAmount}} short — pay balance or cancel',
-      data: { type: 'amount_short', action: 'view_order' }
+      data: { type: 'amount_short', action: 'order' }
     },
     CUSTOMER_CANCELLED: {
       title: 'Order cancelled',
-      body: 'Order {{displayId}} was cancelled. {{detail}}',
-      data: { type: 'customer_cancelled', action: 'view_order' }
+      body: 'Customer cancelled shop order {{displayId}}. {{detail}}',
+      data: { type: 'customer_cancelled', action: 'order' }
     },
     ORDER_PACKED: {
       title: 'Order packed',
-      body: 'Order {{displayId}} is packed. Delivery charge ₹{{deliveryFee}}.',
-      data: { type: 'order_packed', action: 'view_order' }
+      body: 'Your {{shopName}} order is packed — delivery charge ₹{{deliveryFee}} in cash',
+      data: { type: 'order_packed', action: 'tracking' }
     },
     DRIVER_SLOW: {
       title: 'Assigning delivery partner',
       body: 'Still assigning a delivery partner — thanks for waiting',
-      data: { type: 'marketplace_driver_slow', action: 'view_order' }
+      data: { type: 'marketplace_driver_slow', action: 'tracking' }
     },
     ORDER_ASSIGNED: {
       title: 'Driver assigned',
-      body: 'A driver is assigned for order {{displayId}}.',
-      data: { type: 'order_assigned', action: 'view_order' }
+      body: '{{driverName}} is picking up your {{shopName}} order',
+      data: { type: 'order_assigned', action: 'tracking' }
     },
     DRIVER_AT_SHOP: {
-      title: 'Driver at the shop',
-      body: 'The driver is at the shop for order {{displayId}}.',
-      data: { type: 'driver_at_shop', action: 'view_order' }
+      title: 'Driver at shop',
+      body: '{{driverName}} has reached {{shopName}}',
+      data: { type: 'driver_at_shop', action: 'tracking' }
+    },
+    OUT_FOR_DELIVERY: {
+      title: 'Out for delivery',
+      body: 'Your {{shopName}} order is on the way — delivery charge ₹{{deliveryFee}} in cash',
+      data: { type: 'out_for_delivery', action: 'tracking' }
     },
     ORDER_DELIVERED: {
-      title: 'Order delivered',
-      body: 'Order {{displayId}} was delivered.',
-      data: { type: 'order_delivered', action: 'view_order' }
+      title: 'Delivered',
+      body: 'Delivered — rate your {{shopName}} order',
+      data: { type: 'order_delivered', action: 'rate' }
     },
     HELP_UPDATE: {
       title: 'Help request update',
       body: 'Support needs your response on Shop order {{displayId}}.',
       data: { type: 'help_update', action: 'help' }
+    },
+    HELP_SHOP_RESPONSE: {
+      title: 'Support needs your response',
+      body: 'Support needs your response on Shop order {{displayId}}.',
+      data: { type: 'help_shop_response', action: 'help' }
+    },
+    BALANCE_NOT_PAID: {
+      title: 'Order cancelled',
+      body: 'Order cancelled — ₹{{amount}} refund from {{shopName}}',
+      data: { type: 'balance_not_paid', action: 'refund' }
+    },
+    BALANCE_NOT_PAID_SHOP: {
+      title: 'Balance not paid',
+      body: 'Balance not paid — refund ₹{{amount}} due',
+      data: { type: 'balance_not_paid_shop', action: 'refund' }
     }
   },
 
@@ -347,62 +372,48 @@ class NotificationTemplateProcessor {
    * @param {Object} variables - Variables to substitute
    * @returns {Object} Processed notification
    */
-  static process(template, variables = {}) {
+  static process(template, variables = {}, context = {}) {
     if (!template) {
       throw new Error('Template is required');
     }
 
-    // ✅ FIX: Remove undefined values from variables before adding to data
     const cleanedVariables = this.removeUndefinedValues(variables);
     const bodyVariables = { ...variables };
     const dataType = template.data && template.data.type;
     if (dataType === 'utr_corrected' && typeof bodyVariables.utr === 'string') {
       bodyVariables.utr = bodyVariables.utr.slice(-4);
     }
+    if (dataType === 'utr_submitted' && typeof bodyVariables.utr === 'string') {
+      bodyVariables.utr = bodyVariables.utr.slice(-4);
+    }
     if (dataType === 'refund_sent' && typeof bodyVariables.refundUtr === 'string') {
       bodyVariables.refundUtr = bodyVariables.refundUtr.slice(-4);
     }
 
+    const displayForBody = {
+      ...bodyVariables,
+      displayId: digitsDisplayId(bodyVariables.displayId)
+    };
+
     const processedTemplate = {
-      title: this.substituteVariables(template.title, variables),
-      body: this.substituteVariables(template.body, bodyVariables),
+      title: this.substituteVariables(template.title, displayForBody),
+      body: this.substituteVariables(template.body, displayForBody),
       data: { ...template.data }
     };
 
-    // Add cleaned variables to data for app processing (only if there are any)
-    // One place for every REFUND_INITIATED send. The body already has the rupee
-    // amount. The data payload must not.
-    if (typeof dataType === 'string' && dataType.startsWith('refund_')) {
-      delete cleanedVariables.amount;
-      delete cleanedVariables.upiId;
-      delete cleanedVariables.refundUtr;
-      delete cleanedVariables.utr;
-    }
-    // One place for every UTR_CORRECTED send, customer and shop. The body shows
-    // the last 4. The data payload must not carry the UTR.
-    if (dataType === 'utr_corrected') {
-      delete cleanedVariables.utr;
+    const { category, templateKey } = context;
+    if (category === 'MARKETPLACE' && templateKey) {
+      const pushVars = {
+        orderId: cleanedVariables.orderId,
+        displayId: cleanedVariables.displayId,
+        shopName: cleanedVariables.shopName
+      };
+      processedTemplate.data = buildMarketplacePushData(templateKey, dataType, pushVars);
+      processedTemplate.marketplace = true;
+      return processedTemplate;
     }
 
-    if (
-      dataType === 'items_unavailable'
-      || dataType === 'refund_initiated'
-      || dataType === 'order_packed'
-      || dataType === 'order_assigned'
-      || dataType === 'driver_at_shop'
-      || dataType === 'order_delivered'
-      || dataType === 'order_cancelled'
-      || dataType === 'customer_cancelled'
-    ) {
-      const text = (value) => (value == null ? '' : String(value));
-      processedTemplate.data = {
-        type: dataType,
-        orderId: text(cleanedVariables.orderId),
-        displayId: text(cleanedVariables.displayId),
-        shopName: text(cleanedVariables.shopName),
-        action: template.data.action
-      };
-    } else if (Object.keys(cleanedVariables).length > 0) {
+    if (Object.keys(cleanedVariables).length > 0) {
       processedTemplate.data.variables = cleanedVariables;
     }
 

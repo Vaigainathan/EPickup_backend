@@ -367,7 +367,7 @@ describe('payment job modes', () => {
       data: { mode: 'legacy' }
     });
     expect(mockNotifyCustomer).toHaveBeenCalledWith('cust-1', 'PAYMENT_EXPIRED', expect.objectContaining({
-      displayId: '#11',
+      displayId: '00011',
       orderId: 'order-1'
     }));
     expect(mockTimeoutDocs.get('marketplaceOrders/order-short').orderStatus).toBe('awaiting_payment');
@@ -434,7 +434,7 @@ describe('payment job modes', () => {
     expect(eventsFor('order-1')[0].type).toBe('utr_nudge');
     expect(mockNotifyCustomer).toHaveBeenCalledTimes(1);
     expect(mockNotifyCustomer).toHaveBeenCalledWith('cust-1', 'UTR_NUDGE', {
-      displayId: '#7',
+      displayId: '00007',
       orderId: 'order-1',
       shopName: 'Vaigzz'
     });
@@ -455,7 +455,7 @@ describe('payment job modes', () => {
     expect(isServerStamp(mockTimeoutDocs.get('marketplaceOrders/order-1').payment.remindersSent.min5)).toBe(true);
     expect(mockSendTemplate).toHaveBeenCalledTimes(1);
     expect(mockSendTemplate).toHaveBeenCalledWith('shop-1', 'MARKETPLACE', 'PAYMENT_REMINDER', expect.objectContaining({
-      displayId: '#11'
+      displayId: '00011'
     }));
     expect(eventsFor('order-1')[0]).toMatchObject({ type: 'reminder_sent', data: { minute: 5 } });
 
@@ -584,9 +584,14 @@ describe('payment job modes', () => {
       type: 'cancelled',
       reason: 'balance_expired'
     });
-    expect(mockNotifyCustomer).toHaveBeenCalledWith('cust-1', 'REFUND_INITIATED', expect.objectContaining({
+    expect(mockNotifyCustomer).toHaveBeenCalledWith('cust-1', 'BALANCE_NOT_PAID', expect.objectContaining({
       amount: 40
     }));
+    expect(mockSendTemplate).toHaveBeenCalledWith('shop-1', 'MARKETPLACE', 'BALANCE_NOT_PAID_SHOP', expect.objectContaining({
+      amount: 40
+    }));
+    expect(mockNotifyCustomer).toHaveBeenCalledTimes(1);
+    expect(mockNotifyCustomer).not.toHaveBeenCalledWith('cust-1', 'REFUND_INITIATED', expect.anything());
     expect(mockTimeoutDocs.has('marketplaceLocks/cust-1_shop-1')).toBe(false);
 
     const second = await job.runTick({ nowMs: now + 60000, enforcement: ON });

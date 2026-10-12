@@ -7,7 +7,7 @@ const { isValidUtr } = require('../../validators/marketplace');
 const { presentCustomerOrder } = require('./customerOrderView');
 const { appendEvent } = require('./orderEvents');
 const { isWithinUtrWindow, acceptHoursFrom } = require('./customerOrderActions');
-const displayIdService = require('../displayIdService');
+const { digitsDisplayId } = require('./marketplacePush');
 const {
   MAX_BYTES,
   httpError,
@@ -88,8 +88,8 @@ async function notifyShop(shopId, template, variables) {
   }
 }
 
-function displayLabel(data) {
-  return displayIdService.formatDisplayId(data.displayId);
+function pushDisplayId(data) {
+  return digitsDisplayId(data.displayId);
 }
 
 async function rollbackEvidence(db, orderRef, evidenceRef) {
@@ -355,7 +355,7 @@ async function submitPaymentReport({ customerId, orderId, idempotencyKey, body, 
       openedReview: true,
       data: { ...data, orderStatus: 'payment_review', payment: nextPayment, updatedAt: at },
       shopId: data.shopId,
-      displayId: displayLabel(data),
+      displayId: pushDisplayId(data),
       orderId,
       shopName: typeof snapshot.name === 'string' ? snapshot.name : ''
     };

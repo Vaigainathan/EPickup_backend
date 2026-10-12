@@ -9,7 +9,7 @@ const {
   millisOf,
   mirrorPatch
 } = require('./marketplace/refunds');
-const displayIdService = require('./displayIdService');
+const { marketplacePushVariables } = require('./marketplace/marketplacePush');
 const notificationService = require('./notificationService');
 
 const HOUR_MS = 60 * 60 * 1000;
@@ -188,11 +188,7 @@ class MarketplaceRefundJob {
       return {
         actions,
         notifies,
-        variables: {
-          displayId: displayIdService.formatDisplayId(data.displayId),
-          orderId: orderRef.id,
-          shopName: ''
-        }
+        variables: marketplacePushVariables(data, orderRef.id)
       };
     });
     const variables = outcome.variables;

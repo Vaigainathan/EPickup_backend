@@ -4,8 +4,6 @@ const { getFirestore } = require('../firebase');
 const { MARKETPLACE_DEFAULTS } = require('../../config/marketplaceDefaults');
 const { isValidUtr, isValidUpiId, toPaise } = require('../../validators/marketplace');
 const { appendEvent } = require('./orderEvents');
-const displayIdService = require('../displayIdService');
-
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const OPEN_STATUSES = new Set(['upi_needed', 'due', 'sent', 'disputed']);
 const SENT_OR_LATER = new Set(['sent', 'confirmed', 'disputed', 'closed']);
@@ -65,13 +63,10 @@ function isCancelled(orderStatus) {
   return orderStatus === 'cancelled';
 }
 
+const { marketplacePushVariables } = require('./marketplacePush');
+
 function displayVariables(data, orderId) {
-  const snapshot = data && data.shopSnapshot && typeof data.shopSnapshot === 'object' ? data.shopSnapshot : {};
-  return {
-    displayId: displayIdService.formatDisplayId(data && data.displayId),
-    orderId,
-    shopName: typeof snapshot.name === 'string' ? snapshot.name : ''
-  };
+  return marketplacePushVariables(data, orderId);
 }
 
 function sameMoney(left, right) {

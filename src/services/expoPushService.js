@@ -2,6 +2,10 @@ const { Expo } = require('expo-server-sdk');
 const { getFirestore } = require('./firebase');
 const firestoreSessionService = require('./firestoreSessionService');
 const { NEW_ORDER_CHANNEL_ID } = require('../constants/notifications');
+const {
+  isMarketplacePushData,
+  MARKETPLACE_PUSH_DATA_KEYS
+} = require('./marketplace/marketplacePush');
 
 /**
  * Expo Push Notification Service for EPickup
@@ -215,23 +219,32 @@ class ExpoPushService {
         throw new Error('No valid Expo push tokens provided');
       }
 
-      // ✅ FIX: Clean notification data to remove undefined values before sending
       const cleanedNotificationData = notification.data ? this.removeUndefinedValues(notification.data) : {};
-      
-      // ✅ CRITICAL FIX: Include variables in notification data for frontend to display order details
-      // This allows the frontend to show order info even before fetching from API
-      const notificationData = {
-        type: notification.type || 'general',
-        bookingId: notification.bookingId || '',
-        driverId: notification.driverId || '',
-        paymentId: notification.paymentId || '',
-        timestamp: new Date().toISOString(),
-        ...cleanedNotificationData
-      };
-      
-      // ✅ CRITICAL: Include variables from notification template (pickupAddress, dropoffAddress, fare, etc.)
-      if (cleanedNotificationData.variables) {
-        notificationData.variables = cleanedNotificationData.variables;
+
+      const marketplace = options.marketplace
+        || notification.marketplace
+        || isMarketplacePushData(cleanedNotificationData);
+
+      let notificationData;
+      if (marketplace) {
+        notificationData = {};
+        MARKETPLACE_PUSH_DATA_KEYS.forEach((key) => {
+          notificationData[key] = cleanedNotificationData[key] == null
+            ? ''
+            : String(cleanedNotificationData[key]);
+        });
+      } else {
+        notificationData = {
+          type: notification.type || 'general',
+          bookingId: notification.bookingId || '',
+          driverId: notification.driverId || '',
+          paymentId: notification.paymentId || '',
+          timestamp: new Date().toISOString(),
+          ...cleanedNotificationData
+        };
+        if (cleanedNotificationData.variables) {
+          notificationData.variables = cleanedNotificationData.variables;
+        }
       }
       
       // Create notification messages

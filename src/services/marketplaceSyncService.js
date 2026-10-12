@@ -2,7 +2,7 @@ const admin = require('firebase-admin');
 const { getFirestore } = require('./firebase');
 const { appendEvent, touchOrderSignal } = require('./marketplace/orderEvents');
 const notificationService = require('./notificationService');
-const displayIdService = require('./displayIdService');
+const { marketplacePushVariables } = require('./marketplace/marketplacePush');
 
 const STAGE_ORDER = ['searching', 'assigned', 'at_shop', 'picked_up', 'on_the_way', 'delivered'];
 const BELOW_PICKUP = new Set(['searching', 'assigned', 'at_shop']);
@@ -373,18 +373,16 @@ class MarketplaceSyncService {
     if (!template || !customerId) {
       return;
     }
-    const snapshot = order.shopSnapshot && typeof order.shopSnapshot === 'object' ? order.shopSnapshot : {};
+    const driverInfo = presentDriverInfo(order.driverInfo);
+    const driverName = driverInfo && driverInfo.name ? driverInfo.name : 'Your driver';
     try {
       const result = await notificationService.sendTemplateNotification(
         customerId,
         'MARKETPLACE',
         template,
         {
-          type: template,
-          orderId,
-          displayId: displayIdService.formatDisplayId(order.displayId),
-          shopName: typeof snapshot.name === 'string' ? snapshot.name : '',
-          action: 'view_order'
+          ...marketplacePushVariables(order, orderId),
+          driverName
         }
       );
       if (result && result.success === false) {

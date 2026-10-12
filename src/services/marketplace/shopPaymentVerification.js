@@ -7,8 +7,6 @@ const { appendEvent } = require('./orderEvents');
 const { deductStock } = require('./stock');
 const { createRefund, hasReason, refundRemainder } = require('./refunds');
 const { getMarketplaceEnforcement } = require('./orderStateMachine');
-const displayIdService = require('../displayIdService');
-
 const POST_CONFIRM_ORDER = new Set(['preparing', 'ready', 'handed_over', 'completed']);
 const BLOCKED_CANCEL = new Set(['handed_over', 'completed', 'delivery_failed']);
 
@@ -448,13 +446,10 @@ function writeRegistry(tx, registrySnap, registryRef, { orderId, customerId, kin
   });
 }
 
+const { marketplacePushVariables } = require('./marketplacePush');
+
 function displayVariables(data, orderId) {
-  const snapshot = data.shopSnapshot && typeof data.shopSnapshot === 'object' ? data.shopSnapshot : {};
-  return {
-    displayId: displayIdService.formatDisplayId(data.displayId),
-    orderId,
-    shopName: typeof snapshot.name === 'string' ? snapshot.name : ''
-  };
+  return marketplacePushVariables(data, orderId);
 }
 
 function reviewOf(payment) {

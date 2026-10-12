@@ -391,35 +391,34 @@ describe('markUnavailable', () => {
     expect(templateCalls('ITEMS_UNAVAILABLE')).toHaveLength(1);
     expect(templateCalls('REFUND_INITIATED')).toHaveLength(1);
     const pushIds = {
-      displayId: '#00012',
+      displayId: '00012',
       orderId: 'order-1',
       shopName: 'Shop'
     };
     expect(templateCalls('ITEMS_UNAVAILABLE')[0][3]).toEqual(pushIds);
     expect(templateCalls('REFUND_INITIATED')[0][3]).toEqual(pushIds);
-    const itemsData = NotificationTemplateProcessor.process(
-      NotificationTemplateProcessor.getTemplate('MARKETPLACE', 'ITEMS_UNAVAILABLE'),
-      templateCalls('ITEMS_UNAVAILABLE')[0][3]
-    ).data;
-    const refundData = NotificationTemplateProcessor.process(
-      NotificationTemplateProcessor.getTemplate('MARKETPLACE', 'REFUND_INITIATED'),
-      templateCalls('REFUND_INITIATED')[0][3]
-    ).data;
+    const mpCtx = (key, vars) => NotificationTemplateProcessor.process(
+      NotificationTemplateProcessor.getTemplate('MARKETPLACE', key),
+      vars,
+      { category: 'MARKETPLACE', templateKey: key }
+    );
+    const itemsData = mpCtx('ITEMS_UNAVAILABLE', templateCalls('ITEMS_UNAVAILABLE')[0][3]).data;
+    const refundData = mpCtx('REFUND_INITIATED', templateCalls('REFUND_INITIATED')[0][3]).data;
     expect(Object.keys(itemsData)).toEqual(['type', 'orderId', 'displayId', 'shopName', 'action']);
     expect(itemsData).toEqual({
       type: 'items_unavailable',
       orderId: 'order-1',
-      displayId: '#00012',
+      displayId: '00012',
       shopName: 'Shop',
-      action: 'view_order'
+      action: 'refund'
     });
     expect(Object.keys(refundData)).toEqual(['type', 'orderId', 'displayId', 'shopName', 'action']);
     expect(refundData).toEqual({
       type: 'refund_initiated',
       orderId: 'order-1',
-      displayId: '#00012',
+      displayId: '00012',
       shopName: 'Shop',
-      action: 'view_order'
+      action: 'refund'
     });
 
     await shopOrderService.markUnavailable('shop-1', 'order-1', { itemIds: ['line0'] });

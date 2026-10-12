@@ -895,27 +895,37 @@ describe('refund views and the legacy sent route', () => {
   });
 
   test('REFUND_SENT shows the last 4 and the payload has no full UTR or amount', () => {
-    const sent = NotificationTemplateProcessor.process(
-      NotificationTemplateProcessor.getTemplate('MARKETPLACE', 'REFUND_SENT'),
-      { displayId: '#11', refundUtr: UTR, amount: 40, upiId: UPI }
+    const mp = (key, vars) => NotificationTemplateProcessor.process(
+      NotificationTemplateProcessor.getTemplate('MARKETPLACE', key),
+      vars,
+      { category: 'MARKETPLACE', templateKey: key }
     );
+    const sent = mp('REFUND_SENT', {
+      displayId: 11,
+      orderId: 'order-1',
+      shopName: 'Vaigzz',
+      refundUtr: UTR,
+      amount: 40,
+      upiId: UPI
+    });
     expect(sent.body).toContain('9012');
     expect(JSON.stringify(sent)).not.toMatch(/\d{12}/);
-    expect(sent.data.variables.amount).toBeUndefined();
-    expect(sent.data.variables.refundUtr).toBeUndefined();
-    expect(sent.data.variables.upiId).toBeUndefined();
+    expect(sent.data.variables).toBeUndefined();
 
-    const initiated = NotificationTemplateProcessor.process(
-      NotificationTemplateProcessor.getTemplate('MARKETPLACE', 'REFUND_INITIATED'),
-      { displayId: '#11', amount: 40 }
-    );
-    expect(initiated.body).toBe('Share your UPI ID to receive your refund.');
+    const initiated = mp('REFUND_INITIATED', {
+      displayId: 11,
+      orderId: 'order-1',
+      shopName: 'Vaigzz',
+      amount: 40
+    });
+    expect(initiated.body).toContain('Share your UPI ID');
+    expect(initiated.body).toContain('40');
     expect(initiated.data).toEqual({
       type: 'refund_initiated',
-      orderId: '',
-      displayId: '#11',
-      shopName: '',
-      action: 'view_order'
+      orderId: 'order-1',
+      displayId: '00011',
+      shopName: 'Vaigzz',
+      action: 'refund'
     });
     expect(JSON.stringify(initiated.data)).not.toContain('40');
   });

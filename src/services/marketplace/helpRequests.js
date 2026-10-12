@@ -5,7 +5,6 @@ const { MARKETPLACE_DEFAULTS } = require('../../config/marketplaceDefaults');
 const { appendEvent } = require('./orderEvents');
 const { toPaise } = require('../../validators/marketplace');
 const { createRefund, refundRemainder } = require('./refunds');
-const displayIdService = require('../displayIdService');
 const {
   httpError,
   requireUuid,
@@ -143,15 +142,11 @@ async function notifyHelpUpdate(customerId, data, orderId) {
   if (!customerId) {
     return;
   }
-  const snapshot = data.shopSnapshot && typeof data.shopSnapshot === 'object' ? data.shopSnapshot : {};
   try {
     const notificationService = require('../notificationService');
+    const { marketplacePushVariables } = require('./marketplacePush');
     await notificationService.sendTemplateNotification(customerId, 'MARKETPLACE', 'HELP_UPDATE', {
-      type: 'HELP_UPDATE',
-      orderId,
-      displayId: displayIdService.formatDisplayId(data.displayId),
-      shopName: typeof snapshot.name === 'string' ? snapshot.name : '',
-      action: 'help'
+      ...marketplacePushVariables(data, orderId)
     });
   } catch (error) {
     console.error('❌ [MARKETPLACE_HELP] push failed', error.message);

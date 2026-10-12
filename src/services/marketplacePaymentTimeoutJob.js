@@ -1,13 +1,13 @@
 const cron = require('node-cron');
 const admin = require('firebase-admin');
 const { getFirestore } = require('./firebase');
-const displayIdService = require('./displayIdService');
 const shopOrderService = require('./shopOrderService');
 const { MARKETPLACE_DEFAULTS } = require('../config/marketplaceDefaults');
 const { getMarketplaceEnforcement } = require('./marketplace/orderStateMachine');
 const { appendEvent } = require('./marketplace/orderEvents');
 const { createRefund } = require('./marketplace/refunds');
 const { isShortBalanceExpired } = require('./marketplace/shopPaymentVerification');
+const { marketplacePushVariables, digitsDisplayId } = require('./marketplace/marketplacePush');
 
 const SETTINGS_DOC = ['appSettings', 'marketplace'];
 // short is not expireable. MP-6 owns balance dueBy via isShortBalanceExpired.
@@ -103,8 +103,9 @@ class MarketplacePaymentTimeoutJob {
           continue;
         }
         await shopOrderService.notifyCustomer(result.customerId, 'PAYMENT_EXPIRED', {
-          displayId: displayIdService.formatDisplayId(result.displayId),
-          orderId: doc.id
+          displayId: digitsDisplayId(result.displayId),
+          orderId: doc.id,
+          shopName: ''
         });
         actions.push({ id: doc.id, kind: 'legacy_expire', changed: true });
       }
@@ -361,12 +362,21 @@ class MarketplacePaymentTimeoutJob {
           reason: 'balance_expired',
           data: { reason: 'balance_expired' }
         }, data.customerId);
-        notifies = [{
-          audience: 'customer',
-          id: customerId,
-          template: 'REFUND_INITIATED',
-          variables: { ...variables, amount: refund.amount }
-        }];
+        const amount = refund.amount;
+        notifies = [
+          {
+            audience: 'customer',
+            id: customerId,
+            template: 'BALANCE_NOT_PAID',
+            variables: { ...variables, amount }
+          },
+          {
+            audience: 'shop',
+            id: shopId,
+            template: 'BALANCE_NOT_PAID_SHOP',
+            variables: { ...variables, amount }
+          }
+        ];
       } else if (action.kind === 'paid_check_alert') {
         tx.update(orderRef, { 'cancellation.paidCheckEscalatedAt': at, updatedAt: at });
         appendEvent(tx, orderRef, {
@@ -494,12 +504,7 @@ function releaseLock(tx, lockRef, lockSnap, userRef, userSnap, orderId) {
 }
 
 function pushVariables(data, orderId) {
-  const snapshot = data.shopSnapshot && typeof data.shopSnapshot === 'object' ? data.shopSnapshot : {};
-  return {
-    displayId: displayIdService.formatDisplayId(data.displayId),
-    orderId,
-    shopName: typeof snapshot.name === 'string' ? snapshot.name : ''
-  };
+  return marketplacePushVariables(data, orderId);
 }
 
 function hasCustomerUtr(payment) {

@@ -509,15 +509,20 @@ async function createMarketplaceOrder({ customerId, idempotencyKey, body }) {
       }
     }, customerId);
 
-    return { replay: false, data: orderData, shopId, displayId };
+    const customerName = typeof customerData.name === 'string' && customerData.name.trim()
+      ? customerData.name.trim()
+      : (typeof customerData.displayName === 'string' ? customerData.displayName.trim() : 'Customer');
+
+    return { replay: false, data: orderData, shopId, displayId, customerName };
   });
 
   if (!created.replay) {
     try {
       const notificationService = require('../notificationService');
+      const { marketplacePushVariables } = require('./marketplacePush');
       await notificationService.sendTemplateNotification(created.shopId, 'MARKETPLACE', 'INCOMING_PAYMENT', {
-        displayId: displayIdService.formatDisplayId(created.displayId),
-        orderId: resolvedOrderId,
+        ...marketplacePushVariables(created.data, resolvedOrderId),
+        customerName: created.customerName,
         expectedAmount: created.data.expectedAmount
       });
     } catch (error) {

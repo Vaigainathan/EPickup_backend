@@ -72,6 +72,10 @@ async function allocateOrderNumber(db, options) {
 }
 
 module.exports = {
+  COUNTER_COLLECTION,
+  COUNTER_DOC,
+  MODULUS,
+  ORDER_NUMBER_POOL_SIZE: MODULUS,
   numberForIndex,
   allocateInTransaction,
   allocateOrderNumber,

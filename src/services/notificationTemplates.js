@@ -267,6 +267,11 @@ const NOTIFICATION_TEMPLATES = {
       body: 'Order {{displayId}} is packed. Delivery charge ₹{{deliveryFee}}.',
       data: { type: 'order_packed', action: 'view_order' }
     },
+    DRIVER_SLOW: {
+      title: 'Assigning delivery partner',
+      body: 'Still assigning a delivery partner — thanks for waiting',
+      data: { type: 'marketplace_driver_slow', action: 'view_order' }
+    },
     ORDER_ASSIGNED: {
       title: 'Driver assigned',
       body: 'A driver is assigned for order {{displayId}}.',

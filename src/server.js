@@ -898,6 +898,18 @@ async function initializeServices() {
     marketplaceHelpJob.start();
     console.log('✅ Marketplace help cron scheduled');
 
+    const marketplaceSlowDriverJob = require('./services/marketplaceSlowDriverJob');
+    marketplaceSlowDriverJob.start();
+    console.log('✅ Marketplace slow-driver cron scheduled');
+
+    const marketplaceCleanupJob = require('./services/marketplaceCleanupJob');
+    marketplaceCleanupJob.start();
+    console.log('✅ Marketplace cleanup cron scheduled');
+
+    const marketplaceOrderNumberPoolJob = require('./services/marketplaceOrderNumberPoolJob');
+    marketplaceOrderNumberPoolJob.start();
+    console.log('✅ Marketplace order-number pool monitor scheduled');
+
     // Performance monitoring handled by monitoringService
     console.log('✅ Performance monitoring consolidated into monitoringService');
     

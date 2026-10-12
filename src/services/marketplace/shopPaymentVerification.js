@@ -996,7 +996,8 @@ async function answerPaidCheck({ shopId, orderId, body, nowMs }) {
       'cancellation.paidCheckAt': at,
       'payment.status': 'refund_pending',
       'payment.officialUtr': matched.officialUtr,
-      'payment.utrSource': matched.utrSource
+      'payment.utrSource': matched.utrSource,
+      ...arrivedAmountFields(amount, data)
     });
     if (!alreadyRefund) {
       createRefund(tx, {
@@ -1098,7 +1099,8 @@ async function resolvePaidCheckSupport({ orderId, received, operator, body, nowM
       'cancellation.paidCheckAt': at,
       'payment.status': 'refund_pending',
       'payment.officialUtr': matched.officialUtr,
-      'payment.utrSource': matched.utrSource
+      'payment.utrSource': matched.utrSource,
+      ...arrivedAmountFields(amount, data)
     });
     if (!alreadyRefund) {
       createRefund(tx, {

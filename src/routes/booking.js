@@ -8,8 +8,25 @@ const { requireRole, requireCustomer, requireDriver } = require('../middleware/a
 const { userRateLimit } = require('../middleware/auth');
 const { getFirestore } = require('../services/firebase');
 const { requireOwnership } = require('../middleware/auth');
+const { withParcelSource, marketplaceBookingRejection } = require('../services/parcelSourceFilter');
+const {
+  listCustomerParcelBookings,
+  presentCustomerParcelBookingHistory
+} = require('../services/customerParcelBookingHistory');
 
 const router = express.Router();
+
+function sendMarketplaceRejectionForCustomer(res, bookingData, bookingId, route, customerId, userType) {
+  if (userType !== 'customer') {
+    return false;
+  }
+  const rejection = marketplaceBookingRejection(bookingData, { bookingId, route, customerId });
+  if (!rejection) {
+    return false;
+  }
+  res.status(rejection.status).json(rejection.body);
+  return true;
+}
 
 /**
  * @route   POST /api/bookings
@@ -90,9 +107,9 @@ router.post('/', [
 
     // ✅ IDEMPOTENCY CHECK - Prevent duplicate bookings
     console.log('🔍 [IDEMPOTENCY] Checking for existing booking with key:', idempotencyKey);
-    const existingBooking = await db.collection('bookings')
+    const existingBooking = await withParcelSource(db.collection('bookings')
       .where('customerId', '==', req.user.uid)
-      .where('idempotencyKey', '==', idempotencyKey)
+      .where('idempotencyKey', '==', idempotencyKey))
       .limit(1)
       .get();
 
@@ -674,6 +691,17 @@ router.get('/:id', async (req, res) => {
         },
         timestamp: new Date().toISOString()
       });
+    }
+
+    if (sendMarketplaceRejectionForCustomer(
+      res,
+      booking,
+      id,
+      'GET /api/bookings/:id',
+      uid,
+      userType
+    )) {
+      return;
     }
 
     res.status(200).json({
@@ -1412,6 +1440,17 @@ router.get('/:id/driver', [
     }
 
     const bookingData = bookingDoc.data();
+
+    if (sendMarketplaceRejectionForCustomer(
+      res,
+      bookingData,
+      id,
+      'GET /api/bookings/:id/driver',
+      uid,
+      userType
+    )) {
+      return;
+    }
     
     // Check access permissions
     if (userType === 'customer' && bookingData.customerId !== uid) {
@@ -1623,12 +1662,23 @@ router.post('/:id/cancel', [
     }
 
     const { id } = req.params;
-    const { uid, userType } = req.body;
+    const { uid, userType } = req.user;
     const { reason } = req.body;
 
     // Get current booking to check permissions
     const currentBooking = await bookingService.getBookingDetails(id);
     const { booking } = currentBooking.data;
+
+    if (sendMarketplaceRejectionForCustomer(
+      res,
+      booking,
+      id,
+      'POST /api/bookings/:id/cancel',
+      uid,
+      userType
+    )) {
+      return;
+    }
 
     // Check access permissions
     if (userType !== 'admin' && 
@@ -1713,7 +1763,7 @@ router.get('/customer/:customerId', [
 
     const { customerId } = req.params;
     const { uid, userType } = req.user;
-    const { status, startDate, endDate, limit = 20, offset = 0 } = req.query;
+    const { status, limit = 20, offset = 0 } = req.query;
 
     // Check access permissions
     if (userType !== 'admin' && customerId !== uid) {
@@ -1728,20 +1778,20 @@ router.get('/customer/:customerId', [
       });
     }
 
-    // Get customer bookings
-    const result = await bookingService.getCustomerBookings(customerId, {
+    const db = getFirestore();
+    const limitNum = parseInt(limit, 10) || 20;
+    const offsetNum = parseInt(offset, 10) || 0;
+    const { data, pagination } = await listCustomerParcelBookings(db, customerId, {
       status,
-      startDate,
-      endDate,
-      limit: parseInt(limit),
-      offset: parseInt(offset)
+      limit: limitNum,
+      offset: offsetNum
     });
+    const presented = data.map((row) => presentCustomerParcelBookingHistory(row));
 
     res.status(200).json({
       success: true,
-      message: 'Customer bookings retrieved successfully',
-      data: result.data,
-      timestamp: new Date().toISOString()
+      data: presented,
+      pagination
     });
 
   } catch (error) {

@@ -10,7 +10,7 @@ require('dotenv').config();
 const { FieldValue } = require('firebase-admin/firestore');
 const { assertStagingEnv, assertStagingAdmin } = require('../assertStagingFirebase');
 const { STAGING_CUSTOMER_ID } = require('./marketplaceStagingActions');
-const { loadMarketplaceSnapshot } = require('./userMarketplaceSnapshot');
+const { loadMarketplaceSnapshot, deleteMarketplaceSnapshot } = require('./userMarketplaceSnapshot');
 
 assertStagingEnv();
 
@@ -82,6 +82,7 @@ async function main() {
     updatedAt: FieldValue.serverTimestamp()
   };
   await userRef.update(patch);
+  deleteMarketplaceSnapshot(customerId);
   console.log(JSON.stringify({ applied: true, ...plan }, null, 2));
 }
 

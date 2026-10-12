@@ -82,9 +82,9 @@ class ActiveBookingService {
         // ✅ Use shared constants for consistency
         const { ACTIVE_BOOKING_STATUSES } = require('../constants/bookingStatuses');
         const activeStatuses = [...ACTIVE_BOOKING_STATUSES, 'at_dropoff']; // Include at_dropoff if needed
-        const activeBookingsQuery = this.db.collection('bookings')
+        const activeBookingsQuery = withParcelSource(this.db.collection('bookings')
           .where('customerId', '==', customerId)
-          .where('status', 'in', activeStatuses)
+          .where('status', 'in', activeStatuses))
           .limit(1);
 
         const activeBookingsSnapshot = await transaction.get(activeBookingsQuery);

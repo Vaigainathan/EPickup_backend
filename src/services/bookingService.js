@@ -18,6 +18,7 @@ const serviceAreaValidation = require('./serviceAreaValidation');
 const walletService = require('./walletService');
 const displayIdService = require('./displayIdService');
 const { isPoolEnabled, allocateInTransaction } = require('./orderNumberPool');
+const { withParcelSource } = require('./parcelSourceFilter');
 
 /**
  * Booking Service for EPickup delivery platform
@@ -53,9 +54,9 @@ class BookingService {
       // ✅ CRITICAL FIX: Check for existing active bookings (exclude delivered/completed)
       // ✅ Use shared constants for consistency
       const { ACTIVE_BOOKING_STATUSES } = require('../constants/bookingStatuses');
-      const existingActiveBooking = await this.db.collection('bookings')
+      const existingActiveBooking = await withParcelSource(this.db.collection('bookings')
         .where('customerId', '==', customerId)
-        .where('status', 'in', ACTIVE_BOOKING_STATUSES)
+        .where('status', 'in', ACTIVE_BOOKING_STATUSES))
         .limit(1)
         .get();
 

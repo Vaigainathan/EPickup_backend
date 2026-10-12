@@ -1,15 +1,24 @@
 const fs = require('fs');
 const path = require('path');
 
-const SNAPSHOT_DIR = path.join(__dirname, '..', '..', 'tmp', 'marketplace-profile-snapshots');
+const DEFAULT_SNAPSHOT_DIR = path.join(__dirname, '..', '..', 'tmp', 'marketplace-profile-snapshots');
+
+function getSnapshotDir() {
+  const override = process.env.MARKETPLACE_SNAPSHOT_DIR;
+  if (typeof override === 'string' && override.trim()) {
+    return path.resolve(override.trim());
+  }
+  return DEFAULT_SNAPSHOT_DIR;
+}
 
 function snapshotPath(customerId) {
-  return path.join(SNAPSHOT_DIR, `${customerId}.json`);
+  return path.join(getSnapshotDir(), `${customerId}.json`);
 }
 
 function ensureDir() {
-  if (!fs.existsSync(SNAPSHOT_DIR)) {
-    fs.mkdirSync(SNAPSHOT_DIR, { recursive: true });
+  const dir = getSnapshotDir();
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true });
   }
 }
 
@@ -33,8 +42,36 @@ function loadMarketplaceSnapshot(customerId) {
   return JSON.parse(fs.readFileSync(file, 'utf8'));
 }
 
+function deleteMarketplaceSnapshot(customerId) {
+  const file = snapshotPath(customerId);
+  if (!fs.existsSync(file)) {
+    return false;
+  }
+  fs.unlinkSync(file);
+  return true;
+}
+
+/**
+ * Before restrict --apply: save marketplace unless a snapshot exists and --force was not passed.
+ */
+function prepareRestrictSnapshot(customerId, marketplace, { force = false } = {}) {
+  const existing = loadMarketplaceSnapshot(customerId);
+  if (existing && !force) {
+    return { ok: false, code: 'SNAPSHOT_EXISTS' };
+  }
+  const file = saveMarketplaceSnapshot(customerId, marketplace);
+  return {
+    ok: true,
+    file,
+    overwritten: Boolean(existing && force)
+  };
+}
+
 module.exports = {
-  SNAPSHOT_DIR,
+  DEFAULT_SNAPSHOT_DIR,
+  getSnapshotDir,
   saveMarketplaceSnapshot,
-  loadMarketplaceSnapshot
+  loadMarketplaceSnapshot,
+  deleteMarketplaceSnapshot,
+  prepareRestrictSnapshot
 };

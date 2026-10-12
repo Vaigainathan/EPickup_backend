@@ -669,17 +669,14 @@ service cloud.firestore {
          request.auth.token.userType == 'admin');
     }
 
-    // Ratings collection - secure rating data access
+    // Ratings collection - server writes only (Admin SDK); clients read own/driver-related rows
     match /ratings/{ratingId} {
-      allow read, write: if request.auth != null && 
+      allow read: if request.auth != null && 
         (request.auth.uid == resource.data.customerId || 
          request.auth.uid == resource.data.driverId ||
          request.auth.token.role == 'admin' || 
          request.auth.token.userType == 'admin');
-      allow create: if request.auth != null && 
-        (request.auth.uid == request.resource.data.customerId || 
-         request.auth.token.role == 'admin' || 
-         request.auth.token.userType == 'admin');
+      allow create, update, delete: if false;
     }
 
     // Refunds collection - secure refund data access

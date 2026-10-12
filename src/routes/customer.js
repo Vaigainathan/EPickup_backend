@@ -17,6 +17,10 @@ const { lookupCustomerBookingByIdempotencyKey } = require('../services/bookingId
 const { decideParcelLock, presentLockedBooking } = require('../services/customerParcelLock');
 const { customerCancelRefusal, activeCancelHttp } = require('../constants/bookingStatuses');
 const { withParcelSource, marketplaceBookingRejection } = require('../services/parcelSourceFilter');
+const {
+  listCustomerParcelBookings,
+  presentCustomerParcelBookingHistory
+} = require('../services/customerParcelBookingHistory');
 
 function sendMarketplaceRejection(res, bookingData, bookingId, route, customerId) {
   const rejection = marketplaceBookingRejection(bookingData, { bookingId, route, customerId });
@@ -313,129 +317,31 @@ router.get('/bookings', authenticateToken, async (req, res) => {
     const { uid: userId } = req.user;
     const { status, limit = 20, offset = 0 } = req.query;
     const db = getFirestore();
-    
-    const limitNum = parseInt(limit) || 20;
-    const offsetNum = parseInt(offset) || 0;
-    
+
+    const limitNum = parseInt(limit, 10) || 20;
+    const offsetNum = parseInt(offset, 10) || 0;
+
     console.log(`📋 Getting bookings for customer: ${userId}`, { status, limit: limitNum, offset: offsetNum });
-    
-    // ✅ FIXED: When no status is specified (order history), fetch completed/delivered/cancelled orders
-    // Use Firestore's 'in' operator for efficient querying with proper index
-    if (!status) {
-      // Order history: fetch all completed, delivered, and cancelled bookings
-      const completedStatuses = ['delivered', 'completed', 'cancelled', 'customer_cancelled', 'driver_cancelled'];
-      
-      // ✅ FIXED: Fetch all bookings for customer, then filter client-side
-      // This is more reliable and works with the customerId + createdAt index
-      // Fetch enough records to account for filtering (3x limit)
-      const fetchLimit = Math.max(limitNum * 3, 50);
-      
-      const query = withParcelSource(db.collection('bookings')
-        .where('customerId', '==', userId))
-        .orderBy('createdAt', 'desc')
-        .limit(fetchLimit);
-      
-      const snapshot = await query.get();
-      const allBookings = [];
-      
-      snapshot.forEach(doc => {
-        const data = doc.data();
-        allBookings.push({
-          id: doc.id,
-          ...data,
-          createdAt: data.createdAt?.toDate?.() || data.createdAt,
-          updatedAt: data.updatedAt?.toDate?.() || data.updatedAt,
-          completedAt: data.completedAt?.toDate?.() || data.completedAt || 
-                       data.deliveredAt?.toDate?.() || data.deliveredAt || 
-                       data.cancelledAt?.toDate?.() || data.cancelledAt ||
-                       data.updatedAt?.toDate?.() || data.updatedAt
-        });
-      });
-      
-      // ✅ FIXED: Filter for completed/delivered/cancelled orders only
-      const filteredBookings = allBookings.filter(b => {
-        const bookingStatus = (b.status || '').toLowerCase();
-        return completedStatuses.some(status => bookingStatus === status.toLowerCase());
-      });
-      
-      // ✅ FIXED: Sort by completion date (most recent first)
-      filteredBookings.sort((a, b) => {
-        const dateA = a.completedAt ? new Date(a.completedAt).getTime() : new Date(a.createdAt).getTime();
-        const dateB = b.completedAt ? new Date(b.completedAt).getTime() : new Date(b.createdAt).getTime();
-        return dateB - dateA;
-      });
-      
-      // ✅ FIXED: Apply pagination after filtering
-      const totalCount = filteredBookings.length;
-      const paginatedBookings = filteredBookings.slice(offsetNum, offsetNum + limitNum);
-      
-      console.log(`✅ Retrieved ${paginatedBookings.length} bookings for customer: ${userId}`, {
-        statuses: [...new Set(paginatedBookings.map(b => b.status))],
-        totalFetched: allBookings.length,
-        totalFiltered: totalCount,
-        totalReturned: paginatedBookings.length,
-        offset: offsetNum,
-        limit: limitNum
-      });
-      
-      return res.json({
-        success: true,
-        data: paginatedBookings,
-        pagination: {
-          limit: limitNum,
-          offset: offsetNum,
-          total: totalCount,
-          hasMore: (offsetNum + paginatedBookings.length) < totalCount
-        }
-      });
-    }
-    
-    // ✅ FIXED: Handle specific status queries (for backward compatibility)
-    const query = withParcelSource(db.collection('bookings')
-      .where('customerId', '==', userId)
-      .where('status', '==', status))
-      .orderBy('createdAt', 'desc');
-    
-    // ✅ FIXED: Use cursor-based pagination instead of offset for better performance
-    // For now, use limit + offset but with proper error handling
-    const snapshot = await query.limit(limitNum + offsetNum).get();
-    
-    const allBookings = [];
-    snapshot.forEach(doc => {
-      const data = doc.data();
-      allBookings.push({
-        id: doc.id,
-        ...data,
-        createdAt: data.createdAt?.toDate?.() || data.createdAt,
-        updatedAt: data.updatedAt?.toDate?.() || data.updatedAt,
-        completedAt: data.completedAt?.toDate?.() || data.completedAt || 
-                     data.deliveredAt?.toDate?.() || data.deliveredAt || 
-                     data.updatedAt?.toDate?.() || data.updatedAt
-      });
+
+    const { data, pagination } = await listCustomerParcelBookings(db, userId, {
+      status,
+      limit: limitNum,
+      offset: offsetNum
     });
-    
-    // Apply offset manually after fetching
-    const paginatedBookings = allBookings.slice(offsetNum, offsetNum + limitNum);
-    
-    console.log(`✅ Retrieved ${paginatedBookings.length} bookings for customer: ${userId}`, {
-      status: status,
-      totalFetched: allBookings.length,
-      totalReturned: paginatedBookings.length,
+    const presented = data.map((row) => presentCustomerParcelBookingHistory(row));
+
+    console.log(`✅ Retrieved ${presented.length} bookings for customer: ${userId}`, {
+      status: status || 'history',
+      totalReturned: presented.length,
       offset: offsetNum,
       limit: limitNum
     });
-    
-    res.json({
+
+    return res.json({
       success: true,
-      data: paginatedBookings,
-      pagination: {
-        limit: limitNum,
-        offset: offsetNum,
-        total: allBookings.length,
-        hasMore: (offsetNum + paginatedBookings.length) < allBookings.length
-      }
+      data: presented,
+      pagination
     });
-    
   } catch (error) {
     console.error('❌ Error getting customer bookings:', error);
     

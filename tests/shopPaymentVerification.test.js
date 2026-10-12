@@ -147,7 +147,13 @@ jest.mock('../src/services/notificationService', () => ({
   sendToUser: (...args) => mockSendToUser(...args)
 }));
 
-const { isPastPaymentGrace, isShortBalanceExpired, resolvePaymentReview } = require('../src/services/marketplace/shopPaymentVerification');
+const {
+  isPastPaymentGrace,
+  isShortBalanceExpired,
+  resolvePaymentReview,
+  answerPaidCheck,
+  resolvePaidCheckSupport
+} = require('../src/services/marketplace/shopPaymentVerification');
 const { recordFoundRefund } = require('../src/services/marketplace/refunds');
 const { NotificationTemplateProcessor } = require('../src/services/notificationTemplates');
 const { presentCustomerOrder } = require('../src/services/marketplace/customerOrderView');
@@ -1433,6 +1439,55 @@ describe('shop payment verification', () => {
     })).rejects.toMatchObject({ status: 409 });
     expect(mockDocs.get('marketplaceOrders/order-picked').orderStatus).toBe('ready');
     expect(mockDocs.get('bookings/book-picked').status).toBe('picked_up');
+  });
+
+  function seedPaidCheckOrder(orderId, overrides = {}) {
+    mockDocs.set(`marketplaceOrders/${orderId}`, {
+      customerId: 'cust-1',
+      shopId: 'shop-1',
+      displayId: 1001,
+      orderStatus: 'cancelled',
+      expectedAmount: 500,
+      expectedAmountPaise: 50000,
+      items: [{ name: 'Item', qty: 1, price: 500 }],
+      cancellation: {
+        reason: 'customer_cancel',
+        paidCheck: 'pending'
+      },
+      payment: {
+        status: 'confirmed',
+        customerUtr: UTR
+      },
+      ...overrides
+    });
+    mockDocs.set('appSettings/marketplace', {});
+  }
+
+  test('answerPaidCheck received=true stores payment.receivedAmount in the same transaction', async () => {
+    seedPaidCheckOrder('paid-shop');
+    await answerPaidCheck({
+      shopId: 'shop-1',
+      orderId: 'paid-shop',
+      body: { received: true, utrLast4: UTR.slice(-4) }
+    });
+    const stored = mockDocs.get('marketplaceOrders/paid-shop');
+    expect(stored.payment.receivedAmount).toBe(500);
+    expect(stored.payment.receivedAmountPaise).toBe(50000);
+    expect(stored.cancellation.paidCheck).toBe('received');
+  });
+
+  test('resolvePaidCheckSupport received=true stores payment.receivedAmount', async () => {
+    seedPaidCheckOrder('paid-support');
+    await resolvePaidCheckSupport({
+      orderId: 'paid-support',
+      received: true,
+      operator: 'ops-1',
+      body: { utrLast4: UTR.slice(-4) }
+    });
+    const stored = mockDocs.get('marketplaceOrders/paid-support');
+    expect(stored.payment.receivedAmount).toBe(500);
+    expect(stored.payment.receivedAmountPaise).toBe(50000);
+    expect(stored.cancellation.paidCheck).toBe('received');
   });
 
   test('order_cancelled and customer_cancelled data payloads are the five ids', () => {

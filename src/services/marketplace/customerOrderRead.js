@@ -6,9 +6,17 @@ const {
 const { presentCustomerOrder, presentCustomerOrderSummary } = require('./customerOrderView');
 const { loadRefundDocs } = require('./refunds');
 const { loadHelpTicketForOrder } = require('./helpRequests');
-const { httpError, paymentDetailsFromStored } = require('./createCustomerOrder');
+const { httpError } = require('./httpError');
+const { paymentDetailsFromStored } = require('./createCustomerOrder');
 
-const PAYMENT_DETAILS_STATUSES = ['awaiting_payment'];
+function paymentDetailsAllowed(data) {
+  const source = data && typeof data === 'object' ? data : {};
+  if (source.orderStatus === 'awaiting_payment') {
+    return true;
+  }
+  const payment = source.payment && typeof source.payment === 'object' ? source.payment : {};
+  return payment.status === 'short';
+}
 
 function encodeCursor(createdAt, id) {
   return Buffer.from(JSON.stringify({ createdAt, id }), 'utf8').toString('base64url');
@@ -102,16 +110,32 @@ async function getCustomerOrder(db, customerId, orderId) {
     help
   });
   const body = { order };
-  if (PAYMENT_DETAILS_STATUSES.includes(order.orderStatus)) {
+  if (paymentDetailsAllowed(data)) {
     body.paymentDetails = paymentDetailsFromStored(data);
   }
   return body;
 }
 
+async function getCustomerPaymentDetails(db, customerId, orderId) {
+  const snapshot = await db.collection('marketplaceOrders').doc(orderId).get();
+  if (!snapshot.exists) {
+    throw httpError(404, 'ORDER_NOT_FOUND', 'Order not found');
+  }
+  const data = snapshot.data() || {};
+  if (data.customerId !== customerId) {
+    throw httpError(404, 'ORDER_NOT_FOUND', 'Order not found');
+  }
+  if (!paymentDetailsAllowed(data)) {
+    throw httpError(409, 'INVALID_STATE', 'Payment details are not available for this order');
+  }
+  return paymentDetailsFromStored(data);
+}
+
 module.exports = {
-  PAYMENT_DETAILS_STATUSES,
+  paymentDetailsAllowed,
   encodeCursor,
   decodeCursor,
   listCustomerOrders,
-  getCustomerOrder
+  getCustomerOrder,
+  getCustomerPaymentDetails
 };

@@ -2703,76 +2703,20 @@ router.get('/invoice/:bookingId', authenticateToken, async (req, res) => {
     const format = req.query.format || 'json';
     
     if (format === 'pdf') {
-      // Generate PDF invoice (requires pdfkit or similar library)
       try {
         const PDFDocument = require('pdfkit');
+        const { parcelFilename, pipeParcelDeliveryReceipt } = require('../services/receiptService');
         const doc = new PDFDocument();
-        
-        // Set response headers for PDF download
+        const parcelDisplayId = bookingData.displayId != null ? bookingData.displayId : null;
         res.setHeader('Content-Type', 'application/pdf');
-        res.setHeader('Content-Disposition', `attachment; filename="invoice-${invoiceData.invoiceId}.pdf"`);
-        
-        // Pipe PDF to response
+        res.setHeader('Content-Disposition', `attachment; filename="${parcelFilename(parcelDisplayId)}"`);
         doc.pipe(res);
-        
-        // Add invoice content to PDF
-        doc.fontSize(20).text('EPickup Invoice', 50, 50);
-        doc.fontSize(12).text(`Invoice ID: ${invoiceData.invoiceId}`, 50, 80);
-        doc.text(`Date: ${new Date(invoiceData.invoiceDate).toLocaleDateString()}`, 50, 100);
-        doc.text(`Booking ID: ${invoiceData.bookingId}`, 50, 120);
-        
-        // Customer details
-        doc.text('Customer Details:', 50, 160);
-        doc.text(`Name: ${invoiceData.customer.name}`, 70, 180);
-        doc.text(`Phone: ${invoiceData.customer.phone}`, 70, 200);
-        doc.text(`Email: ${invoiceData.customer.email}`, 70, 220);
-        
-        // Driver details
-        if (invoiceData.driver) {
-          doc.text('Driver Details:', 50, 260);
-          doc.text(`Name: ${invoiceData.driver.name}`, 70, 280);
-          doc.text(`Phone: ${invoiceData.driver.phone}`, 70, 300);
-          doc.text(`Vehicle: ${invoiceData.driver.vehicleNumber}`, 70, 320);
-        }
-        
-        // Pickup details
-        doc.text('Pickup Details:', 50, 360);
-        doc.text(`Address: ${invoiceData.pickup.address}`, 70, 380);
-        doc.text(`Sender: ${invoiceData.pickup.name}`, 70, 400);
-        // Phone removed - sender phone not displayed
-        
-        // Dropoff details
-        doc.text('Dropoff Details:', 50, 440);
-        doc.text(`Address: ${invoiceData.dropoff.address}`, 70, 460);
-        doc.text(`Contact: ${invoiceData.dropoff.name} (${invoiceData.dropoff.phone})`, 70, 480);
-        
-        // Package details
-        doc.text('Package Details:', 50, 520);
-        doc.text(`Weight: ${invoiceData.package.weight} kg`, 70, 540);
-        doc.text(`Description: ${invoiceData.package.description}`, 70, 560);
-        
-        // Fare breakdown
-        doc.text('Fare Breakdown:', 50, 600);
-        doc.text(`Base Fare: ₹${invoiceData.fare.baseFare}`, 70, 620);
-        doc.text(`Distance Fare: ₹${invoiceData.fare.distanceFare}`, 70, 640);
-        doc.fontSize(14).text(`Total: ₹${invoiceData.fare.totalFare}`, 70, 670);
-        
-        // Payment details
-        doc.fontSize(12).text('Payment Details:', 50, 710);
-        doc.text(`Method: ${invoiceData.paymentMethod}`, 70, 730);
-        doc.text(`Status: ${invoiceData.paymentStatus}`, 70, 750);
-        
-        // Footer
-        doc.text('Thank you for using EPickup!', 50, 790);
-        
+        pipeParcelDeliveryReceipt(doc, invoiceData, parcelDisplayId);
         doc.end();
-        
-        console.log(`✅ Generated PDF invoice ${invoiceData.invoiceId} for booking ${bookingId}`);
+        console.log(`✅ Generated parcel receipt PDF for booking ${bookingId}`);
         return;
-        
       } catch (error) {
         console.error('❌ Error generating PDF invoice:', error);
-        // Fallback to JSON if PDF generation fails
       }
     }
     
@@ -2848,6 +2792,43 @@ router.post('/cancel-active-booking', [
         details: error.message
       },
       timestamp: new Date().toISOString()
+    });
+  }
+});
+
+const {
+  readMarketplaceProfile,
+  updateMarketplaceProfile
+} = require('../services/marketplace/customerMarketplaceProfile');
+
+router.get('/profile/marketplace', authenticateToken, async (req, res) => {
+  try {
+    const data = await readMarketplaceProfile(req.user.uid);
+    return res.json({ success: true, data });
+  } catch (error) {
+    const status = error.status || 500;
+    return res.status(status).json({
+      success: false,
+      error: {
+        code: error.code || 'INTERNAL_ERROR',
+        message: status === 500 ? 'Failed to load marketplace profile' : error.message
+      }
+    });
+  }
+});
+
+router.put('/profile/marketplace', authenticateToken, async (req, res) => {
+  try {
+    const data = await updateMarketplaceProfile(req.user.uid, req.body || {});
+    return res.json({ success: true, data });
+  } catch (error) {
+    const status = error.status || 500;
+    return res.status(status).json({
+      success: false,
+      error: {
+        code: error.code || 'INTERNAL_ERROR',
+        message: status === 500 ? 'Failed to update marketplace profile' : error.message
+      }
     });
   }
 });

@@ -1,4 +1,4 @@
-const { httpError } = require('./createCustomerOrder');
+const { httpError } = require('./httpError');
 
 const LIVE_STAGES = new Set(['assigned', 'at_shop', 'picked_up', 'on_the_way']);
 const FRESH_MS = 60 * 1000;

@@ -1034,6 +1034,108 @@ async function answerPaidCheck({ shopId, orderId, body, nowMs }) {
   });
 }
 
+async function resolvePaidCheckSupport({ orderId, received, operator, body, nowMs }) {
+  if (typeof received !== 'boolean') {
+    throw httpError(400, 'VALIDATION', 'received must be true or false');
+  }
+  const operatorId = typeof operator === 'string' ? operator.trim() : '';
+  if (!operatorId) {
+    throw httpError(400, 'VALIDATION', 'operator is required');
+  }
+  const payload = body && typeof body === 'object' ? body : {};
+  const now = Number.isFinite(nowMs) ? nowMs : Date.now();
+  const db = getFirestore();
+  const orderRef = db.collection('marketplaceOrders').doc(orderId);
+  const actor = { type: 'support', id: operatorId };
+  return db.runTransaction(async (tx) => {
+    const orderSnap = await tx.get(orderRef);
+    if (!orderSnap.exists) {
+      throw httpError(404, 'ORDER_NOT_FOUND', 'Order not found');
+    }
+    const data = orderSnap.data() || {};
+    const cancellation = data.cancellation || {};
+    const eligible = data.orderStatus === 'cancelled'
+      && cancellation.reason === 'customer_cancel'
+      && (cancellation.paidCheck === 'pending'
+        || cancellation.paidCheck === 'received'
+        || cancellation.paidCheck === 'not_received');
+    if (!eligible) {
+      throw httpError(409, 'INVALID_STATE', 'This order is not waiting for a paid check');
+    }
+    const answer = paidCheckAnswer(data, received);
+    if (answer === 'same') {
+      return { alreadyProcessed: true, customerId: data.customerId || null, notifies: [] };
+    }
+    if (answer === 'different') {
+      throw httpError(409, 'ALREADY_ANSWERED', 'This paid check was already answered');
+    }
+
+    const at = Timestamp.fromMillis(now);
+    if (received === false) {
+      tx.update(orderRef, {
+        'cancellation.paidCheck': 'not_received',
+        'cancellation.paidCheckAt': at
+      });
+      appendEvent(tx, orderRef, {
+        type: 'paid_check',
+        actor,
+        data: { received: false }
+      }, data.customerId);
+      return { alreadyProcessed: false, customerId: data.customerId || null, notifies: [] };
+    }
+
+    const payment = data.payment || {};
+    const matched = matchOfficialUtr(payment, payload);
+    const registryRef = db.collection('utrRegistry').doc(matched.officialUtr);
+    const registrySnap = await tx.get(registryRef);
+    assertRegistryAvailable(registrySnap, orderId);
+    const alreadyRefund = await hasReason(tx, orderRef, 'customer_cancel');
+    const amount = payment.receivedAmount != null
+      ? payment.receivedAmount
+      : (data.expectedAmount != null ? data.expectedAmount : null);
+    tx.update(orderRef, {
+      'cancellation.paidCheck': 'received',
+      'cancellation.paidCheckAt': at,
+      'payment.status': 'refund_pending',
+      'payment.officialUtr': matched.officialUtr,
+      'payment.utrSource': matched.utrSource
+    });
+    if (!alreadyRefund) {
+      createRefund(tx, {
+        orderRef,
+        data,
+        reason: 'customer_cancel',
+        amount,
+        items: data.items,
+        actor,
+        resultingOrderStatus: 'cancelled'
+      });
+    }
+    writeRegistry(tx, registrySnap, registryRef, {
+      orderId,
+      customerId: data.customerId,
+      kind: matched.utrSource === 'shop' ? 'shop' : 'customer',
+      at
+    });
+    appendEvent(tx, orderRef, {
+      type: 'paid_check',
+      actor,
+      data: { received: true, officialUtr: matched.officialUtr }
+    }, data.customerId);
+    return {
+      alreadyProcessed: false,
+      customerId: data.customerId || null,
+      notifies: [{
+        type: 'REFUND_INITIATED',
+        variables: {
+          ...displayVariables(data, orderId),
+          amount
+        }
+      }]
+    };
+  });
+}
+
 async function confirmShortBalance(tx, context) {
   const { db, orderRef, shopId, orderId, data, payment, body, now } = context;
   const balance = payment.balance && typeof payment.balance === 'object' ? payment.balance : {};
@@ -1653,6 +1755,7 @@ module.exports = {
   reportPaymentNotFound,
   resolvePaymentReview,
   answerPaidCheck,
+  resolvePaidCheckSupport,
   isShortBalanceExpired,
   assertReceivedAmountShape,
   shopCancelAllowed,

@@ -14,6 +14,8 @@ const { submitCustomerUpi, acknowledgeRefund } = require('../services/marketplac
 const { submitOrderRating } = require('../services/marketplace/submitOrderRating');
 const { uploadHelpEvidence } = require('../services/marketplace/helpEvidence');
 const { submitMarketplaceHelp } = require('../services/marketplace/helpRequests');
+const { streamShopOrderReceipt } = require('../services/marketplace/shopOrderReceipt');
+const { getCustomerPaymentDetails } = require('../services/marketplace/customerOrderRead');
 
 const evidenceUpload = multer({
   storage: multer.memoryStorage(),
@@ -39,6 +41,16 @@ const detailLimiter = userRateLimiter({
   windowMs: 60 * 1000,
   max: 120,
   name: 'marketplace-order-detail-minute'
+});
+const receiptLimiter = userRateLimiter({
+  windowMs: 60 * 1000,
+  max: 30,
+  name: 'marketplace-order-receipt-minute'
+});
+const paymentDetailsLimiter = userRateLimiter({
+  windowMs: 60 * 1000,
+  max: 60,
+  name: 'marketplace-order-payment-details-minute'
 });
 const utrLimiter = userRateLimiter({
   windowMs: 60 * 1000,
@@ -404,6 +416,39 @@ router.get(
       return res.json({ success: true, data });
     } catch (error) {
       return sendError(res, error, 'Failed to load marketplace order');
+    }
+  }
+);
+
+router.get(
+  '/marketplace-orders/:id/payment-details',
+  authenticateToken,
+  requireRole(['customer']),
+  paymentDetailsLimiter,
+  async (req, res) => {
+    try {
+      const data = await getCustomerPaymentDetails(getFirestore(), req.user.uid, req.params.id);
+      return res.json({ success: true, data });
+    } catch (error) {
+      return sendError(res, error, 'Failed to load payment details');
+    }
+  }
+);
+
+router.get(
+  '/marketplace-orders/:id/receipt',
+  authenticateToken,
+  requireRole(['customer']),
+  receiptLimiter,
+  async (req, res) => {
+    try {
+      await streamShopOrderReceipt(res, req.user.uid, req.params.id);
+      return undefined;
+    } catch (error) {
+      if (!res.headersSent) {
+        return sendError(res, error, 'Failed to generate receipt');
+      }
+      return undefined;
     }
   }
 );

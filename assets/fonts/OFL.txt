@@ -1,0 +1,4 @@
+Noto Sans is licensed under the SIL Open Font License, Version 1.1.
+See https://scripts.sil.org/OFL
+
+Font file: NotoSans-Regular.ttf (Google Noto Fonts project).

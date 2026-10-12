@@ -821,6 +821,41 @@ async function main() {
     return;
   }
 
+  if (process.argv.includes('--payment-details')) {
+    const orderId = argValue('--order');
+    if (!orderId) {
+      console.error('--payment-details needs --order <id>. Nothing was written.');
+      process.exit(1);
+    }
+    const { getCustomerPaymentDetails } = require('../../src/services/marketplace/customerOrderRead');
+    try {
+      const details = await getCustomerPaymentDetails(db, customerId, orderId);
+      console.log(JSON.stringify({ paymentDetails: details }, null, 2));
+    } catch (error) {
+      console.error(error.message || error);
+      process.exit(1);
+    }
+    return;
+  }
+
+  if (process.argv.includes('--receipt')) {
+    const orderId = argValue('--order');
+    const outPath = argValue('--receipt');
+    if (!orderId || !outPath) {
+      console.error('--receipt <path> needs --order <id>. Nothing was written.');
+      process.exit(1);
+    }
+    const { writeShopOrderReceiptToFile } = require('../../src/services/marketplace/shopOrderReceipt');
+    try {
+      const result = await writeShopOrderReceiptToFile(outPath, customerId, orderId);
+      console.log(JSON.stringify({ wrote: true, path: outPath, ...result }, null, 2));
+    } catch (error) {
+      console.error(error.message || error);
+      process.exit(1);
+    }
+    return;
+  }
+
   if (process.argv.includes('--mark-ready')) {
     const orderId = argValue('--order');
     const notifyDrivers = markReadyNotifiesDrivers(process.argv);

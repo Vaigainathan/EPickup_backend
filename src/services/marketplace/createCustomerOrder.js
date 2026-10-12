@@ -7,18 +7,10 @@ const { presentCustomerOrder, copyWindow } = require('./customerOrderView');
 const { appendEvent } = require('./orderEvents');
 const { isPoolEnabled, allocateInTransaction } = require('../orderNumberPool');
 const displayIdService = require('../displayIdService');
+const { assertMarketplaceProfileNotRestricted } = require('./customerMarketplaceRestriction');
+const { httpError } = require('./httpError');
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-
-function httpError(status, code, message, extra) {
-  const error = new Error(message);
-  error.status = status;
-  error.code = code;
-  if (extra) {
-    Object.assign(error, extra);
-  }
-  return error;
-}
 
 function rupeesFromPaise(paise) {
   if (!Number.isInteger(paise)) {
@@ -339,9 +331,7 @@ async function createMarketplaceOrder({ customerId, idempotencyKey, body }) {
     const marketplaceProfile = customerData.customer && customerData.customer.marketplace
       ? customerData.customer.marketplace
       : {};
-    if (marketplaceProfile.restriction && marketplaceProfile.restriction.active === true) {
-      throw httpError(403, 'ACCOUNT_RESTRICTED', 'This account cannot place marketplace orders');
-    }
+    assertMarketplaceProfileNotRestricted(marketplaceProfile);
 
     const limits = readLimits(settingsSnap.exists ? settingsSnap.data() : null);
     const unpaidCount = Number(marketplaceProfile.unpaidCount) || 0;

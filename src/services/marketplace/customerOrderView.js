@@ -134,11 +134,55 @@ function balanceUtrSubmitted(payment) {
   return typeof utr === 'string' && utr.trim() !== '';
 }
 
+const DELIVERY_STAGE_TIME_KEYS = ['assigned', 'at_shop', 'picked_up', 'on_the_way', 'delivered'];
+
 function deliveredAtIso(source) {
   const delivery = source && source.delivery && typeof source.delivery === 'object'
     ? source.delivery
     : null;
   return delivery ? toIso(delivery.deliveredAt) : null;
+}
+
+function presentDeliveryStageTimes(delivery) {
+  const stageTimes = delivery && delivery.stageTimes && typeof delivery.stageTimes === 'object'
+    ? delivery.stageTimes
+    : {};
+  const out = {};
+  DELIVERY_STAGE_TIME_KEYS.forEach((key) => {
+    out[key] = toIso(stageTimes[key]);
+  });
+  return out;
+}
+
+function presentCustomerDriverInfo(raw) {
+  if (!raw || typeof raw !== 'object') {
+    return null;
+  }
+  const name = typeof raw.name === 'string' && raw.name.trim() !== '' ? raw.name : null;
+  const phone = typeof raw.phone === 'string' && raw.phone.trim() !== '' ? raw.phone : null;
+  const vehicle = typeof raw.vehicle === 'string' && raw.vehicle.trim() !== ''
+    ? raw.vehicle
+    : (typeof raw.vehicleNumber === 'string' && raw.vehicleNumber.trim() !== ''
+      ? raw.vehicleNumber
+      : null);
+  if (!name && !phone && !vehicle) {
+    return null;
+  }
+  return { name, vehicle, phone };
+}
+
+function presentShopSnapshot(snapshot) {
+  if (!snapshot || typeof snapshot !== 'object') {
+    return null;
+  }
+  const rawAddress = snapshot.address;
+  const address = typeof rawAddress === 'string' ? rawAddress.trim() : '';
+  return {
+    name: snapshot.name ?? null,
+    category: snapshot.category ?? null,
+    phone: snapshot.phone ?? null,
+    address: address === '' ? null : address
+  };
 }
 
 function presentCustomerReview(review) {
@@ -172,13 +216,17 @@ function presentCustomerOrder(order) {
     readyAt: toIso(source.readyAt),
     delivery: {
       stage: source.delivery && typeof source.delivery.stage === 'string' ? source.delivery.stage : null,
-      fare: source.delivery && typeof source.delivery.fare === 'number' ? source.delivery.fare : null
+      fare: source.delivery && typeof source.delivery.fare === 'number' ? source.delivery.fare : null,
+      deliveredAt: source.delivery && source.delivery.deliveredAt != null
+        ? toIso(source.delivery.deliveredAt)
+        : null,
+      stageTimes: presentDeliveryStageTimes(source.delivery)
     },
     deliveryAddress: source.deliveryAddress ?? null,
     window: copyWindow(source.window),
     verifiedPayeeName: source.verifiedPayeeName ?? null,
     policyGroup: source.policyGroup ?? null,
-    shopSnapshot: source.shopSnapshot ?? null,
+    shopSnapshot: presentShopSnapshot(source.shopSnapshot),
     notes: {
       customerNote: source.customerNote ?? null,
       riderNotes: source.riderNotes ?? null,
@@ -187,7 +235,7 @@ function presentCustomerOrder(order) {
     orderStatus: source.orderStatus ?? null,
     displayId: source.displayId ?? null,
     linkedBookingId: source.linkedBookingId ?? null,
-    driverInfo: source.driverInfo ?? null,
+    driverInfo: presentCustomerDriverInfo(source.driverInfo),
     payment: {
       ...copyPayment(source.payment),
       balance: copyBalance(source.payment)
@@ -243,7 +291,11 @@ function presentCustomerOrderSummary(order) {
 
 module.exports = {
   copyWindow,
+  DELIVERY_STAGE_TIME_KEYS,
   presentCustomerOrder,
   presentCustomerOrderSummary,
+  presentCustomerDriverInfo,
+  presentShopSnapshot,
+  presentDeliveryStageTimes,
   deriveCustomerRefundAction
 };

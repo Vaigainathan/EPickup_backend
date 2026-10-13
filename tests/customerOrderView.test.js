@@ -1,7 +1,11 @@
 const {
   presentCustomerOrder,
-  presentCustomerOrderSummary
+  presentCustomerOrderSummary,
+  presentCustomerDriverInfo,
+  presentShopSnapshot,
+  DELIVERY_STAGE_TIME_KEYS
 } = require('../src/services/marketplace/customerOrderView');
+const { shopSnapshotAddress } = require('../src/services/marketplace/createCustomerOrder');
 
 describe('presentCustomerOrder', () => {
   test('handover OTP and private data never appear', () => {
@@ -88,6 +92,80 @@ describe('presentCustomerOrder', () => {
     expect(view.payment.officialUtr).toBe('123456789012');
   });
 
+  test('delivery stageTimes, deliveredAt, readyAt, and payment.confirmedAt are exposed', () => {
+    const view = presentCustomerOrder({
+      id: 'ord-track',
+      readyAt: '2026-10-10T10:00:00.000Z',
+      delivery: {
+        stage: 'on_the_way',
+        fare: 45,
+        deliveredAt: '2026-10-10T11:30:00.000Z',
+        stageTimes: {
+          assigned: '2026-10-10T10:05:00.000Z',
+          at_shop: '2026-10-10T10:20:00.000Z'
+        }
+      },
+      payment: {
+        status: 'confirmed',
+        confirmedAt: '2026-10-10T09:00:00.000Z'
+      }
+    });
+    expect(view.readyAt).toBe('2026-10-10T10:00:00.000Z');
+    expect(view.payment.confirmedAt).toBe('2026-10-10T09:00:00.000Z');
+    expect(view.delivery.deliveredAt).toBe('2026-10-10T11:30:00.000Z');
+    expect(view.delivery.stageTimes).toEqual({
+      assigned: '2026-10-10T10:05:00.000Z',
+      at_shop: '2026-10-10T10:20:00.000Z',
+      picked_up: null,
+      on_the_way: null,
+      delivered: null
+    });
+    DELIVERY_STAGE_TIME_KEYS.forEach((key) => {
+      expect(view.delivery.stageTimes).toHaveProperty(key);
+    });
+  });
+
+  test('driverInfo is shaped to name, vehicle, phone only', () => {
+    expect(presentCustomerDriverInfo({
+      id: 'drv-1',
+      name: 'Ravi',
+      phone: '9000000001',
+      vehicleNumber: 'TN 09 AB 1234',
+      rating: 4.9
+    })).toEqual({
+      name: 'Ravi',
+      vehicle: 'TN 09 AB 1234',
+      phone: '9000000001'
+    });
+    const view = presentCustomerOrder({
+      id: 'ord-driver',
+      driverInfo: { id: 'drv-1', name: 'Ravi', phone: '1', vehicle: 'TN01', extra: true }
+    });
+    expect(view.driverInfo).toEqual({ name: 'Ravi', vehicle: 'TN01', phone: '1' });
+    expect(JSON.stringify(view)).not.toContain('drv-1');
+    expect(presentCustomerDriverInfo({ id: 'only' })).toBeNull();
+  });
+
+  test('shopSnapshot includes address when stored; older snapshots omit address as null', () => {
+    expect(presentShopSnapshot({
+      name: 'Shop',
+      category: 'Food',
+      phone: '1',
+      address: ' 12 Main St  '
+    })).toEqual({
+      name: 'Shop',
+      category: 'Food',
+      phone: '1',
+      address: '12 Main St'
+    });
+    expect(presentShopSnapshot({ name: 'Legacy Shop', phone: '9' }).address).toBeNull();
+    const view = presentCustomerOrder({
+      id: 'ord-snap',
+      shopSnapshot: { name: 'Legacy Shop' }
+    });
+    expect(view.shopSnapshot.address).toBeNull();
+  });
+
   test('review shows status, openedAt, and outcome.result only', () => {
     const view = presentCustomerOrder({
       id: 'ord-3',
@@ -110,6 +188,14 @@ describe('presentCustomerOrder', () => {
     expect(JSON.stringify(view.review)).not.toContain('shop_not_found');
     expect(JSON.stringify(view.review)).not.toContain('not_found');
     expect(JSON.stringify(view.review)).not.toContain('secret');
+  });
+});
+
+describe('shopSnapshotAddress at order create', () => {
+  test('reads shops profile address field', () => {
+    expect(shopSnapshotAddress({ address: ' 42 Bazaar Road ' })).toBe('42 Bazaar Road');
+    expect(shopSnapshotAddress({ address: '' })).toBeNull();
+    expect(shopSnapshotAddress({})).toBeNull();
   });
 });
 

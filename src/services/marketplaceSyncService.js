@@ -5,6 +5,8 @@ const notificationService = require('./notificationService');
 const { marketplacePushVariables } = require('./marketplace/marketplacePush');
 
 const STAGE_ORDER = ['searching', 'assigned', 'at_shop', 'picked_up', 'on_the_way', 'delivered'];
+const STAGE_TIMES_TRACKED = ['assigned', 'at_shop', 'picked_up', 'on_the_way', 'delivered'];
+const STAGE_TIMES_TRACKED_SET = new Set(STAGE_TIMES_TRACKED);
 const BELOW_PICKUP = new Set(['searching', 'assigned', 'at_shop']);
 const PUSH_BY_STAGE = {
   assigned: 'ORDER_ASSIGNED',
@@ -202,6 +204,45 @@ function planDeliverySync(order, booking) {
   return plan;
 }
 
+function stageTimeStored(order, stage) {
+  const delivery = order.delivery && typeof order.delivery === 'object' ? order.delivery : {};
+  const stageTimes = delivery.stageTimes && typeof delivery.stageTimes === 'object' ? delivery.stageTimes : {};
+  return stageTimes[stage] != null;
+}
+
+function buildMarketplaceSyncOrderUpdates(order, plan) {
+  const updates = {};
+  const stageNow = currentStageOf(order);
+  if (plan.stage && plan.stage !== stageNow) {
+    updates['delivery.stage'] = plan.stage;
+    if (STAGE_TIMES_TRACKED_SET.has(plan.stage) && !stageTimeStored(order, plan.stage)) {
+      updates[`delivery.stageTimes.${plan.stage}`] = admin.firestore.FieldValue.serverTimestamp();
+    }
+  }
+  if (plan.deliveredAt) {
+    updates['delivery.deliveredAt'] = plan.deliveredAt;
+  }
+  if (plan.completedAt) {
+    updates.completedAt = plan.completedAt;
+  }
+  if (plan.clearDriverInfo) {
+    updates.driverInfo = admin.firestore.FieldValue.delete();
+  } else if (plan.driverInfo) {
+    updates.driverInfo = plan.driverInfo;
+  }
+  if (plan.fare !== undefined) {
+    updates['delivery.fare'] = plan.fare;
+    updates.deliveryFee = plan.deliveryFee;
+  }
+  if (plan.orderStatus) {
+    updates.orderStatus = plan.orderStatus;
+  }
+  if (Object.keys(updates).length > 0) {
+    updates.updatedAt = admin.firestore.FieldValue.serverTimestamp();
+  }
+  return updates;
+}
+
 function planWrites(plan, order) {
   if (!plan) {
     return false;
@@ -292,31 +333,8 @@ class MarketplaceSyncService {
         return { wrote: false, plan, order, orderId: orderSnap.id };
       }
 
-      const updates = {};
-      const stageNow = currentStageOf(order);
-      if (plan.stage && plan.stage !== stageNow) {
-        updates['delivery.stage'] = plan.stage;
-      }
-      if (plan.deliveredAt) {
-        updates['delivery.deliveredAt'] = plan.deliveredAt;
-      }
-      if (plan.completedAt) {
-        updates.completedAt = plan.completedAt;
-      }
-      if (plan.clearDriverInfo) {
-        updates.driverInfo = admin.firestore.FieldValue.delete();
-      } else if (plan.driverInfo) {
-        updates.driverInfo = plan.driverInfo;
-      }
-      if (plan.fare !== undefined) {
-        updates['delivery.fare'] = plan.fare;
-        updates.deliveryFee = plan.deliveryFee;
-      }
-      if (plan.orderStatus) {
-        updates.orderStatus = plan.orderStatus;
-      }
+      const updates = buildMarketplaceSyncOrderUpdates(order, plan);
       if (Object.keys(updates).length > 0) {
-        updates.updatedAt = admin.firestore.FieldValue.serverTimestamp();
         transaction.update(orderRef, updates);
       }
       if (plan.complete && order.shopId) {
@@ -399,5 +417,8 @@ marketplaceSyncService.planDeliverySync = planDeliverySync;
 marketplaceSyncService.STATUS_TO_STAGE = STATUS_TO_STAGE;
 marketplaceSyncService.planWrites = planWrites;
 marketplaceSyncService.deliveryTimestampFromBooking = deliveryTimestampFromBooking;
+marketplaceSyncService.buildMarketplaceSyncOrderUpdates = buildMarketplaceSyncOrderUpdates;
+marketplaceSyncService.stageTimeStored = stageTimeStored;
+marketplaceSyncService.STAGE_TIMES_TRACKED = STAGE_TIMES_TRACKED;
 
 module.exports = marketplaceSyncService;

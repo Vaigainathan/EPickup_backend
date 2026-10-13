@@ -223,6 +223,15 @@ function addressText(address) {
   return found ? found.trim() : '';
 }
 
+function shopSnapshotAddress(shopProfile) {
+  const source = shopProfile && typeof shopProfile === 'object' ? shopProfile : {};
+  if (typeof source.address !== 'string') {
+    return null;
+  }
+  const trimmed = source.address.trim();
+  return trimmed === '' ? null : trimmed;
+}
+
 function addressCoordinates(address) {
   const coords = address.coordinates || address.location;
   const lat = coords && typeof coords.latitude === 'number'
@@ -475,7 +484,8 @@ async function createMarketplaceOrder({ customerId, idempotencyKey, body }) {
       shopSnapshot: {
         name: typeof shopIdentity.shopName === 'string' ? shopIdentity.shopName : '',
         category: typeof shopIdentity.shopType === 'string' ? shopIdentity.shopType : '',
-        phone: typeof shopUser.phone === 'string' ? shopUser.phone : null
+        phone: typeof shopUser.phone === 'string' ? shopUser.phone : null,
+        address: shopSnapshotAddress(shopProfile)
       },
       customerNote: typeof body.customerNote === 'string' ? body.customerNote : null,
       riderNotes: typeof body.riderNotes === 'string' ? body.riderNotes : null,
@@ -552,5 +562,6 @@ module.exports = {
   isShopOpenNow,
   paymentDetailsFromStored,
   successBody,
+  shopSnapshotAddress,
   createMarketplaceOrder
 };

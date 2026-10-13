@@ -10,7 +10,7 @@ const { isShortBalanceExpired } = require('./marketplace/shopPaymentVerification
 const { marketplacePushVariables, digitsDisplayId } = require('./marketplace/marketplacePush');
 
 const SETTINGS_DOC = ['appSettings', 'marketplace'];
-// short is not expireable. MP-6 owns balance dueBy via isShortBalanceExpired.
+// Balance dueBy expiry (newStatuses ON): isShortBalanceExpired — skips orders with in-time balance UTR.
 const EXPIREABLE = new Set(['pending', 'initiated']);
 const AWAITING_PAYMENT_STATUSES = new Set(['pending', 'initiated', 'customer_claimed']);
 const JOB_ACTOR = { type: 'system', id: 'payment-job' };

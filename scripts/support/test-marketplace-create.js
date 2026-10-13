@@ -23,7 +23,8 @@
  * dry run, and from the amount_short_cancel stub after --apply.
  * --confirm dry run prints utrLast4. On a short order that is the last 4 of
  * balance.utr. --full-utr sends that 12-digit value instead. --confirm --apply
- * calls confirmPayment. A short confirm needs --enforce. The confirm result
+ * calls confirmPayment (short balance uses the same path as live, without --enforce).
+ * The confirm result
  * prints officialUtrLast4 for the first payment and balanceOfficialUtrLast4
  * for the balance match.
  * --amount-differs <rupees> [--order <id>] dry run prints utrLast4 and the body and

@@ -827,8 +827,8 @@ describe('shop payment verification', () => {
     mockGetEnforcement.mockResolvedValue({ newStatuses: false, utrBlocksReject: false });
     seedOrder('order-off', { payment: { status: 'short', amount: 100 } });
     const off = await post('order-off/confirm-payment', {});
-    expect(off.status).toBe(409);
-    expect(off.body.error.code).toBe('INVALID_TRANSITION');
+    expect(off.status).toBe(400);
+    expect(off.body.error.code).toBe('FULL_UTR_REQUIRED');
     expect(mockDocs.get('marketplaceOrders/order-off').payment.status).toBe('short');
   });
 

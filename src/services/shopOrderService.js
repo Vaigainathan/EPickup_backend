@@ -546,17 +546,28 @@ class ShopOrderService {
 
   async confirmPayment(shopId, orderId, body, enforcement) {
     const flags = await resolveEnforcement(enforcement);
-    if (flags.newStatuses) {
+
+    const finishVerification = async () => {
       const outcome = await confirmShopPayment({ shopId, orderId, body });
       if (!outcome.alreadyProcessed) {
         await this.sendNotifies(outcome.customerId, outcome.notifies);
-        await this.sendShopNotifies(shopId, outcome.shopNotifies);
+        await this.sendShopNotifies(shopId, outcome.shopNotifies || []);
       }
       const fresh = await this.orders().doc(orderId).get();
       return {
         alreadyProcessed: outcome.alreadyProcessed,
         order: await this.presentOrder(fresh.id, fresh.data())
       };
+    };
+
+    if (flags.newStatuses) {
+      return finishVerification();
+    }
+
+    const pre = await this.orders().doc(orderId).get();
+    const preData = pre.exists ? (pre.data() || {}) : {};
+    if (pre.exists && preData.shopId === shopId && paymentStatus(preData) === 'short') {
+      return finishVerification();
     }
 
     const ref = this.orders().doc(orderId);

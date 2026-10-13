@@ -146,18 +146,46 @@ function balanceWindowMs(settingsData) {
   return safe * 60 * 1000;
 }
 
+function balanceUtrSubmittedInTime(payment) {
+  const balance = payment && payment.balance && typeof payment.balance === 'object'
+    ? payment.balance
+    : {};
+  const utr = balance.utr ?? balance.officialUtr;
+  if (typeof utr !== 'string' || utr.trim() === '') {
+    return false;
+  }
+  const dueMs = millisOf(balance.dueBy);
+  const submittedMs = millisOf(balance.submittedAt);
+  if (!Number.isFinite(dueMs) || !Number.isFinite(submittedMs)) {
+    return false;
+  }
+  return submittedMs <= dueMs;
+}
+
 function isShortBalanceExpired(data, nowMs) {
-  // MP-6 cancels a short order once dueBy has passed and refunds the amount received.
-  // A submitted balance UTR does not pause that expiry. Nothing calls this yet.
+  // MP-6: after dueBy, cancel/refund only when the customer never submitted a balance UTR in time.
   const payment = data && data.payment ? data.payment : {};
   if (payment.status !== 'short') {
     return false;
   }
   const dueMs = millisOf(payment.balance && payment.balance.dueBy);
-  if (!Number.isFinite(dueMs) || !Number.isFinite(nowMs)) {
+  if (!Number.isFinite(dueMs) || !Number.isFinite(nowMs) || nowMs < dueMs) {
     return false;
   }
-  return nowMs >= dueMs;
+  return !balanceUtrSubmittedInTime(payment);
+}
+
+function assertBalanceConfirmAllowed(payment, nowMs) {
+  if (balanceUtrSubmittedInTime(payment)) {
+    return;
+  }
+  const balance = payment && payment.balance && typeof payment.balance === 'object'
+    ? payment.balance
+    : {};
+  const dueMs = millisOf(balance.dueBy);
+  if (Number.isFinite(dueMs) && Number.isFinite(nowMs) && nowMs >= dueMs) {
+    throw httpError(409, 'BALANCE_WINDOW_CLOSED', 'The balance window is closed');
+  }
 }
 
 function expectedReceivedFields(data) {
@@ -1143,6 +1171,7 @@ async function resolvePaidCheckSupport({ orderId, received, operator, body, nowM
 
 async function confirmShortBalance(tx, context) {
   const { db, orderRef, shopId, orderId, data, payment, body, now } = context;
+  assertBalanceConfirmAllowed(payment, now);
   const balance = payment.balance && typeof payment.balance === 'object' ? payment.balance : {};
   const balanceUtr = balance.utr ? String(balance.utr) : '';
   const matched = matchOfficialUtr({ customerUtr: balanceUtr }, body);
@@ -1768,6 +1797,7 @@ module.exports = {
   answerPaidCheck,
   resolvePaidCheckSupport,
   isShortBalanceExpired,
+  balanceUtrSubmittedInTime,
   assertReceivedAmountShape,
   shopCancelAllowed,
   httpError

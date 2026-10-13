@@ -88,6 +88,59 @@ function presentCustomerRating(rating) {
   };
 }
 
+function refundStatusFromEntry(entry) {
+  if (!entry || typeof entry !== 'object') {
+    return null;
+  }
+  if (typeof entry.status === 'string') {
+    return entry.status;
+  }
+  if (entry.data && typeof entry.data.status === 'string') {
+    return entry.data.status;
+  }
+  return null;
+}
+
+/**
+ * Customer refund CTA for list rows. Uses order-doc fields or refunds already on `source`
+ * (detail load). List queries do not load refunds — returns null unless denormalized.
+ */
+function deriveCustomerRefundAction(source) {
+  const raw = source && typeof source === 'object' ? source : {};
+  if (raw.customerRefundAction === 'share_upi' || raw.customerRefundAction === 'confirm_received') {
+    return raw.customerRefundAction;
+  }
+  const refunds = Array.isArray(raw.refunds) ? raw.refunds : null;
+  if (!refunds || refunds.length === 0) {
+    return null;
+  }
+  const statuses = refunds.map(refundStatusFromEntry).filter(Boolean);
+  if (statuses.includes('upi_needed')) {
+    return 'share_upi';
+  }
+  if (statuses.includes('sent')) {
+    return 'confirm_received';
+  }
+  return null;
+}
+
+function balanceUtrSubmitted(payment) {
+  const source = payment && typeof payment === 'object' ? payment : {};
+  const balance = source.balance && typeof source.balance === 'object' ? source.balance : null;
+  if (!balance) {
+    return false;
+  }
+  const utr = balance.utr ?? balance.officialUtr;
+  return typeof utr === 'string' && utr.trim() !== '';
+}
+
+function deliveredAtIso(source) {
+  const delivery = source && source.delivery && typeof source.delivery === 'object'
+    ? source.delivery
+    : null;
+  return delivery ? toIso(delivery.deliveredAt) : null;
+}
+
 function presentCustomerReview(review) {
   if (!review || typeof review !== 'object') {
     return null;
@@ -159,10 +212,12 @@ function presentCustomerOrder(order) {
 }
 
 function presentCustomerOrderSummary(order) {
+  const source = order && typeof order === 'object' ? order : {};
   const view = presentCustomerOrder(order);
   const items = Array.isArray(view.items) ? view.items : [];
   const first = items[0] || null;
   const snapshot = view.shopSnapshot && typeof view.shopSnapshot === 'object' ? view.shopSnapshot : {};
+  const payment = view.payment && typeof view.payment === 'object' ? view.payment : {};
   return {
     id: view.id,
     displayId: view.displayId,
@@ -175,12 +230,20 @@ function presentCustomerOrderSummary(order) {
     createdAt: view.createdAt,
     window: view.window,
     rating: view.rating,
-    hasOpenHelp: view.hasOpenHelp === true
+    hasOpenHelp: view.hasOpenHelp === true,
+    paymentStatus: payment.status ?? null,
+    balanceSubmitted: balanceUtrSubmitted(source.payment),
+    deliveryStage: view.delivery && typeof view.delivery.stage === 'string' ? view.delivery.stage : null,
+    hasOpenRefund: view.hasOpenRefund === true,
+    refundAction: deriveCustomerRefundAction(source),
+    policyGroup: view.policyGroup ?? null,
+    deliveredAt: deliveredAtIso(source)
   };
 }
 
 module.exports = {
   copyWindow,
   presentCustomerOrder,
-  presentCustomerOrderSummary
+  presentCustomerOrderSummary,
+  deriveCustomerRefundAction
 };

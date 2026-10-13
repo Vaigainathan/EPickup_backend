@@ -89,7 +89,8 @@ function refundsCollection(orderRef) {
 
 async function readRefundDocs(tx, orderRef) {
   const snap = await tx.get(refundsCollection(orderRef));
-  return snap.docs.map((doc) => ({
+  const docs = snap && Array.isArray(snap.docs) ? snap.docs : [];
+  return docs.map((doc) => ({
     id: doc.id,
     ref: doc.ref,
     data: doc.data() || {}
@@ -122,8 +123,33 @@ function statusAfter(refunds, refundId, nextStatus) {
   });
 }
 
-function mirrorPatch(data, hasOpen) {
-  const patch = { hasOpenRefund: hasOpen };
+function refundRowStatus(refund, pendingRefundId, pendingStatus) {
+  if (pendingRefundId && refund.id === pendingRefundId && pendingStatus) {
+    return pendingStatus;
+  }
+  const data = refund.data && typeof refund.data === 'object' ? refund.data : refund;
+  return data.status;
+}
+
+function computeCustomerRefundAction(refunds, pendingRefundId, pendingStatus) {
+  const rows = Array.isArray(refunds) ? refunds : [];
+  const statuses = rows
+    .map((refund) => refundRowStatus(refund, pendingRefundId, pendingStatus))
+    .filter((status) => typeof status === 'string' && status.trim() !== '');
+  if (statuses.includes('upi_needed')) {
+    return 'share_upi';
+  }
+  if (statuses.includes('sent')) {
+    return 'confirm_received';
+  }
+  return null;
+}
+
+function mirrorPatch(data, hasOpen, customerRefundAction) {
+  const patch = {
+    hasOpenRefund: hasOpen,
+    customerRefundAction: customerRefundAction == null ? null : customerRefundAction
+  };
   if (!isCancelled(data.orderStatus)) {
     return patch;
   }
@@ -131,7 +157,16 @@ function mirrorPatch(data, hasOpen) {
   return patch;
 }
 
-function createRefund(tx, {
+function orderRefundDenormPatch(data, refunds, pendingRefundId, pendingStatus) {
+  const rows = Array.isArray(refunds) ? refunds : [];
+  const hasOpen = pendingRefundId && pendingStatus
+    ? statusAfter(rows, pendingRefundId, pendingStatus)
+    : rows.some((refund) => OPEN_STATUSES.has(refundRowStatus(refund)));
+  const customerRefundAction = computeCustomerRefundAction(rows, pendingRefundId, pendingStatus);
+  return mirrorPatch(data, hasOpen, customerRefundAction);
+}
+
+async function createRefund(tx, {
   orderRef,
   data,
   reason,
@@ -139,12 +174,21 @@ function createRefund(tx, {
   items,
   actor,
   eventReason,
-  resultingOrderStatus
+  resultingOrderStatus,
+  existingRefunds
 }) {
-  const orderStatus = resultingOrderStatus || (data && data.orderStatus);
   const refundId = crypto.randomBytes(8).toString('hex');
   const refundRef = refundsCollection(orderRef).doc(refundId);
   const stamp = FieldValue.serverTimestamp();
+  const prior = Array.isArray(existingRefunds)
+    ? existingRefunds.slice()
+    : await readRefundDocs(tx, orderRef);
+  const rows = prior.slice();
+  rows.push({ id: refundId, data: { status: 'upi_needed' } });
+  const orderContext = resultingOrderStatus
+    ? { ...data, orderStatus: resultingOrderStatus }
+    : data;
+  const denorm = orderRefundDenormPatch(orderContext, rows);
   tx.set(refundRef, {
     id: refundId,
     orderId: orderRef.id,
@@ -168,14 +212,7 @@ function createRefund(tx, {
     createdAt: stamp,
     updatedAt: stamp
   });
-  const patch = {
-    hasOpenRefund: true,
-    updatedAt: stamp
-  };
-  if (isCancelled(orderStatus)) {
-    patch['payment.status'] = 'refund_pending';
-  }
-  tx.update(orderRef, patch);
+  tx.update(orderRef, { ...denorm, updatedAt: stamp });
   appendEvent(tx, orderRef, {
     type: 'refund_created',
     actor,
@@ -302,6 +339,7 @@ async function submitCustomerUpi({
     if (refund.status !== 'upi_needed') {
       throw httpError(409, 'ALREADY_SUBMITTED', 'A UPI ID is already on this refund');
     }
+    const refunds = await readRefundDocs(tx, orderRef);
     const dueBy = Timestamp.fromMillis(now + (MARKETPLACE_DEFAULTS.REFUND_DUE_HOURS * HOUR_MS));
     const stamp = FieldValue.serverTimestamp();
     tx.update(refundRef, {
@@ -325,6 +363,10 @@ async function submitCustomerUpi({
       actor: { type: 'customer', id: customerId },
       data: null
     }, data.customerId);
+    tx.update(orderRef, {
+      ...orderRefundDenormPatch(data, refunds, refundId, 'due'),
+      updatedAt: stamp
+    });
     return {
       replay: false,
       data,
@@ -399,9 +441,8 @@ async function acknowledgeRefund({
       patch.ackAt = stamp;
     }
     tx.update(refundRef, patch);
-    const hasOpen = statusAfter(refunds, refundId, nextStatus);
     tx.update(orderRef, {
-      ...mirrorPatch(data, hasOpen),
+      ...orderRefundDenormPatch(data, refunds, refundId, nextStatus),
       updatedAt: stamp
     });
     appendEvent(tx, orderRef, {
@@ -472,6 +513,7 @@ async function markRefundSent({
     }
     const data = orderSnap.data() || {};
     const refund = refundSnap.data() || {};
+    const refunds = await readRefundDocs(tx, orderRef);
     if (refund.status === 'sent' && refund.refundUtr === refundUtr) {
       return { alreadyProcessed: true, data, refund };
     }
@@ -508,6 +550,10 @@ async function markRefundSent({
       reason: eventReason == null ? null : eventReason,
       data: { refundUtrLast4: last4(refundUtr) }
     }, data.customerId);
+    tx.update(orderRef, {
+      ...orderRefundDenormPatch(data, refunds, refundId, 'sent'),
+      updatedAt: stamp
+    });
     return { alreadyProcessed: false, data, refund: { ...refund, status: 'sent', refundUtr, sentAmount: amount } };
   });
 
@@ -558,8 +604,10 @@ async function resolveRefundDispute({
     const stamp = FieldValue.serverTimestamp();
     if (outcome === 'received') {
       tx.update(refundRef, { status: 'confirmed', ackAt: stamp, updatedAt: stamp });
-      const hasOpen = statusAfter(refunds, refundId, 'confirmed');
-      tx.update(orderRef, { ...mirrorPatch(data, hasOpen), updatedAt: stamp });
+      tx.update(orderRef, {
+        ...orderRefundDenormPatch(data, refunds, refundId, 'confirmed'),
+        updatedAt: stamp
+      });
       appendEvent(tx, orderRef, {
         type: 'refund_ack',
         actor,
@@ -604,7 +652,10 @@ async function resolveRefundDispute({
       }
     }, data.customerId);
     tx.update(refundRef, patch);
-    tx.update(orderRef, { ...mirrorPatch(data, true), updatedAt: stamp });
+    const rows = refunds.map((row) => (row.id === refundId
+      ? { ...row, data: { ...row.data, ...patch, status: to } }
+      : row));
+    tx.update(orderRef, { ...orderRefundDenormPatch(data, rows), updatedAt: stamp });
     return { data, template: null, refund: { ...refund, ...patch, id: refundId } };
   });
 
@@ -637,7 +688,8 @@ async function recordFoundRefund({ orderId, amount, operator, reason }) {
     if (data.orderStatus === 'payment_review' || (review && review.status === 'open')) {
       throw httpError(409, 'INVALID_STATE', 'An open review cannot be refunded from here');
     }
-    const existing = (await readRefundDocs(tx, orderRef))
+    const existingRefunds = await readRefundDocs(tx, orderRef);
+    const existing = existingRefunds
       .find((refund) => refund.data.reason === 'support_decision');
     if (existing) {
       throw httpError(409, 'INVALID_STATE', `A found refund is already recorded (refund ${existing.id})`);
@@ -645,7 +697,7 @@ async function recordFoundRefund({ orderId, amount, operator, reason }) {
     if (data.closedReason !== 'payment_not_verified' || payment.status !== 'not_verified') {
       throw httpError(409, 'INVALID_STATE', 'Only a not-verified cancellation can record a found refund');
     }
-    const created = createRefund(tx, {
+    const created = await createRefund(tx, {
       orderRef,
       data,
       reason: 'support_decision',
@@ -653,7 +705,8 @@ async function recordFoundRefund({ orderId, amount, operator, reason }) {
       items: Array.isArray(data.items) ? data.items : [],
       actor: { type: 'support', id: operator || 'support' },
       eventReason: note,
-      resultingOrderStatus: 'cancelled'
+      resultingOrderStatus: 'cancelled',
+      existingRefunds
     });
     tx.update(orderRef, {
       'payment.receivedAmount': amount,
@@ -736,5 +789,8 @@ module.exports = {
   listShopRefunds,
   alertRefund,
   millisOf,
-  mirrorPatch
+  mirrorPatch,
+  computeCustomerRefundAction,
+  orderRefundDenormPatch,
+  readRefundDocs
 };

@@ -383,12 +383,12 @@ async function resolveMarketplaceHelp({
         const payment = data.payment || {};
         const received = payment.receivedAmount != null ? payment.receivedAmount : payment.amount;
         const receivedPaise = toPaise(received);
-        const { remainderPaise } = await refundRemainder(tx, orderRef, receivedPaise);
+        const { remainderPaise, refunds: existingRefunds } = await refundRemainder(tx, orderRef, receivedPaise);
         const amountPaise = toPaise(amount);
         if (amountPaise > remainderPaise) {
           throw httpError(409, 'VALIDATION', 'Refund amount exceeds the remaining refundable balance');
         }
-        const created = createRefund(tx, {
+        const created = await createRefund(tx, {
           orderRef,
           data,
           reason: 'support_decision',
@@ -396,7 +396,8 @@ async function resolveMarketplaceHelp({
           items: Array.isArray(items) ? items : [],
           actor: { type: 'support', id: operator || 'support' },
           eventReason: 'help_resolution',
-          resultingOrderStatus: data.orderStatus
+          resultingOrderStatus: data.orderStatus,
+          existingRefunds
         });
         refundId = created.refundId;
         resolution.refundAmount = amount;

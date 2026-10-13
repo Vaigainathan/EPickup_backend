@@ -1,3 +1,4 @@
+const { wrapStrictTransaction } = require('./helpers/strictFirestoreTransaction');
 const mockTimeoutDocs = new Map();
 const mockTimeoutOps = [];
 const mockNotifyCustomer = jest.fn(async () => ({ success: true }));
@@ -12,10 +13,31 @@ function mockTimeoutRef(path) {
     id,
     path,
     collection(name) {
+      const collPath = `${path}/${name}`;
       return {
+        path: collPath,
         doc(subId) {
           const child = subId || `auto-${mockEventSeq += 1}`;
-          return mockTimeoutRef(`${path}/${name}/${child}`);
+          return mockTimeoutRef(`${collPath}/${child}`);
+        },
+        async get() {
+          const prefix = `${collPath}/`;
+          const docs = [];
+          mockTimeoutDocs.forEach((data, docPath) => {
+            if (!docPath.startsWith(prefix)) {
+              return;
+            }
+            const rest = docPath.slice(prefix.length);
+            if (!rest || rest.includes('/')) {
+              return;
+            }
+            docs.push({
+              id: rest,
+              ref: mockTimeoutRef(docPath),
+              data: () => data
+            });
+          });
+          return { docs, empty: docs.length === 0, size: docs.length };
         }
       };
     },
@@ -123,8 +145,11 @@ function mockTimeoutDb() {
       return api;
     },
     async runTransaction(fn) {
-      const tx = {
+      const tx = wrapStrictTransaction({
         async get(ref) {
+          if (ref && ref.path && ref.path.endsWith('/refunds') && typeof ref.get === 'function') {
+            return ref.get();
+          }
           if (mockFlipOnRead && ref.path === mockFlipOnRead.path) {
             mockApplyPatch(mockTimeoutDocs.get(ref.path), mockFlipOnRead.patch);
             mockFlipOnRead = null;
@@ -151,7 +176,7 @@ function mockTimeoutDb() {
           mockTimeoutOps.push({ op: 'delete', path: ref.path });
           mockTimeoutDocs.delete(ref.path);
         }
-      };
+      });
       return fn(tx);
     }
   };

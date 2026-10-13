@@ -1,4 +1,5 @@
 const crypto = require('crypto');
+const { wrapStrictTransaction } = require('./helpers/strictFirestoreTransaction');
 const mockDocs = new Map();
 const saveCalls = [];
 let txTail = Promise.resolve();
@@ -145,7 +146,7 @@ function mockDb() {
         release = resolve;
       });
       await previous;
-      const tx = {
+      const tx = wrapStrictTransaction({
         async get(target) {
           return target.get();
         },
@@ -159,7 +160,7 @@ function mockDb() {
         delete(ref) {
           mockDocs.delete(ref.path);
         }
-      };
+      });
       try {
         return await fn(tx);
       } finally {

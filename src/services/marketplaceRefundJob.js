@@ -7,7 +7,7 @@ const { appendEvent } = require('./marketplace/orderEvents');
 const {
   alertRefund,
   millisOf,
-  mirrorPatch
+  orderRefundDenormPatch
 } = require('./marketplace/refunds');
 const { marketplacePushVariables } = require('./marketplace/marketplacePush');
 const notificationService = require('./notificationService');
@@ -183,8 +183,7 @@ class MarketplaceRefundJob {
         const count = typeof stats.refundsOverdue === 'number' ? stats.refundsOverdue : 0;
         tx.update(shopRef, { 'marketplaceStats.refundsOverdue': count + overdueAdded });
       }
-      const open = refunds.some((refund) => ['upi_needed', 'due', 'sent', 'disputed'].includes(refund.data.status));
-      tx.update(orderRef, { ...mirrorPatch(data, open), updatedAt: stamp });
+      tx.update(orderRef, { ...orderRefundDenormPatch(data, refunds), updatedAt: stamp });
       return {
         actions,
         notifies,

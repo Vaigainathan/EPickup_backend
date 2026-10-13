@@ -29,6 +29,15 @@ const {
   refundRemainder
 } = require('./marketplace/refunds');
 
+function refundRowsFromQuerySnap(snap) {
+  const docs = snap && Array.isArray(snap.docs) ? snap.docs : [];
+  return docs.map((doc) => ({
+    id: doc.id,
+    ref: doc.ref,
+    data: typeof doc.data === 'function' ? doc.data() || {} : doc.data || {}
+  }));
+}
+
 const COLLECTION = 'marketplaceOrders';
 const PAST_PICKUP_BOOKING = new Set([
   'photo_captured',
@@ -1070,6 +1079,7 @@ class ShopOrderService {
       }
 
       const refundSnap = await tx.get(ref.collection('refunds'));
+      const existingRefunds = refundRowsFromQuerySnap(refundSnap);
       const amountPaise = indexes.reduce((sum, index) => sum + lineRefundPaise(items[index]), 0);
       if (sumRefundPaise(refundSnap.docs || []) + amountPaise > receivedPaiseOf(data)) {
         throw httpError(409, 'REFUND_CAP', 'Refund would exceed the amount received');
@@ -1085,14 +1095,15 @@ class ShopOrderService {
         indexes.includes(index) ? { ...line, unavailable: true } : line
       ));
       const marked = indexes.map((index) => nextItems[index]);
-      createRefund(tx, {
+      await createRefund(tx, {
         orderRef: ref,
         data,
         reason: 'stock_short',
         amount: fromPaise(amountPaise),
         items: marked,
         actor: { type: 'shop', id: shopId },
-        resultingOrderStatus: 'preparing'
+        resultingOrderStatus: 'preparing',
+        existingRefunds
       });
       appendEvent(tx, ref, {
         type: 'items_unavailable',
@@ -1162,9 +1173,11 @@ class ShopOrderService {
         })
         : null;
       let refundDocs = [];
+      let existingRefunds = [];
       if (paid) {
         const refundSnap = await tx.get(ref.collection('refunds'));
         refundDocs = refundSnap.docs || [];
+        existingRefunds = refundRowsFromQuerySnap(refundSnap);
       }
       let nextItems = data.items;
       if (cancelRestoresStock(data)) {
@@ -1201,15 +1214,20 @@ class ShopOrderService {
         const receivedPaise = receivedPaiseOf(data);
         const remainderPaise = Math.max(0, receivedPaise - sumRefundPaise(refundDocs));
         if (remainderPaise > 0) {
-          createRefund(tx, {
+          await createRefund(tx, {
             orderRef: ref,
-            data,
+            data: {
+              ...data,
+              orderStatus: 'cancelled',
+              closedReason: 'shop_cancelled'
+            },
             reason: 'shop_cancel',
             amount: fromPaise(remainderPaise),
             items: nextItems,
             actor: { type: 'shop', id: shopId },
             eventReason: reason,
-            resultingOrderStatus: 'cancelled'
+            resultingOrderStatus: 'cancelled',
+            existingRefunds
           });
         }
         updates['payment.status'] = 'refund_pending';
@@ -1363,14 +1381,20 @@ class ShopOrderService {
       let refundAmount = null;
       if (remainder.remainderPaise > 0) {
         refundAmount = fromPaise(remainder.remainderPaise);
-        createRefund(tx, {
+        await createRefund(tx, {
           orderRef,
-          data,
+          data: {
+            ...data,
+            orderStatus: 'cancelled',
+            closedReason: reason,
+            items: nextItems
+          },
           reason,
           amount: refundAmount,
           items: nextItems,
           actor: { type: 'support', id: operatorId },
-          resultingOrderStatus: 'cancelled'
+          resultingOrderStatus: 'cancelled',
+          existingRefunds: remainder.refunds
         });
         refundCreated = true;
       }

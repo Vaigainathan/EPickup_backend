@@ -4,7 +4,7 @@ const { MARKETPLACE_DEFAULTS } = require('../../config/marketplaceDefaults');
 const { isValidUtr, toPaise, fromPaise } = require('../../validators/marketplace');
 const { presentCustomerOrder } = require('./customerOrderView');
 const { appendEvent } = require('./orderEvents');
-const { createRefund, refundRemainder } = require('./refunds');
+const { createRefund, refundRemainder, readRefundDocs } = require('./refunds');
 const { restoreLines } = require('./stock');
 const { digitsDisplayId } = require('./marketplacePush');
 
@@ -394,21 +394,29 @@ async function cancelCustomerOrder({ customerId, orderId, idempotencyKey, nowMs 
         cancelledAt: at
       };
       const nextPayment = { ...payment, status: 'refund_pending' };
+      const existingRefunds = await readRefundDocs(tx, orderRef);
+      const orderForRefund = {
+        ...data,
+        orderStatus: 'cancelled',
+        closedReason: reason,
+        cancellation: nextCancellation
+      };
+      const created = await createRefund(tx, {
+        orderRef,
+        data: orderForRefund,
+        reason,
+        amount: refundAmount,
+        items: data.items,
+        actor: { type: 'customer', id: customerId },
+        resultingOrderStatus: 'cancelled',
+        existingRefunds
+      });
       tx.update(orderRef, {
         orderStatus: 'cancelled',
         closedReason: reason,
         cancellation: nextCancellation,
         'payment.status': 'refund_pending',
         updatedAt: at
-      });
-      const created = createRefund(tx, {
-        orderRef,
-        data,
-        reason,
-        amount: refundAmount,
-        items: data.items,
-        actor: { type: 'customer', id: customerId },
-        resultingOrderStatus: 'cancelled'
       });
       const lockData = lockSnap.exists ? (lockSnap.data() || {}) : null;
       if (lockData && lockData.orderId === orderId) {
@@ -479,14 +487,21 @@ async function cancelCustomerOrder({ customerId, orderId, idempotencyKey, nowMs 
       let refundAmount = null;
       if (remainder.remainderPaise > 0) {
         refundAmount = fromPaise(remainder.remainderPaise);
-        const created = createRefund(tx, {
+        const created = await createRefund(tx, {
           orderRef,
-          data,
+          data: {
+            ...data,
+            orderStatus: 'cancelled',
+            closedReason: reason,
+            cancellation: nextCancellation,
+            items: restored.items
+          },
           reason,
           amount: refundAmount,
           items: restored.items,
           actor: { type: 'customer', id: customerId },
-          resultingOrderStatus: 'cancelled'
+          resultingOrderStatus: 'cancelled',
+          existingRefunds: remainder.refunds
         });
         refund = {
           id: created.refundId,

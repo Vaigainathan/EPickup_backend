@@ -2,6 +2,7 @@ jest.mock('../src/middleware/auth', () => require('./helpers/mockCustomerAuth'))
 
 const express = require('express');
 const request = require('supertest');
+const { wrapStrictTransaction } = require('./helpers/strictFirestoreTransaction');
 
 const mockDocs = new Map();
 let mockEventSeq = 0;
@@ -96,7 +97,7 @@ function mockBuildDb() {
       };
     },
     async runTransaction(fn) {
-      const tx = {
+      const tx = wrapStrictTransaction({
         async get(ref) {
           if (ref && typeof ref.listDocs === 'function') {
             return ref.listDocs();
@@ -118,7 +119,7 @@ function mockBuildDb() {
         delete(ref) {
           mockDocs.delete(ref.path);
         }
-      };
+      });
       return fn(tx);
     }
   };

@@ -5,7 +5,7 @@ const shopOrderService = require('./shopOrderService');
 const { MARKETPLACE_DEFAULTS } = require('../config/marketplaceDefaults');
 const { getMarketplaceEnforcement } = require('./marketplace/orderStateMachine');
 const { appendEvent } = require('./marketplace/orderEvents');
-const { createRefund } = require('./marketplace/refunds');
+const { createRefund, readRefundDocs } = require('./marketplace/refunds');
 const { isShortBalanceExpired } = require('./marketplace/shopPaymentVerification');
 const { marketplacePushVariables, digitsDisplayId } = require('./marketplace/marketplacePush');
 
@@ -336,6 +336,21 @@ class MarketplacePaymentTimeoutJob {
         notifies = [{ audience: 'customer', id: customerId, template: 'PAYMENT_NOT_CONFIRMED', variables }];
       } else if (action.kind === 'balance_expired') {
         const payment = data.payment || {};
+        const existingRefunds = await readRefundDocs(tx, orderRef);
+        const refund = await createRefund(tx, {
+          orderRef,
+          data: {
+            ...data,
+            orderStatus: 'cancelled',
+            closedReason: 'balance_expired'
+          },
+          reason: 'balance_expired',
+          amount: payment.receivedAmount != null ? payment.receivedAmount : null,
+          items: data.items,
+          actor: JOB_ACTOR,
+          resultingOrderStatus: 'cancelled',
+          existingRefunds
+        });
         tx.update(orderRef, {
           orderStatus: 'cancelled',
           closedReason: 'balance_expired',
@@ -345,15 +360,6 @@ class MarketplacePaymentTimeoutJob {
           'payment.status': 'refund_pending',
           'payment.balance.status': 'expired',
           updatedAt: at
-        });
-        const refund = createRefund(tx, {
-          orderRef,
-          data,
-          reason: 'balance_expired',
-          amount: payment.receivedAmount != null ? payment.receivedAmount : null,
-          items: data.items,
-          actor: JOB_ACTOR,
-          resultingOrderStatus: 'cancelled'
         });
         releaseLock(tx, lockRef, lockSnap, userRef, userSnap, orderRef.id);
         appendEvent(tx, orderRef, {

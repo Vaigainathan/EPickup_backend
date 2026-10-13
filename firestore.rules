@@ -924,7 +924,10 @@ service cloud.firestore {
       }
 
       match /signal/{docId} {
-        allow read: if isAuthenticated() && isOwner(resource.data.customerId);
+        allow read: if isAuthenticated() && (
+          isOwner(resource.data.customerId) ||
+          request.auth.token.roleBasedUID == resource.data.customerId
+        );
         allow write: if false;
       }
 

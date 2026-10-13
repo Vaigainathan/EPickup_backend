@@ -1,6 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 const admin = require('firebase-admin');
+const { wrapStrictTransaction } = require('./helpers/strictFirestoreTransaction');
 
 const mockDocs = new Map();
 const mockSendTemplate = jest.fn(async () => ({ success: true }));
@@ -133,7 +134,7 @@ function mockDb() {
       return api;
     },
     async runTransaction(fn) {
-      const tx = {
+      const tx = wrapStrictTransaction({
         async get(ref) {
           return ref.get();
         },
@@ -147,7 +148,7 @@ function mockDb() {
         delete(ref) {
           mockDocs.delete(ref.path);
         }
-      };
+      });
       return fn(tx);
     }
   };
@@ -320,6 +321,7 @@ describe('customer refund UPI', () => {
     expect(refund.status).toBe('due');
     expect(refund.customerUpiId).toBe(UPI);
     expect(refund.dueBy.toMillis()).toBe(now + (24 * HOUR));
+    expect(orderOf('order-1').customerRefundAction).toBeNull();
     expect(orderOf('order-1').payment.status).toBe('confirmed');
     expect(mockDocs.get('users/cust-1').customer.marketplace.refundUpiId).toBe(UPI);
     expect(mockSendTemplate).toHaveBeenCalledWith('shop-1', 'MARKETPLACE', 'REFUND_DUE', expect.any(Object));
@@ -390,6 +392,7 @@ describe('shop marks a refund sent', () => {
     });
     expect(sent.alreadyProcessed).toBe(false);
     expect(refundOf('order-1', 'refund-1').status).toBe('sent');
+    expect(orderOf('order-1').customerRefundAction).toBe('confirm_received');
     expect(mockDocs.get(`utrRegistry/${UTR}`).kind).toBe('refund');
     expect(eventsOf('order-1').find((event) => event.type === 'refund_sent').data.refundUtrLast4).toBe('9012');
     expect(mockSendTemplate).toHaveBeenCalledWith(
@@ -450,6 +453,7 @@ describe('acknowledgement and the payment mirror', () => {
       idempotencyKey: KEY_TWO
     });
     expect(orderOf('order-1').hasOpenRefund).toBe(false);
+    expect(orderOf('order-1').customerRefundAction).toBeNull();
     expect(orderOf('order-1').payment.status).toBe('refunded');
   });
 
@@ -469,6 +473,7 @@ describe('acknowledgement and the payment mirror', () => {
     });
     expect(orderOf('order-1').payment.status).toBe('confirmed');
     expect(orderOf('order-1').hasOpenRefund).toBe(false);
+    expect(orderOf('order-1').customerRefundAction).toBeNull();
   });
 
   test('not received opens a dispute, including a late dispute inside 7 days', async () => {
@@ -488,6 +493,7 @@ describe('acknowledgement and the payment mirror', () => {
     });
     expect(refundOf('order-1', 'refund-1').status).toBe('disputed');
     expect(orderOf('order-1').hasOpenRefund).toBe(true);
+    expect(orderOf('order-1').customerRefundAction).toBeNull();
     expect(orderOf('order-1').payment.status).toBe('refund_pending');
     expect(mockCaptureMessage).toHaveBeenCalled();
 
@@ -573,6 +579,7 @@ describe('support resend and a found refund', () => {
     expect(due.refundUtr).toBeNull();
     expect(due.reminders.due24).toBe(false);
     expect(due.dueBy.toMillis()).toBe(now + (24 * HOUR));
+    expect(orderOf('order-1').customerRefundAction).toBeNull();
     expect(mockDocs.get(`utrRegistry/${UTR}`).kind).toBe('refund');
     expect(eventsOf('order-1')[0]).toMatchObject({
       type: 'refund_resent',
@@ -595,6 +602,7 @@ describe('support resend and a found refund', () => {
     });
     const cleared = refundOf('order-1', 'refund-1');
     expect(cleared.status).toBe('upi_needed');
+    expect(orderOf('order-1').customerRefundAction).toBe('share_upi');
     expect(cleared.customerUpiId).toBeNull();
     expect(isServerStamp(cleared.upiChaseFrom)).toBe(true);
     expect(cleared.reminders.upi24).toBe(false);
@@ -636,6 +644,7 @@ describe('support resend and a found refund', () => {
     expect(created.orderStatus).toBe('cancelled');
     expect(orderOf('order-1').orderStatus).toBe('cancelled');
     expect(orderOf('order-1').hasOpenRefund).toBe(true);
+    expect(orderOf('order-1').customerRefundAction).toBe('share_upi');
     expect(orderOf('order-1').payment.status).toBe('refund_pending');
     expect(orderOf('order-1').payment.receivedAmount).toBe(40);
     expect(orderOf('order-1').payment.receivedAmountPaise).toBe(4000);
@@ -764,6 +773,7 @@ describe('refund job', () => {
     expect(closed.actions.map((action) => action.kind)).toEqual(['auto_close']);
     expect(refundOf('order-1', 'refund-1').status).toBe('closed');
     expect(orderOf('order-1').hasOpenRefund).toBe(false);
+    expect(orderOf('order-1').customerRefundAction).toBeNull();
     expect(orderOf('order-1').payment.status).toBe('confirmed');
     expect(JSON.stringify(orderOf('order-1'))).not.toContain(String(start));
   });

@@ -5,7 +5,7 @@ const marketplaceMoney = require('../../validators/marketplace');
 const { isValidUtr } = marketplaceMoney;
 const { appendEvent } = require('./orderEvents');
 const { deductStock } = require('./stock');
-const { createRefund, hasReason, refundRemainder } = require('./refunds');
+const { createRefund, refundRemainder, readRefundDocs } = require('./refunds');
 const { getMarketplaceEnforcement } = require('./orderStateMachine');
 const POST_CONFIRM_ORDER = new Set(['preparing', 'ready', 'handed_over', 'completed']);
 const BLOCKED_CANCEL = new Set(['handed_over', 'completed', 'delivery_failed']);
@@ -304,14 +304,15 @@ async function confirmLateUnfulfilled(tx, {
   }
   if (remainder.remainderPaise > 0) {
     const amount = marketplaceMoney.fromPaise(remainder.remainderPaise);
-    createRefund(tx, {
+    await createRefund(tx, {
       orderRef,
-      data,
+      data: { ...data, orderStatus: 'cancelled', closedReason: reason },
       reason,
       amount,
       items: data.items,
       actor: { type: 'shop', id: shopId },
-      resultingOrderStatus: 'cancelled'
+      resultingOrderStatus: 'cancelled',
+      existingRefunds: remainder.refunds
     });
     notifies.push({
       type: 'REFUND_INITIATED',
@@ -373,14 +374,15 @@ async function confirmPaidOnCancelled(tx, {
   const notifies = [];
   if (remainder.remainderPaise > 0) {
     const amount = marketplaceMoney.fromPaise(remainder.remainderPaise);
-    createRefund(tx, {
+    await createRefund(tx, {
       orderRef,
       data,
       reason: 'paid_on_cancelled',
       amount,
       items: data.items,
       actor: { type: 'shop', id: shopId },
-      resultingOrderStatus: 'cancelled'
+      resultingOrderStatus: 'cancelled',
+      existingRefunds: remainder.refunds
     });
     notifies.push({
       type: 'REFUND_INITIATED',
@@ -537,6 +539,7 @@ async function confirmOpenReview(tx, context) {
     officialUtr: matched.officialUtr
   });
   assertRegistryAvailable(reads.registrySnap, orderId);
+  const existingRefunds = await readRefundDocs(tx, orderRef);
   const at = Timestamp.fromMillis(now);
   const fulfil = !(body && body.fulfil === false);
   const disputed = shopHadDisputed(review);
@@ -568,14 +571,15 @@ async function confirmOpenReview(tx, context) {
         decidedAt: FieldValue.serverTimestamp()
       }
     });
-    createRefund(tx, {
+    await createRefund(tx, {
       orderRef,
-      data,
+      data: { ...data, orderStatus: 'cancelled', closedReason: 'shop_cancelled' },
       reason: 'review_refund',
       amount,
       items: data.items,
       actor: { type: 'shop', id: shopId },
-      resultingOrderStatus: 'cancelled'
+      resultingOrderStatus: 'cancelled',
+      existingRefunds
     });
     writeRegistry(tx, reads.registrySnap, reads.registryRef, {
       orderId,
@@ -982,7 +986,8 @@ async function answerPaidCheck({ shopId, orderId, body, nowMs }) {
     const registryRef = db.collection('utrRegistry').doc(matched.officialUtr);
     const registrySnap = await tx.get(registryRef);
     assertRegistryAvailable(registrySnap, orderId);
-    const alreadyRefund = await hasReason(tx, orderRef, 'customer_cancel');
+    const existingRefunds = await readRefundDocs(tx, orderRef);
+    const alreadyRefund = existingRefunds.some((refund) => refund.data.reason === 'customer_cancel');
     const amount = payment.receivedAmount != null
       ? payment.receivedAmount
       : (data.expectedAmount != null ? data.expectedAmount : null);
@@ -995,14 +1000,15 @@ async function answerPaidCheck({ shopId, orderId, body, nowMs }) {
       ...arrivedAmountFields(amount, data)
     });
     if (!alreadyRefund) {
-      createRefund(tx, {
+      await createRefund(tx, {
         orderRef,
         data,
         reason: 'customer_cancel',
         amount,
         items: data.items,
         actor: { type: 'shop', id: shopId },
-        resultingOrderStatus: 'cancelled'
+        resultingOrderStatus: 'cancelled',
+        existingRefunds
       });
     }
     writeRegistry(tx, registrySnap, registryRef, {
@@ -1085,7 +1091,8 @@ async function resolvePaidCheckSupport({ orderId, received, operator, body, nowM
     const registryRef = db.collection('utrRegistry').doc(matched.officialUtr);
     const registrySnap = await tx.get(registryRef);
     assertRegistryAvailable(registrySnap, orderId);
-    const alreadyRefund = await hasReason(tx, orderRef, 'customer_cancel');
+    const existingRefunds = await readRefundDocs(tx, orderRef);
+    const alreadyRefund = existingRefunds.some((refund) => refund.data.reason === 'customer_cancel');
     const amount = payment.receivedAmount != null
       ? payment.receivedAmount
       : (data.expectedAmount != null ? data.expectedAmount : null);
@@ -1098,14 +1105,15 @@ async function resolvePaidCheckSupport({ orderId, received, operator, body, nowM
       ...arrivedAmountFields(amount, data)
     });
     if (!alreadyRefund) {
-      createRefund(tx, {
+      await createRefund(tx, {
         orderRef,
         data,
         reason: 'customer_cancel',
         amount,
         items: data.items,
         actor,
-        resultingOrderStatus: 'cancelled'
+        resultingOrderStatus: 'cancelled',
+        existingRefunds
       });
     }
     writeRegistry(tx, registrySnap, registryRef, {
@@ -1248,6 +1256,7 @@ async function differOnOpenReview(tx, context) {
     officialUtr: matched.officialUtr
   });
   assertRegistryAvailable(reads.registrySnap, orderId);
+  const existingRefunds = await readRefundDocs(tx, orderRef);
   const stock = await deductOnPreparing(tx, db, {
     orderRef,
     data,
@@ -1288,14 +1297,15 @@ async function differOnOpenReview(tx, context) {
   }
   tx.update(orderRef, patch);
   if (overpaidAmount != null) {
-    createRefund(tx, {
+    await createRefund(tx, {
       orderRef,
       data,
       reason: 'overpaid',
       amount: overpaidAmount,
       items: data.items,
       actor: { type: 'shop', id: shopId },
-      resultingOrderStatus: 'preparing'
+      resultingOrderStatus: 'preparing',
+      existingRefunds
     });
   }
   writeRegistry(tx, reads.registrySnap, reads.registryRef, {
@@ -1390,6 +1400,7 @@ async function reportAmountDiffers({ shopId, orderId, body, nowMs }) {
     const late = isPastPaymentGrace(endMs, now, graceMs);
     const at = Timestamp.fromMillis(now);
     assertRegistryAvailable(registrySnap, orderId);
+    const existingRefunds = await readRefundDocs(tx, orderRef);
     const receivedAmount = marketplaceMoney.fromPaise(receivedPaise);
     const userPatch = {};
     if (matched.corrected && release && release.userSnap && release.userSnap.exists) {
@@ -1498,14 +1509,15 @@ async function reportAmountDiffers({ shopId, orderId, body, nowMs }) {
     }
     tx.update(orderRef, confirming);
     if (overpaidAmount != null) {
-      createRefund(tx, {
+      await createRefund(tx, {
         orderRef,
         data,
         reason: 'overpaid',
         amount: overpaidAmount,
         items: data.items,
         actor: { type: 'shop', id: shopId },
-        resultingOrderStatus: 'preparing'
+        resultingOrderStatus: 'preparing',
+        existingRefunds
       });
     }
     writeRegistry(tx, registrySnap, registryRef, {
@@ -1675,6 +1687,7 @@ async function resolvePaymentReview({ orderId, outcome, reason, operator }) {
       };
     }
 
+    const existingRefunds = await readRefundDocs(tx, orderRef);
     const amount = reviewRefundAmount(data, payment, review);
     tx.update(orderRef, {
       orderStatus: 'cancelled',
@@ -1687,15 +1700,16 @@ async function resolvePaymentReview({ orderId, outcome, reason, operator }) {
       'payment.review.status': 'resolved',
       'payment.review.outcome': outcomeDoc
     });
-    createRefund(tx, {
+    await createRefund(tx, {
       orderRef,
-      data,
+      data: { ...data, orderStatus: 'cancelled', closedReason: 'support_cancelled' },
       reason: 'review_refund',
       amount,
       items: data.items,
       actor,
       eventReason: note,
-      resultingOrderStatus: 'cancelled'
+      resultingOrderStatus: 'cancelled',
+      existingRefunds
     });
     if (disputed) {
       bumpShopStat(tx, shopSnap, shopRef, 'reviewsFoundAgainstShop');

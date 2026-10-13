@@ -2,11 +2,21 @@ const { body, validationResult } = require('express-validator');
 const sanitizeHtml = require('sanitize-html');
 const validator = require('validator');
 
+function isCustomerMarketplacePath(req) {
+  const reqPath = String(req.path || '');
+  if (reqPath.startsWith('/api/customer/marketplace')) {
+    return true;
+  }
+  const originalPath = String(req.originalUrl || req.url || '').split('?')[0];
+  return originalPath.startsWith('/api/customer/marketplace');
+}
+
 /**
  * Sanitize input data to prevent XSS attacks
  */
 const sanitizeInput = (req, res, next) => {
-  const sanitizeObject = (obj) => {
+  const preserveQueryCategory = isCustomerMarketplacePath(req);
+  const sanitizeObject = (obj, options = {}) => {
     if (typeof obj === 'string') {
       return sanitizeHtml(obj, {
         allowedTags: [],
@@ -16,7 +26,15 @@ const sanitizeInput = (req, res, next) => {
     if (typeof obj === 'object' && obj !== null) {
       const sanitized = {};
       for (const key in obj) {
-        sanitized[key] = sanitizeObject(obj[key]);
+        if (
+          options.preserveQueryCategory
+          && key === 'category'
+          && typeof obj[key] === 'string'
+        ) {
+          sanitized[key] = obj[key];
+        } else {
+          sanitized[key] = sanitizeObject(obj[key], options);
+        }
       }
       return sanitized;
     }
@@ -24,7 +42,7 @@ const sanitizeInput = (req, res, next) => {
   };
 
   req.body = sanitizeObject(req.body);
-  req.query = sanitizeObject(req.query);
+  req.query = sanitizeObject(req.query, { preserveQueryCategory });
   req.params = sanitizeObject(req.params);
   next();
 };

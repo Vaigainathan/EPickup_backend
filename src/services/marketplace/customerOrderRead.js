@@ -59,6 +59,16 @@ function parseLimit(raw) {
   return limit;
 }
 
+const CUSTOMER_REFUND_ACTIONS = ['share_upi', 'confirm_received'];
+
+function parseListGroup(raw) {
+  const group = raw;
+  if (group === 'ongoing' || group === 'history' || group === 'action') {
+    return group;
+  }
+  throw httpError(400, 'VALIDATION', 'group must be ongoing, history or action');
+}
+
 function statusesForGroup(group) {
   if (group === 'ongoing') {
     return ONGOING_ORDER_STATUSES;
@@ -66,16 +76,24 @@ function statusesForGroup(group) {
   if (group === 'history') {
     return TERMINAL_ORDER_STATUSES;
   }
-  throw httpError(400, 'VALIDATION', 'group must be ongoing or history');
+  return null;
+}
+
+function listQueryForGroup(db, customerId, group) {
+  const base = db.collection('marketplaceOrders').where('customerId', '==', customerId);
+  if (group === 'action') {
+    return base
+      .where('customerRefundAction', 'in', CUSTOMER_REFUND_ACTIONS);
+  }
+  const statuses = statusesForGroup(group);
+  return base.where('orderStatus', 'in', statuses);
 }
 
 async function listCustomerOrders(db, customerId, query) {
-  const statuses = statusesForGroup(query.group);
+  const group = parseListGroup(query.group);
   const limit = parseLimit(query.limit);
   const cursor = decodeCursor(query.cursor);
-  let request = db.collection('marketplaceOrders')
-    .where('customerId', '==', customerId)
-    .where('orderStatus', 'in', statuses)
+  let request = listQueryForGroup(db, customerId, group)
     .orderBy('createdAt', 'desc')
     .orderBy(FieldPath.documentId(), 'desc')
     .limit(limit + 1);

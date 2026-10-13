@@ -168,6 +168,27 @@ describe('customer marketplace order reads', () => {
         createdAt: stamp('2026-10-07T11:00:00.000Z'),
         items: [{ name: 'Frame', qty: 1 }]
       }),
+      order('mine-cancel-refund', {
+        orderStatus: 'cancelled',
+        customerRefundAction: 'share_upi',
+        hasOpenRefund: true,
+        createdAt: stamp('2026-10-07T11:35:00.000Z'),
+        items: [{ name: 'Refund item', qty: 1 }]
+      }),
+      order('mine-sent-refund', {
+        orderStatus: 'cancelled',
+        customerRefundAction: 'confirm_received',
+        hasOpenRefund: true,
+        createdAt: stamp('2026-10-07T11:32:00.000Z'),
+        items: [{ name: 'Ack item', qty: 1 }]
+      }),
+      order('mine-closed-refund', {
+        orderStatus: 'cancelled',
+        customerRefundAction: null,
+        hasOpenRefund: false,
+        createdAt: stamp('2026-10-07T11:34:00.000Z'),
+        items: [{ name: 'Closed refund', qty: 1 }]
+      }),
       order('other-order', {
         customerId: 'someone-else',
         orderStatus: 'awaiting_payment',
@@ -198,8 +219,57 @@ describe('customer marketplace order reads', () => {
 
     const history = await request(app()).get('/api/customer/marketplace-orders?group=history');
     expect(history.status).toBe(200);
-    expect(history.body.data.orders.map((row) => row.id)).toEqual(['mine-done']);
-    expect(history.body.data.orders[0].firstItemName).toBe('Frame');
+    expect(history.body.data.orders.map((row) => row.id)).toEqual([
+      'mine-cancel-refund',
+      'mine-closed-refund',
+      'mine-sent-refund',
+      'mine-done'
+    ]);
+    expect(history.body.data.orders[0].firstItemName).toBe('Refund item');
+  });
+
+  test('action group lists only orders with a pending refund CTA, including cancelled', async () => {
+    const action = await request(app()).get('/api/customer/marketplace-orders?group=action');
+    expect(action.status).toBe(200);
+    expect(action.body.data.orders.map((row) => row.id)).toEqual([
+      'mine-cancel-refund',
+      'mine-sent-refund'
+    ]);
+    expect(action.body.data.orders[0]).toEqual(expect.objectContaining({
+      orderStatus: 'cancelled',
+      refundAction: 'share_upi',
+      hasOpenRefund: true
+    }));
+    expect(action.body.data.orders[1]).toEqual(expect.objectContaining({
+      orderStatus: 'cancelled',
+      refundAction: 'confirm_received'
+    }));
+    expect(action.body.data.orders.map((row) => row.id)).not.toContain('mine-closed-refund');
+    expect(action.body.data.orders.map((row) => row.id)).not.toContain('mine-new');
+
+    const ongoing = await request(app()).get('/api/customer/marketplace-orders?group=ongoing');
+    expect(ongoing.body.data.orders.map((row) => row.id)).not.toContain('mine-cancel-refund');
+  });
+
+  test('action group cursor pages by createdAt and id', async () => {
+    const first = await request(app()).get('/api/customer/marketplace-orders?group=action&limit=1');
+    expect(first.status).toBe(200);
+    expect(first.body.data.orders.map((row) => row.id)).toEqual(['mine-cancel-refund']);
+    expect(first.body.data.nextCursor).toEqual(expect.any(String));
+
+    const second = await request(app()).get(
+      `/api/customer/marketplace-orders?group=action&limit=1&cursor=${encodeURIComponent(first.body.data.nextCursor)}`
+    );
+    expect(second.status).toBe(200);
+    expect(second.body.data.orders.map((row) => row.id)).toEqual(['mine-sent-refund']);
+    expect(second.body.data.nextCursor).toBeNull();
+  });
+
+  test('invalid group is 400 VALIDATION', async () => {
+    const response = await request(app()).get('/api/customer/marketplace-orders?group=active');
+    expect(response.status).toBe(400);
+    expect(response.body.error.code).toBe('VALIDATION');
+    expect(response.body.error.message).toBe('group must be ongoing, history or action');
   });
 
   test('cursor pages ongoing orders after one page-1 order moves to history', async () => {

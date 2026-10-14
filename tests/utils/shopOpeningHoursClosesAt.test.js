@@ -57,7 +57,7 @@ describe('currentClosesAt (B3 / C3)', () => {
     );
   });
 
-  test('overnight window (close before open on same day) is not supported', () => {
+  test('overnight window closes on the next IST calendar day', () => {
     const overnight = {
       monday: { closed: false, open: '18:00', close: '02:00' },
       tuesday: { closed: false, open: '18:00', close: '02:00' },
@@ -68,10 +68,12 @@ describe('currentClosesAt (B3 / C3)', () => {
       sunday: { closed: false, open: '18:00', close: '02:00' }
     };
     const evening = new Date('2026-06-15T20:00:00+05:30');
-    expect(isInsideOpenWindow(overnight.monday, 20 * 60)).toBe(false);
+    expect(isInsideOpenWindow(overnight.monday, 20 * 60)).toBe(true);
     expect(
       isShopOpenNow({ isOpen: true, openingHours: overnight, now: evening })
-    ).toBe(false);
-    expect(currentClosesAt({ openingHours: overnight, now: evening })).toBeNull();
+    ).toBe(true);
+    expect(currentClosesAt({ openingHours: overnight, now: evening })).toBe(
+      '2026-06-16T02:00:00+05:30'
+    );
   });
 });

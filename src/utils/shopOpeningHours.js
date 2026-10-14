@@ -95,7 +95,7 @@ function validateOpeningHours(input) {
     if (open == null || close == null) {
       throw openingHoursError(`${day} requires open and close when not closed`);
     }
-    if (close <= open) {
+    if (close === open) {
       throw openingHoursError(`${day} close must be after open on the same day`);
     }
 
@@ -130,6 +130,112 @@ function istParts(now) {
     weekday: String(parts.weekday || '').toLowerCase(),
     minutes: (hour * 60) + minute
   };
+}
+
+function previousWeekday(weekday) {
+  const index = WEEKDAYS.indexOf(weekday);
+  if (index < 0) {
+    return null;
+  }
+  return WEEKDAYS[(index + 6) % 7];
+}
+
+/**
+ * @returns {{ open: number, close: number } | null}
+ */
+function clocksFromEntry(entry) {
+  if (!entry || typeof entry !== 'object') {
+    return null;
+  }
+  const hasLegacy = entry.start != null || entry.end != null;
+  const hasNew = entry.closed != null || entry.open != null || entry.close != null;
+
+  if (hasLegacy && !hasNew) {
+    const open = parseClock(entry.start);
+    const close = parseClock(entry.end);
+    if (open == null || close == null) {
+      return null;
+    }
+    return { open, close };
+  }
+
+  if (entry.closed === true) {
+    return null;
+  }
+  const open = parseClock(entry.open);
+  const close = parseClock(entry.close);
+  if (open == null || close == null) {
+    return null;
+  }
+  return { open, close };
+}
+
+/**
+ * @returns {{ kind: 'sameDay' | 'overnight', open: number, close: number } | null}
+ */
+function parseDayWindow(entry) {
+  const clocks = clocksFromEntry(entry);
+  if (!clocks) {
+    return null;
+  }
+  const { open, close } = clocks;
+  if (close === open) {
+    return null;
+  }
+  if (close > open) {
+    return { kind: 'sameDay', open, close };
+  }
+  return { kind: 'overnight', open, close };
+}
+
+/**
+ * @returns {{ isOpen: false } | { isOpen: true, closeDayOffset: number, closeMinutes: number }}
+ */
+function activeWindowAt({ openingHours, now = new Date() }) {
+  if (openingHours == null || typeof openingHours !== 'object' || Array.isArray(openingHours)) {
+    return { isOpen: false };
+  }
+
+  const clock = istParts(now);
+  const prevDay = previousWeekday(clock.weekday);
+  if (prevDay) {
+    const prevEntry = openingHours[prevDay];
+    const prevWindow = parseDayWindow(prevEntry);
+    if (prevWindow && prevWindow.kind === 'overnight' && clock.minutes < prevWindow.close) {
+      return {
+        isOpen: true,
+        closeDayOffset: 0,
+        closeMinutes: prevWindow.close
+      };
+    }
+  }
+
+  const todayEntry = openingHours[clock.weekday];
+  const todayWindow = parseDayWindow(todayEntry);
+  if (!todayWindow) {
+    return { isOpen: false };
+  }
+
+  if (todayWindow.kind === 'sameDay') {
+    if (clock.minutes >= todayWindow.open && clock.minutes < todayWindow.close) {
+      return {
+        isOpen: true,
+        closeDayOffset: 0,
+        closeMinutes: todayWindow.close
+      };
+    }
+    return { isOpen: false };
+  }
+
+  if (clock.minutes >= todayWindow.open) {
+    return {
+      isOpen: true,
+      closeDayOffset: 1,
+      closeMinutes: todayWindow.close
+    };
+  }
+
+  return { isOpen: false };
 }
 
 /**
@@ -172,103 +278,32 @@ function isShopOpenNow({ isOpen, openingHours, now = new Date() }) {
   if (typeof openingHours !== 'object' || Array.isArray(openingHours)) {
     return false;
   }
-  const clock = istParts(now);
-  const today = openingHours[clock.weekday];
-  if (!today || typeof today !== 'object') {
-    return false;
-  }
-
-  // Legacy start/end shape fallback (same-day only, no overnight)
-  const hasLegacy = today.start != null || today.end != null;
-  const hasNew = today.closed != null || today.open != null || today.close != null;
-
-  if (hasLegacy && !hasNew) {
-    const start = parseClock(today.start);
-    const end = parseClock(today.end);
-    if (start == null || end == null) {
-      return false;
-    }
-    if (end >= start) {
-      return clock.minutes >= start && clock.minutes < end;
-    }
-    return false;
-  }
-
-  if (today.closed === true) {
-    return false;
-  }
-  const open = parseClock(today.open);
-  const close = parseClock(today.close);
-  if (open == null || close == null) {
-    return false;
-  }
-  if (close <= open) {
-    return false;
-  }
-  return clock.minutes >= open && clock.minutes < close;
+  return activeWindowAt({ openingHours, now }).isOpen;
 }
 
 function dayOpenMinutes(entry) {
-  if (!entry || typeof entry !== 'object') {
-    return null;
-  }
-  if (entry.closed === true) {
-    return null;
-  }
-  const hasLegacy = entry.start != null || entry.end != null;
-  const hasNew = entry.closed != null || entry.open != null || entry.close != null;
-  if (hasLegacy && !hasNew) {
-    return parseClock(entry.start);
-  }
-  return parseClock(entry.open);
+  const clocks = clocksFromEntry(entry);
+  return clocks ? clocks.open : null;
 }
 
 function dayCloseMinutes(entry) {
-  if (!entry || typeof entry !== 'object') {
-    return null;
-  }
-  if (entry.closed === true) {
-    return null;
-  }
-  const hasLegacy = entry.start != null || entry.end != null;
-  const hasNew = entry.closed != null || entry.open != null || entry.close != null;
-  if (hasLegacy && !hasNew) {
-    return parseClock(entry.end);
-  }
-  return parseClock(entry.close);
+  const clocks = clocksFromEntry(entry);
+  return clocks ? clocks.close : null;
 }
 
+/**
+ * Whether clockMinutes falls in the portion of this day's window on that weekday's calendar date.
+ * Overnight morning segments (after midnight) are resolved via activeWindowAt / previous day entry.
+ */
 function isInsideOpenWindow(entry, clockMinutes) {
-  if (!entry || typeof entry !== 'object') {
+  const window = parseDayWindow(entry);
+  if (!window) {
     return false;
   }
-  const hasLegacy = entry.start != null || entry.end != null;
-  const hasNew = entry.closed != null || entry.open != null || entry.close != null;
-
-  if (hasLegacy && !hasNew) {
-    const start = parseClock(entry.start);
-    const end = parseClock(entry.end);
-    if (start == null || end == null) {
-      return false;
-    }
-    if (end >= start) {
-      return clockMinutes >= start && clockMinutes < end;
-    }
-    return false;
+  if (window.kind === 'sameDay') {
+    return clockMinutes >= window.open && clockMinutes < window.close;
   }
-
-  if (entry.closed === true) {
-    return false;
-  }
-  const open = parseClock(entry.open);
-  const close = parseClock(entry.close);
-  if (open == null || close == null) {
-    return false;
-  }
-  if (close <= open) {
-    return false;
-  }
-  return clockMinutes >= open && clockMinutes < close;
+  return clockMinutes >= window.open;
 }
 
 function istCloseIso(date, dayOffset, closeMinutes) {
@@ -277,25 +312,16 @@ function istCloseIso(date, dayOffset, closeMinutes) {
 
 /**
  * Closing instant for the current IST open window, or null.
- * Matches isShopOpenNow same-day windows only (no overnight cross-midnight).
  */
 function currentClosesAt({ openingHours, now = new Date() }) {
   if (openingHours == null || typeof openingHours !== 'object' || Array.isArray(openingHours)) {
     return null;
   }
-  const clock = istParts(now);
-  const today = openingHours[clock.weekday];
-  if (!today || typeof today !== 'object') {
+  const active = activeWindowAt({ openingHours, now });
+  if (!active.isOpen) {
     return null;
   }
-  if (!isInsideOpenWindow(today, clock.minutes)) {
-    return null;
-  }
-  const closeMinutes = dayCloseMinutes(today);
-  if (closeMinutes == null) {
-    return null;
-  }
-  return istCloseIso(now, 0, closeMinutes);
+  return istCloseIso(now, active.closeDayOffset, active.closeMinutes);
 }
 
 function istYmdFromDate(date) {
@@ -335,11 +361,11 @@ function nextOpensAt({ openingHours, now = new Date() }) {
     const shifted = new Date(now.getTime() + dayOffset * 24 * 60 * 60 * 1000);
     const clock = istParts(shifted);
     const entry = openingHours[clock.weekday];
-    const openMinutes = dayOpenMinutes(entry);
-    if (openMinutes == null) {
+    const window = parseDayWindow(entry);
+    if (!window) {
       continue;
     }
-    const candidate = istOpenIso(now, dayOffset, openMinutes);
+    const candidate = istOpenIso(now, dayOffset, window.open);
     const candidateMs = Date.parse(candidate);
     if (Number.isFinite(candidateMs) && candidateMs > nowMs) {
       return candidate;

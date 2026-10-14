@@ -57,10 +57,15 @@ describe('MP-12 shop profile', () => {
       expect(normalized.monday).toEqual({ closed: false, open: '09:00', close: '21:00' });
     });
 
-    it('rejects overnight ranges', () => {
-      expect(() => validateOpeningHours(fullWeek({
+    it('accepts overnight ranges (close before open on the same day)', () => {
+      const normalized = validateOpeningHours(fullWeek({
         tuesday: { closed: false, open: '22:00', close: '06:00' }
-      }))).toThrow(/after open/);
+      }));
+      expect(normalized.tuesday).toEqual({
+        closed: false,
+        open: '22:00',
+        close: '06:00'
+      });
     });
 
     it('rejects extra keys on a day', () => {
@@ -143,15 +148,15 @@ describe('MP-12 shop profile', () => {
       expect(isShopOpenNow({ isOpen: true, openingHours: legacyHours, now: atEnd })).toBe(false);
     });
 
-    it('rejects legacy overnight ranges (no wrap)', () => {
+    it('supports legacy overnight start/end wrap', () => {
       const legacyOvernight = { monday: { start: '22:00', end: '06:00' }, tuesday: {}, wednesday: {}, thursday: {}, friday: {}, saturday: {}, sunday: {} };
       const now = istDate('monday', 23, 0);
-      expect(isShopOpenNow({ isOpen: true, openingHours: legacyOvernight, now })).toBe(false);
+      expect(isShopOpenNow({ isOpen: true, openingHours: legacyOvernight, now })).toBe(true);
     });
 
-    it('validates close > open when times are present', () => {
+    it('rejects equal open and close times', () => {
       expect(() => validateOpeningHours(fullWeek({
-        monday: { closed: false, open: '22:00', close: '06:00' }
+        monday: { closed: false, open: '12:00', close: '12:00' }
       }))).toThrow(/after open/);
     });
   });

@@ -8,6 +8,9 @@ const {
   shouldNotifySlowDriver
 } = require('./marketplace/slowDriverJobDecisions');
 const { STAGING_TEST_PAIR } = require('./marketplace/mp17StagingPair');
+const { appendEvent, bumpOrderSignal } = require('./marketplace/orderEvents');
+
+const JOB_ACTOR = { type: 'system', id: 'slow-driver-job' };
 
 const SETTINGS_DOC = ['appSettings', 'marketplace'];
 
@@ -121,6 +124,12 @@ class MarketplaceSlowDriverJob {
         'delivery.slowNotifiedAt': FieldValue.serverTimestamp(),
         'delivery.updatedAt': FieldValue.serverTimestamp()
       });
+      appendEvent(tx, orderRef, {
+        type: 'driver_slow',
+        actor: JOB_ACTOR,
+        data: null
+      }, data.customerId);
+      bumpOrderSignal(tx, orderRef, data.customerId, 'driver_slow');
       const { marketplacePushVariables } = require('./marketplace/marketplacePush');
       return {
         claimed: true,
@@ -156,4 +165,5 @@ const marketplaceSlowDriverJob = new MarketplaceSlowDriverJob();
 marketplaceSlowDriverJob.shouldNotifySlowDriver = shouldNotifySlowDriver;
 marketplaceSlowDriverJob.claimSlowDriverInTransaction = claimSlowDriverInTransaction;
 marketplaceSlowDriverJob.planSlowDriverTickItem = planSlowDriverTickItem;
+marketplaceSlowDriverJob.applyOne = MarketplaceSlowDriverJob.prototype.applyOne;
 module.exports = marketplaceSlowDriverJob;

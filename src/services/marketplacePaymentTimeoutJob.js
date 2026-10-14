@@ -4,7 +4,7 @@ const { getFirestore } = require('./firebase');
 const shopOrderService = require('./shopOrderService');
 const { MARKETPLACE_DEFAULTS } = require('../config/marketplaceDefaults');
 const { getMarketplaceEnforcement } = require('./marketplace/orderStateMachine');
-const { appendEvent } = require('./marketplace/orderEvents');
+const { appendEvent, bumpOrderSignal } = require('./marketplace/orderEvents');
 const { createRefund, readRefundDocs } = require('./marketplace/refunds');
 const { isShortBalanceExpired } = require('./marketplace/shopPaymentVerification');
 const { marketplacePushVariables, digitsDisplayId } = require('./marketplace/marketplacePush');
@@ -235,6 +235,7 @@ class MarketplacePaymentTimeoutJob {
         actor: JOB_ACTOR,
         data: { mode: 'legacy' }
       }, data.customerId);
+      bumpOrderSignal(tx, orderRef, data.customerId, 'timed_out');
       return {
         expired: true,
         customerId: data.customerId || null,
@@ -279,6 +280,7 @@ class MarketplacePaymentTimeoutJob {
         tx.update(orderRef, { 'payment.nudges.utr3min': at, updatedAt: at });
         appendEvent(tx, orderRef, { type: 'utr_nudge', actor: JOB_ACTOR, data: null }, data.customerId);
         notifies = [{ audience: 'customer', id: customerId, template: 'UTR_NUDGE', variables }];
+        bumpOrderSignal(tx, orderRef, data.customerId, signalTypeForActionKind(action.kind));
       } else if (action.kind === 'reminder') {
         tx.update(orderRef, {
           [`payment.remindersSent.${action.flag}`]: at,
@@ -290,6 +292,7 @@ class MarketplacePaymentTimeoutJob {
           data: { minute: action.minute }
         }, data.customerId);
         notifies = [{ audience: 'shop', id: shopId, template: 'PAYMENT_REMINDER', variables }];
+        bumpOrderSignal(tx, orderRef, data.customerId, signalTypeForActionKind(action.kind));
       } else if (action.kind === 'timeout_review') {
         tx.update(orderRef, {
           orderStatus: 'payment_review',
@@ -320,6 +323,7 @@ class MarketplacePaymentTimeoutJob {
           { audience: 'customer', id: customerId, template: 'PAYMENT_UNDER_REVIEW', variables },
           { audience: 'shop', id: shopId, template: 'PAYMENT_REVIEW_SHOP', variables }
         ];
+        bumpOrderSignal(tx, orderRef, data.customerId, signalTypeForActionKind(action.kind));
       } else if (action.kind === 'timeout_unconfirmed') {
         tx.update(orderRef, {
           orderStatus: 'payment_unconfirmed',
@@ -334,6 +338,7 @@ class MarketplacePaymentTimeoutJob {
           data: { mode: 'unconfirmed' }
         }, data.customerId);
         notifies = [{ audience: 'customer', id: customerId, template: 'PAYMENT_NOT_CONFIRMED', variables }];
+        bumpOrderSignal(tx, orderRef, data.customerId, signalTypeForActionKind(action.kind));
       } else if (action.kind === 'balance_expired') {
         const payment = data.payment || {};
         const existingRefunds = await readRefundDocs(tx, orderRef);
@@ -383,6 +388,7 @@ class MarketplacePaymentTimeoutJob {
             variables: { ...variables, amount }
           }
         ];
+        bumpOrderSignal(tx, orderRef, data.customerId, signalTypeForActionKind(action.kind));
       } else if (action.kind === 'paid_check_alert') {
         tx.update(orderRef, { 'cancellation.paidCheckEscalatedAt': at, updatedAt: at });
         appendEvent(tx, orderRef, {
@@ -391,6 +397,7 @@ class MarketplacePaymentTimeoutJob {
           data: { escalated: true }
         }, data.customerId);
         notifies = [{ audience: 'support', id: orderRef.id, displayId: data.displayId ?? null }];
+        bumpOrderSignal(tx, orderRef, data.customerId, signalTypeForActionKind(action.kind));
       } else if (action.kind === 'unconfirmed_close') {
         tx.update(orderRef, {
           orderStatus: 'cancelled',
@@ -407,6 +414,7 @@ class MarketplacePaymentTimeoutJob {
           data: { reason: 'unconfirmed_expired' }
         }, data.customerId);
         notifies = [{ audience: 'customer', id: customerId, template: 'ORDER_CLOSED_UNCONFIRMED', variables }];
+        bumpOrderSignal(tx, orderRef, data.customerId, signalTypeForActionKind(action.kind));
       } else if (action.kind === 'review_escalated') {
         tx.update(orderRef, {
           'payment.review.escalatedAt': at,
@@ -423,6 +431,7 @@ class MarketplacePaymentTimeoutJob {
           displayId: data.displayId ?? null,
           hoursOpen: action.hoursOpen
         }];
+        bumpOrderSignal(tx, orderRef, data.customerId, signalTypeForActionKind(action.kind));
       }
 
       return { changed: true, kind: action.kind, notifies };
@@ -611,6 +620,29 @@ function decideUnconfirmed(data, nowMs, settings) {
   return { kind: 'unconfirmed_close' };
 }
 
+function signalTypeForActionKind(kind) {
+  switch (kind) {
+    case 'nudge':
+      return 'utr_nudge';
+    case 'reminder':
+      return 'reminder_sent';
+    case 'timeout_review':
+      return 'review_opened';
+    case 'timeout_unconfirmed':
+      return 'timed_out';
+    case 'balance_expired':
+      return 'cancelled';
+    case 'paid_check_alert':
+      return 'paid_check';
+    case 'unconfirmed_close':
+      return 'cancelled';
+    case 'review_escalated':
+      return 'review_escalated';
+    default:
+      return 'timed_out';
+  }
+}
+
 function decideForLane(lane, data, nowMs, settings) {
   if (lane === 'awaiting') {
     return decideAwaiting(data, nowMs, settings);
@@ -683,4 +715,7 @@ async function notifyShop(shopId, template, variables) {
 const marketplacePaymentTimeoutJob = new MarketplacePaymentTimeoutJob();
 marketplacePaymentTimeoutJob.isLegacyPaymentExpireable = (status) => EXPIREABLE.has(status);
 marketplacePaymentTimeoutJob.decideForLane = decideForLane;
+marketplacePaymentTimeoutJob.signalTypeForActionKind = signalTypeForActionKind;
+marketplacePaymentTimeoutJob.applyOne = MarketplacePaymentTimeoutJob.prototype.applyOne;
+marketplacePaymentTimeoutJob.expireOne = MarketplacePaymentTimeoutJob.prototype.expireOne;
 module.exports = marketplacePaymentTimeoutJob;

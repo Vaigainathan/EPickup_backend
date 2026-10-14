@@ -3,7 +3,7 @@ const { Timestamp, FieldValue } = require('firebase-admin/firestore');
 const { getFirestore } = require('../firebase');
 const { MARKETPLACE_DEFAULTS } = require('../../config/marketplaceDefaults');
 const { isValidUtr, isValidUpiId, toPaise } = require('../../validators/marketplace');
-const { appendEvent } = require('./orderEvents');
+const { appendEvent, bumpOrderSignal } = require('./orderEvents');
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const OPEN_STATUSES = new Set(['upi_needed', 'due', 'sent', 'disputed']);
 const SENT_OR_LATER = new Set(['sent', 'confirmed', 'disputed', 'closed']);
@@ -219,6 +219,7 @@ async function createRefund(tx, {
     reason: eventReason == null ? null : eventReason,
     data: { reason }
   }, data.customerId);
+  bumpOrderSignal(tx, orderRef, data.customerId, 'refund_created');
   return { refundId, amount };
 }
 
@@ -358,15 +359,16 @@ async function submitCustomerUpi({
         tx.set(userRef, { customer: { marketplace: { refundUpiId: left } } });
       }
     }
+    tx.update(orderRef, {
+      ...orderRefundDenormPatch(data, refunds, refundId, 'due'),
+      updatedAt: stamp
+    });
     appendEvent(tx, orderRef, {
       type: 'refund_upi',
       actor: { type: 'customer', id: customerId },
       data: null
     }, data.customerId);
-    tx.update(orderRef, {
-      ...orderRefundDenormPatch(data, refunds, refundId, 'due'),
-      updatedAt: stamp
-    });
+    bumpOrderSignal(tx, orderRef, data.customerId, 'refund_upi');
     return {
       replay: false,
       data,
@@ -445,11 +447,13 @@ async function acknowledgeRefund({
       ...orderRefundDenormPatch(data, refunds, refundId, nextStatus),
       updatedAt: stamp
     });
+    const ackSignalType = nextStatus === 'confirmed' ? 'refund_ack' : 'refund_disputed';
     appendEvent(tx, orderRef, {
-      type: nextStatus === 'confirmed' ? 'refund_ack' : 'refund_disputed',
+      type: ackSignalType,
       actor: { type: 'customer', id: customerId },
       data: nextStatus === 'confirmed' ? { received: true } : { late }
     }, data.customerId);
+    bumpOrderSignal(tx, orderRef, data.customerId, ackSignalType);
     const variables = displayVariables(data, orderId);
     const notifies = nextStatus === 'confirmed'
       ? [{ template: 'REFUND_CLOSED', variables }]
@@ -554,6 +558,7 @@ async function markRefundSent({
       ...orderRefundDenormPatch(data, refunds, refundId, 'sent'),
       updatedAt: stamp
     });
+    bumpOrderSignal(tx, orderRef, data.customerId, 'refund_sent');
     return { alreadyProcessed: false, data, refund: { ...refund, status: 'sent', refundUtr, sentAmount: amount } };
   });
 
@@ -613,6 +618,7 @@ async function resolveRefundDispute({
         actor,
         data: { received: true }
       }, data.customerId);
+      bumpOrderSignal(tx, orderRef, data.customerId, 'refund_ack');
       return { data, template: 'REFUND_CLOSED', refund: { ...refund, status: 'confirmed' } };
     }
     const reminders = {
@@ -656,6 +662,7 @@ async function resolveRefundDispute({
       ? { ...row, data: { ...row.data, ...patch, status: to } }
       : row));
     tx.update(orderRef, { ...orderRefundDenormPatch(data, rows), updatedAt: stamp });
+    bumpOrderSignal(tx, orderRef, data.customerId, 'refund_resent');
     return { data, template: null, refund: { ...refund, ...patch, id: refundId } };
   });
 
@@ -712,6 +719,7 @@ async function recordFoundRefund({ orderId, amount, operator, reason }) {
       'payment.receivedAmount': amount,
       'payment.receivedAmountPaise': toPaise(amount)
     });
+    bumpOrderSignal(tx, orderRef, data.customerId, 'refund_created');
     return { data, refundId: created.refundId };
   });
   await notifyUser(outcome.data.customerId, 'REFUND_INITIATED', displayVariables(outcome.data, orderId));

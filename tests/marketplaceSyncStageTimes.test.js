@@ -10,7 +10,8 @@ jest.mock('../src/services/notificationService', () => ({
 
 jest.mock('../src/services/marketplace/orderEvents', () => ({
   appendEvent: jest.fn(),
-  touchOrderSignal: jest.fn()
+  touchOrderSignal: jest.fn(),
+  bumpOrderSignal: jest.fn()
 }));
 
 const { getFirestore } = require('../src/services/firebase');

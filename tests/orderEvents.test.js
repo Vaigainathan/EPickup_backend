@@ -43,7 +43,8 @@ const BLUEPRINT_TYPES = [
   'rated',
   'help_request',
   'help_resolved',
-  'evidence_deleted'
+  'evidence_deleted',
+  'driver_slow'
 ];
 
 describe('appendEvent', () => {
@@ -97,7 +98,7 @@ describe('appendEvent', () => {
     expect(signal.updatedAt).toBeDefined();
   });
 
-  test('a second event in the same transaction does not write the signal again', () => {
+  test('a second event in the same transaction refreshes the signal to the latest type', () => {
     const orderRef = orderRefFor();
     const transaction = { set: jest.fn() };
     appendEvent(transaction, orderRef, {
@@ -109,9 +110,9 @@ describe('appendEvent', () => {
       actor: { type: 'system', id: 'marketplace' }
     }, 'cust-1');
     const signalWrites = transaction.set.mock.calls.filter((call) => call[0] === orderRef.signalRef);
-    expect(signalWrites).toHaveLength(1);
-    expect(signalWrites[0][1].type).toBe('created');
-    expect(transaction.set).toHaveBeenCalledTimes(3);
+    expect(signalWrites).toHaveLength(2);
+    expect(signalWrites[1][1].type).toBe('payment_details_issued');
+    expect(transaction.set).toHaveBeenCalledTimes(4);
   });
 
   test('a missing customer id throws before a write', () => {
@@ -125,9 +126,9 @@ describe('appendEvent', () => {
     const orderRef = orderRefFor();
     const transaction = { set: jest.fn() };
     expect(touchOrderSignal(transaction, orderRef, 'cust-1', 'delivery_fare')).toBe(true);
-    expect(touchOrderSignal(transaction, orderRef, 'cust-1', 'delivery_driver')).toBe(false);
-    expect(transaction.set).toHaveBeenCalledTimes(1);
-    expect(Object.keys(transaction.set.mock.calls[0][1]).sort()).toEqual(['customerId', 'type', 'updatedAt']);
-    expect(transaction.set.mock.calls[0][1].type).toBe('delivery_fare');
+    expect(touchOrderSignal(transaction, orderRef, 'cust-1', 'delivery_driver')).toBe(true);
+    expect(transaction.set).toHaveBeenCalledTimes(2);
+    expect(Object.keys(transaction.set.mock.calls[1][1]).sort()).toEqual(['customerId', 'type', 'updatedAt']);
+    expect(transaction.set.mock.calls[1][1].type).toBe('delivery_driver');
   });
 });

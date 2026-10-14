@@ -45,11 +45,11 @@ const EVENT_TYPES = [
   'rated',
   'help_request',
   'help_resolved',
-  'evidence_deleted'
+  'evidence_deleted',
+  'driver_slow'
 ];
 
 const EVENT_TYPE_SET = new Set(EVENT_TYPES);
-const signalTouched = new WeakMap();
 
 function requireCustomerId(customerId) {
   if (typeof customerId !== 'string' || customerId.trim() === '') {
@@ -67,22 +67,17 @@ function touchOrderSignal(transaction, orderRef, customerId, type) {
     error.code = 'MISSING_SIGNAL_TYPE';
     throw error;
   }
-  let touched = signalTouched.get(transaction);
-  if (!touched) {
-    touched = new Set();
-    signalTouched.set(transaction, touched);
-  }
-  const key = (orderRef && (orderRef.path || orderRef.id)) || 'order';
-  if (touched.has(key)) {
-    return false;
-  }
-  touched.add(key);
   transaction.set(orderRef.collection('signal').doc('latest'), {
     customerId: id,
     updatedAt: admin.firestore.FieldValue.serverTimestamp(),
     type
   });
   return true;
+}
+
+/** Call after the final marketplaceOrders patch in a transaction (Rule 8). */
+function bumpOrderSignal(transaction, orderRef, customerId, type) {
+  return touchOrderSignal(transaction, orderRef, customerId, type);
 }
 
 function appendEvent(transaction, orderRef, event, customerId) {
@@ -118,5 +113,6 @@ function appendEvent(transaction, orderRef, event, customerId) {
 module.exports = {
   EVENT_TYPES,
   appendEvent,
-  touchOrderSignal
+  touchOrderSignal,
+  bumpOrderSignal
 };

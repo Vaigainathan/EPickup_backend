@@ -3,7 +3,7 @@ const { FieldValue } = require('firebase-admin/firestore');
 const { getFirestore } = require('./firebase');
 const { MARKETPLACE_DEFAULTS } = require('../config/marketplaceDefaults');
 const { getMarketplaceEnforcement } = require('./marketplace/orderStateMachine');
-const { appendEvent } = require('./marketplace/orderEvents');
+const { appendEvent, bumpOrderSignal } = require('./marketplace/orderEvents');
 const {
   alertRefund,
   millisOf,
@@ -113,6 +113,7 @@ class MarketplaceRefundJob {
       const notifies = [];
       const actions = [];
       let overdueAdded = 0;
+      let lastSignalType = null;
       planned.forEach((action) => {
         const refund = refunds.find((item) => item.id === action.refundId);
         if (!refund) {
@@ -132,6 +133,7 @@ class MarketplaceRefundJob {
           tx.update(refund.ref, { status: 'closed', autoClosedAt: stamp, updatedAt: stamp });
           refund.data.status = 'closed';
           appendEvent(tx, orderRef, { type: 'refund_auto_closed', actor: JOB_ACTOR, data: null }, data.customerId);
+          lastSignalType = 'refund_auto_closed';
           notifies.push({ template: 'REFUND_CLOSED', customerId: data.customerId, shopId: data.shopId });
         } else if (action.kind === 'upi7d') {
           reminders.upiAlert7d = true;
@@ -142,6 +144,7 @@ class MarketplaceRefundJob {
             actor: JOB_ACTOR,
             data: { which: 'upi7d' }
           }, data.customerId);
+          lastSignalType = 'refund_reminder';
           row.alert = true;
         } else if (action.kind === 'due48') {
           reminders.due48 = true;
@@ -157,6 +160,7 @@ class MarketplaceRefundJob {
             actor: JOB_ACTOR,
             data: { which: 'due48' }
           }, data.customerId);
+          lastSignalType = 'refund_reminder';
           notifies.push({ template: 'REFUND_OVERDUE', customerId: data.customerId, shopId: data.shopId });
         } else {
           reminders[action.kind] = true;
@@ -168,6 +172,7 @@ class MarketplaceRefundJob {
             actor: JOB_ACTOR,
             data: { which }
           }, data.customerId);
+          lastSignalType = 'refund_reminder';
           if (which === 'upi24' || which === 'upi72') {
             notifies.push({ template: 'REFUND_UPI_REMINDER', customerId: data.customerId, shopId: null });
           } else if (which === 'due24') {
@@ -184,6 +189,9 @@ class MarketplaceRefundJob {
         tx.update(shopRef, { 'marketplaceStats.refundsOverdue': count + overdueAdded });
       }
       tx.update(orderRef, { ...orderRefundDenormPatch(data, refunds), updatedAt: stamp });
+      if (lastSignalType) {
+        bumpOrderSignal(tx, orderRef, data.customerId, lastSignalType);
+      }
       return {
         actions,
         notifies,
@@ -264,4 +272,5 @@ async function notifyUser(userId, template, variables) {
 
 const marketplaceRefundJob = new MarketplaceRefundJob();
 marketplaceRefundJob.planRefundActions = planRefundActions;
+marketplaceRefundJob.applyOrder = MarketplaceRefundJob.prototype.applyOrder;
 module.exports = marketplaceRefundJob;

@@ -266,7 +266,7 @@ describe('shop payment verification', () => {
     });
     expect(mockDocs.get('marketplaceOrders/order-1/signal/latest')).toMatchObject({
       customerId: 'cust-1',
-      type: 'stock_deducted'
+      type: 'shop_confirm'
     });
   });
 

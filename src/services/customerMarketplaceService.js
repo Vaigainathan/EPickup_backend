@@ -301,6 +301,33 @@ function stripInternalCardFields(card) {
   return out;
 }
 
+function presentShopStatusFields(row, settings, now) {
+  const toggleOpen = row.isOpen;
+  const openingHours = row.openingHours;
+  const isOpenNow = isShopOpenNow({ isOpen: toggleOpen, openingHours, now });
+  const opensAt = isOpenNow
+    ? null
+    : nextOpensAt({ openingHours, now });
+  const closesAt = isOpenNow && openingHours != null
+    ? currentClosesAt({ openingHours, now })
+    : null;
+  const policyGroup = policyGroupFor(row.shopType, settings.policyGroupA);
+  return { isOpenNow, opensAt, closesAt, policyGroup };
+}
+
+function presentSearchProductShop(row, settings, now) {
+  const { isOpenNow, opensAt, closesAt, policyGroup } = presentShopStatusFields(row, settings, now);
+  return {
+    id: row.id,
+    shopName: row.shopName,
+    shopType: row.shopType,
+    isOpenNow,
+    opensAt,
+    closesAt,
+    policyGroup
+  };
+}
+
 class CustomerMarketplaceService {
   getDb() {
     return getFirestore();
@@ -478,11 +505,11 @@ class CustomerMarketplaceService {
 
   async presentShopCard(row, { productPhotoByShop, taglineByShop, policyGroupA, now }) {
     const toggleOpen = row.isOpen;
-    const openingHours = row.openingHours;
-    const isOpenNow = isShopOpenNow({ isOpen: toggleOpen, openingHours, now });
-    const opensAt = isOpenNow
-      ? null
-      : nextOpensAt({ openingHours, now });
+    const { isOpenNow, opensAt, closesAt, policyGroup } = presentShopStatusFields(
+      row,
+      { policyGroupA },
+      now
+    );
 
     const storefront = row.storefront || {};
     let photoSource = photoSourceForShop(storefront);
@@ -533,12 +560,10 @@ class CustomerMarketplaceService {
       tagline,
       isOpenNow,
       opensAt,
-      closesAt: isOpenNow && openingHours != null
-        ? currentClosesAt({ openingHours, now })
-        : null,
+      closesAt,
       rating,
       isNew,
-      policyGroup: policyGroupFor(row.shopType, policyGroupA),
+      policyGroup,
       fairRating: row.fairRating,
       relevanceScore: row.relevanceScore
     };
@@ -752,7 +777,7 @@ class CustomerMarketplaceService {
       .map((shop) => stripInternalCardFields(shop));
 
     const products = [];
-    const shopNameById = new Map(rows.map((shop) => [shop.id, shop.shopName]));
+    const rowById = new Map(rows.map((shop) => [shop.id, shop]));
     for (const ids of chunk([...eligibleIds], SHOP_ID_IN_LIMIT)) {
       if (ids.length === 0) {
         continue;
@@ -764,9 +789,11 @@ class CustomerMarketplaceService {
           continue;
         }
         const product = await this.presentCustomerProduct(data, doc.id);
+        const shopRow = rowById.get(product.shopId);
         products.push({
           ...product,
-          shopName: shopNameById.get(product.shopId) || ''
+          shopName: shopRow ? shopRow.shopName : '',
+          shop: shopRow ? presentSearchProductShop(shopRow, settings, now) : null
         });
       }
     }
@@ -790,3 +817,5 @@ module.exports.encodeCursor = encodeCursor;
 module.exports.pageShops = pageShops;
 module.exports.hasVerifiedUpiName = hasVerifiedUpiName;
 module.exports.stripInternalCardFields = stripInternalCardFields;
+module.exports.presentShopStatusFields = presentShopStatusFields;
+module.exports.presentSearchProductShop = presentSearchProductShop;

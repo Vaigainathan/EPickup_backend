@@ -6,6 +6,17 @@ const {
   pageShops,
   hasVerifiedUpiName
 } = require('../src/services/customerMarketplaceService');
+const shopCatalogueService = require('../src/services/shopCatalogueService');
+
+const weekdayOpeningHours = {
+  monday: { closed: false, open: '09:00', close: '21:00' },
+  tuesday: { closed: false, open: '09:00', close: '21:00' },
+  wednesday: { closed: false, open: '09:00', close: '21:00' },
+  thursday: { closed: false, open: '09:00', close: '21:00' },
+  friday: { closed: false, open: '09:00', close: '21:00' },
+  saturday: { closed: false, open: '09:00', close: '21:00' },
+  sunday: { closed: false, open: '09:00', close: '21:00' }
+};
 
 jest.mock('../src/services/firebase', () => ({
   getFirestore: jest.fn()
@@ -400,5 +411,106 @@ describe('customerMarketplaceService browse', () => {
       lng: 77.6,
       q: 'x'.repeat(51)
     })).rejects.toMatchObject({ code: 'INVALID_QUERY' });
+  });
+
+  test('search product hit includes shop when shop name does not match q', async () => {
+    const result = await service.search({
+      lat: 12.9,
+      lng: 77.6,
+      q: 'rice'
+    });
+    expect(result.shops).toHaveLength(0);
+    expect(result.products).toHaveLength(1);
+    expect(result.products[0].shopName).toBe('Verified Mart');
+    expect(result.products[0].shop).toMatchObject({
+      id: 'shop-verified',
+      shopName: 'Verified Mart',
+      shopType: 'Grocery & Supermarket'
+    });
+  });
+
+  test('search product shop status matches presentShopCard for open shop', async () => {
+    jest.useFakeTimers();
+    jest.setSystemTime(new Date('2026-06-15T12:00:00+05:30'));
+    const origin = { lat: 12.9, lng: 77.6 };
+    const now = new Date();
+    const { rows, settings } = await service.collectEligibleShopRows(origin, now);
+    const row = rows.find((r) => r.id === 'shop-verified');
+    const [card] = await service.presentShopCardsForRows([row], settings, now);
+    const result = await service.search({ lat: origin.lat, lng: origin.lng, q: 'rice' });
+    jest.useRealTimers();
+
+    expect(result.products[0].shop).toEqual({
+      id: card.id,
+      shopName: card.shopName,
+      shopType: card.shopType,
+      isOpenNow: card.isOpenNow,
+      opensAt: card.opensAt,
+      closesAt: card.closesAt,
+      policyGroup: card.policyGroup
+    });
+  });
+
+  test('search product shop status matches presentShopCard when shop is closed by hours', async () => {
+    const shopWithHours = {
+      ...verifiedShop,
+      data: {
+        ...verifiedShop.data,
+        storefront: {
+          tagline: 'Fresh daily',
+          openingHours: weekdayOpeningHours
+        }
+      }
+    };
+    const { getFirestore } = require('../src/services/firebase');
+    getFirestore.mockReturnValue(buildFirestoreMock({
+      users,
+      shops: [shopWithHours, unverifiedShop],
+      products: [
+        {
+          id: 'prod-hidden',
+          data: { shopId: 'shop-unverified', name: 'Secret Item', isActive: true }
+        },
+        {
+          id: 'prod-visible',
+          data: { shopId: 'shop-verified', name: 'Rice', isActive: true }
+        }
+      ]
+    }));
+    const hoursService = new CustomerMarketplaceService();
+
+    jest.useFakeTimers();
+    jest.setSystemTime(new Date('2026-06-15T07:00:00+05:30'));
+    const origin = { lat: 12.9, lng: 77.6 };
+    const now = new Date();
+    const { rows, settings } = await hoursService.collectEligibleShopRows(origin, now);
+    const row = rows.find((r) => r.id === 'shop-verified');
+    const [card] = await hoursService.presentShopCardsForRows([row], settings, now);
+    const result = await hoursService.search({ lat: origin.lat, lng: origin.lng, q: 'rice' });
+    jest.useRealTimers();
+
+    expect(card.isOpenNow).toBe(false);
+    expect(card.opensAt).toBe('2026-06-15T09:00:00+05:30');
+    expect(result.products[0].shop).toEqual({
+      id: card.id,
+      shopName: card.shopName,
+      shopType: card.shopType,
+      isOpenNow: card.isOpenNow,
+      opensAt: card.opensAt,
+      closesAt: card.closesAt,
+      policyGroup: card.policyGroup
+    });
+  });
+
+  test('search product-only path does not extra getAll or sign shop photos', async () => {
+    const { getFirestore } = require('../src/services/firebase');
+    const db = getFirestore();
+    const getAllSpy = jest.spyOn(db, 'getAll');
+    const signSpy = jest.spyOn(shopCatalogueService, 'resolvePhotoFromSource');
+    await service.search({ lat: 12.9, lng: 77.6, q: 'rice' });
+    expect(getAllSpy).toHaveBeenCalledTimes(1);
+    expect(signSpy).not.toHaveBeenCalled();
+    getAllSpy.mockRestore();
+    signSpy.mockRestore();
   });
 });

@@ -1,5 +1,6 @@
 // Customers read marketplace orders through the API. The signal document is the only client-readable change notice.
 const { presentCustomerRefund } = require('./refunds');
+const { presentDeliveryAddress } = require('./presentDeliveryAddress');
 
 const PAYMENT_FIELDS = [
   'status',
@@ -239,7 +240,7 @@ function presentCustomerOrder(order) {
         : null,
       stageTimes: presentDeliveryStageTimes(source.delivery)
     },
-    deliveryAddress: source.deliveryAddress ?? null,
+    deliveryAddress: presentDeliveryAddress(source.deliveryAddress, { includeAddressId: true }),
     window: copyWindow(source.window),
     verifiedPayeeName: source.verifiedPayeeName ?? null,
     policyGroup: source.policyGroup ?? null,
@@ -285,6 +286,7 @@ function presentCustomerOrderSummary(order) {
   const payment = view.payment && typeof view.payment === 'object' ? view.payment : {};
   return {
     id: view.id,
+    shopId: view.shopId ?? source.shopId ?? null,
     displayId: view.displayId,
     orderStatus: view.orderStatus,
     shopSnapshot: { name: snapshot.name ?? null },

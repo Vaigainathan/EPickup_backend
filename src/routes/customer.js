@@ -21,6 +21,12 @@ const {
   listCustomerParcelBookings,
   presentCustomerParcelBookingHistory
 } = require('../services/customerParcelBookingHistory');
+const {
+  parseCustomerAddressBody,
+  applySingleDefault,
+  addressLimitExceeded,
+  invalidateCustomerAddressCache
+} = require('../validators/customerAddress');
 
 function sendMarketplaceRejection(res, bookingData, bookingId, route, customerId) {
   const rejection = marketplaceBookingRejection(bookingData, { bookingId, route, customerId });
@@ -1253,36 +1259,61 @@ router.get('/addresses', authenticateToken, async (req, res) => {
 router.post('/addresses', authenticateToken, async (req, res) => {
   try {
     const { uid: userId } = req.user;
-    const addressData = req.body;
     const db = getFirestore();
     
     console.log(`📍 Adding address for customer: ${userId}`);
     
-    // Get current addresses
     const customerDoc = await db.collection('users').doc(userId).get();
+    if (!customerDoc.exists) {
+      return res.status(404).json({
+        success: false,
+        error: 'Customer not found'
+      });
+    }
     const customerData = customerDoc.data();
     const addresses = customerData.customer?.addresses || [];
-    
-    // Add new address
+
+    const parsed = parseCustomerAddressBody(req.body, { mode: 'create' });
+    if (!parsed.ok) {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: parsed.code,
+          message: parsed.message,
+          field: parsed.field
+        }
+      });
+    }
+
+    if (addressLimitExceeded(addresses)) {
+      return res.status(409).json({
+        success: false,
+        error: {
+          code: 'ADDRESS_LIMIT',
+          message: 'You can save at most 20 addresses'
+        }
+      });
+    }
+
     const newAddress = {
       id: `addr_${Date.now()}`,
-      ...addressData,
+      ...parsed.value,
       createdAt: new Date()
     };
-    
+
     addresses.push(newAddress);
+    const defaultIndex = addresses.length - 1;
+    const updatedAddresses = applySingleDefault(addresses, defaultIndex);
     
-    // Update customer document
     await db.collection('users').doc(userId).update({
-      'customer.addresses': addresses,
+      'customer.addresses': updatedAddresses,
       updatedAt: new Date()
     });
-    
-    // 🚀 BACKEND CACHING: Invalidate cache when addresses are updated
-    const cacheKey = `addresses_${userId}`;
+
+    const savedAddress = updatedAddresses[defaultIndex];
     const cachingService = require('../services/cachingService');
     try {
-      await cachingService.delete(cacheKey, 'memory');
+      await invalidateCustomerAddressCache(userId, cachingService);
       console.log(`🗑️ Invalidated address cache for customer: ${userId}`);
     } catch (cacheError) {
       console.log('⚠️ Cache invalidation failed, but continuing:', cacheError.message);
@@ -1292,7 +1323,7 @@ router.post('/addresses', authenticateToken, async (req, res) => {
     
     res.json({
       success: true,
-      data: newAddress,
+      data: savedAddress,
       message: 'Address added successfully'
     });
     
@@ -1315,17 +1346,20 @@ router.put('/addresses/:addressId', authenticateToken, async (req, res) => {
   try {
     const { uid: userId } = req.user;
     const { addressId } = req.params;
-    const addressData = req.body;
     const db = getFirestore();
     
     console.log(`📍 Updating address ${addressId} for customer: ${userId}`);
     
-    // Get current addresses
     const customerDoc = await db.collection('users').doc(userId).get();
+    if (!customerDoc.exists) {
+      return res.status(404).json({
+        success: false,
+        error: 'Customer not found'
+      });
+    }
     const customerData = customerDoc.data();
     const addresses = customerData.customer?.addresses || [];
     
-    // Find and update address
     const addressIndex = addresses.findIndex(addr => addr.id === addressId);
     
     if (addressIndex === -1) {
@@ -1334,24 +1368,45 @@ router.put('/addresses/:addressId', authenticateToken, async (req, res) => {
         error: 'Address not found'
       });
     }
+
+    const parsed = parseCustomerAddressBody(req.body, { mode: 'update' });
+    if (!parsed.ok) {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: parsed.code,
+          message: parsed.message,
+          field: parsed.field
+        }
+      });
+    }
     
     addresses[addressIndex] = {
       ...addresses[addressIndex],
-      ...addressData,
+      ...parsed.value,
       updatedAt: new Date()
     };
+
+    const updatedAddresses = applySingleDefault(addresses, addressIndex);
     
-    // Update customer document
     await db.collection('users').doc(userId).update({
-      'customer.addresses': addresses,
+      'customer.addresses': updatedAddresses,
       updatedAt: new Date()
     });
+
+    const cachingService = require('../services/cachingService');
+    try {
+      await invalidateCustomerAddressCache(userId, cachingService);
+      console.log(`🗑️ Invalidated address cache for customer: ${userId}`);
+    } catch (cacheError) {
+      console.log('⚠️ Cache invalidation failed, but continuing:', cacheError.message);
+    }
     
     console.log(`✅ Updated address ${addressId} for customer: ${userId}`);
     
     res.json({
       success: true,
-      data: addresses[addressIndex],
+      data: updatedAddresses[addressIndex],
       message: 'Address updated successfully'
     });
     

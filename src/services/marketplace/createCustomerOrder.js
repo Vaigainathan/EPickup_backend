@@ -9,6 +9,7 @@ const { isPoolEnabled, allocateInTransaction } = require('../orderNumberPool');
 const displayIdService = require('../displayIdService');
 const { assertMarketplaceProfileNotRestricted } = require('./customerMarketplaceRestriction');
 const { httpError } = require('./httpError');
+const { validateIndianMobile } = require('../../validators/customerAddress');
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
@@ -261,6 +262,66 @@ function addressCoordinates(address) {
   return new GeoPoint(lat, lng);
 }
 
+function customerProfileName(customer) {
+  const data = customer && typeof customer === 'object' ? customer : {};
+  if (typeof data.name === 'string' && data.name.trim()) {
+    return data.name.trim();
+  }
+  if (typeof data.displayName === 'string' && data.displayName.trim()) {
+    return data.displayName.trim();
+  }
+  return null;
+}
+
+function snapshotDeliveryAddress(address, customer, { addressId, coordinates }) {
+  const row = address && typeof address === 'object' ? address : {};
+  const snapshot = {
+    addressId,
+    text: addressText(row),
+    coordinates
+  };
+
+  const label = typeof row.name === 'string' ? row.name.trim() : '';
+  if (label) {
+    snapshot.label = label;
+  }
+  const type = typeof row.type === 'string' ? row.type.trim().toLowerCase() : '';
+  if (type) {
+    snapshot.type = type;
+  }
+  const houseNo = typeof row.houseNo === 'string' ? row.houseNo.trim() : '';
+  if (houseNo) {
+    snapshot.houseNo = houseNo;
+  }
+  const street = typeof row.street === 'string' ? row.street.trim() : '';
+  if (street) {
+    snapshot.street = street;
+  }
+  const landmark = typeof row.landmark === 'string' ? row.landmark.trim() : '';
+  if (landmark) {
+    snapshot.landmark = landmark;
+  }
+
+  const receiverName = typeof row.receiverName === 'string' && row.receiverName.trim()
+    ? row.receiverName.trim()
+    : customerProfileName(customer);
+  if (receiverName) {
+    snapshot.receiverName = receiverName;
+  }
+
+  const phoneCandidate = typeof row.receiverPhone === 'string' && row.receiverPhone.trim()
+    ? row.receiverPhone.trim()
+    : (typeof customer.phone === 'string' ? customer.phone.trim() : '');
+  if (phoneCandidate) {
+    const phoneResult = validateIndianMobile(phoneCandidate);
+    if (phoneResult.ok) {
+      snapshot.receiverPhone = phoneResult.value;
+    }
+  }
+
+  return snapshot;
+}
+
 function mixDisplayId(counter, timestamp, customerId) {
   const timestampSeed = timestamp % 99989;
   const customerSeed = displayIdService.generateHash(customerId) % 99989;
@@ -469,11 +530,10 @@ async function createMarketplaceOrder({ customerId, idempotencyKey, body }) {
       expectedAmount: adjustment.expectedAmount,
       expectedAmountPaise: adjustment.expectedAmountPaise,
       amountAdjustmentPaise: adjustment.amountAdjustmentPaise,
-      deliveryAddress: {
+      deliveryAddress: snapshotDeliveryAddress(address, customerData, {
         addressId: body.addressId,
-        text: addressText(address),
         coordinates: deliveryCoords
-      },
+      }),
       orderStatus: 'awaiting_payment',
       paymentMethod: 'upi',
       payment: {
@@ -585,5 +645,7 @@ module.exports = {
   shopSnapshotAddress,
   shopSnapshotCoordinates,
   addressCoordinates,
+  addressText,
+  snapshotDeliveryAddress,
   createMarketplaceOrder
 };

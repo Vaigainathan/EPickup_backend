@@ -235,6 +235,7 @@ describe('presentCustomerOrderSummary', () => {
   test('includes new list fields without sensitive payment or shop contact data', () => {
     const summary = presentCustomerOrderSummary({
       ...baseOrder,
+      shopId: 'shop-1',
       payment: {
         status: 'initiated',
         customerUtr: '123456789012',
@@ -245,6 +246,7 @@ describe('presentCustomerOrderSummary', () => {
 
     expect(summary).toEqual({
       id: 'ord-list',
+      shopId: 'shop-1',
       displayId: 1001,
       orderStatus: 'preparing',
       shopSnapshot: { name: 'Test Shop' },

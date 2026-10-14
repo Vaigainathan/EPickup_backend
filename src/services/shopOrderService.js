@@ -28,6 +28,7 @@ const {
   presentShopRefund,
   refundRemainder
 } = require('./marketplace/refunds');
+const { presentDeliveryAddress } = require('./marketplace/presentDeliveryAddress');
 
 function refundRowsFromQuerySnap(snap) {
   const docs = snap && Array.isArray(snap.docs) ? snap.docs : [];
@@ -321,10 +322,7 @@ class ShopOrderService {
       deliveryFee: data.deliveryFee ?? 0,
       readyAt: toIso(data.readyAt),
       delivery: presentDelivery(data.delivery),
-      deliveryAddress: {
-        text: typeof address.text === 'string' ? address.text : '',
-        coordinates: presentLocation(address.coordinates)
-      },
+      deliveryAddress: presentDeliveryAddress(address, { includeAddressId: false }),
       orderStatus: data.orderStatus,
       displayId: data.displayId ?? null,
       expectedAmount: data.expectedAmount ?? null,
@@ -915,17 +913,27 @@ class ShopOrderService {
       ? customerData.name
       : 'Customer';
     const customerPhone = typeof customerData.phone === 'string' ? customerData.phone : '';
+    const dropoffName = typeof delivery.receiverName === 'string' && delivery.receiverName.trim()
+      ? delivery.receiverName.trim()
+      : customerName;
+    const dropoffPhone = typeof delivery.receiverPhone === 'string' && delivery.receiverPhone.trim()
+      ? delivery.receiverPhone.trim()
+      : customerPhone;
     const dropoffAddress = typeof delivery.text === 'string' ? delivery.text : '';
     const instructions = riderInstructions(orderData);
     const dropoff = {
-      name: customerName,
-      phone: customerPhone,
+      name: dropoffName,
+      phone: dropoffPhone,
       address: dropoffAddress,
       coordinates: {
         latitude: dropoffCoords.latitude,
         longitude: dropoffCoords.longitude
       }
     };
+    const dropoffLandmark = typeof delivery.landmark === 'string' ? delivery.landmark.trim() : '';
+    if (dropoffLandmark) {
+      dropoff.landmark = dropoffLandmark;
+    }
     if (instructions) {
       dropoff.instructions = instructions;
     }

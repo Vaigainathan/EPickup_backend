@@ -4,6 +4,12 @@ const shopCatalogueService = require('./shopCatalogueService');
 const shopOnboardingService = require('./shopOnboardingService');
 const { validateOpeningHours } = require('../utils/shopOpeningHours');
 const { imageExt, contentTypeFor } = require('./marketplace/evidenceCommon');
+const { thumbPathForOriginal } = require('../utils/catalogueThumbPath');
+const { generateCatalogueThumbBuffer } = require('./catalogueThumbnail');
+const {
+  photoSourceForShopThumb,
+  computePhotoKeyFromSource
+} = require('../utils/cataloguePhotoKey');
 
 const MAX_PHOTO_BYTES = 5 * 1024 * 1024;
 
@@ -22,6 +28,18 @@ function storefrontPhotoExt(buffer) {
   return ext;
 }
 
+function isStorageNotFound(error) {
+  if (!error) {
+    return false;
+  }
+  const code = error.code;
+  if (code === 404 || code === '404') {
+    return true;
+  }
+  const message = String(error.message || '');
+  return /not found/i.test(message);
+}
+
 async function deleteStorageObject(filePath) {
   if (typeof filePath !== 'string' || filePath.trim() === '') {
     return;
@@ -29,6 +47,9 @@ async function deleteStorageObject(filePath) {
   try {
     await getStorage().bucket().file(filePath).delete();
   } catch (error) {
+    if (isStorageNotFound(error)) {
+      return;
+    }
     console.error('❌ [SHOP_STOREFRONT] Failed to delete storage object:', error.message);
   }
 }
@@ -40,10 +61,19 @@ class ShopStorefrontService {
 
   async presentStorefront(storefront = {}) {
     const photoUrl = await shopCatalogueService.resolvePhotoUrl(storefront.photoPath, null);
+    const thumbSource = photoSourceForShopThumb(storefront);
+    let thumbUrl = null;
+    let thumbKey = null;
+    if (thumbSource) {
+      thumbKey = computePhotoKeyFromSource(thumbSource);
+      thumbUrl = await shopCatalogueService.resolvePhotoFromSource(thumbSource);
+    }
     return {
       tagline: typeof storefront.tagline === 'string' ? storefront.tagline : '',
       openingHours: storefront.openingHours !== undefined ? storefront.openingHours : null,
-      photoUrl
+      photoUrl,
+      thumbUrl,
+      thumbKey
     };
   }
 
@@ -102,29 +132,49 @@ class ShopStorefrontService {
       throw httpError(400, 'FILE_TOO_LARGE', 'Photo must be 5MB or smaller');
     }
 
+    const thumbBuffer = await generateCatalogueThumbBuffer(file.buffer);
+
     const ext = storefrontPhotoExt(file.buffer);
     const filePath = `shops/${shopId}/storefront/${Date.now()}.${ext}`;
-    const fileRef = getStorage().bucket().file(filePath);
+    const thumbPath = thumbPathForOriginal(filePath);
+    const customMetadata = {
+      shopId,
+      uploadedAt: new Date().toISOString(),
+      uploadedBy: 'backend_proxy',
+      originalFileName: file.originalname || `photo.${ext}`
+    };
+    const bucket = getStorage().bucket();
+    const fileRef = bucket.file(filePath);
+    const thumbRef = bucket.file(thumbPath);
 
     await fileRef.save(file.buffer, {
       metadata: {
         contentType: contentTypeFor(ext),
-        customMetadata: {
-          shopId,
-          uploadedAt: new Date().toISOString(),
-          uploadedBy: 'backend_proxy',
-          originalFileName: file.originalname || `photo.${ext}`
-        }
+        customMetadata
       }
     });
+
+    try {
+      await thumbRef.save(thumbBuffer, {
+        metadata: {
+          contentType: 'image/jpeg',
+          customMetadata
+        }
+      });
+    } catch (error) {
+      await deleteStorageObject(filePath);
+      throw error;
+    }
 
     const ctx = await shopOnboardingService.loadShopContext(shopId);
     const existing = ctx.shopProfile.storefront || {};
     const previousPath = typeof existing.photoPath === 'string' ? existing.photoPath : null;
+    const previousThumb = typeof existing.thumbPath === 'string' ? existing.thumbPath : null;
 
     const storefront = {
       ...existing,
       photoPath: filePath,
+      thumbPath,
       updatedAt: this.now()
     };
 
@@ -136,6 +186,9 @@ class ShopStorefrontService {
     if (previousPath && previousPath !== filePath) {
       await deleteStorageObject(previousPath);
     }
+    if (previousThumb && previousThumb !== thumbPath) {
+      await deleteStorageObject(previousThumb);
+    }
 
     return this.presentStorefront(storefront);
   }
@@ -144,15 +197,20 @@ class ShopStorefrontService {
     const ctx = await shopOnboardingService.loadShopContext(shopId);
     const existing = ctx.shopProfile.storefront || {};
     const previousPath = typeof existing.photoPath === 'string' ? existing.photoPath : null;
+    const previousThumb = typeof existing.thumbPath === 'string' ? existing.thumbPath : null;
 
     await ctx.shopRef.update({
       'storefront.photoPath': admin.firestore.FieldValue.delete(),
+      'storefront.thumbPath': admin.firestore.FieldValue.delete(),
       'storefront.updatedAt': this.now(),
       updatedAt: this.now()
     });
 
     if (previousPath) {
       await deleteStorageObject(previousPath);
+    }
+    if (previousThumb) {
+      await deleteStorageObject(previousThumb);
     }
 
     const refreshed = await shopOnboardingService.loadShopContext(shopId);

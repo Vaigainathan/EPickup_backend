@@ -13,6 +13,8 @@ const {
 const {
   photoSourceForProduct,
   photoSourceForShop,
+  photoSourceForProductThumb,
+  photoSourceForShopThumb,
   computePhotoKeyFromSource
 } = require('../utils/cataloguePhotoKey');
 const {
@@ -493,6 +495,20 @@ class CustomerMarketplaceService {
     const photoKey = computePhotoKeyFromSource(photoSource);
     const photoUrl = await shopCatalogueService.resolvePhotoFromSource(photoSource);
 
+    let thumbSource = photoSourceForShopThumb(storefront);
+    if (!thumbSource) {
+      const fallback = productPhotoByShop.get(row.id);
+      if (fallback) {
+        thumbSource = photoSourceForProductThumb(fallback);
+      }
+    }
+    let thumbUrl = null;
+    let thumbKey = null;
+    if (thumbSource) {
+      thumbKey = computePhotoKeyFromSource(thumbSource);
+      thumbUrl = await shopCatalogueService.resolvePhotoFromSource(thumbSource);
+    }
+
     let tagline = typeof storefront.tagline === 'string' ? storefront.tagline.trim() : '';
     if (!tagline) {
       tagline = taglineByShop.get(row.id) || '';
@@ -512,6 +528,8 @@ class CustomerMarketplaceService {
       orderCount: row.orderCount,
       photoUrl,
       photoKey,
+      thumbUrl,
+      thumbKey,
       tagline,
       isOpenNow,
       opensAt,
@@ -702,6 +720,8 @@ class CustomerMarketplaceService {
       weight: full.weight ?? null,
       photoUrl: full.photoUrl,
       photoKey: full.photoKey ?? null,
+      thumbUrl: full.thumbUrl ?? null,
+      thumbKey: full.thumbKey ?? null,
       isActive: full.isActive !== false,
       stock: full.stock ?? 0,
       hasVariants: full.hasVariants === true,

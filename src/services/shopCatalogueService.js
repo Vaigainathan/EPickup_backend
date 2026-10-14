@@ -4,8 +4,11 @@ const { getFirestore, getStorage } = require('./firebase');
 const {
   photoSourceFromPathAndUrl,
   photoSourceForProduct,
+  photoSourceForProductThumb,
   computePhotoKeyFromSource
 } = require('../utils/cataloguePhotoKey');
+const { thumbPathForOriginal } = require('../utils/catalogueThumbPath');
+const { generateCatalogueThumbBuffer } = require('./catalogueThumbnail');
 
 const MAX_PHOTO_BYTES = 5 * 1024 * 1024;
 const SIGNED_URL_MS = 6 * 24 * 60 * 60 * 1000;
@@ -31,6 +34,32 @@ function httpError(status, code, message) {
   error.status = status;
   error.code = code;
   return error;
+}
+
+function isStorageNotFound(error) {
+  if (!error) {
+    return false;
+  }
+  const code = error.code;
+  if (code === 404 || code === '404') {
+    return true;
+  }
+  const message = String(error.message || '');
+  return /not found/i.test(message);
+}
+
+async function deleteStorageObjectQuiet(filePath) {
+  if (typeof filePath !== 'string' || filePath.trim() === '') {
+    return;
+  }
+  try {
+    await getStorage().bucket().file(filePath).delete();
+  } catch (error) {
+    if (isStorageNotFound(error)) {
+      return;
+    }
+    console.error('❌ [SHOP_CATALOGUE] Failed to delete storage object:', error.message);
+  }
 }
 
 function isFilled(value) {
@@ -148,6 +177,10 @@ class ShopCatalogueService {
     return getFirestore();
   }
 
+  async deleteStorageObjectQuiet(filePath) {
+    await deleteStorageObjectQuiet(filePath);
+  }
+
   now() {
     return admin.firestore.FieldValue.serverTimestamp();
   }
@@ -217,6 +250,13 @@ class ShopCatalogueService {
     const photoSource = photoSourceForProduct(data);
     const photoKey = computePhotoKeyFromSource(photoSource);
     const photoUrl = await this.resolvePhotoFromSource(photoSource);
+    const thumbSource = photoSourceForProductThumb(data);
+    let thumbUrl = null;
+    let thumbKey = null;
+    if (thumbSource) {
+      thumbKey = computePhotoKeyFromSource(thumbSource);
+      thumbUrl = await this.resolvePhotoFromSource(thumbSource);
+    }
     return {
       id,
       shopId: data.shopId,
@@ -230,6 +270,8 @@ class ShopCatalogueService {
       barcode: data.barcode ?? null,
       photoUrl,
       photoKey,
+      thumbUrl,
+      thumbKey,
       isActive: data.isActive !== false,
       stock: data.stock ?? 0,
       lowStockThreshold: data.lowStockThreshold ?? 0,
@@ -364,27 +406,45 @@ class ShopCatalogueService {
       throw httpError(400, 'INVALID_FILE_TYPE', 'Photo must be an image');
     }
 
+    const thumbBuffer = await generateCatalogueThumbBuffer(file.buffer);
+
     const ext = photoExtension(file.mimetype, file.originalname);
     const filePath = `shops/${shopId}/products/${productId}/${Date.now()}_photo.${ext}`;
+    const thumbFilePath = thumbPathForOriginal(filePath);
     const contentType = (file.mimetype || '').startsWith('image/')
       ? file.mimetype
       : 'image/jpeg';
-    const fileRef = getStorage().bucket().file(filePath);
+    const customMetadata = {
+      shopId,
+      productId,
+      uploadedAt: new Date().toISOString(),
+      uploadedBy: 'backend_proxy',
+      originalFileName: file.originalname || `photo.${ext}`
+    };
+    const bucket = getStorage().bucket();
+    const fileRef = bucket.file(filePath);
+    const thumbRef = bucket.file(thumbFilePath);
 
     await fileRef.save(file.buffer, {
       metadata: {
         contentType,
-        customMetadata: {
-          shopId,
-          productId,
-          uploadedAt: new Date().toISOString(),
-          uploadedBy: 'backend_proxy',
-          originalFileName: file.originalname || `photo.${ext}`
-        }
+        customMetadata
       }
     });
 
-    return filePath;
+    try {
+      await thumbRef.save(thumbBuffer, {
+        metadata: {
+          contentType: 'image/jpeg',
+          customMetadata
+        }
+      });
+    } catch (error) {
+      await this.deleteStorageObjectQuiet(filePath);
+      throw error;
+    }
+
+    return { photoFilePath: filePath, thumbFilePath };
   }
 
   buildProductFields(shopId, payload, existing = {}) {
@@ -447,8 +507,11 @@ class ShopCatalogueService {
     const ref = this.getDb().collection('products').doc();
     const fields = this.buildProductFields(shopId, payload, {});
     let photoFilePath = null;
+    let thumbFilePath = null;
     if (photoFile) {
-      photoFilePath = await this.uploadProductPhoto(shopId, ref.id, photoFile);
+      const uploaded = await this.uploadProductPhoto(shopId, ref.id, photoFile);
+      photoFilePath = uploaded.photoFilePath;
+      thumbFilePath = uploaded.thumbFilePath;
     }
 
     const now = this.now();
@@ -456,6 +519,7 @@ class ShopCatalogueService {
       ...fields,
       photoUrl: photoFilePath,
       photoFilePath,
+      thumbFilePath,
       createdAt: now,
       updatedAt: now
     });
@@ -471,11 +535,16 @@ class ShopCatalogueService {
     }
 
     const fields = this.buildProductFields(shopId, { ...owned.data, ...payload }, owned.data);
+    const oldPhoto = owned.data.photoFilePath || null;
+    const oldThumb = owned.data.thumbFilePath || null;
     let photoFilePath = owned.data.photoFilePath || null;
     let photoUrl = owned.data.photoUrl || null;
+    let thumbFilePath = owned.data.thumbFilePath ?? null;
 
     if (photoFile) {
-      photoFilePath = await this.uploadProductPhoto(shopId, productId, photoFile);
+      const uploaded = await this.uploadProductPhoto(shopId, productId, photoFile);
+      photoFilePath = uploaded.photoFilePath;
+      thumbFilePath = uploaded.thumbFilePath;
       photoUrl = photoFilePath;
     }
 
@@ -483,8 +552,18 @@ class ShopCatalogueService {
       ...fields,
       photoFilePath,
       photoUrl,
+      thumbFilePath,
       updatedAt: this.now()
     });
+
+    if (photoFile) {
+      if (oldPhoto && oldPhoto !== photoFilePath) {
+        await this.deleteStorageObjectQuiet(oldPhoto);
+      }
+      if (oldThumb && oldThumb !== thumbFilePath) {
+        await this.deleteStorageObjectQuiet(oldThumb);
+      }
+    }
 
     const saved = await owned.ref.get();
     return this.presentProduct(saved.data(), productId);

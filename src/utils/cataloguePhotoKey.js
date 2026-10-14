@@ -37,6 +37,16 @@ function photoSourceForShop(storefront) {
   return photoSourceFromPathAndUrl(row.photoPath, row.photoUrl);
 }
 
+function photoSourceForProductThumb(data) {
+  const row = data && typeof data === 'object' ? data : {};
+  return photoSourceFromPathAndUrl(row.thumbFilePath, null);
+}
+
+function photoSourceForShopThumb(storefront) {
+  const row = storefront && typeof storefront === 'object' ? storefront : {};
+  return photoSourceFromPathAndUrl(row.thumbPath, null);
+}
+
 function computePhotoKeyFromSource(source) {
   if (!source || !source.value) {
     return null;
@@ -61,6 +71,8 @@ module.exports = {
   photoSourceFromPathAndUrl,
   photoSourceForProduct,
   photoSourceForShop,
+  photoSourceForProductThumb,
+  photoSourceForShopThumb,
   computePhotoKeyFromSource,
   computePhotoKey,
   pathHashPrefix

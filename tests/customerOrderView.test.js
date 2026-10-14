@@ -5,7 +5,7 @@ const {
   presentShopSnapshot,
   DELIVERY_STAGE_TIME_KEYS
 } = require('../src/services/marketplace/customerOrderView');
-const { shopSnapshotAddress } = require('../src/services/marketplace/createCustomerOrder');
+const { shopSnapshotAddress, shopSnapshotCoordinates } = require('../src/services/marketplace/createCustomerOrder');
 
 describe('presentCustomerOrder', () => {
   test('handover OTP and private data never appear', () => {
@@ -146,24 +146,29 @@ describe('presentCustomerOrder', () => {
     expect(presentCustomerDriverInfo({ id: 'only' })).toBeNull();
   });
 
-  test('shopSnapshot includes address when stored; older snapshots omit address as null', () => {
+  test('shopSnapshot includes address and coordinates when stored; legacy omits as null', () => {
     expect(presentShopSnapshot({
       name: 'Shop',
       category: 'Food',
       phone: '1',
-      address: ' 12 Main St  '
+      address: ' 12 Main St  ',
+      coordinates: { lat: 12.97, lng: 77.59 }
     })).toEqual({
       name: 'Shop',
       category: 'Food',
       phone: '1',
-      address: '12 Main St'
+      address: '12 Main St',
+      coordinates: { lat: 12.97, lng: 77.59 }
     });
     expect(presentShopSnapshot({ name: 'Legacy Shop', phone: '9' }).address).toBeNull();
+    expect(presentShopSnapshot({ name: 'Legacy Shop' }).coordinates).toBeNull();
+    expect(presentShopSnapshot({ name: 'Shop', coordinates: { lat: NaN, lng: 1 } }).coordinates).toBeNull();
     const view = presentCustomerOrder({
       id: 'ord-snap',
       shopSnapshot: { name: 'Legacy Shop' }
     });
     expect(view.shopSnapshot.address).toBeNull();
+    expect(view.shopSnapshot.coordinates).toBeNull();
   });
 
   test('review shows status, openedAt, and outcome.result only', () => {
@@ -196,6 +201,16 @@ describe('shopSnapshotAddress at order create', () => {
     expect(shopSnapshotAddress({ address: ' 42 Bazaar Road ' })).toBe('42 Bazaar Road');
     expect(shopSnapshotAddress({ address: '' })).toBeNull();
     expect(shopSnapshotAddress({})).toBeNull();
+  });
+});
+
+describe('shopSnapshotCoordinates at order create', () => {
+  test('reads shops profile location (booking pickup source)', () => {
+    expect(shopSnapshotCoordinates({
+      location: { latitude: 12.9716, longitude: 77.5946 }
+    })).toEqual({ lat: 12.9716, lng: 77.5946 });
+    expect(shopSnapshotCoordinates({ location: { latitude: 1, longitude: NaN } })).toBeNull();
+    expect(shopSnapshotCoordinates({})).toBeNull();
   });
 });
 

@@ -171,6 +171,22 @@ function presentCustomerDriverInfo(raw) {
   return { name, vehicle, phone };
 }
 
+function presentShopSnapshotCoordinates(raw) {
+  if (!raw || typeof raw !== 'object') {
+    return null;
+  }
+  const lat = typeof raw.lat === 'number' && Number.isFinite(raw.lat)
+    ? raw.lat
+    : (typeof raw.latitude === 'number' && Number.isFinite(raw.latitude) ? raw.latitude : null);
+  const lng = typeof raw.lng === 'number' && Number.isFinite(raw.lng)
+    ? raw.lng
+    : (typeof raw.longitude === 'number' && Number.isFinite(raw.longitude) ? raw.longitude : null);
+  if (lat == null || lng == null) {
+    return null;
+  }
+  return { lat, lng };
+}
+
 function presentShopSnapshot(snapshot) {
   if (!snapshot || typeof snapshot !== 'object') {
     return null;
@@ -181,7 +197,8 @@ function presentShopSnapshot(snapshot) {
     name: snapshot.name ?? null,
     category: snapshot.category ?? null,
     phone: snapshot.phone ?? null,
-    address: address === '' ? null : address
+    address: address === '' ? null : address,
+    coordinates: presentShopSnapshotCoordinates(snapshot.coordinates)
   };
 }
 
@@ -296,6 +313,7 @@ module.exports = {
   presentCustomerOrderSummary,
   presentCustomerDriverInfo,
   presentShopSnapshot,
+  presentShopSnapshotCoordinates,
   presentDeliveryStageTimes,
   deriveCustomerRefundAction
 };

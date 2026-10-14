@@ -232,6 +232,21 @@ function shopSnapshotAddress(shopProfile) {
   return trimmed === '' ? null : trimmed;
 }
 
+/** Same source as marketplace booking pickup: shops/{shopId}.location (see shopOrderService toLatLng). */
+function shopSnapshotCoordinates(shopProfile) {
+  const source = shopProfile && typeof shopProfile === 'object' ? shopProfile : {};
+  const location = source.location;
+  if (!location || typeof location !== 'object') {
+    return null;
+  }
+  const lat = location.latitude ?? location._latitude;
+  const lng = location.longitude ?? location._longitude;
+  if (typeof lat !== 'number' || !Number.isFinite(lat) || typeof lng !== 'number' || !Number.isFinite(lng)) {
+    return null;
+  }
+  return { lat, lng };
+}
+
 function addressCoordinates(address) {
   const coords = address.coordinates || address.location;
   const lat = coords && typeof coords.latitude === 'number'
@@ -485,7 +500,8 @@ async function createMarketplaceOrder({ customerId, idempotencyKey, body }) {
         name: typeof shopIdentity.shopName === 'string' ? shopIdentity.shopName : '',
         category: typeof shopIdentity.shopType === 'string' ? shopIdentity.shopType : '',
         phone: typeof shopUser.phone === 'string' ? shopUser.phone : null,
-        address: shopSnapshotAddress(shopProfile)
+        address: shopSnapshotAddress(shopProfile),
+        coordinates: shopSnapshotCoordinates(shopProfile)
       },
       customerNote: typeof body.customerNote === 'string' ? body.customerNote : null,
       riderNotes: typeof body.riderNotes === 'string' ? body.riderNotes : null,
@@ -563,5 +579,6 @@ module.exports = {
   paymentDetailsFromStored,
   successBody,
   shopSnapshotAddress,
+  shopSnapshotCoordinates,
   createMarketplaceOrder
 };

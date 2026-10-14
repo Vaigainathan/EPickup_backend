@@ -100,11 +100,13 @@ async function main() {
       apply,
       wrote: false,
       noWrite: true,
+      action: plan.action,
       reason: plan.refuseReason,
       orderId,
       bookingId: resolved.id,
       orderStatus: order.orderStatus ?? null,
-      bookingStatus: booking.status ?? null
+      bookingStatus: booking.status ?? null,
+      bookingPatch: null
     }, null, 2));
     return;
   }

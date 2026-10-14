@@ -15,6 +15,18 @@ function runMp17(args) {
   );
 }
 
+function runAuditCataloguePhotos(args) {
+  return spawnSync(
+    process.execPath,
+    [path.join(ROOT, 'scripts', 'support', 'audit-catalogue-photos.js'), ...args],
+    {
+      cwd: ROOT,
+      env: { ...process.env },
+      encoding: 'utf8'
+    }
+  );
+}
+
 function expectNoAdminInitCrash(result) {
   const combined = `${result.stdout || ''}${result.stderr || ''}`;
   expect(combined).not.toContain('Firebase Admin is not initialized');
@@ -38,6 +50,16 @@ describe('MP-17 support scripts smoke', () => {
     expect(result.status).toBe(0);
     expect(result.stdout).toContain('"dryRun": true');
     expect(result.stdout).toContain('"job": "cleanup"');
+  });
+
+  it('audit-catalogue-photos with --shop does not throw admin-not-initialized', () => {
+    const result = runAuditCataloguePhotos([
+      '--shop', 'b7302f5d6343c1641d63811306eb'
+    ]);
+    expectNoAdminInitCrash(result);
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain('Products');
+    expect(result.stdout).toContain('Shops');
   });
 
   it('pool-tick dry-run does not throw admin-not-initialized', () => {

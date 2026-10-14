@@ -89,6 +89,16 @@ function mergeBookingAfterPatch(booking, patch) {
   };
 }
 
+function bookingMatchesOrderForReconcile(orderStatus, bookingStatus) {
+  if (orderStatus === 'completed') {
+    return bookingStatus === 'delivered' || bookingStatus === 'completed';
+  }
+  if (orderStatus === 'cancelled') {
+    return bookingStatus === 'cancelled';
+  }
+  return false;
+}
+
 function evaluateSyncPreflight(order, proposedBooking, planDeliverySync, planWrites) {
   const plan = planDeliverySync(order, proposedBooking);
   const writes = planWrites(plan, order);
@@ -115,6 +125,13 @@ function planReconcileBooking(order, booking) {
     bookingPatch: null,
     driverRelease: null
   };
+
+  if (bookingMatchesOrderForReconcile(orderStatus, bookingStatus)) {
+    result.action = 'none';
+    result.noWrite = true;
+    result.refuseReason = 'Booking already matches order.';
+    return result;
+  }
 
   if (!isOpenBookingStatus(bookingStatus)) {
     result.noWrite = true;
@@ -344,6 +361,7 @@ module.exports = {
   buildDriverReleasePatch,
   mergeBookingAfterPatch,
   evaluateSyncPreflight,
+  bookingMatchesOrderForReconcile,
   planReconcileBooking,
   planSimStepPatch,
   flattenTimingPatch,

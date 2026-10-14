@@ -149,6 +149,7 @@ function printIssues(label, issues) {
 
 async function main() {
   const shopFilter = parseShopArg(process.argv.slice(2));
+  getFirestore();
   assertStagingAdmin();
   const db = getFirestore();
 

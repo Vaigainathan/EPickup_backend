@@ -223,6 +223,81 @@ function dayOpenMinutes(entry) {
   return parseClock(entry.open);
 }
 
+function dayCloseMinutes(entry) {
+  if (!entry || typeof entry !== 'object') {
+    return null;
+  }
+  if (entry.closed === true) {
+    return null;
+  }
+  const hasLegacy = entry.start != null || entry.end != null;
+  const hasNew = entry.closed != null || entry.open != null || entry.close != null;
+  if (hasLegacy && !hasNew) {
+    return parseClock(entry.end);
+  }
+  return parseClock(entry.close);
+}
+
+function isInsideOpenWindow(entry, clockMinutes) {
+  if (!entry || typeof entry !== 'object') {
+    return false;
+  }
+  const hasLegacy = entry.start != null || entry.end != null;
+  const hasNew = entry.closed != null || entry.open != null || entry.close != null;
+
+  if (hasLegacy && !hasNew) {
+    const start = parseClock(entry.start);
+    const end = parseClock(entry.end);
+    if (start == null || end == null) {
+      return false;
+    }
+    if (end >= start) {
+      return clockMinutes >= start && clockMinutes < end;
+    }
+    return false;
+  }
+
+  if (entry.closed === true) {
+    return false;
+  }
+  const open = parseClock(entry.open);
+  const close = parseClock(entry.close);
+  if (open == null || close == null) {
+    return false;
+  }
+  if (close <= open) {
+    return false;
+  }
+  return clockMinutes >= open && clockMinutes < close;
+}
+
+function istCloseIso(date, dayOffset, closeMinutes) {
+  return istOpenIso(date, dayOffset, closeMinutes);
+}
+
+/**
+ * Closing instant for the current IST open window, or null.
+ * Matches isShopOpenNow same-day windows only (no overnight cross-midnight).
+ */
+function currentClosesAt({ openingHours, now = new Date() }) {
+  if (openingHours == null || typeof openingHours !== 'object' || Array.isArray(openingHours)) {
+    return null;
+  }
+  const clock = istParts(now);
+  const today = openingHours[clock.weekday];
+  if (!today || typeof today !== 'object') {
+    return null;
+  }
+  if (!isInsideOpenWindow(today, clock.minutes)) {
+    return null;
+  }
+  const closeMinutes = dayCloseMinutes(today);
+  if (closeMinutes == null) {
+    return null;
+  }
+  return istCloseIso(now, 0, closeMinutes);
+}
+
 function istYmdFromDate(date) {
   const formatter = new Intl.DateTimeFormat('en-CA', {
     timeZone: 'Asia/Kolkata',
@@ -283,5 +358,8 @@ module.exports = {
   openingHoursFromShopProfile,
   isShopOpenForMarketplaceOrder,
   isShopOpenNow,
-  nextOpensAt
+  nextOpensAt,
+  dayCloseMinutes,
+  currentClosesAt,
+  isInsideOpenWindow
 };

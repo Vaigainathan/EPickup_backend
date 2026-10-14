@@ -376,6 +376,10 @@ async function createMarketplaceOrder({ customerId, idempotencyKey, body }) {
     if (!address) {
       throw httpError(400, 'VALIDATION', 'addressId was not found');
     }
+    const deliveryCoords = addressCoordinates(address);
+    if (!deliveryCoords) {
+      throw httpError(400, 'ADDRESS_INVALID', 'Delivery address must include valid coordinates');
+    }
 
     const shopUser = shopUserSnap.exists ? (shopUserSnap.data() || {}) : null;
     const shopIdentity = shopUser && shopUser.shop ? shopUser.shop : {};
@@ -468,7 +472,7 @@ async function createMarketplaceOrder({ customerId, idempotencyKey, body }) {
       deliveryAddress: {
         addressId: body.addressId,
         text: addressText(address),
-        coordinates: addressCoordinates(address)
+        coordinates: deliveryCoords
       },
       orderStatus: 'awaiting_payment',
       paymentMethod: 'upi',
@@ -580,5 +584,6 @@ module.exports = {
   successBody,
   shopSnapshotAddress,
   shopSnapshotCoordinates,
+  addressCoordinates,
   createMarketplaceOrder
 };

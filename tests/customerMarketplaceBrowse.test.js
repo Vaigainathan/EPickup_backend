@@ -17,7 +17,27 @@ jest.mock('../src/services/locationService', () => ({
 }));
 
 jest.mock('../src/services/shopCatalogueService', () => ({
-  resolvePhotoUrl: jest.fn(async (path) => (path ? `https://signed/${path}` : null)),
+  resolvePhotoUrl: jest.fn(async (filePath, fallbackUrl) => {
+    if (filePath && String(filePath).trim()) {
+      return `https://signed/${String(filePath).trim()}`;
+    }
+    if (fallbackUrl && /^https?:\/\//i.test(String(fallbackUrl))) {
+      return String(fallbackUrl).trim();
+    }
+    if (fallbackUrl && String(fallbackUrl).trim()) {
+      return `https://signed/${String(fallbackUrl).trim()}`;
+    }
+    return null;
+  }),
+  resolvePhotoFromSource: jest.fn(async (source) => {
+    if (!source) {
+      return null;
+    }
+    if (source.kind === 'path') {
+      return `https://signed/${source.value}`;
+    }
+    return source.value;
+  }),
   presentProduct: jest.fn(async (data, id) => ({
     id,
     shopId: data.shopId,

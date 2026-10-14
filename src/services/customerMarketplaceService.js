@@ -7,8 +7,14 @@ const {
   isShopOpenNow,
   shopOpenToggleIsOn,
   openingHoursFromShopProfile,
-  nextOpensAt
+  nextOpensAt,
+  currentClosesAt
 } = require('../utils/shopOpeningHours');
+const {
+  photoSourceForProduct,
+  photoSourceForShop,
+  computePhotoKeyFromSource
+} = require('../utils/cataloguePhotoKey');
 const {
   ratingFromProfile,
   applyRankingMetrics,
@@ -373,16 +379,15 @@ class CustomerMarketplaceService {
       : nextOpensAt({ openingHours, now });
 
     const storefront = row.storefront || {};
-    let photoUrl = null;
-    if (typeof storefront.photoPath === 'string' && storefront.photoPath.trim() !== '') {
-      photoUrl = await shopCatalogueService.resolvePhotoUrl(storefront.photoPath, null);
-    }
-    if (!photoUrl) {
+    let photoSource = photoSourceForShop(storefront);
+    if (!photoSource) {
       const fallback = productPhotoByShop.get(row.id);
       if (fallback) {
-        photoUrl = await shopCatalogueService.resolvePhotoUrl(fallback.photoFilePath, fallback.photoUrl);
+        photoSource = photoSourceForProduct(fallback);
       }
     }
+    const photoKey = computePhotoKeyFromSource(photoSource);
+    const photoUrl = await shopCatalogueService.resolvePhotoFromSource(photoSource);
 
     let tagline = typeof storefront.tagline === 'string' ? storefront.tagline.trim() : '';
     if (!tagline) {
@@ -402,9 +407,13 @@ class CustomerMarketplaceService {
       isOpen: toggleOpen,
       orderCount: row.orderCount,
       photoUrl,
+      photoKey,
       tagline,
       isOpenNow,
       opensAt,
+      closesAt: isOpenNow && openingHours != null
+        ? currentClosesAt({ openingHours, now })
+        : null,
       rating,
       isNew,
       policyGroup: policyGroupFor(row.shopType, policyGroupA),
@@ -611,9 +620,6 @@ class CustomerMarketplaceService {
     const snapshot = await this.getDb().collection('products').where('shopId', '==', shopId).get();
     const rows = snapshot.docs.filter((doc) => {
       const data = doc.data() || {};
-      if (data.isActive === false) {
-        return false;
-      }
       if (categoryId && data.categoryId !== categoryId) {
         return false;
       }
@@ -635,9 +641,6 @@ class CustomerMarketplaceService {
       throw httpError(404, 'PRODUCT_NOT_FOUND', 'Product not found');
     }
     const data = snap.data() || {};
-    if (data.isActive === false) {
-      throw httpError(404, 'PRODUCT_NOT_FOUND', 'Product not found');
-    }
     await this.assertEligibleShop(data.shopId);
     return { product: await this.presentCustomerProduct(data, snap.id) };
   }
@@ -655,6 +658,8 @@ class CustomerMarketplaceService {
       unitType: full.unitType,
       weight: full.weight ?? null,
       photoUrl: full.photoUrl,
+      photoKey: full.photoKey ?? null,
+      isActive: full.isActive !== false,
       stock: full.stock ?? 0,
       hasVariants: full.hasVariants === true,
       variants: variants.map((row) => ({
@@ -692,7 +697,7 @@ class CustomerMarketplaceService {
       const snapshot = await this.getDb().collection('products').where('shopId', 'in', ids).get();
       for (const doc of snapshot.docs) {
         const data = doc.data() || {};
-        if (!eligibleIds.has(data.shopId) || data.isActive === false || !nameMatches(data.name, q)) {
+        if (!eligibleIds.has(data.shopId) || !nameMatches(data.name, q)) {
           continue;
         }
         const product = await this.presentCustomerProduct(data, doc.id);

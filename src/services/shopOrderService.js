@@ -314,6 +314,7 @@ class ShopOrderService {
       shopId: data.shopId,
       customerId: data.customerId || null,
       items: Array.isArray(data.items) ? data.items : [],
+      customerNote: typeof data.customerNote === 'string' ? data.customerNote : null,
       stockShort: data.stockShort === true,
       stockShortOpen: stockShortOpen(data.items),
       itemsTotal,

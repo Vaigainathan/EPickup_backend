@@ -1,6 +1,11 @@
 const crypto = require('crypto');
 const admin = require('firebase-admin');
 const { getFirestore, getStorage } = require('./firebase');
+const {
+  photoSourceFromPathAndUrl,
+  photoSourceForProduct,
+  computePhotoKeyFromSource
+} = require('../utils/cataloguePhotoKey');
 
 const MAX_PHOTO_BYTES = 5 * 1024 * 1024;
 const SIGNED_URL_MS = 6 * 24 * 60 * 60 * 1000;
@@ -164,21 +169,29 @@ class ShopCatalogueService {
   }
 
   async resolvePhotoUrl(filePath, fallbackUrl) {
-    if (isFilled(filePath)) {
+    const source = photoSourceFromPathAndUrl(filePath, fallbackUrl);
+    return this.resolvePhotoFromSource(source);
+  }
+
+  async resolvePhotoFromSource(source) {
+    if (!source) {
+      return null;
+    }
+    if (source.kind === 'path') {
       try {
-        return await this.signReadUrl(filePath);
+        return await this.signReadUrl(source.value);
       } catch (error) {
         console.error('❌ [SHOP_CATALOGUE] Failed to sign product photo URL:', error.message);
+        return null;
       }
     }
-    if (isFilled(fallbackUrl) && /^https?:\/\//i.test(fallbackUrl)) {
-      return fallbackUrl;
-    }
-    return null;
+    return source.value;
   }
 
   async presentProduct(data, id) {
-    const photoUrl = await this.resolvePhotoUrl(data.photoFilePath, data.photoUrl);
+    const photoSource = photoSourceForProduct(data);
+    const photoKey = computePhotoKeyFromSource(photoSource);
+    const photoUrl = await this.resolvePhotoFromSource(photoSource);
     return {
       id,
       shopId: data.shopId,
@@ -191,6 +204,7 @@ class ShopCatalogueService {
       weight: data.weight ?? null,
       barcode: data.barcode ?? null,
       photoUrl,
+      photoKey,
       isActive: data.isActive !== false,
       stock: data.stock ?? 0,
       lowStockThreshold: data.lowStockThreshold ?? 0,

@@ -370,6 +370,110 @@ class CustomerMarketplaceService {
     return { productPhotoByShop, taglineByShop };
   }
 
+  buildBrowseRow(shopId, identity, profile, origin) {
+    if (!hasVerifiedUpiName(profile)) {
+      return null;
+    }
+    const location = presentLocation(profile.location);
+    if (!location) {
+      return null;
+    }
+    const travel = this.travel(origin, location);
+    const orderCount = Number.isFinite(Number(profile.orderCount))
+      ? Math.max(0, Math.floor(Number(profile.orderCount)))
+      : 0;
+    const ratingParts = ratingFromProfile(profile);
+    const storefront = profile.storefront && typeof profile.storefront === 'object'
+      ? profile.storefront
+      : {};
+    return {
+      id: shopId,
+      shopName: typeof identity.shopName === 'string' ? identity.shopName : '',
+      shopType: typeof identity.shopType === 'string' ? identity.shopType : '',
+      address: typeof profile.address === 'string' ? profile.address : '',
+      location,
+      distanceKm: travel.distanceKm,
+      etaMinutes: travel.etaMinutes,
+      isOpen: shopOpenToggleIsOn(identity),
+      orderCount,
+      ratingSum: ratingParts.sum,
+      ratingCount: ratingParts.count,
+      ratingAverage: ratingParts.count > 0 ? ratingParts.average : 0,
+      approvedAt: toDate(profile.approvedAt),
+      openingHours: openingHoursFromShopProfile(profile),
+      storefront
+    };
+  }
+
+  attachBrowseFields(row, now) {
+    const toggleOpen = row.isOpen;
+    const openingHours = row.openingHours;
+    const isOpenNow = isShopOpenNow({ isOpen: toggleOpen, openingHours, now });
+    const { rating, isNew } = presentRatingDisplay(row.ratingCount, row.ratingAverage);
+    return {
+      ...row,
+      isOpenNow,
+      rating,
+      isNew
+    };
+  }
+
+  async collectEligibleShopRows(origin, now) {
+    const db = this.getDb();
+    const [settings, usersSnap] = await Promise.all([
+      this.loadMarketplaceSettings(),
+      db.collection('users').where('userType', '==', 'shop').get()
+    ]);
+    const users = usersSnap.docs.filter((doc) => {
+      const data = doc.data() || {};
+      const shop = data.shop || {};
+      return data.isActive !== false && shop.approvalStatus === 'approved';
+    });
+
+    const shopSnapGroups = await Promise.all(
+      chunk(users, GET_ALL_LIMIT).map((group) => {
+        const refs = group.map((doc) => db.collection('shops').doc(doc.id));
+        return db.getAll(...refs);
+      })
+    );
+    const shopById = new Map(shopSnapGroups.flat().map((snap) => [snap.id, snap]));
+
+    const rows = [];
+    for (const userDoc of users) {
+      const userData = userDoc.data() || {};
+      const identity = userData.shop || {};
+      const shopSnap = shopById.get(userDoc.id);
+      if (!shopSnap || !shopSnap.exists) {
+        continue;
+      }
+      const profile = shopSnap.data() || {};
+      const row = this.buildBrowseRow(userDoc.id, identity, profile, origin);
+      if (row) {
+        rows.push(row);
+      }
+    }
+
+    const ranked = applyRankingMetrics(rows, settings, now, { globalShops: rows });
+    const withBrowse = ranked.map((row) => this.attachBrowseFields(row, now));
+    return { rows: withBrowse, settings };
+  }
+
+  async presentShopCardsForRows(rows, settings, now) {
+    if (!rows.length) {
+      return [];
+    }
+    const shopIds = rows.map((row) => row.id);
+    const { productPhotoByShop, taglineByShop } = await this.loadFallbackMaps(shopIds);
+    return Promise.all(
+      rows.map((row) => this.presentShopCard(row, {
+        productPhotoByShop,
+        taglineByShop,
+        policyGroupA: settings.policyGroupA,
+        now
+      }))
+    );
+  }
+
   async presentShopCard(row, { productPhotoByShop, taglineByShop, policyGroupA, now }) {
     const toggleOpen = row.isOpen;
     const openingHours = row.openingHours;
@@ -423,80 +527,9 @@ class CustomerMarketplaceService {
   }
 
   async buildEligibleShopRows(origin, now) {
-    const db = this.getDb();
-    const settings = await this.loadMarketplaceSettings();
-    const usersSnap = await db.collection('users').where('userType', '==', 'shop').get();
-    const users = usersSnap.docs.filter((doc) => {
-      const data = doc.data() || {};
-      const shop = data.shop || {};
-      return data.isActive !== false && shop.approvalStatus === 'approved';
-    });
-
-    const shopSnaps = [];
-    for (const group of chunk(users, GET_ALL_LIMIT)) {
-      const refs = group.map((doc) => db.collection('shops').doc(doc.id));
-      const snaps = await db.getAll(...refs);
-      shopSnaps.push(...snaps);
-    }
-    const shopById = new Map(shopSnaps.map((snap) => [snap.id, snap]));
-
-    const rows = [];
-    for (const userDoc of users) {
-      const userData = userDoc.data() || {};
-      const identity = userData.shop || {};
-      const shopSnap = shopById.get(userDoc.id);
-      if (!shopSnap || !shopSnap.exists) {
-        continue;
-      }
-      const profile = shopSnap.data() || {};
-      if (!hasVerifiedUpiName(profile)) {
-        continue;
-      }
-      const location = presentLocation(profile.location);
-      if (!location) {
-        continue;
-      }
-      const travel = this.travel(origin, location);
-      const orderCount = Number.isFinite(Number(profile.orderCount))
-        ? Math.max(0, Math.floor(Number(profile.orderCount)))
-        : 0;
-      const ratingParts = ratingFromProfile(profile);
-      const storefront = profile.storefront && typeof profile.storefront === 'object'
-        ? profile.storefront
-        : {};
-      rows.push({
-        id: userDoc.id,
-        shopName: typeof identity.shopName === 'string' ? identity.shopName : '',
-        shopType: typeof identity.shopType === 'string' ? identity.shopType : '',
-        address: typeof profile.address === 'string' ? profile.address : '',
-        location,
-        distanceKm: travel.distanceKm,
-        etaMinutes: travel.etaMinutes,
-        isOpen: shopOpenToggleIsOn(identity),
-        orderCount,
-        ratingSum: ratingParts.sum,
-        ratingCount: ratingParts.count,
-        ratingAverage: ratingParts.count > 0 ? ratingParts.average : 0,
-        approvedAt: toDate(profile.approvedAt),
-        openingHours: openingHoursFromShopProfile(profile),
-        storefront
-      });
-    }
-
-    const shopIds = rows.map((row) => row.id);
-    const { productPhotoByShop, taglineByShop } = await this.loadFallbackMaps(shopIds);
-
-    const ranked = applyRankingMetrics(rows, settings, now, { globalShops: rows });
-    const cards = await Promise.all(
-      ranked.map((row) => this.presentShopCard(row, {
-        productPhotoByShop,
-        taglineByShop,
-        policyGroupA: settings.policyGroupA,
-        now
-      }))
-    );
-
-    return { shops: cards, settings };
+    const { rows, settings } = await this.collectEligibleShopRows(origin, now);
+    const shops = await this.presentShopCardsForRows(rows, settings, now);
+    return { shops, settings };
   }
 
   async loadEligibleShops(origin, now = new Date()) {
@@ -534,20 +567,27 @@ class CustomerMarketplaceService {
   }
 
   async getShopOrThrow(shopId, origin, now = new Date()) {
-    const shops = await this.loadEligibleShops(origin, now);
-    const shop = shops.find((row) => row.id === shopId);
-    if (!shop) {
+    const record = await this.loadShopRecord(shopId);
+    if (!record) {
       throw httpError(404, 'SHOP_NOT_FOUND', 'Shop not found');
     }
-    return shop;
+    const settings = await this.loadMarketplaceSettings();
+    const row = this.buildBrowseRow(shopId, record.identity, record.profile, origin);
+    if (!row) {
+      throw httpError(404, 'SHOP_NOT_FOUND', 'Shop not found');
+    }
+    const [ranked] = applyRankingMetrics([row], settings, now, { globalShops: [row] });
+    const withBrowse = this.attachBrowseFields(ranked, now);
+    const [card] = await this.presentShopCardsForRows([withBrowse], settings, now);
+    return stripInternalCardFields(card);
   }
 
   async listCategories(query) {
     const origin = parseOrigin(query);
-    const shops = await this.loadEligibleShops(origin);
+    const { rows } = await this.collectEligibleShopRows(origin);
     return {
       categories: MARKETPLACE_SHOP_TYPES.map((category) => {
-        const matches = shops.filter((shop) => shop.shopType === category);
+        const matches = rows.filter((shop) => shop.shopType === category);
         if (matches.length === 0) {
           return {
             category,
@@ -581,9 +621,9 @@ class CustomerMarketplaceService {
     const nowIso = cursor ? cursor.now : new Date().toISOString();
     const now = new Date(nowIso);
 
-    const { shops: eligible } = await this.buildEligibleShopRows(origin, now);
+    const { rows, settings } = await this.collectEligibleShopRows(origin, now);
 
-    let shops = eligible;
+    let shops = rows;
     if (category) {
       shops = shops.filter((shop) => shop.shopType === category);
     }
@@ -596,16 +636,19 @@ class CustomerMarketplaceService {
 
     shops = sortShops(shops, sort);
     const paged = pageShops(shops, sort, limit, cursor, nowIso);
+    const cards = await this.presentShopCardsForRows(paged.shops, settings, now);
     return {
-      shops: paged.shops.map((shop) => stripInternalCardFields(shop)),
+      shops: cards.map((shop) => stripInternalCardFields(shop)),
       nextCursor: paged.nextCursor
     };
   }
 
   async getShop(shopId, query) {
     const origin = parseOrigin(query);
-    const shop = await this.getShopOrThrow(shopId, origin);
-    const categories = await shopCatalogueService.listCategories(shopId);
+    const [shop, categories] = await Promise.all([
+      this.getShopOrThrow(shopId, origin),
+      shopCatalogueService.listCategories(shopId)
+    ]);
     return {
       shop,
       categories: categories.map((row) => ({ id: row.id, name: row.name }))
@@ -678,18 +721,18 @@ class CustomerMarketplaceService {
     const q = parseSearchQuery(query.q);
     const now = new Date();
 
-    const { shops: eligible } = await this.buildEligibleShopRows(origin, now);
-    const eligibleIds = new Set(eligible.map((shop) => shop.id));
+    const { rows, settings } = await this.collectEligibleShopRows(origin, now);
+    const eligibleIds = new Set(rows.map((shop) => shop.id));
 
-    const shopHits = sortShops(
-      eligible.filter((shop) => nameMatches(shop.shopName, q)),
+    const shopHitRows = sortShops(
+      rows.filter((shop) => nameMatches(shop.shopName, q)),
       'relevance'
-    )
-      .slice(0, SEARCH_CAP)
+    ).slice(0, SEARCH_CAP);
+    const shopHits = (await this.presentShopCardsForRows(shopHitRows, settings, now))
       .map((shop) => stripInternalCardFields(shop));
 
     const products = [];
-    const shopNameById = new Map(eligible.map((shop) => [shop.id, shop.shopName]));
+    const shopNameById = new Map(rows.map((shop) => [shop.id, shop.shopName]));
     for (const ids of chunk([...eligibleIds], SHOP_ID_IN_LIMIT)) {
       if (ids.length === 0) {
         continue;

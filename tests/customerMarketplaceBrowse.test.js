@@ -262,9 +262,9 @@ describe('customerMarketplaceService browse', () => {
   });
 
   test('listShops sort=orders uses relevance ordering', async () => {
-    const spy = jest.spyOn(service, 'buildEligibleShopRows');
+    const spy = jest.spyOn(service, 'collectEligibleShopRows');
     spy.mockResolvedValue({
-      shops: [
+      rows: [
         {
           id: 'a',
           shopType: 'Grocery & Supermarket',
@@ -352,10 +352,10 @@ describe('customerMarketplaceService browse', () => {
       }
     ];
     const buildNows = [];
-    const spy = jest.spyOn(service, 'buildEligibleShopRows');
+    const spy = jest.spyOn(service, 'collectEligibleShopRows');
     spy.mockImplementation(async (_origin, now) => {
       buildNows.push(now.toISOString());
-      return { shops: rows, settings: {} };
+      return { rows, settings: {} };
     });
 
     const page1 = await service.listShops({ lat: 12.9, lng: 77.6, limit: 2 });

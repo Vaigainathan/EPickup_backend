@@ -9,6 +9,17 @@ const {
 
 const MAX_PHOTO_BYTES = 5 * 1024 * 1024;
 const SIGNED_URL_MS = 6 * 24 * 60 * 60 * 1000;
+const SIGNED_URL_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+const SIGNED_URL_CACHE_MAX_ENTRIES = 5000;
+const signedUrlCache = new Map();
+
+function clearSignedUrlCacheForTests() {
+  signedUrlCache.clear();
+}
+
+function getSignedUrlCacheSizeForTests() {
+  return signedUrlCache.size;
+}
 const PRODUCT_UNIT_TYPES = ['Piece', 'Kg', 'Gram', 'Litre', 'ml', 'Pack', 'Plate'];
 const PRODUCT_UNIT_TYPE_BY_KEY = new Map(
   PRODUCT_UNIT_TYPES.map((unit) => [unit.toLowerCase(), unit])
@@ -160,11 +171,25 @@ class ShopCatalogueService {
   }
 
   async signReadUrl(filePath) {
+    const key = String(filePath);
+    const now = Date.now();
+    const cached = signedUrlCache.get(key);
+    if (cached && (now - cached.issuedAt) < SIGNED_URL_CACHE_TTL_MS) {
+      return cached.url;
+    }
     const [url] = await getStorage().bucket().file(filePath).getSignedUrl({
       action: 'read',
-      expires: Date.now() + SIGNED_URL_MS,
+      expires: now + SIGNED_URL_MS,
       version: 'v4'
     });
+    if (typeof url !== 'string' || url.trim() === '') {
+      return url ?? null;
+    }
+    signedUrlCache.set(key, { url, issuedAt: now });
+    while (signedUrlCache.size > SIGNED_URL_CACHE_MAX_ENTRIES) {
+      const oldestKey = signedUrlCache.keys().next().value;
+      signedUrlCache.delete(oldestKey);
+    }
     return url;
   }
 
@@ -507,4 +532,8 @@ class ShopCatalogueService {
   }
 }
 
-module.exports = new ShopCatalogueService();
+const catalogueService = new ShopCatalogueService();
+
+module.exports = catalogueService;
+module.exports.clearSignedUrlCacheForTests = clearSignedUrlCacheForTests;
+module.exports.getSignedUrlCacheSizeForTests = getSignedUrlCacheSizeForTests;

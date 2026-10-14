@@ -124,8 +124,8 @@ describe('customer marketplace inactive products (B2 / C5)', () => {
   });
 
   test('search includes inactive product', async () => {
-    jest.spyOn(customerMarketplaceService, 'buildEligibleShopRows').mockResolvedValue({
-      shops: [{ id: 'shop-1', shopName: 'Test Shop' }],
+    jest.spyOn(customerMarketplaceService, 'collectEligibleShopRows').mockResolvedValue({
+      rows: [{ id: 'shop-1', shopName: 'Test Shop' }],
       settings: {}
     });
     const result = await customerMarketplaceService.search({

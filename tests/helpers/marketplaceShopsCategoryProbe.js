@@ -12,7 +12,7 @@ const category = process.argv[2];
 const lat = process.argv[3] || '12.9';
 const lng = process.argv[4] || '77.6';
 
-customerMarketplaceService.buildEligibleShopRows = async () => ({ shops: [], settings: {} });
+customerMarketplaceService.collectEligibleShopRows = async () => ({ rows: [], settings: {} });
 
 const app = express();
 app.use(sanitizeInput);

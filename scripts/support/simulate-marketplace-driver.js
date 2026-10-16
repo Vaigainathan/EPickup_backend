@@ -231,9 +231,16 @@ async function runMove(db, orderId, seconds, every, apply) {
   }
 
   const locationRef = db.collection('driverLocations').doc(STAGING_TEST_DRIVER_UID);
+  const intervalSec = movePlan.intervalSec != null ? Number(movePlan.intervalSec) : Number(every);
+  const paceMs = Number.isFinite(intervalSec) && intervalSec > 0 ? intervalSec * 1000 : 0;
   for (let index = 0; index < movePlan.writes.length; index += 1) {
     const write = movePlan.writes[index];
     await locationRef.set(write, { merge: true });
+    if (paceMs > 0 && index < movePlan.writes.length - 1) {
+      await new Promise((resolve) => {
+        setTimeout(resolve, paceMs);
+      });
+    }
   }
   console.log(JSON.stringify({
     move: true,

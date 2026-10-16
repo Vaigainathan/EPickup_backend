@@ -18,6 +18,12 @@ async function recomputeDriverRating(db, driverId) {
     .get();
 
   const ratings = driverRatingsQuery.docs.map((doc) => doc.data().rating);
+  if (ratings.length === 0) {
+    return {
+      averageRating: 0,
+      totalRatings: 0
+    };
+  }
   const averageRating = ratings.reduce((sum, value) => sum + value, 0) / ratings.length;
 
   await db.collection('users').doc(driverId).update({
@@ -86,7 +92,23 @@ async function addBookingDriverRating(db, {
   };
 }
 
-async function createBookingDriverRatingInTransaction(tx, db, {
+function bookingDriverRatingQuery(db, bookingId, customerId) {
+  return db.collection('ratings')
+    .where('bookingId', '==', bookingId)
+    .where('customerId', '==', customerId)
+    .limit(1);
+}
+
+async function readBookingDriverRatingDuplicateInTransaction(tx, db, bookingId, customerId) {
+  const existing = await tx.get(bookingDriverRatingQuery(db, bookingId, customerId));
+  if (!existing.empty) {
+    const error = new Error('Rating already submitted for this booking');
+    error.code = 'DRIVER_ALREADY_RATED';
+    throw error;
+  }
+}
+
+function writeBookingDriverRatingInTransaction(tx, db, {
   bookingId,
   customerId,
   driverId,
@@ -94,17 +116,6 @@ async function createBookingDriverRatingInTransaction(tx, db, {
   feedback,
   categories
 }) {
-  const query = db.collection('ratings')
-    .where('bookingId', '==', bookingId)
-    .where('customerId', '==', customerId)
-    .limit(1);
-  const existing = await tx.get(query);
-  if (!existing.empty) {
-    const error = new Error('Rating already submitted for this booking');
-    error.code = 'DRIVER_ALREADY_RATED';
-    throw error;
-  }
-
   const ratingData = buildRatingDocument({
     bookingId,
     customerId,
@@ -118,9 +129,21 @@ async function createBookingDriverRatingInTransaction(tx, db, {
   return { ratingRef, ratingData };
 }
 
+async function createBookingDriverRatingInTransaction(tx, db, params) {
+  await readBookingDriverRatingDuplicateInTransaction(
+    tx,
+    db,
+    params.bookingId,
+    params.customerId
+  );
+  return writeBookingDriverRatingInTransaction(tx, db, params);
+}
+
 module.exports = {
   findExistingBookingRating,
   recomputeDriverRating,
   addBookingDriverRating,
+  readBookingDriverRatingDuplicateInTransaction,
+  writeBookingDriverRatingInTransaction,
   createBookingDriverRatingInTransaction
 };

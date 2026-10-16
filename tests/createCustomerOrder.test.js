@@ -129,6 +129,8 @@ describe('classifyOrderLines', () => {
       id: 'line0',
       productId: 'sized',
       variantId: 'v1',
+      variantLabel: null,
+      variantValue: null,
       name: 'Rice',
       price: 80,
       qty: 2

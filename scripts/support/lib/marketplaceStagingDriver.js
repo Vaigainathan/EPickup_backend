@@ -249,7 +249,7 @@ function interpolateRoute(start, end, progress01) {
   };
 }
 
-function planMoveWrites({ order, bookingId, seconds, every }) {
+function planMoveWrites({ order, bookingId, seconds, every, baseMs }) {
   const stage = order.delivery && typeof order.delivery.stage === 'string'
     ? order.delivery.stage
     : null;
@@ -282,6 +282,8 @@ function planMoveWrites({ order, bookingId, seconds, every }) {
   }
 
   const steps = Math.max(1, Math.ceil(totalSec / intervalSec));
+  const startMs = Number.isFinite(Number(baseMs)) ? Number(baseMs) : Date.now();
+  const intervalMs = intervalSec * 1000;
   const writes = [];
   for (let index = 0; index < steps; index += 1) {
     const progress = steps === 1 ? 1 : index / (steps - 1);
@@ -293,11 +295,11 @@ function planMoveWrites({ order, bookingId, seconds, every }) {
       bookingId,
       latitude: point.latitude,
       longitude: point.longitude,
-      lastUpdated: new Date()
+      lastUpdated: new Date(startMs + index * intervalMs)
     });
   }
 
-  return { ok: true, writes, stage };
+  return { ok: true, writes, stage, intervalSec };
 }
 
 function planSeedDriverDoc() {

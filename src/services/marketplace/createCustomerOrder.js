@@ -112,6 +112,19 @@ function lineCurrent(product, variant) {
   };
 }
 
+function variantFieldsFromVariant(variant) {
+  if (!variant || typeof variant !== 'object') {
+    return { variantLabel: null, variantValue: null };
+  }
+  const variantLabel = typeof variant.attributeLabel === 'string' && variant.attributeLabel.trim() !== ''
+    ? variant.attributeLabel.trim()
+    : null;
+  const variantValue = typeof variant.value === 'string' && variant.value.trim() !== ''
+    ? variant.value.trim()
+    : null;
+  return { variantLabel, variantValue };
+}
+
 function classifyOrderLines(items, productsById, shopId) {
   const badLines = [];
   const goodLines = [];
@@ -148,9 +161,12 @@ function classifyOrderLines(items, productsById, shopId) {
       badLines.push({ ...base, reason: 'stock', current });
       return;
     }
+    const { variantLabel, variantValue } = variantFieldsFromVariant(variant);
     goodLines.push({
       productId: item.productId,
       variantId,
+      variantLabel,
+      variantValue,
       name: typeof product.name === 'string' ? product.name : '',
       price,
       qty: item.qty,
@@ -161,14 +177,21 @@ function classifyOrderLines(items, productsById, shopId) {
 }
 
 function storedOrderItems(goodLines) {
-  return goodLines.map((line, index) => ({
-    id: `line${index}`,
-    productId: line.productId,
-    variantId: line.variantId,
-    name: line.name,
-    price: line.price,
-    qty: line.qty
-  }));
+  return goodLines.map((line, index) => {
+    const item = {
+      id: `line${index}`,
+      productId: line.productId,
+      variantId: line.variantId,
+      name: line.name,
+      price: line.price,
+      qty: line.qty
+    };
+    if (line.variantId) {
+      item.variantLabel = line.variantLabel ?? null;
+      item.variantValue = line.variantValue ?? null;
+    }
+    return item;
+  });
 }
 
 function sumItemsTotalPaise(goodLines) {
@@ -631,6 +654,7 @@ module.exports = {
   rupeesFromPaise,
   orderIdFor,
   validateCreateInput,
+  variantFieldsFromVariant,
   classifyOrderLines,
   storedOrderItems,
   sumItemsTotalPaise,

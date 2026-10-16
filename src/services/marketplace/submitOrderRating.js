@@ -4,7 +4,8 @@ const { presentCustomerOrder } = require('./customerOrderView');
 const { appendEvent } = require('./orderEvents');
 const { parseMarketplaceRatingBody } = require('./marketplaceRatingValidation');
 const {
-  createBookingDriverRatingInTransaction,
+  readBookingDriverRatingDuplicateInTransaction,
+  writeBookingDriverRatingInTransaction,
   recomputeDriverRating
 } = require('../bookingDriverRating');
 
@@ -38,126 +39,155 @@ function orderAlreadyRated(data) {
   return rating != null && typeof rating === 'object' && Object.keys(rating).length > 0;
 }
 
+function scheduleDriverRatingRecompute(db, driverId) {
+  setImmediate(() => {
+    recomputeDriverRating(db, driverId).catch((error) => {
+      console.error('❌ [MARKETPLACE_RATING] Driver aggregate recompute failed:', error.message);
+    });
+  });
+}
+
 async function submitOrderRating({ customerId, orderId, body }) {
   const parsed = parseMarketplaceRatingBody(body);
   const db = getFirestore();
   const orderRef = db.collection('marketplaceOrders').doc(orderId);
 
-  const outcome = await db.runTransaction(async (tx) => {
-    const orderSnap = await tx.get(orderRef);
-    if (!orderSnap.exists) {
-      throw httpError(404, 'ORDER_NOT_FOUND', 'Order not found');
-    }
-    const data = orderSnap.data() || {};
-    if (data.customerId !== customerId) {
-      throw httpError(404, 'ORDER_NOT_FOUND', 'Order not found');
-    }
-    if (data.orderStatus !== 'completed') {
-      throw httpError(409, 'INVALID_STATE', 'Order is not completed');
-    }
-    if (orderAlreadyRated(data)) {
-      throw httpError(409, 'ALREADY_RATED', 'This order was already rated');
-    }
-
-    const shopRatingRef = db.collection('shopRatings').doc(orderId);
-    const shopRatingSnap = await tx.get(shopRatingRef);
-    if (shopRatingSnap.exists) {
-      throw httpError(409, 'ALREADY_RATED', 'This order was already rated');
-    }
-
-    let driverIdForRecompute = null;
-
-    if (parsed.driver) {
-      const linkedBookingId = typeof data.linkedBookingId === 'string' ? data.linkedBookingId : '';
-      if (!linkedBookingId) {
-        throw httpError(409, 'INVALID_STATE', 'No driver is assigned for this order');
+  let outcome;
+  try {
+    outcome = await db.runTransaction(async (tx) => {
+      const orderSnap = await tx.get(orderRef);
+      if (!orderSnap.exists) {
+        throw httpError(404, 'ORDER_NOT_FOUND', 'Order not found');
       }
-      const bookingSnap = await tx.get(db.collection('bookings').doc(linkedBookingId));
-      const booking = bookingSnap.exists ? (bookingSnap.data() || {}) : {};
-      const driverId = typeof booking.driverId === 'string' ? booking.driverId : '';
-      if (!driverId) {
-        throw httpError(409, 'INVALID_STATE', 'No driver is assigned for this order');
+      const data = orderSnap.data() || {};
+      if (data.customerId !== customerId) {
+        throw httpError(404, 'ORDER_NOT_FOUND', 'Order not found');
       }
-      await createBookingDriverRatingInTransaction(tx, db, {
-        bookingId: linkedBookingId,
-        customerId,
-        driverId,
-        rating: parsed.driver.stars,
-        feedback: '',
-        categories: { tags: parsed.driver.tags }
-      });
-      driverIdForRecompute = driverId;
-    }
-
-    if (parsed.shop) {
-      const shopId = data.shopId;
-      if (!shopId) {
-        throw httpError(409, 'INVALID_STATE', 'Order has no shop');
+      if (data.orderStatus !== 'completed') {
+        throw httpError(409, 'INVALID_STATE', 'Order is not completed');
       }
-      const shopRef = db.collection('shops').doc(shopId);
-      const shopSnap = await tx.get(shopRef);
-      const shopData = shopSnap.exists ? (shopSnap.data() || {}) : {};
-      const current = shopRatingFromDoc(shopData);
-      const nextSum = current.sum + parsed.shop.stars;
-      const nextCount = current.count + 1;
-      const nextAverage = roundAverage(nextSum, nextCount);
+      if (orderAlreadyRated(data)) {
+        throw httpError(409, 'ALREADY_RATED', 'This order was already rated');
+      }
 
-      tx.set(shopRatingRef, {
-        orderId,
-        shopId,
-        customerId,
-        stars: parsed.shop.stars,
-        tags: parsed.shop.tags,
-        comment: parsed.shop.comment,
-        createdAt: FieldValue.serverTimestamp()
-      });
-      tx.set(shopRef, {
-        rating: {
-          sum: nextSum,
-          count: nextCount,
-          average: nextAverage
+      const shopRatingRef = db.collection('shopRatings').doc(orderId);
+      const shopRatingSnap = await tx.get(shopRatingRef);
+      if (shopRatingSnap.exists) {
+        throw httpError(409, 'ALREADY_RATED', 'This order was already rated');
+      }
+
+      let driverIdForRecompute = null;
+      let driverWrite = null;
+      let shopWrite = null;
+
+      if (parsed.driver) {
+        const linkedBookingId = typeof data.linkedBookingId === 'string' ? data.linkedBookingId : '';
+        if (!linkedBookingId) {
+          throw httpError(409, 'INVALID_STATE', 'No driver is assigned for this order');
         }
-      }, { merge: true });
-    }
+        const bookingSnap = await tx.get(db.collection('bookings').doc(linkedBookingId));
+        const booking = bookingSnap.exists ? (bookingSnap.data() || {}) : {};
+        const driverId = typeof booking.driverId === 'string' ? booking.driverId : '';
+        if (!driverId) {
+          throw httpError(409, 'INVALID_STATE', 'No driver is assigned for this order');
+        }
+        await readBookingDriverRatingDuplicateInTransaction(tx, db, linkedBookingId, customerId);
+        driverIdForRecompute = driverId;
+        driverWrite = {
+          bookingId: linkedBookingId,
+          customerId,
+          driverId,
+          rating: parsed.driver.stars,
+          feedback: '',
+          categories: { tags: parsed.driver.tags }
+        };
+      }
 
-    const ratedAt = Timestamp.now();
-    const orderRating = {
-      ratedAt
-    };
-    if (parsed.shop) {
-      orderRating.shopStars = parsed.shop.stars;
-    }
-    if (parsed.driver) {
-      orderRating.driverStars = parsed.driver.stars;
-    }
+      if (parsed.shop) {
+        const shopId = data.shopId;
+        if (!shopId) {
+          throw httpError(409, 'INVALID_STATE', 'Order has no shop');
+        }
+        const shopRef = db.collection('shops').doc(shopId);
+        const shopSnap = await tx.get(shopRef);
+        const shopData = shopSnap.exists ? (shopSnap.data() || {}) : {};
+        const current = shopRatingFromDoc(shopData);
+        const nextSum = current.sum + parsed.shop.stars;
+        const nextCount = current.count + 1;
+        const nextAverage = roundAverage(nextSum, nextCount);
+        shopWrite = {
+          shopRatingRef,
+          shopRef,
+          shopId,
+          nextSum,
+          nextCount,
+          nextAverage
+        };
+      }
 
-    tx.update(orderRef, {
-      rating: orderRating,
-      updatedAt: ratedAt
-    });
+      if (driverWrite) {
+        writeBookingDriverRatingInTransaction(tx, db, driverWrite);
+      }
 
-    appendEvent(tx, orderRef, {
-      type: 'rated',
-      actor: { type: 'customer', id: customerId },
-      data: null
-    }, customerId);
+      if (shopWrite) {
+        tx.set(shopWrite.shopRatingRef, {
+          orderId,
+          shopId: shopWrite.shopId,
+          customerId,
+          stars: parsed.shop.stars,
+          tags: parsed.shop.tags,
+          comment: parsed.shop.comment,
+          createdAt: FieldValue.serverTimestamp()
+        });
+        tx.set(shopWrite.shopRef, {
+          rating: {
+            sum: shopWrite.nextSum,
+            count: shopWrite.nextCount,
+            average: shopWrite.nextAverage
+          }
+        }, { merge: true });
+      }
 
-    return {
-      driverIdForRecompute,
-      data: {
-        ...data,
+      const ratedAt = Timestamp.now();
+      const orderRating = {
+        ratedAt
+      };
+      if (parsed.shop) {
+        orderRating.shopStars = parsed.shop.stars;
+      }
+      if (parsed.driver) {
+        orderRating.driverStars = parsed.driver.stars;
+      }
+
+      tx.update(orderRef, {
         rating: orderRating,
         updatedAt: ratedAt
-      }
-    };
-  });
+      });
+
+      appendEvent(tx, orderRef, {
+        type: 'rated',
+        actor: { type: 'customer', id: customerId },
+        data: null
+      }, customerId);
+
+      return {
+        driverIdForRecompute,
+        data: {
+          ...data,
+          rating: orderRating,
+          updatedAt: ratedAt
+        }
+      };
+    });
+  } catch (error) {
+    if (error && error.code === 'DRIVER_ALREADY_RATED') {
+      throw httpError(409, 'ALREADY_RATED', 'This order was already rated');
+    }
+    throw error;
+  }
 
   if (outcome.driverIdForRecompute) {
-    try {
-      await recomputeDriverRating(db, outcome.driverIdForRecompute);
-    } catch (error) {
-      console.error('❌ [MARKETPLACE_RATING] Driver aggregate recompute failed:', error.message);
-    }
+    scheduleDriverRatingRecompute(db, outcome.driverIdForRecompute);
   }
 
   return {

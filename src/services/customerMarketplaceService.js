@@ -67,8 +67,12 @@ function presentLocation(location) {
   return { lat, lng };
 }
 
+function coordQueryEmpty(value) {
+  return value === undefined || value === null || String(value).trim() === '';
+}
+
 function parseCoord(value, name) {
-  if (value === undefined || value === null || String(value).trim() === '') {
+  if (coordQueryEmpty(value)) {
     throw httpError(400, 'INVALID_LOCATION', `${name} is required`);
   }
   const n = Number(value);
@@ -79,8 +83,14 @@ function parseCoord(value, name) {
 }
 
 function parseOrigin(query) {
-  const lat = parseCoord(query.lat, 'lat');
-  const lng = parseCoord(query.lng, 'lng');
+  const q = query && typeof query === 'object' ? query : {};
+  const latEmpty = coordQueryEmpty(q.lat);
+  const lngEmpty = coordQueryEmpty(q.lng);
+  if (latEmpty && lngEmpty) {
+    return null;
+  }
+  const lat = parseCoord(q.lat, 'lat');
+  const lng = parseCoord(q.lng, 'lng');
   if (lat < -90 || lat > 90 || lng < -180 || lng > 180) {
     throw httpError(400, 'INVALID_LOCATION', 'Invalid coordinates');
   }
@@ -407,7 +417,13 @@ class CustomerMarketplaceService {
     if (!location) {
       return null;
     }
-    const travel = this.travel(origin, location);
+    let distanceKm = null;
+    let etaMinutes = null;
+    if (origin) {
+      const travel = this.travel(origin, location);
+      distanceKm = travel.distanceKm;
+      etaMinutes = travel.etaMinutes;
+    }
     const orderCount = Number.isFinite(Number(profile.orderCount))
       ? Math.max(0, Math.floor(Number(profile.orderCount)))
       : 0;
@@ -421,8 +437,8 @@ class CustomerMarketplaceService {
       shopType: typeof identity.shopType === 'string' ? identity.shopType : '',
       address: typeof profile.address === 'string' ? profile.address : '',
       location,
-      distanceKm: travel.distanceKm,
-      etaMinutes: travel.etaMinutes,
+      distanceKm,
+      etaMinutes,
       isOpen: shopOpenToggleIsOn(identity),
       orderCount,
       ratingSum: ratingParts.sum,
@@ -640,6 +656,15 @@ class CustomerMarketplaceService {
             comingSoon: true
           };
         }
+        if (origin == null) {
+          return {
+            category,
+            shopCount: matches.length,
+            etaMinMinutes: null,
+            etaMaxMinutes: null,
+            comingSoon: false
+          };
+        }
         const etas = matches.map((shop) => shop.etaMinutes);
         return {
           category,
@@ -656,8 +681,9 @@ class CustomerMarketplaceService {
     const origin = parseOrigin(query);
     const category = parseCategory(query.category);
     const sort = parseSort(query.sort);
+    const effectiveSort = origin == null && sort === 'distance' ? 'relevance' : sort;
     const limit = parseLimit(query.limit);
-    const cursor = decodeCursor(query.cursor, sort);
+    const cursor = decodeCursor(query.cursor, effectiveSort);
     const openNow = String(query.openNow || '').toLowerCase() === 'true';
     const minRating = parseMinRating(query);
 
@@ -677,8 +703,8 @@ class CustomerMarketplaceService {
       shops = shops.filter((shop) => shop.rating && shop.rating.average >= minRating);
     }
 
-    shops = sortShops(shops, sort);
-    const paged = pageShops(shops, sort, limit, cursor, nowIso);
+    shops = sortShops(shops, effectiveSort);
+    const paged = pageShops(shops, effectiveSort, limit, cursor, nowIso);
     const cards = await this.presentShopCardsForRows(paged.shops, settings, now);
     return {
       shops: cards.map((shop) => stripInternalCardFields(shop)),
@@ -811,6 +837,7 @@ const service = new CustomerMarketplaceService();
 module.exports = service;
 module.exports.CustomerMarketplaceService = CustomerMarketplaceService;
 module.exports.LEGACY_CARD_FIELDS = LEGACY_CARD_FIELDS;
+module.exports.parseOrigin = parseOrigin;
 module.exports.parseSort = parseSort;
 module.exports.decodeCursor = decodeCursor;
 module.exports.encodeCursor = encodeCursor;

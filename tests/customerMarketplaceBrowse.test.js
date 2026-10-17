@@ -1,11 +1,13 @@
 const {
   CustomerMarketplaceService,
   LEGACY_CARD_FIELDS,
+  parseOrigin,
   parseSort,
   decodeCursor,
   pageShops,
   hasVerifiedUpiName
 } = require('../src/services/customerMarketplaceService');
+const { applyRankingMetrics, sortShops } = require('../src/services/marketplace/browseRanking');
 const shopCatalogueService = require('../src/services/shopCatalogueService');
 
 const weekdayOpeningHours = {
@@ -512,5 +514,259 @@ describe('customerMarketplaceService browse', () => {
     expect(signSpy).not.toHaveBeenCalled();
     getAllSpy.mockRestore();
     signSpy.mockRestore();
+  });
+});
+
+function assertNoNaNInValue(value, path = 'root') {
+  if (typeof value === 'number') {
+    expect(Number.isNaN(value)).toBe(false);
+    return;
+  }
+  if (value == null || typeof value !== 'object') {
+    return;
+  }
+  if (Array.isArray(value)) {
+    value.forEach((item, index) => assertNoNaNInValue(item, `${path}[${index}]`));
+    return;
+  }
+  Object.keys(value).forEach((key) => {
+    assertNoNaNInValue(value[key], `${path}.${key}`);
+  });
+}
+
+describe('customerMarketplaceService browse without customer origin', () => {
+  const rankingSettings = {
+    weights: { rating: 0.4, popularity: 0.3, nearness: 0.3 },
+    priorWeight: 5,
+    boostDays: 30,
+    policyGroupA: ['Food & Restaurants']
+  };
+
+  const fixedNow = new Date('2026-06-01T12:00:00.000Z');
+
+  function makeBrowseRow(overrides) {
+    return {
+      shopName: 'Shop',
+      shopType: 'Grocery & Supermarket',
+      address: 'Addr',
+      location: { lat: 12.9, lng: 77.6 },
+      distanceKm: null,
+      etaMinutes: null,
+      isOpen: true,
+      orderCount: 0,
+      ratingSum: 0,
+      ratingCount: 0,
+      ratingAverage: 0,
+      approvedAt: null,
+      openingHours: null,
+      storefront: {},
+      isOpenNow: true,
+      rating: null,
+      isNew: true,
+      ...overrides
+    };
+  }
+
+  let service;
+
+  beforeEach(() => {
+    service = new CustomerMarketplaceService();
+  });
+
+  test('parseOrigin returns null when both lat and lng are missing', () => {
+    expect(parseOrigin({})).toBeNull();
+    expect(parseOrigin({ lat: '', lng: '' })).toBeNull();
+  });
+
+  test('parseOrigin throws INVALID_LOCATION when only lat is present', () => {
+    expect(() => parseOrigin({ lat: '12.9' })).toThrow(
+      expect.objectContaining({ code: 'INVALID_LOCATION', message: 'lng is required' })
+    );
+  });
+
+  test('listCategories without origin returns null ETAs and correct shopCount', async () => {
+    const spy = jest.spyOn(service, 'collectEligibleShopRows');
+    spy.mockResolvedValue({
+      rows: [
+        makeBrowseRow({
+          id: 'shop-a',
+          shopType: 'Grocery & Supermarket',
+          etaMinutes: 5,
+          distanceKm: 1
+        })
+      ],
+      settings: rankingSettings
+    });
+    const result = await service.listCategories({});
+    const grocery = result.categories.find((row) => row.category === 'Grocery & Supermarket');
+    expect(grocery.shopCount).toBe(1);
+    expect(grocery.etaMinMinutes).toBeNull();
+    expect(grocery.etaMaxMinutes).toBeNull();
+    expect(grocery.comingSoon).toBe(false);
+    spy.mockRestore();
+  });
+
+  test('listShops without origin nulls distance and ETA on cards', async () => {
+    const spy = jest.spyOn(service, 'collectEligibleShopRows');
+    spy.mockResolvedValue({
+      rows: [
+        makeBrowseRow({
+          id: 'shop-a',
+          relevanceScore: 1,
+          fairRating: 4
+        })
+      ],
+      settings: rankingSettings
+    });
+    const result = await service.listShops({});
+    expect(result.shops).toHaveLength(1);
+    expect(result.shops[0].distanceKm).toBeNull();
+    expect(result.shops[0].etaMinutes).toBeNull();
+    assertNoNaNInValue(result);
+    spy.mockRestore();
+  });
+
+  test('listShops without origin sort=distance uses relevance order with neutral nearness', async () => {
+    const raw = [
+      {
+        id: 'open-low',
+        distanceKm: null,
+        etaMinutes: null,
+        orderCount: 2,
+        ratingSum: 8,
+        ratingCount: 2,
+        ratingAverage: 4,
+        isOpenNow: true,
+        approvedAt: new Date('2024-01-01T00:00:00.000Z')
+      },
+      {
+        id: 'open-high',
+        distanceKm: null,
+        etaMinutes: null,
+        orderCount: 40,
+        ratingSum: 45,
+        ratingCount: 10,
+        ratingAverage: 4.5,
+        isOpenNow: true,
+        approvedAt: new Date('2024-06-01T00:00:00.000Z')
+      },
+      {
+        id: 'closed-best',
+        distanceKm: null,
+        etaMinutes: null,
+        orderCount: 100,
+        ratingSum: 500,
+        ratingCount: 100,
+        ratingAverage: 5,
+        isOpenNow: false,
+        approvedAt: new Date('2023-01-01T00:00:00.000Z')
+      }
+    ];
+    const ranked = applyRankingMetrics(raw, rankingSettings, fixedNow, { globalShops: raw });
+    const rows = ranked.map((row) => makeBrowseRow({
+      ...row,
+      shopType: 'Grocery & Supermarket',
+      rating: row.ratingCount > 0 ? { average: row.ratingAverage, count: row.ratingCount } : null,
+      isNew: row.ratingCount === 0
+    }));
+    const expectedIds = sortShops(rows, 'relevance').map((row) => row.id);
+
+    const spy = jest.spyOn(service, 'collectEligibleShopRows');
+    spy.mockResolvedValue({ rows, settings: rankingSettings });
+
+    const byRelevance = await service.listShops({ sort: 'relevance' });
+    const byDistance = await service.listShops({ sort: 'distance' });
+    const filtered = await service.listShops({ sort: 'distance', minRating: 4.5, openNow: 'true' });
+
+    expect(byDistance.shops.map((row) => row.id)).toEqual(expectedIds);
+    expect(byRelevance.shops.map((row) => row.id)).toEqual(expectedIds);
+    expect(filtered.shops.every((row) => row.rating && row.rating.average >= 4.5)).toBe(true);
+    expect(filtered.shops.every((row) => row.isOpenNow === true)).toBe(true);
+    assertNoNaNInValue(byDistance);
+    ranked.forEach((row) => {
+      expect(Number.isNaN(row.relevanceScore)).toBe(false);
+      expect(Number.isNaN(row.fairRating)).toBe(false);
+    });
+    spy.mockRestore();
+  });
+
+  test('getShop without origin returns null distance and ETA', async () => {
+    jest.spyOn(service, 'loadShopRecord').mockResolvedValue({
+      identity: { shopName: 'Verified Mart', shopType: 'Grocery & Supermarket', isOpen: true, approvalStatus: 'approved' },
+      profile: {
+        address: '1 Main St',
+        location: { latitude: 12.9, longitude: 77.6 },
+        orderCount: 3,
+        bank: { upiNameVerification: { verifiedName: 'Verified Shop' } },
+        rating: { sum: 8, count: 2, average: 4 },
+        storefront: { tagline: 'Fresh daily' }
+      }
+    });
+    jest.spyOn(service, 'loadMarketplaceSettings').mockResolvedValue(rankingSettings);
+    jest.spyOn(service, 'getDb').mockReturnValue({
+      collection: () => ({
+        where: () => ({
+          get: async () => ({ docs: [] })
+        })
+      }),
+      getAll: async () => []
+    });
+    const result = await service.getShop('shop-verified', {});
+    expect(result.shop.distanceKm).toBeNull();
+    expect(result.shop.etaMinutes).toBeNull();
+  });
+
+  test('search without origin returns null distance on shop hits', async () => {
+    const spy = jest.spyOn(service, 'collectEligibleShopRows');
+    spy.mockResolvedValue({
+      rows: [
+        makeBrowseRow({
+          id: 'shop-verified',
+          shopName: 'Verified Mart',
+          relevanceScore: 1,
+          fairRating: 4
+        })
+      ],
+      settings: rankingSettings
+    });
+    jest.spyOn(service, 'getDb').mockReturnValue({
+      collection: () => ({
+        where: () => ({
+          get: async () => ({ docs: [] })
+        })
+      })
+    });
+    const shopHit = await service.search({ q: 'verified' });
+    expect(shopHit.shops).toHaveLength(1);
+    expect(shopHit.shops[0].distanceKm).toBeNull();
+    expect(shopHit.shops[0].etaMinutes).toBeNull();
+    spy.mockRestore();
+  });
+
+  test('valid origin keeps distance and ETA from travel', async () => {
+    const { getFirestore } = require('../src/services/firebase');
+    const verifiedShop = {
+      id: 'shop-verified',
+      data: {
+        address: '1 Main St',
+        location: { latitude: 12.9, longitude: 77.6 },
+        orderCount: 3,
+        bank: { upiNameVerification: { verifiedName: 'Verified Shop' } },
+        rating: { sum: 8, count: 2, average: 4 },
+        storefront: { tagline: 'Fresh daily' }
+      }
+    };
+    const users = [
+      makeUserDoc('shop-verified', {
+        userType: 'shop',
+        isActive: true,
+        shop: { approvalStatus: 'approved', shopName: 'Verified Mart', shopType: 'Grocery & Supermarket', isOpen: true }
+      })
+    ];
+    getFirestore.mockReturnValue(buildFirestoreMock({ users, shops: [verifiedShop], products: [] }));
+    const localService = new CustomerMarketplaceService();
+    const shops = await localService.loadEligibleShops({ lat: 12.9, lng: 77.6 });
+    expect(shops[0].distanceKm).toBe(5);
+    expect(shops[0].etaMinutes).toBe(10);
   });
 });

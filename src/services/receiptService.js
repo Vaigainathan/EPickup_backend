@@ -25,7 +25,15 @@ function formatMoney(currency, amount) {
   if (amount == null || amount === '—') {
     return '—';
   }
-  return `${currency}${amount}`;
+  const n = Number(amount);
+  if (!Number.isFinite(n)) {
+    return '—';
+  }
+  const formatted = new Intl.NumberFormat('en-IN', {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2
+  }).format(n);
+  return `${currency}${formatted}`;
 }
 
 function millisOf(value) {

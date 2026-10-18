@@ -3,6 +3,14 @@ const { getFirestore } = require('./firebase');
 const passwordService = require('./passwordService');
 const shopOnboardingService = require('./shopOnboardingService');
 const notificationService = require('./notificationService');
+const { trimRegisteredName, isVerified } = require('../utils/shopBankMerge');
+const {
+  isShopOpenNow,
+  nextOpensAt,
+  currentClosesAt,
+  shopOpenToggleIsOn,
+  openingHoursFromShopProfile
+} = require('../utils/shopOpeningHours');
 
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
@@ -25,15 +33,37 @@ function presentLocation(location) {
   return { lat, lng };
 }
 
+function presentUpiRegisteredName(bank) {
+  const source = bank && typeof bank === 'object' ? bank : {};
+  const trimmed = trimRegisteredName(source.upiRegisteredName);
+  return trimmed === '' ? null : trimmed;
+}
+
 function presentBank(bank = {}) {
+  const source = bank && typeof bank === 'object' ? bank : {};
   return {
-    accountHolderName: typeof bank.accountHolderName === 'string' ? bank.accountHolderName : '',
-    bankName: typeof bank.bankName === 'string' ? bank.bankName : '',
-    accountNumberLast4: typeof bank.accountNumberLast4 === 'string' ? bank.accountNumberLast4 : '',
-    ifsc: typeof bank.ifsc === 'string' ? bank.ifsc : '',
-    upiId: typeof bank.upiId === 'string' ? bank.upiId : '',
-    upiVerified: bank.upiVerified === true
+    accountHolderName: typeof source.accountHolderName === 'string' ? source.accountHolderName : '',
+    bankName: typeof source.bankName === 'string' ? source.bankName : '',
+    accountNumberLast4: typeof source.accountNumberLast4 === 'string' ? source.accountNumberLast4 : '',
+    ifsc: typeof source.ifsc === 'string' ? source.ifsc : '',
+    upiId: typeof source.upiId === 'string' ? source.upiId : '',
+    upiVerified: source.upiVerified === true,
+    upiRegisteredName: presentUpiRegisteredName(source),
+    upiNameVerified: isVerified(source)
   };
+}
+
+function presentShopOpenState(shop, shopProfile, now = new Date()) {
+  const toggleOpen = shopOpenToggleIsOn(shop);
+  const openingHours = openingHoursFromShopProfile(shopProfile);
+  const isOpenNow = isShopOpenNow({ isOpen: toggleOpen, openingHours, now });
+  const opensAt = isOpenNow
+    ? null
+    : nextOpensAt({ openingHours, now });
+  const closesAt = isOpenNow && openingHours != null
+    ? currentClosesAt({ openingHours, now })
+    : null;
+  return { isOpenNow, opensAt, closesAt };
 }
 
 class ShopSettingsService {
@@ -85,6 +115,7 @@ class ShopSettingsService {
     const shop = ctx.shop || {};
     const profile = ctx.shopProfile || {};
     const userData = ctx.userData || {};
+    const { isOpenNow, opensAt, closesAt } = presentShopOpenState(shop, profile);
 
     return {
       name: typeof userData.name === 'string' ? userData.name : '',
@@ -93,6 +124,9 @@ class ShopSettingsService {
       shopName: typeof shop.shopName === 'string' ? shop.shopName : '',
       shopType: typeof shop.shopType === 'string' ? shop.shopType : '',
       isOpen: shop.isOpen === true,
+      isOpenNow,
+      opensAt,
+      closesAt,
       address: typeof profile.address === 'string' ? profile.address : '',
       location: presentLocation(profile.location),
       bank: presentBank(profile.bank)
@@ -288,4 +322,7 @@ class ShopSettingsService {
   }
 }
 
-module.exports = new ShopSettingsService();
+const shopSettingsService = new ShopSettingsService();
+module.exports = shopSettingsService;
+module.exports.presentShopOpenState = presentShopOpenState;
+module.exports.presentBank = presentBank;

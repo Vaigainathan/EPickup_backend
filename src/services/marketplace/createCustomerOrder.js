@@ -397,6 +397,47 @@ function generateHandoverOtp() {
   return String(crypto.randomInt(100000, 1000000));
 }
 
+const CUSTOMER_SNAPSHOT_NAME_MAX = 60;
+const CUSTOMER_SNAPSHOT_PAYER_UPI_NAME_MAX = 100;
+
+function resolveCustomerSnapshotName(customerData) {
+  const source = customerData && typeof customerData === 'object' ? customerData : {};
+  let name;
+  if (typeof source.name === 'string' && source.name.trim()) {
+    name = source.name.trim();
+  } else if (typeof source.displayName === 'string' && source.displayName.trim()) {
+    name = source.displayName.trim();
+  } else {
+    name = 'Customer';
+  }
+  if (name.length > CUSTOMER_SNAPSHOT_NAME_MAX) {
+    return name.slice(0, CUSTOMER_SNAPSHOT_NAME_MAX);
+  }
+  return name;
+}
+
+function resolveCustomerSnapshotPayerUpiName(marketplaceProfile) {
+  const source = marketplaceProfile && typeof marketplaceProfile === 'object' ? marketplaceProfile : {};
+  if (typeof source.payerUpiName !== 'string') {
+    return null;
+  }
+  const trimmed = source.payerUpiName.trim();
+  if (!trimmed) {
+    return null;
+  }
+  if (trimmed.length > CUSTOMER_SNAPSHOT_PAYER_UPI_NAME_MAX) {
+    return trimmed.slice(0, CUSTOMER_SNAPSHOT_PAYER_UPI_NAME_MAX);
+  }
+  return trimmed;
+}
+
+function buildCustomerSnapshot(customerData, marketplaceProfile) {
+  return {
+    name: resolveCustomerSnapshotName(customerData),
+    payerUpiName: resolveCustomerSnapshotPayerUpiName(marketplaceProfile)
+  };
+}
+
 async function createMarketplaceOrder({ customerId, idempotencyKey, body }) {
   const validation = validateCreateInput(idempotencyKey, body);
   if (!validation.ok) {
@@ -596,6 +637,7 @@ async function createMarketplaceOrder({ customerId, idempotencyKey, body }) {
       linkedBookingId: null,
       driverInfo: null,
       displayId,
+      customerSnapshot: buildCustomerSnapshot(customerData, marketplaceProfile),
       createdAt: now,
       updatedAt: now
     };
@@ -622,9 +664,7 @@ async function createMarketplaceOrder({ customerId, idempotencyKey, body }) {
       }
     }, customerId);
 
-    const customerName = typeof customerData.name === 'string' && customerData.name.trim()
-      ? customerData.name.trim()
-      : (typeof customerData.displayName === 'string' ? customerData.displayName.trim() : 'Customer');
+    const customerName = orderData.customerSnapshot.name;
 
     return { replay: false, data: orderData, shopId, displayId, customerName };
   });
@@ -671,5 +711,8 @@ module.exports = {
   addressCoordinates,
   addressText,
   snapshotDeliveryAddress,
+  buildCustomerSnapshot,
+  resolveCustomerSnapshotName,
+  resolveCustomerSnapshotPayerUpiName,
   createMarketplaceOrder
 };

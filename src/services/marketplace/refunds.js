@@ -242,13 +242,19 @@ function presentCustomerRefund(refund) {
   };
 }
 
-function presentShopRefund(refund, orderId) {
+function presentShopRefund(refund, orderId, orderData) {
   const source = refund && typeof refund === 'object' ? refund : {};
+  const order = orderData && typeof orderData === 'object' ? orderData : {};
   const status = source.status ?? null;
   const sent = SENT_OR_LATER.has(status);
+  const snapshot = order.customerSnapshot && typeof order.customerSnapshot === 'object'
+    ? order.customerSnapshot
+    : null;
   return {
     id: source.id ?? null,
     orderId: orderId ?? source.orderId ?? null,
+    displayId: order.displayId ?? null,
+    customerName: snapshot && typeof snapshot.name === 'string' ? snapshot.name : null,
     reason: source.reason ?? null,
     status,
     amount: source.amount ?? null,
@@ -570,7 +576,7 @@ async function markRefundSent({
   }
   return {
     alreadyProcessed: outcome.alreadyProcessed,
-    refund: presentShopRefund({ ...outcome.refund, id: refundId }, orderId)
+    refund: presentShopRefund({ ...outcome.refund, id: refundId }, orderId, outcome.data)
   };
 }
 
@@ -671,7 +677,7 @@ async function resolveRefundDispute({
     await notifyUser(result.data.customerId, result.template, variables);
     await notifyUser(result.data.shopId, result.template, variables);
   }
-  return { wrote: true, refund: presentShopRefund(result.refund, orderId) };
+  return { wrote: true, refund: presentShopRefund(result.refund, orderId, result.data) };
 }
 
 async function recordFoundRefund({ orderId, amount, operator, reason }) {
@@ -759,7 +765,7 @@ async function listShopRefunds(shopId, status, nowMs) {
     refundSnap.docs.forEach((refundDoc) => {
       const refund = { id: refundDoc.id, ...(refundDoc.data() || {}) };
       if (matchesShopFilter(refund, filter, now)) {
-        rows.push(presentShopRefund(refund, orderDoc.id));
+        rows.push(presentShopRefund(refund, orderDoc.id, orderDoc.data() || {}));
       }
     });
   }

@@ -12,7 +12,7 @@ const db = getFirestore();
  * @access  Private
  */
 router.post('/register', [
-  requireRole(['customer', 'driver']),
+  requireRole(['customer', 'driver', 'shop']),
   body('token').isString().notEmpty().withMessage('FCM token is required'),
   body('deviceId').optional().isString(),
   body('platform').optional().isIn(['android', 'ios', 'web'])
@@ -97,7 +97,7 @@ router.post('/register', [
  * @access  Private
  */
 router.post('/unregister', [
-  requireRole(['customer', 'driver'])
+  requireRole(['customer', 'driver', 'shop'])
 ], async (req, res) => {
   try {
     const userId = req.user.uid;

@@ -52,14 +52,8 @@ const PAST_PICKUP_BOOKING = new Set([
 const SUPPORT_READY_STAGES = new Set(['searching', 'assigned', 'at_shop']);
 const DISPLAY_ID_ATTEMPTS = 8;
 
-const ORDER_STATUSES = new Set([
-  'awaiting_payment',
-  'preparing',
-  'ready',
-  'handed_over',
-  'completed',
-  'cancelled'
-]);
+const { ORDER_STATUSES: ORDER_STATUS_LIST } = require('./marketplace/orderStateMachine');
+const ORDER_STATUSES = new Set(ORDER_STATUS_LIST);
 
 const CONFIRMABLE_PAYMENT = new Set(['pending', 'initiated', 'customer_claimed']);
 const BLOCKED_CONFIRM_PAYMENT = new Set(['expired', 'cancelled', 'refund_pending', 'refunded']);
@@ -373,8 +367,11 @@ class ShopOrderService {
       createdAt: data.createdAt || null,
       updatedAt: data.updatedAt || null,
       hasOpenRefund: data.hasOpenRefund === true,
+      customerName: data.customerSnapshot?.name ?? null,
+      payerUpiName: data.customerSnapshot?.payerUpiName ?? null,
+      closedReason: typeof data.closedReason === 'string' ? data.closedReason : null,
       help: await this.presentOrderHelp(id, data),
-      refunds: loaded.map((refund) => presentShopRefund(refund, id))
+      refunds: loaded.map((refund) => presentShopRefund(refund, id, data))
     };
   }
 

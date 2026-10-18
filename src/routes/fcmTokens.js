@@ -42,10 +42,10 @@ router.post('/register', [
     console.log(`🔔 [PUSH_TOKEN] Token type: ${isExpoToken ? 'Expo' : isFCMToken ? 'FCM' : 'Unknown'}`);
     console.log(`🔔 [PUSH_TOKEN] Token data:`, { hasToken: !!fcmToken, deviceId, platform, userType });
     
-    // Build update data
+    // Build update data (Firestore rejects undefined — use null for omitted optional fields)
     const updateData = {
-      deviceId,
-      platform,
+      deviceId: deviceId ?? null,
+      platform: platform ?? null,
       userType: userType || req.user.userType,
       tokenUpdatedAt: new Date(),
       registrationSource: userType || 'unknown',
@@ -56,10 +56,8 @@ router.post('/register', [
     if (isExpoToken) {
       updateData.expoPushToken = fcmToken; // Store Expo token in expoPushToken field
       // Keep existing fcmToken if it exists (backward compatibility)
-      console.log(`✅ [PUSH_TOKEN] Expo push token stored for user: ${userId}`);
     } else if (isFCMToken) {
       updateData.fcmToken = fcmToken; // Store FCM token in fcmToken field
-      console.log(`✅ [PUSH_TOKEN] FCM token stored for user: ${userId}`);
     } else {
       // Unknown token type - store in both fields for backward compatibility
       updateData.expoPushToken = fcmToken;
@@ -70,6 +68,8 @@ router.post('/register', [
     // Update user's push token (use set with merge to create document if it doesn't exist)
     await db.collection('users').doc(userId).set(updateData, { merge: true });
 
+    const tokenKind = isExpoToken ? 'Expo' : isFCMToken ? 'FCM' : 'Unknown';
+    console.log(`✅ [PUSH_TOKEN] ${tokenKind} push token stored for user: ${userId}`);
     console.log(`✅ [PUSH_TOKEN] Push token registered successfully for user: ${userId}`);
 
     res.status(200).json({

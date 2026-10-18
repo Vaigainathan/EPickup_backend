@@ -3,6 +3,27 @@ const request = require('supertest');
 
 const userWrites = [];
 
+function assertNoUndefinedDeep(value, path = 'payload') {
+  if (value === undefined) {
+    throw new Error(`undefined at ${path}`);
+  }
+  if (value === null || typeof value !== 'object') {
+    return;
+  }
+  if (value instanceof Date) {
+    return;
+  }
+  if (Array.isArray(value)) {
+    value.forEach((entry, index) => {
+      assertNoUndefinedDeep(entry, `${path}[${index}]`);
+    });
+    return;
+  }
+  Object.keys(value).forEach((key) => {
+    assertNoUndefinedDeep(value[key], `${path}.${key}`);
+  });
+}
+
 jest.mock('../src/services/firebase', () => ({
   getFirestore: () => ({
     collection: () => ({
@@ -36,11 +57,11 @@ describe('shop FCM token routes', () => {
     userWrites.length = 0;
   });
 
-  test('shop user can register expo push token on users doc', async () => {
+  test('shop user can register expo push token without deviceId', async () => {
     const shopUid = 'shop-role-uid';
     const res = await request(buildApp({ uid: shopUid, userType: 'shop' }))
       .post('/register')
-      .send({ token: EXPO_TOKEN, platform: 'android' });
+      .send({ token: EXPO_TOKEN, platform: 'android', userType: 'shop' });
 
     expect(res.status).toBe(200);
     expect(res.body.success).toBe(true);
@@ -48,6 +69,8 @@ describe('shop FCM token routes', () => {
     expect(userWrites[0].userId).toBe(shopUid);
     expect(userWrites[0].options).toEqual({ merge: true });
     expect(userWrites[0].data.expoPushToken).toBe(EXPO_TOKEN);
+    expect(userWrites[0].data.deviceId).toBeNull();
+    assertNoUndefinedDeep(userWrites[0].data);
   });
 
   test('shop user can unregister tokens on users doc', async () => {
@@ -60,6 +83,7 @@ describe('shop FCM token routes', () => {
     expect(userWrites).toHaveLength(1);
     expect(userWrites[0].data.expoPushToken).toBeNull();
     expect(userWrites[0].data.fcmToken).toBeNull();
+    assertNoUndefinedDeep(userWrites[0].data);
   });
 
   test('role outside allow list receives 403', async () => {
@@ -80,6 +104,7 @@ describe('shop FCM token routes', () => {
 
     expect(res.status).toBe(200);
     expect(userWrites[0].data.expoPushToken).toBe(EXPO_TOKEN);
+    assertNoUndefinedDeep(userWrites[0].data);
   });
 
   test('driver register behaviour unchanged', async () => {
@@ -90,5 +115,6 @@ describe('shop FCM token routes', () => {
 
     expect(res.status).toBe(200);
     expect(userWrites[0].data.expoPushToken).toBe(EXPO_TOKEN);
+    assertNoUndefinedDeep(userWrites[0].data);
   });
 });

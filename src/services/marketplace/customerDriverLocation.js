@@ -40,8 +40,13 @@ function locationFromFix(fix, linkedBookingId, now) {
   if (updatedMs > now + FRESH_MS || now - updatedMs > FRESH_MS) {
     return null;
   }
-  const lat = coordinate(fix.latitude, fix.lat);
-  const lng = coordinate(fix.longitude, fix.lng);
+  const currentLocation = fix.currentLocation && typeof fix.currentLocation === 'object'
+    ? fix.currentLocation
+    : null;
+  const lat = coordinate(fix.latitude, fix.lat)
+    ?? (currentLocation ? coordinate(currentLocation.latitude, currentLocation.lat) : null);
+  const lng = coordinate(fix.longitude, fix.lng)
+    ?? (currentLocation ? coordinate(currentLocation.longitude, currentLocation.lng) : null);
   if (lat == null || lng == null) {
     return null;
   }
@@ -88,5 +93,6 @@ async function getCustomerDriverLocation(db, customerId, orderId, now = Date.now
 }
 
 module.exports = {
-  getCustomerDriverLocation
+  getCustomerDriverLocation,
+  locationFromFix
 };

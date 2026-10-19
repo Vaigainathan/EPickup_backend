@@ -29,6 +29,8 @@ const {
   refundRemainder
 } = require('./marketplace/refunds');
 const { presentDeliveryAddress } = require('./marketplace/presentDeliveryAddress');
+const { buildSystemAvailabilityUpdate } = require('../utils/driverAvailabilityMetadata');
+const { emitBookingCancelled, emitMarketplaceHandoverConfirmed } = require('./bookingCancelEvents');
 
 function refundRowsFromQuerySnap(snap) {
   const docs = snap && Array.isArray(snap.docs) ? snap.docs : [];
@@ -1044,6 +1046,29 @@ class ShopOrderService {
       });
     }
 
+    if (!result.alreadyProcessed && result.order) {
+      const linkedBookingId = result.order.linkedBookingId;
+      if (linkedBookingId) {
+        try {
+          const bookingSnap = await this.getDb().collection('bookings').doc(linkedBookingId).get();
+          const booking = bookingSnap.exists ? (bookingSnap.data() || {}) : null;
+          const driverId = booking && booking.driverId;
+          if (driverId) {
+            const { getSocketIO } = require('./socket');
+            const io = getSocketIO();
+            emitMarketplaceHandoverConfirmed(io, {
+              driverId,
+              bookingId: linkedBookingId,
+              marketplaceOrderId: orderId,
+              displayId: result.order.displayId ?? null
+            });
+          }
+        } catch (error) {
+          console.error('❌ [SHOP_ORDERS] Handover driver socket failed:', error.message);
+        }
+      }
+    }
+
     return result;
   }
 
@@ -1369,6 +1394,8 @@ class ShopOrderService {
         const driverData = driverSnap.data() || {};
         const active = driverData.driver && driverData.driver.activeBookings;
         tx.update(driverRef, {
+          ...buildSystemAvailabilityUpdate(true),
+          'driver.currentBookingId': null,
           'driver.activeBookings': Math.max((active || 1) - 1, 0),
           updatedAt: at
         });
@@ -1465,6 +1492,18 @@ class ShopOrderService {
         );
       } catch (error) {
         console.error('❌ [SHOP_ORDERS] Driver cancel notification failed:', error.message);
+      }
+      try {
+        const { getSocketIO } = require('./socket');
+        const io = getSocketIO();
+        emitBookingCancelled(io, {
+          driverId: outcome.driverId,
+          bookingId: outcome.bookingId,
+          reason: 'Marketplace order cancelled',
+          cancelledBy: 'support'
+        });
+      } catch (error) {
+        console.error('❌ [SHOP_ORDERS] Driver cancel socket failed:', error.message);
       }
     }
     return { alreadyProcessed: false, wrote: true };

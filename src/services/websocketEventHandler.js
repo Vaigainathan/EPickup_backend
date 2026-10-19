@@ -5,6 +5,7 @@ const expoPushService = require('./expoPushService');
 const { NEW_ORDER_CHANNEL_ID } = require('../constants/notifications');
 const { withParcelSource } = require('./parcelSourceFilter');
 const { authorizeBookingRoomJoin } = require('./bookingRoomAuth');
+const { buildNewBookingSocketFields } = require('./marketplace/newBookingAvailablePayload');
 
 /**
  * WebSocket Event Handler Service
@@ -2228,10 +2229,13 @@ class WebSocketEventHandler {
         return;
       }
 
+      const marketplaceSocketFields = buildNewBookingSocketFields(bookingData);
       const notificationData = {
         type: 'new_booking',
+        ...marketplaceSocketFields,
         booking: {
           id: bookingData.id,
+          ...marketplaceSocketFields,
           pickup: bookingData.pickup,
           dropoff: bookingData.dropoff, // ✅ CRITICAL FIX: Use correct field name
           fare: bookingData.fare,

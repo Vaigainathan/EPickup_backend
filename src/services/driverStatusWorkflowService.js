@@ -1,6 +1,7 @@
 const { FieldValue } = require('firebase-admin/firestore');
 const { getFirestore } = require('./firebase');
 const bookingStateMachine = require('./bookingStateMachine');
+const { assertHandoverComplete } = require('./marketplace/marketplaceHandoverGuard');
 
 class DriverStatusError extends Error {
   constructor(statusCode, code, message, details = {}) {
@@ -386,6 +387,8 @@ class DriverStatusWorkflowService {
     this.ensureTransitionAllowed(currentStatus, canonicalStatus);
     this.ensureLocationRequirement(canonicalStatus, bookingData, location);
 
+    await assertHandoverComplete(db, bookingData, canonicalStatus);
+
     const updateData = this.buildStatusUpdateData({
       booking: bookingData,
       status: canonicalStatus,
@@ -528,6 +531,8 @@ class DriverStatusWorkflowService {
     }
 
     this.ensureLocationRequirement('at_dropoff', bookingData, location);
+
+    await assertHandoverComplete(db, bookingData, 'delivered');
     
     if (!['at_dropoff', 'in_transit'].includes(currentStatus)) {
       throw new DriverStatusError(

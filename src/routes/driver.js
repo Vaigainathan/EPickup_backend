@@ -10,6 +10,10 @@ const BookingLockService = require('../services/bookingLockService');
 const bookingLockService = new BookingLockService();
 const { driverStatusWorkflowService, DriverStatusError } = require('../services/driverStatusWorkflowService');
 const { idempotencyKeyMiddleware } = require('../middleware/idempotencyMiddleware');
+const {
+  loadAssignedMarketplaceContext,
+  attachMarketplaceToDriverBooking
+} = require('../services/marketplace/driverMarketplaceAssignment');
 
 const router = express.Router();
 
@@ -4343,12 +4347,19 @@ router.get('/bookings/active', requireDriver, async (req, res) => {
     const bookingData = bookingDoc.data();
     
     // Format the response
-    const booking = {
+    let booking = {
       id: bookingDoc.id,
       ...bookingData,
       createdAt: bookingData.createdAt?.toDate?.() || bookingData.createdAt,
       updatedAt: bookingData.updatedAt?.toDate?.() || bookingData.updatedAt
     };
+
+    const marketplaceContext = await loadAssignedMarketplaceContext(
+      db,
+      { ...bookingData, id: bookingDoc.id },
+      uid
+    );
+    booking = attachMarketplaceToDriverBooking(booking, marketplaceContext);
     
     console.log(`✅ [DRIVER_ACTIVE_BOOKING] Found active booking: ${bookingDoc.id}, status: ${bookingData.status}`);
     
@@ -5491,13 +5502,23 @@ router.post('/bookings/:id/accept', idempotencyKeyMiddleware, requireDriver, asy
       // Don't fail the accept request if stop push fails
     }
 
+    const acceptData = {
+      bookingId: id,
+      status: 'driver_assigned'
+    };
+    const marketplaceContext = await loadAssignedMarketplaceContext(
+      db,
+      { ...updatedBookingData, id },
+      uid
+    );
+    if (marketplaceContext) {
+      acceptData.marketplace = marketplaceContext;
+    }
+
     res.status(200).json({
       success: true,
       message: 'Booking accepted successfully',
-      data: {
-        bookingId: id,
-        status: 'driver_assigned'
-      },
+      data: acceptData,
       timestamp: new Date().toISOString()
     });
 

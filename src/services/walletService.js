@@ -1,6 +1,22 @@
 const { getFirestore } = require('firebase-admin/firestore');
 const { v4: uuidv4 } = require('uuid');
 
+const STAGING_PROJECT = 'epickup-app-staging';
+
+function assertStagingProjectForSupportWallet() {
+  const admin = require('firebase-admin');
+  let projectId = process.env.FIREBASE_PROJECT_ID;
+  if (admin.apps && admin.apps.length > 0) {
+    const app = admin.app();
+    projectId = (app.options && app.options.projectId) || projectId;
+  }
+  if (projectId !== STAGING_PROJECT) {
+    throw new Error(
+      `Refusing support wallet adjustment: projectId is ${projectId || '(empty)'}, expected ${STAGING_PROJECT}`
+    );
+  }
+}
+
 class PointsService {
   constructor() {
     this.db = getFirestore();
@@ -669,6 +685,104 @@ class PointsService {
         details: error.message
       };
     }
+  }
+
+  /**
+   * Set absolute points balance for staging support scripts (not exposed via HTTP routes).
+   * @param {string} driverId - Driver ID
+   * @param {number} targetBalance - Target points balance
+   * @param {Object} details - Audit metadata (reason, script, etc.)
+   * @returns {Promise<Object>} Result object
+   */
+  async setSupportTestPointsBalance(driverId, targetBalance, details = {}) {
+    assertStagingProjectForSupportWallet();
+
+    const target = Number(targetBalance);
+    if (!Number.isFinite(target) || target < 0) {
+      return {
+        success: false,
+        error: 'Target balance must be a finite number greater than or equal to 0'
+      };
+    }
+
+    const reason = typeof details.reason === 'string' && details.reason.trim()
+      ? details.reason.trim()
+      : 'support/test top-up';
+
+    let walletDoc = await this.db.collection('driverPointsWallets').doc(driverId).get();
+    if (!walletDoc.exists) {
+      const created = await this.createOrGetPointsWallet(driverId, 0);
+      if (!created.success) {
+        return created;
+      }
+      walletDoc = await this.db.collection('driverPointsWallets').doc(driverId).get();
+    }
+
+    const currentWallet = walletDoc.data() || {};
+    const currentBalance = Number(currentWallet.pointsBalance || 0);
+    if (currentBalance === target) {
+      return {
+        success: true,
+        noop: true,
+        wallet: {
+          driverId,
+          pointsBalance: target
+        }
+      };
+    }
+
+    const delta = target - currentBalance;
+    const batch = this.db.batch();
+    const walletRef = this.db.collection('driverPointsWallets').doc(driverId);
+    const walletUpdates = {
+      pointsBalance: target,
+      requiresTopUp: target <= 0,
+      lastUpdated: new Date()
+    };
+    if (delta > 0) {
+      walletUpdates.totalPointsEarned = Number(currentWallet.totalPointsEarned || 0) + delta;
+    } else {
+      walletUpdates.totalPointsSpent = Number(currentWallet.totalPointsSpent || 0) + Math.abs(delta);
+    }
+    batch.update(walletRef, walletUpdates);
+
+    const transactionId = uuidv4();
+    const transactionRef = this.db.collection('pointsTransactions').doc(transactionId);
+    batch.set(transactionRef, {
+      id: transactionId,
+      driverId,
+      type: delta > 0 ? 'credit' : 'debit',
+      pointsAmount: Math.abs(delta),
+      previousBalance: currentBalance,
+      newBalance: target,
+      paymentMethod: 'support_test_topup',
+      paymentDetails: {
+        reason,
+        script: details.script || 'approve-test-driver',
+        ...details
+      },
+      status: 'completed',
+      createdAt: new Date()
+    });
+
+    await batch.commit();
+
+    try {
+      const cachingService = require('./cachingService');
+      await cachingService.delete(`wallet:balance:${driverId}`, 'memory');
+      await cachingService.invalidatePattern(`wallet:full:${driverId}:`, 'memory');
+      await cachingService.delete(`wallet:transactions:count:${driverId}`, 'memory');
+    } catch (cacheError) {
+      console.warn('⚠️ [WALLET_SERVICE] Failed to invalidate cache after support top-up:', cacheError.message);
+    }
+
+    return {
+      success: true,
+      noop: false,
+      previousBalance: currentBalance,
+      newBalance: target,
+      transactionId
+    };
   }
 
   /**

@@ -106,7 +106,9 @@ class VerificationService {
         const doc = documents[camelKey] || documents[snakeCaseKey];
 
         if (doc) {
+          const hasFilePath = doc.filePath && typeof doc.filePath === 'string' && doc.filePath.trim() !== '';
           const hasUrl = (doc.url || doc.downloadURL) && (doc.url !== '' || doc.downloadURL !== '');
+          const hasDocumentAsset = hasFilePath || hasUrl;
           
           // ✅ CRITICAL: Check multiple verification status fields for compatibility
           const isVerified = doc.verified === true || 
@@ -114,7 +116,7 @@ class VerificationService {
                             doc.verificationStatus === 'verified' ||
                             doc.verificationStatus === 'approved';
           
-          if (hasUrl || isVerified) {
+          if (hasDocumentAsset || isVerified) {
             // Document exists with either URL or verification status
             totalCount++;
             
@@ -143,7 +145,7 @@ class VerificationService {
         const camelKey = docType;
         const snakeCaseKey = docType.replace(/([A-Z])/g, '_$1').toLowerCase();
         const doc = documents[camelKey] || documents[snakeCaseKey];
-        if (doc && (doc.url || doc.downloadURL)) {
+        if (doc && ((doc.filePath && String(doc.filePath).trim()) || doc.url || doc.downloadURL)) {
           const isRejected = doc.status === 'rejected' || 
                            doc.verificationStatus === 'rejected' ||
                            doc.rejected === true;

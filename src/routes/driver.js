@@ -6,6 +6,12 @@ const { requireDriver } = require('../middleware/auth');
 const { documentStatusRateLimit } = require('../middleware/rateLimiter');
 const { speedLimiter, bookingStatusLimiter } = require('../middleware/rateLimit');
 const { documentStatusCache, invalidateUserCache } = require('../middleware/cache');
+const {
+  listLatestDriverKycDocumentsFromStorage,
+  resolveDriverKycReadUrl,
+  presentDriverKycDocumentMap,
+  signDriverKycPath
+} = require('../services/driverKycDocumentUrlService');
 const BookingLockService = require('../services/bookingLockService');
 const bookingLockService = new BookingLockService();
 const { driverStatusWorkflowService, DriverStatusError } = require('../services/driverStatusWorkflowService');
@@ -868,16 +874,20 @@ router.get('/profile', requireDriver, async (req, res) => {
             return bTime - aTime; // Newest first
           });
 
-          const [downloadURL] = await sortedFiles[0].getSignedUrl({
-            action: 'read',
-            expires: '03-01-2500'
-          });
-
-          profilePicture = downloadURL;
+          const profilePath = sortedFiles[0].name;
+          const signed = await signDriverKycPath(profilePath);
+          profilePicture = signed.url;
           console.log('✅ [PROFILE] Profile photo fetched from Firebase Storage');
         }
       } catch (storageError) {
         console.warn('⚠️ [PROFILE] Failed to fetch profile photo from Firebase Storage:', storageError.message);
+      }
+    }
+
+    if (profilePicture) {
+      const resolvedProfile = await resolveDriverKycReadUrl({ url: profilePicture });
+      if (resolvedProfile.url) {
+        profilePicture = resolvedProfile.url;
       }
     }
     
@@ -1104,57 +1114,7 @@ router.get('/documents', requireDriver, async (req, res) => {
 
     const userData = userDoc.data();
     
-    // ✅ CRITICAL FIX: Fetch actual documents from Firebase Storage
-    const bucket = getStorage().bucket();
-    const [files] = await bucket.getFiles({
-      prefix: `drivers/${uid}/documents/`,
-    });
-
-    const documents = {};
-    const documentFiles = {};
-
-    // Group files by document type
-    for (const file of files) {
-      try {
-        const pathParts = file.name.split('/');
-        const documentType = pathParts[pathParts.length - 2];
-        
-        if (!documentFiles[documentType]) {
-          documentFiles[documentType] = [];
-        }
-        
-        const [downloadURL] = await file.getSignedUrl({
-          action: 'read',
-          expires: '03-01-2500'
-        });
-
-        const [metadata] = await file.getMetadata();
-        
-        documentFiles[documentType].push({
-          fileName: file.name.split('/').pop(),
-          filePath: file.name,
-          downloadURL: downloadURL,
-          size: metadata.size,
-          uploadedAt: metadata.timeCreated,
-          contentType: metadata.contentType,
-          customMetadata: metadata.customMetadata || {}
-        });
-      } catch (fileError) {
-        console.error(`❌ [DRIVER_DOCS] Error processing file ${file.name}:`, fileError);
-      }
-    }
-
-    // Select the latest file for each document type
-    for (const [documentType, files] of Object.entries(documentFiles)) {
-      if (files.length > 0) {
-        const sortedFiles = files.sort((a, b) => new Date(b.uploadedAt) - new Date(a.uploadedAt));
-        documents[documentType] = sortedFiles[0];
-        
-        if (files.length > 1) {
-          console.warn(`⚠️ [DRIVER_DOCS] Multiple files found for ${documentType}: ${files.length} files. Using latest: ${sortedFiles[0].fileName}`);
-        }
-      }
-    }
+    const documents = await listLatestDriverKycDocumentsFromStorage(uid);
 
     // ✅ CRITICAL FIX: Get actual verification status from Firestore
     const firestoreDocs = userData.driver?.documents || userData.documents || {};
@@ -10952,57 +10912,7 @@ router.get('/documents/status', requireDriver, documentStatusRateLimit, document
 
     const userData = userDoc.data();
     
-    // ✅ CRITICAL FIX: Get documents from Firebase Storage instead of Firestore
-    const bucket = getStorage().bucket();
-    const [files] = await bucket.getFiles({
-      prefix: `drivers/${uid}/documents/`,
-    });
-
-    const documents = {};
-    const documentFiles = {};
-
-    // Group files by document type
-    for (const file of files) {
-      try {
-        const pathParts = file.name.split('/');
-        const documentType = pathParts[pathParts.length - 2];
-        
-        if (!documentFiles[documentType]) {
-          documentFiles[documentType] = [];
-        }
-        
-        const [downloadURL] = await file.getSignedUrl({
-          action: 'read',
-          expires: '03-01-2500'
-        });
-
-        const [metadata] = await file.getMetadata();
-        
-        documentFiles[documentType].push({
-          fileName: file.name.split('/').pop(),
-          filePath: file.name,
-          downloadURL: downloadURL,
-          size: metadata.size,
-          uploadedAt: metadata.timeCreated,
-          contentType: metadata.contentType,
-          customMetadata: metadata.customMetadata || {}
-        });
-      } catch (fileError) {
-        console.error(`❌ [DOC_STATUS] Error processing file ${file.name}:`, fileError);
-      }
-    }
-
-    // Select the latest file for each document type
-    for (const [documentType, files] of Object.entries(documentFiles)) {
-      if (files.length > 0) {
-        const sortedFiles = files.sort((a, b) => new Date(b.uploadedAt) - new Date(a.uploadedAt));
-        documents[documentType] = sortedFiles[0];
-        
-        if (files.length > 1) {
-          console.warn(`⚠️ [DOC_STATUS] Multiple files found for ${documentType}: ${files.length} files. Using latest: ${sortedFiles[0].fileName}`);
-        }
-      }
-    }
+    const documents = await listLatestDriverKycDocumentsFromStorage(uid);
 
     const verificationStatus = userData.driver?.verificationStatus || 'pending';
 
@@ -11379,68 +11289,18 @@ router.post('/documents/request-verification', requireDriver, async (req, res) =
       });
     }
     
-    // ✅ CRITICAL FIX: Check Firebase Storage instead of Firestore
-    const bucket = getStorage().bucket();
-    const [files] = await bucket.getFiles({
-      prefix: `drivers/${uid}/documents/`,
-    });
-
-    const documents = {};
-    const documentFiles = {};
-
-    // Group files by document type
-    for (const file of files) {
-      try {
-        const pathParts = file.name.split('/');
-        const documentType = pathParts[pathParts.length - 2];
-        
-        if (!documentFiles[documentType]) {
-          documentFiles[documentType] = [];
-        }
-        
-        const [downloadURL] = await file.getSignedUrl({
-          action: 'read',
-          expires: '03-01-2500'
-        });
-
-        const [metadata] = await file.getMetadata();
-        
-        documentFiles[documentType].push({
-          fileName: file.name.split('/').pop(),
-          filePath: file.name,
-          downloadURL: downloadURL,
-          size: metadata.size,
-          uploadedAt: metadata.timeCreated,
-          contentType: metadata.contentType,
-          customMetadata: metadata.customMetadata || {}
-        });
-      } catch (fileError) {
-        console.error(`❌ [VERIFICATION_REQUEST] Error processing file ${file.name}:`, fileError);
-      }
-    }
-
-    // Select the latest file for each document type
-    for (const [documentType, files] of Object.entries(documentFiles)) {
-      if (files.length > 0) {
-        const sortedFiles = files.sort((a, b) => new Date(b.uploadedAt) - new Date(a.uploadedAt));
-        documents[documentType] = sortedFiles[0];
-        
-        if (files.length > 1) {
-          console.warn(`⚠️ [VERIFICATION_REQUEST] Multiple files found for ${documentType}: ${files.length} files. Using latest: ${sortedFiles[0].fileName}`);
-        }
-      }
-    }
+    const documents = await listLatestDriverKycDocumentsFromStorage(uid);
 
     // Check if all required documents are uploaded
     const requiredDocuments = ['driving_license', 'profile_photo', 'aadhaar_card', 'bike_insurance', 'rc_book'];
     
     const uploadedDocuments = requiredDocuments.filter(docType => {
-      return documents[docType]?.downloadURL;
+      return documents[docType]?.downloadURL || documents[docType]?.filePath;
     });
 
     if (uploadedDocuments.length !== requiredDocuments.length) {
       const missingDocuments = requiredDocuments.filter(docType => {
-        return !documents[docType]?.downloadURL;
+        return !documents[docType]?.downloadURL && !documents[docType]?.filePath;
       });
       
       return res.status(400).json({
@@ -11704,12 +11564,13 @@ router.get('/documents/verification-history', requireDriver, async (req, res) =>
     const verificationRequestsSnapshot = await verificationRequestsQuery.get();
     const verificationRequests = [];
 
-    verificationRequestsSnapshot.forEach(doc => {
-      verificationRequests.push({
-        id: doc.id,
-        ...doc.data()
-      });
-    });
+    for (const doc of verificationRequestsSnapshot.docs) {
+      const row = { id: doc.id, ...doc.data() };
+      if (row.documents && typeof row.documents === 'object') {
+        row.documents = await presentDriverKycDocumentMap(row.documents);
+      }
+      verificationRequests.push(row);
+    }
 
     // Get total count
     const totalQuery = db.collection('documentVerificationRequests')
@@ -13172,7 +13033,7 @@ router.get('/documents/:type/download', requireDriver, async (req, res) => {
     const documents = userData.driver?.documents || {};
     const document = documents[type];
     
-    if (!document || !document.url) {
+    if (!document || (!document.url && !document.filePath && !document.downloadURL)) {
       return res.status(404).json({
         success: false,
         error: {
@@ -13184,11 +13045,29 @@ router.get('/documents/:type/download', requireDriver, async (req, res) => {
       });
     }
 
+    const resolved = await resolveDriverKycReadUrl({
+      filePath: document.filePath,
+      url: document.url,
+      downloadURL: document.downloadURL
+    });
+
+    if (!resolved.url) {
+      return res.status(404).json({
+        success: false,
+        error: {
+          code: 'DOCUMENT_URL_UNAVAILABLE',
+          message: 'Document URL unavailable',
+          details: 'Could not resolve a download URL for this document'
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
     // Get document metadata
     const documentInfo = {
       type: type,
       displayName: getDocumentDisplayName(type),
-      url: document.url,
+      url: resolved.url,
       number: document.number || '',
       uploadedAt: document.uploadedAt?.toDate?.()?.toISOString() || document.uploadedAt || '',
       status: document.status || document.verificationStatus || 'pending',
@@ -13202,8 +13081,8 @@ router.get('/documents/:type/download', requireDriver, async (req, res) => {
       message: 'Document download info retrieved successfully',
       data: {
         document: documentInfo,
-        downloadUrl: document.url, // Firebase Storage URL - accessible directly
-        expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString() // 24 hours
+        downloadUrl: resolved.url,
+        expiresAt: resolved.signedUrlExpiresAt || null
       },
       timestamp: new Date().toISOString()
     });
@@ -13253,22 +13132,35 @@ router.get('/documents/download-all', requireDriver, async (req, res) => {
     
     const documentTypes = ['drivingLicense', 'profilePhoto', 'aadhaarCard', 'bikeInsurance', 'rcBook'];
     const downloadableDocuments = [];
-    
-    documentTypes.forEach(type => {
+    let latestExpiresAt = null;
+
+    for (const type of documentTypes) {
       const document = documents[type];
-      if (document && document.url) {
-        downloadableDocuments.push({
-          type: type,
-          displayName: getDocumentDisplayName(type),
-          url: document.url,
-          number: document.number || '',
-          uploadedAt: document.uploadedAt?.toDate?.()?.toISOString() || document.uploadedAt || '',
-          status: document.status || document.verificationStatus || 'pending',
-          fileSize: document.fileSize || null,
-          lastModified: document.lastModified || document.uploadedAt
-        });
+      if (!document || (!document.url && !document.filePath && !document.downloadURL)) {
+        continue;
       }
-    });
+      const resolved = await resolveDriverKycReadUrl({
+        filePath: document.filePath,
+        url: document.url,
+        downloadURL: document.downloadURL
+      });
+      if (!resolved.url) {
+        continue;
+      }
+      if (resolved.signedUrlExpiresAt) {
+        latestExpiresAt = resolved.signedUrlExpiresAt;
+      }
+      downloadableDocuments.push({
+        type: type,
+        displayName: getDocumentDisplayName(type),
+        url: resolved.url,
+        number: document.number || '',
+        uploadedAt: document.uploadedAt?.toDate?.()?.toISOString() || document.uploadedAt || '',
+        status: document.status || document.verificationStatus || 'pending',
+        fileSize: document.fileSize || null,
+        lastModified: document.lastModified || document.uploadedAt
+      });
+    }
 
     res.status(200).json({
       success: true,
@@ -13276,7 +13168,7 @@ router.get('/documents/download-all', requireDriver, async (req, res) => {
       data: {
         documents: downloadableDocuments,
         totalDocuments: downloadableDocuments.length,
-        expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString() // 24 hours
+        expiresAt: latestExpiresAt
       },
       timestamp: new Date().toISOString()
     });

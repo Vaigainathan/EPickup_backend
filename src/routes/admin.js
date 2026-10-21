@@ -3,6 +3,11 @@ const admin = require('firebase-admin');
 const { getFirestore } = require('firebase-admin/firestore');
 const { getStorage } = require('../services/firebase');
 const verificationService = require('../services/verificationService');
+const {
+  listLatestDriverKycDocumentsFromStorage,
+  presentDriverKycDocumentMapEntry,
+  isDriverKycDocumentPresent
+} = require('../services/driverKycDocumentUrlService');
 const walletService = require('../services/walletService');
 const { sanitizeInput, validateEmail, checkValidation } = require('../middleware/validation');
 const { requireAdmin } = require('../middleware/auth');
@@ -1125,9 +1130,14 @@ router.get('/drivers', async (req, res) => {
       });
       
       // ✅ CRITICAL FIX: Documents are already normalized in mergedDocuments (keys converted to camelCase)
-      // Use mergedDocuments directly as normalizedDocuments
       const normalizedDocuments = mergedDocuments;
-      
+      const presentedDocuments = {};
+      for (const [docKey, docValue] of Object.entries(normalizedDocuments)) {
+        presentedDocuments[docKey] = docValue
+          ? await presentDriverKycDocumentMapEntry(docValue)
+          : docValue;
+      }
+
       // ✅ CRITICAL FIX: Get calculated earnings from map (batch fetched above)
       // driverId is declared at line 990 above
       const earningsData = earningsMap.get(driverId) || {
@@ -1165,9 +1175,9 @@ router.get('/drivers', async (req, res) => {
         // Try both camelCase and snake_case keys
         const camelKey = docType;
         const snakeKey = docType.replace(/([A-Z])/g, '_$1').toLowerCase();
-        const doc = normalizedDocuments[camelKey] || normalizedDocuments[snakeKey];
+        const doc = presentedDocuments[camelKey] || presentedDocuments[snakeKey];
         
-        if (doc && (doc.url || doc.downloadURL)) {
+        if (doc && isDriverKycDocumentPresent(doc)) {
           totalDocs++;
           const isDocVerified = doc.status === 'verified' || 
                                doc.verified === true || 
@@ -1282,7 +1292,7 @@ router.get('/drivers', async (req, res) => {
           commissionThisMonth: earningsData.commissionThisMonth || 0
         },
         // ✅ CRITICAL FIX: Include normalized documents for status display
-        documents: normalizedDocuments,
+        documents: presentedDocuments,
         createdAt: data.createdAt?.toDate?.() || data.createdAt,
         updatedAt: data.updatedAt?.toDate?.() || data.updatedAt
       });
@@ -2753,57 +2763,7 @@ router.get('/drivers/:driverId/documents', async (req, res) => {
 
     const driverData = driverDoc.data();
     
-    // ✅ CRITICAL FIX: Fetch actual documents from Firebase Storage (same logic as driver endpoint)
-    const bucket = getStorage().bucket();
-    const [files] = await bucket.getFiles({
-      prefix: `drivers/${driverId}/documents/`,
-    });
-
-    const documents = {};
-    const documentFiles = {};
-
-    // Group files by document type
-    for (const file of files) {
-      try {
-        const pathParts = file.name.split('/');
-        const documentType = pathParts[pathParts.length - 2];
-        
-        if (!documentFiles[documentType]) {
-          documentFiles[documentType] = [];
-        }
-        
-        const [downloadURL] = await file.getSignedUrl({
-          action: 'read',
-          expires: '03-01-2500'
-        });
-
-        const [metadata] = await file.getMetadata();
-        
-        documentFiles[documentType].push({
-          fileName: file.name.split('/').pop(),
-          filePath: file.name,
-          downloadURL: downloadURL,
-          size: metadata.size,
-          uploadedAt: metadata.timeCreated,
-          contentType: metadata.contentType,
-          customMetadata: metadata.customMetadata || {}
-        });
-      } catch (fileError) {
-        console.error(`❌ [ADMIN_DOCS] Error processing file ${file.name}:`, fileError);
-      }
-    }
-
-    // Select the latest file for each document type
-    for (const [documentType, files] of Object.entries(documentFiles)) {
-      if (files.length > 0) {
-        const sortedFiles = files.sort((a, b) => new Date(b.uploadedAt) - new Date(a.uploadedAt));
-        documents[documentType] = sortedFiles[0];
-        
-        if (files.length > 1) {
-          console.warn(`⚠️ [ADMIN_DOCS] Multiple files found for ${documentType}: ${files.length} files. Using latest: ${sortedFiles[0].fileName}`);
-        }
-      }
-    }
+    const documents = await listLatestDriverKycDocumentsFromStorage(driverId);
 
     // ✅ CRITICAL FIX: Get actual verification status from Firestore
     const firestoreDocs = driverData.driver?.documents || driverData.documents || {};

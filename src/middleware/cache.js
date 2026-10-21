@@ -43,7 +43,7 @@ const documentStatusCache = (req, res, next) => {
     // Only cache successful responses
     if (data.success) {
       documentStatusMemoryCache.set(cacheKey, data);
-      // Auto-cleanup after 5 minutes
+      // Auto-cleanup after 5 minutes (< 50 min; signed KYC URLs are 1h so cached URLs stay valid)
       setTimeout(() => {
         documentStatusMemoryCache.delete(cacheKey);
       }, 5 * 60 * 1000);

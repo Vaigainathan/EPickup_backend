@@ -83,13 +83,14 @@ function isDriverDocumentPresent(doc) {
   if (!doc || typeof doc !== 'object') {
     return false;
   }
+  const hasFilePath = typeof doc.filePath === 'string' && doc.filePath.trim() !== '';
   const url = doc.url || doc.downloadURL;
   const hasUrl = typeof url === 'string' && url.trim() !== '';
   const isVerified = doc.verified === true
     || doc.status === 'verified'
     || doc.verificationStatus === 'verified'
     || doc.verificationStatus === 'approved';
-  return hasUrl || isVerified;
+  return hasFilePath || hasUrl || isVerified;
 }
 
 function isDriverDocumentVerified(doc) {

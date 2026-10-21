@@ -3,6 +3,10 @@ const multer = require('multer');
 const { getStorage } = require('firebase-admin/storage');
 const { getFirestore } = require('firebase-admin/firestore');
 const { requireDriver } = require('../middleware/auth');
+const {
+  listLatestDriverKycDocumentsFromStorage,
+  signDriverKycPath
+} = require('../services/driverKycDocumentUrlService');
 const router = express.Router();
 
 // Configure multer for memory storage
@@ -232,64 +236,7 @@ router.get('/drivers/:driverId/documents', requireDriver, async (req, res) => {
       });
     }
 
-    // Get Firebase Storage instance
-    const bucket = getStorage().bucket();
-    
-    // List all files in the driver's documents folder
-    const [files] = await bucket.getFiles({
-      prefix: `drivers/${driverId}/documents/`,
-    });
-
-    const documents = {};
-    const documentFiles = {}; // ✅ CRITICAL FIX: Track all files per document type
-
-    for (const file of files) {
-      try {
-        // Get download URL
-        const [downloadURL] = await file.getSignedUrl({
-          action: 'read',
-          expires: '03-01-2500'
-        });
-
-        // Get file metadata
-        const [metadata] = await file.getMetadata();
-        
-        // Extract document type from path
-        const pathParts = file.name.split('/');
-        const documentType = pathParts[pathParts.length - 2]; // Second to last part
-
-        // ✅ CRITICAL FIX: Collect all files per document type
-        if (!documentFiles[documentType]) {
-          documentFiles[documentType] = [];
-        }
-        
-        documentFiles[documentType].push({
-          fileName: file.name.split('/').pop(),
-          filePath: file.name,
-          downloadURL: downloadURL,
-          size: metadata.size,
-          uploadedAt: metadata.timeCreated,
-          contentType: metadata.contentType,
-          customMetadata: metadata.customMetadata || {}
-        });
-      } catch (fileError) {
-        console.error(`❌ [BACKEND PROXY] Error processing file ${file.name}:`, fileError);
-      }
-    }
-
-    // ✅ CRITICAL FIX: Select the latest file for each document type
-    for (const [documentType, files] of Object.entries(documentFiles)) {
-      if (files.length > 0) {
-        // Sort by upload time (newest first) and take the first one
-        const sortedFiles = files.sort((a, b) => new Date(b.uploadedAt) - new Date(a.uploadedAt));
-        documents[documentType] = sortedFiles[0];
-        
-        // ✅ CRITICAL FIX: Log if there are multiple files
-        if (files.length > 1) {
-          console.warn(`⚠️ [BACKEND PROXY] Multiple files found for ${documentType}: ${files.length} files. Using latest: ${sortedFiles[0].fileName}`);
-        }
-      }
-    }
+    const documents = await listLatestDriverKycDocumentsFromStorage(driverId);
 
     console.log('✅ [BACKEND PROXY] Retrieved documents:', Object.keys(documents));
 
@@ -379,11 +326,7 @@ router.get('/driver-document/:driverId/:documentType', requireDriver, async (req
       console.warn(`⚠️ [BACKEND PROXY] Multiple files found for ${documentType}: ${files.length} files. Using latest: ${file.name.split('/').pop()}`);
     }
     
-    // Get download URL
-    const [downloadURL] = await file.getSignedUrl({
-      action: 'read',
-      expires: '03-01-2500'
-    });
+    const signed = await signDriverKycPath(file.name);
 
     // Get file metadata
     const [metadata] = await file.getMetadata();
@@ -395,7 +338,8 @@ router.get('/driver-document/:driverId/:documentType', requireDriver, async (req
       data: {
         fileName: file.name.split('/').pop(),
         filePath: file.name,
-        downloadURL: downloadURL,
+        downloadURL: signed.url,
+        signedUrlExpiresAt: signed.signedUrlExpiresAt,
         size: metadata.size,
         uploadedAt: metadata.timeCreated,
         contentType: metadata.contentType,

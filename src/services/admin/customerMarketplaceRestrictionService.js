@@ -1,4 +1,4 @@
-const admin = require('firebase-admin');
+const { FieldValue } = require('firebase-admin/firestore');
 const { getFirestore } = require('../firebase');
 const {
   prepareRestrictSnapshot,
@@ -34,7 +34,7 @@ async function restrictCustomerMarketplace(customerId, { reason, operator, force
     ? data.customer.marketplace
     : {};
 
-  const snapshotOutcome = prepareRestrictSnapshot(customerId, marketplace, { force });
+  const snapshotOutcome = await prepareRestrictSnapshot(customerId, marketplace, { force });
   if (!snapshotOutcome.ok) {
     httpError(409, snapshotOutcome.code || 'SNAPSHOT_EXISTS', 'Marketplace snapshot already exists; pass force to overwrite');
   }
@@ -44,21 +44,21 @@ async function restrictCustomerMarketplace(customerId, { reason, operator, force
       active: true,
       reason,
       setBy: operator,
-      setAt: admin.firestore.FieldValue.serverTimestamp()
+      setAt: FieldValue.serverTimestamp()
     },
-    updatedAt: admin.firestore.FieldValue.serverTimestamp()
+    updatedAt: FieldValue.serverTimestamp()
   });
 
   return {
     customerId,
     restricted: true,
-    snapshotFile: snapshotOutcome.file,
+    snapshotPath: snapshotOutcome.path || snapshotOutcome.file,
     overwritten: snapshotOutcome.overwritten === true
   };
 }
 
 async function unrestrictCustomerMarketplace(customerId, { operator }) {
-  const snapshot = loadMarketplaceSnapshot(customerId);
+  const snapshot = await loadMarketplaceSnapshot(customerId);
   if (!snapshot) {
     httpError(409, 'SNAPSHOT_MISSING', 'No marketplace snapshot found for restore');
   }
@@ -76,10 +76,10 @@ async function unrestrictCustomerMarketplace(customerId, { operator }) {
 
   await userRef.update({
     'customer.marketplace': restored,
-    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    updatedAt: FieldValue.serverTimestamp(),
     marketplaceUnrestrictedBy: operator || null
   });
-  deleteMarketplaceSnapshot(customerId);
+  await deleteMarketplaceSnapshot(customerId);
 
   return { customerId, unrestricted: true, restoredKeys: Object.keys(restored) };
 }

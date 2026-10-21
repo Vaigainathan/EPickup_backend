@@ -5605,6 +5605,17 @@ router.get('/customers/:id', async (req, res) => {
 
     // No wallet system for customers
 
+    const restrictionRaw = customerData.customer?.marketplace?.restriction;
+    let marketplaceRestriction = null;
+    if (restrictionRaw && typeof restrictionRaw === 'object') {
+      marketplaceRestriction = {
+        active: restrictionRaw.active === true,
+        reason: typeof restrictionRaw.reason === 'string' ? restrictionRaw.reason : null,
+        setAt: restrictionRaw.setAt?.toDate?.() || restrictionRaw.setAt || null,
+        setBy: typeof restrictionRaw.setBy === 'string' ? restrictionRaw.setBy : null
+      };
+    }
+
     // Format customer data properly
     const formattedCustomerData = {
       id: customerDoc.id,
@@ -5624,7 +5635,12 @@ router.get('/customers/:id', async (req, res) => {
       userType: customerData.userType || 'customer',
       isActive: customerData.isActive !== false,
       isVerified: customerData.isVerified || false,
-      bookingsCount: bookingsSnapshot.size
+      bookingsCount: bookingsSnapshot.size,
+      customer: {
+        marketplace: {
+          restriction: marketplaceRestriction
+        }
+      }
     };
 
     res.json({

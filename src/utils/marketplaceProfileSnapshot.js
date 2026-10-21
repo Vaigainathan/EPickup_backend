@@ -1,72 +1,73 @@
-const fs = require('fs');
-const path = require('path');
+const { FieldValue } = require('firebase-admin/firestore');
+const { getFirestore } = require('../services/firebase');
 
-const DEFAULT_SNAPSHOT_DIR = path.join(__dirname, '..', '..', 'tmp', 'marketplace-profile-snapshots');
+/** Fixed doc under users/{customerId}/private — survives deploys (unlike tmp/ files). */
+const SNAPSHOT_COLLECTION = 'private';
+const SNAPSHOT_DOC_ID = 'marketplaceRestrictionSnapshot';
 
-function getSnapshotDir() {
-  const override = process.env.MARKETPLACE_SNAPSHOT_DIR;
-  if (typeof override === 'string' && override.trim()) {
-    return path.resolve(override.trim());
-  }
-  return DEFAULT_SNAPSHOT_DIR;
+function snapshotRef(db, customerId) {
+  return db
+    .collection('users')
+    .doc(customerId)
+    .collection(SNAPSHOT_COLLECTION)
+    .doc(SNAPSHOT_DOC_ID);
 }
 
-function snapshotPath(customerId) {
-  return path.join(getSnapshotDir(), `${customerId}.json`);
-}
-
-function ensureDir() {
-  const dir = getSnapshotDir();
-  if (!fs.existsSync(dir)) {
-    fs.mkdirSync(dir, { recursive: true });
-  }
-}
-
-function saveMarketplaceSnapshot(customerId, marketplace) {
-  ensureDir();
-  const file = snapshotPath(customerId);
+async function saveMarketplaceSnapshot(customerId, marketplace) {
+  const db = getFirestore();
+  const ref = snapshotRef(db, customerId);
   const payload = {
     customerId,
-    savedAt: new Date().toISOString(),
+    savedAt: FieldValue.serverTimestamp(),
     marketplace: marketplace && typeof marketplace === 'object' ? marketplace : {}
   };
-  fs.writeFileSync(file, JSON.stringify(payload, null, 2), 'utf8');
-  return file;
+  await ref.set(payload);
+  return ref.path;
 }
 
-function loadMarketplaceSnapshot(customerId) {
-  const file = snapshotPath(customerId);
-  if (!fs.existsSync(file)) {
+async function loadMarketplaceSnapshot(customerId) {
+  const db = getFirestore();
+  const snap = await snapshotRef(db, customerId).get();
+  if (!snap.exists) {
     return null;
   }
-  return JSON.parse(fs.readFileSync(file, 'utf8'));
+  const data = snap.data() || {};
+  return {
+    customerId: data.customerId || customerId,
+    savedAt: data.savedAt,
+    marketplace: data.marketplace && typeof data.marketplace === 'object' ? data.marketplace : {}
+  };
 }
 
-function deleteMarketplaceSnapshot(customerId) {
-  const file = snapshotPath(customerId);
-  if (!fs.existsSync(file)) {
+async function deleteMarketplaceSnapshot(customerId) {
+  const db = getFirestore();
+  const ref = snapshotRef(db, customerId);
+  const snap = await ref.get();
+  if (!snap.exists) {
     return false;
   }
-  fs.unlinkSync(file);
+  await ref.delete();
   return true;
 }
 
-function prepareRestrictSnapshot(customerId, marketplace, { force = false } = {}) {
-  const existing = loadMarketplaceSnapshot(customerId);
+async function prepareRestrictSnapshot(customerId, marketplace, { force = false } = {}) {
+  const existing = await loadMarketplaceSnapshot(customerId);
   if (existing && !force) {
     return { ok: false, code: 'SNAPSHOT_EXISTS' };
   }
-  const file = saveMarketplaceSnapshot(customerId, marketplace);
+  const path = await saveMarketplaceSnapshot(customerId, marketplace);
   return {
     ok: true,
-    file,
+    path,
+    file: path,
     overwritten: Boolean(existing && force)
   };
 }
 
 module.exports = {
-  DEFAULT_SNAPSHOT_DIR,
-  getSnapshotDir,
+  SNAPSHOT_COLLECTION,
+  SNAPSHOT_DOC_ID,
+  snapshotRef,
   saveMarketplaceSnapshot,
   loadMarketplaceSnapshot,
   deleteMarketplaceSnapshot,

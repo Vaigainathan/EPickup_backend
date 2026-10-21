@@ -1,63 +1,115 @@
-const fs = require('fs');
-const os = require('os');
-const path = require('path');
+const store = new Map();
+
+function docPath(collectionPath, id) {
+  return `${collectionPath}/${id}`;
+}
+
+function parseRef(path) {
+  const parts = path.split('/');
+  const id = parts.pop();
+  const collectionPath = parts.join('/');
+  return { collectionPath, id };
+}
+
+const mockDb = {
+  collection(name) {
+    const collectionPath = name;
+    return {
+      doc(id) {
+        const path = docPath(collectionPath, id);
+        return {
+          path,
+          id,
+          collection(subName) {
+            return mockDb.collection(`${path}/${subName}`);
+          },
+          async get() {
+            const data = store.get(path);
+            return {
+              exists: data !== undefined,
+              data: () => data
+            };
+          },
+          async set(data) {
+            store.set(path, { ...data });
+          },
+          async delete() {
+            return store.delete(path);
+          }
+        };
+      }
+    };
+  }
+};
+
+jest.mock('../src/services/firebase', () => ({
+  getFirestore: jest.fn(() => mockDb)
+}));
+
+jest.mock('firebase-admin', () => {
+  const blockRealFirestore = () => {
+    throw new Error('REAL FIRESTORE IN TEST');
+  };
+  return {
+    apps: [],
+    initializeApp: jest.fn(blockRealFirestore),
+    app: jest.fn(blockRealFirestore),
+    credential: { cert: jest.fn() },
+    firestore: blockRealFirestore
+  };
+});
+
+jest.mock('firebase-admin/firestore', () => ({
+  FieldValue: {
+    serverTimestamp: () => ({ __serverTimestamp: true })
+  }
+}));
 
 const {
-  getSnapshotDir,
   saveMarketplaceSnapshot,
   loadMarketplaceSnapshot,
   deleteMarketplaceSnapshot,
   prepareRestrictSnapshot,
-  DEFAULT_SNAPSHOT_DIR
+  SNAPSHOT_DOC_ID
 } = require('../scripts/support/userMarketplaceSnapshot');
 
-describe('userMarketplaceSnapshot', () => {
-  let tempDir;
-  const originalEnv = process.env.MARKETPLACE_SNAPSHOT_DIR;
-
+describe('userMarketplaceSnapshot (Firestore private doc)', () => {
   beforeEach(() => {
-    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'marketplace-snap-test-'));
-    process.env.MARKETPLACE_SNAPSHOT_DIR = tempDir;
+    store.clear();
   });
 
-  afterEach(() => {
-    if (originalEnv === undefined) {
-      delete process.env.MARKETPLACE_SNAPSHOT_DIR;
-    } else {
-      process.env.MARKETPLACE_SNAPSHOT_DIR = originalEnv;
-    }
-    fs.rmSync(tempDir, { recursive: true, force: true });
-  });
-
-  test('defaults to tmp/marketplace-profile-snapshots when env unset', () => {
-    delete process.env.MARKETPLACE_SNAPSHOT_DIR;
-    expect(getSnapshotDir()).toBe(DEFAULT_SNAPSHOT_DIR);
-  });
-
-  test('prepareRestrictSnapshot refuses overwrite without force', () => {
+  test('stores snapshot under users/{id}/private/marketplaceRestrictionSnapshot', async () => {
     const customerId = 'cust-snap-1';
-    saveMarketplaceSnapshot(customerId, { restriction: { active: false } });
-    const outcome = prepareRestrictSnapshot(customerId, { stats: { orders: 1 } }, { force: false });
+    const path = await saveMarketplaceSnapshot(customerId, { restriction: { active: false } });
+    expect(path).toContain(`users/${customerId}/private/${SNAPSHOT_DOC_ID}`);
+    const loaded = await loadMarketplaceSnapshot(customerId);
+    expect(loaded.marketplace).toEqual({ restriction: { active: false } });
+  });
+
+  test('prepareRestrictSnapshot refuses overwrite without force', async () => {
+    const customerId = 'cust-snap-2';
+    await saveMarketplaceSnapshot(customerId, { restriction: { active: false } });
+    const outcome = await prepareRestrictSnapshot(customerId, { stats: { orders: 1 } }, { force: false });
     expect(outcome.ok).toBe(false);
     expect(outcome.code).toBe('SNAPSHOT_EXISTS');
-    expect(loadMarketplaceSnapshot(customerId).marketplace).toEqual({ restriction: { active: false } });
+    expect((await loadMarketplaceSnapshot(customerId)).marketplace).toEqual({ restriction: { active: false } });
   });
 
-  test('prepareRestrictSnapshot overwrites with force', () => {
-    const customerId = 'cust-snap-2';
-    saveMarketplaceSnapshot(customerId, { old: true });
-    const outcome = prepareRestrictSnapshot(customerId, { new: true }, { force: true });
+  test('prepareRestrictSnapshot overwrites with force', async () => {
+    const customerId = 'cust-snap-3';
+    await saveMarketplaceSnapshot(customerId, { old: true });
+    const outcome = await prepareRestrictSnapshot(customerId, { new: true }, { force: true });
     expect(outcome.ok).toBe(true);
     expect(outcome.overwritten).toBe(true);
-    expect(loadMarketplaceSnapshot(customerId).marketplace).toEqual({ new: true });
+    expect((await loadMarketplaceSnapshot(customerId)).marketplace).toEqual({ new: true });
   });
 
-  test('deleteMarketplaceSnapshot removes the file', () => {
-    const customerId = 'cust-snap-3';
-    saveMarketplaceSnapshot(customerId, {});
-    expect(fs.existsSync(path.join(tempDir, `${customerId}.json`))).toBe(true);
-    expect(deleteMarketplaceSnapshot(customerId)).toBe(true);
-    expect(loadMarketplaceSnapshot(customerId)).toBeNull();
-    expect(deleteMarketplaceSnapshot(customerId)).toBe(false);
+  test('deleteMarketplaceSnapshot removes the doc', async () => {
+    const customerId = 'cust-snap-4';
+    await saveMarketplaceSnapshot(customerId, {});
+    expect(await loadMarketplaceSnapshot(customerId)).not.toBeNull();
+    expect(await deleteMarketplaceSnapshot(customerId)).toBe(true);
+    expect(await loadMarketplaceSnapshot(customerId)).toBeNull();
+    expect(await deleteMarketplaceSnapshot(customerId)).toBe(false);
   });
 });

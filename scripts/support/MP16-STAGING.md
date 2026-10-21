@@ -30,7 +30,7 @@ REM expect create failure / ACCOUNT_RESTRICTED from API
 node scripts/support/unrestrict-customer.js --customer Ue51a7afbc981f1b92cf30be32ab --apply
 ```
 
-Snapshot file: `tmp/marketplace-profile-snapshots/Ue51a7afbc981f1b92cf30be32ab.json`.
+Snapshot doc: Firestore `users/{customerId}/private/marketplaceRestrictionSnapshot` (same as restrict/unrestrict API).
 
 ## (c) Cancel after UTR → resolve-paid-check → cleanup
 

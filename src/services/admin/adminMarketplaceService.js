@@ -4,6 +4,8 @@ const { resolvePaidCheckSupport } = require('../marketplace/shopPaymentVerificat
 const { markRefundSent, resolveRefundDispute } = require('../marketplace/refunds');
 const { resolveMarketplaceHelp } = require('../marketplace/helpRequests');
 
+const MARKETPLACE_HELP_TICKET_CATEGORY = 'marketplace_order';
+
 function presentEnforcement(raw) {
   const source = raw && typeof raw === 'object' ? raw : {};
   return {
@@ -142,7 +144,7 @@ class AdminMarketplaceService {
     const safeLimit = Math.max(1, Math.min(100, parseInt(limit, 10) || 20));
     const safeOffset = Math.max(0, parseInt(offset, 10) || 0);
 
-    let query = db.collection('supportTickets').where('category', '==', 'marketplace');
+    let query = db.collection('supportTickets').where('category', '==', MARKETPLACE_HELP_TICKET_CATEGORY);
     if (status) {
       query = query.where('status', '==', status);
     }
@@ -162,7 +164,14 @@ class AdminMarketplaceService {
       error.code = 'TICKET_NOT_FOUND';
       throw error;
     }
-    return { id: snap.id, ...snap.data() };
+    const data = snap.data() || {};
+    if (data.category !== MARKETPLACE_HELP_TICKET_CATEGORY) {
+      const error = new Error('Help ticket not found');
+      error.status = 404;
+      error.code = 'TICKET_NOT_FOUND';
+      throw error;
+    }
+    return { id: snap.id, ...data };
   }
 
   async getEnforcement() {

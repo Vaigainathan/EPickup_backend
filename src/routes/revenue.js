@@ -154,7 +154,29 @@ router.get('/stats', authenticateToken, requireAdmin, async (req, res) => {
     console.log('📊 [REVENUE_ROUTE] GET /api/admin/revenue/stats called');
     console.log('📊 [REVENUE_ROUTE] Admin user:', req.user?.uid);
     
-    const result = await revenueService.getRevenueStats();
+    const filters = {};
+    if (req.query.startDate) {
+      const startDate = new Date(req.query.startDate);
+      if (Number.isNaN(startDate.getTime())) {
+        return res.status(400).json({
+          success: false,
+          error: 'Invalid startDate'
+        });
+      }
+      filters.startDate = startDate;
+    }
+    if (req.query.endDate) {
+      const endDate = new Date(req.query.endDate);
+      if (Number.isNaN(endDate.getTime())) {
+        return res.status(400).json({
+          success: false,
+          error: 'Invalid endDate'
+        });
+      }
+      filters.endDate = endDate;
+    }
+
+    const result = await revenueService.getRevenueStats(filters);
     
     console.log('📊 [REVENUE_ROUTE] Service returned:', {
       success: result.success,

@@ -44,7 +44,20 @@ class RevenueService {
     return query.get();
   }
 
-  async aggregateCommissionByBookingSource(db) {
+  pointsTransactionCreatedAt(data = {}) {
+    if (data.createdAt?.toDate) {
+      return data.createdAt.toDate();
+    }
+    if (data.timestamp?.toDate) {
+      return data.timestamp.toDate();
+    }
+    const raw = data.createdAt || data.timestamp;
+    const parsed = raw ? new Date(raw) : new Date(0);
+    return Number.isNaN(parsed.getTime()) ? new Date(0) : parsed;
+  }
+
+  async aggregateCommissionByBookingSource(db, filters = {}) {
+    const { startDate, endDate } = filters;
     const commissionSnapshot = await db.collection('pointsTransactions')
       .where('type', '==', 'debit')
       .get();
@@ -53,6 +66,13 @@ class RevenueService {
     const rows = [];
     commissionSnapshot.forEach((doc) => {
       const data = doc.data();
+      const createdAt = this.pointsTransactionCreatedAt(data);
+      if (startDate && createdAt < startDate) {
+        return;
+      }
+      if (endDate && createdAt > endDate) {
+        return;
+      }
       const isCommission = !!data.tripId || !!data.bookingId;
       if (!isCommission || data.status === 'failed') {
         return;
@@ -326,9 +346,15 @@ class RevenueService {
    * Get revenue statistics
    * @returns {Promise<Object>} Revenue statistics
    */
-  async getRevenueStats() {
+  async getRevenueStats(filters = {}) {
     try {
       const db = this.getDb();
+      const startDate = filters.startDate instanceof Date && !Number.isNaN(filters.startDate.getTime())
+        ? filters.startDate
+        : undefined;
+      const endDate = filters.endDate instanceof Date && !Number.isNaN(filters.endDate.getTime())
+        ? filters.endDate
+        : undefined;
       
       // Validate db is not null before using it
       if (!db) {
@@ -342,7 +368,7 @@ class RevenueService {
       
       console.log('📊 [REVENUE_SERVICE] Starting getRevenueStats (driverTopUps completed)...');
 
-      const snapshot = await this.queryCompletedDriverTopUps(db, {});
+      const snapshot = await this.queryCompletedDriverTopUps(db, { startDate, endDate });
 
       let totalRevenue = 0;
       let transactionCount = 0;
@@ -396,7 +422,7 @@ class RevenueService {
       };
 
       try {
-        commissionSplit = await this.aggregateCommissionByBookingSource(db);
+        commissionSplit = await this.aggregateCommissionByBookingSource(db, { startDate, endDate });
       } catch (commissionError) {
         console.warn('⚠️ [REVENUE_SERVICE] Error fetching commission data:', commissionError.message);
       }
@@ -424,7 +450,13 @@ class RevenueService {
           parcelCommission: commissionSplit.parcelCommission,
           marketplaceCommission: commissionSplit.marketplaceCommission,
           unknownCommission: commissionSplit.unknownCommission,
-          netRevenue: totalRevenue
+          netRevenue: totalRevenue,
+          period: startDate || endDate
+            ? {
+              startDate: startDate ? startDate.toISOString() : null,
+              endDate: endDate ? endDate.toISOString() : null
+            }
+            : null
         }
       };
     } catch (error) {

@@ -10,7 +10,7 @@ require('dotenv').config();
 const { FieldValue } = require('firebase-admin/firestore');
 const { assertStagingEnv, assertStagingAdmin } = require('../assertStagingFirebase');
 const { STAGING_CUSTOMER_ID } = require('./marketplaceStagingActions');
-const { loadMarketplaceSnapshot, deleteMarketplaceSnapshot } = require('./userMarketplaceSnapshot');
+const { loadMarketplaceSnapshot } = require('./userMarketplaceSnapshot');
 
 assertStagingEnv();
 
@@ -43,7 +43,7 @@ async function main() {
     process.exit(1);
   }
 
-  const snapshot = loadMarketplaceSnapshot(customerId);
+  const snapshot = await loadMarketplaceSnapshot(customerId);
   if (!snapshot) {
     console.error('No snapshot found. Run restrict-customer --apply first.');
     process.exit(1);

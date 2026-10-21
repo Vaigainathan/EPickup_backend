@@ -13,6 +13,8 @@ const { sanitizeInput, validateEmail, checkValidation } = require('../middleware
 const { requireAdminRole } = require('../middleware/auth');
 const { requireStagingFirebaseProject } = require('../middleware/stagingFirebaseProject');
 const { createAdminStaff, disableAdminStaff } = require('../services/adminStaffService');
+const adminSupportTicketService = require('../services/admin/adminSupportTicketService');
+const adminEmergencyAlertService = require('../services/admin/adminEmergencyAlertService');
 const { ADMIN_ROLES, isAdminRole } = require('../constants/adminRoles');
 const {
   resolveBookingSourceType,
@@ -3759,6 +3761,141 @@ router.get('/support/tickets', async (req, res) => {
 });
 
 /**
+ * @route   POST /api/admin/support/tickets/:id/reply
+ * @desc    Add admin message to support ticket thread
+ * @access  Private (Admin only)
+ */
+router.post('/support/tickets/:id/reply', async (req, res) => {
+  try {
+    const { id: ticketId } = req.params;
+    const { message } = req.body;
+    const adminId = req.user.uid || req.user.userId;
+
+    const data = await adminSupportTicketService.appendAdminReply({
+      ticketId,
+      adminId,
+      message
+    });
+
+    res.json({
+      success: true,
+      message: 'Message added successfully',
+      data,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('Error replying to support ticket:', error);
+    res.status(error.status || 500).json({
+      success: false,
+      error: {
+        code: error.code || 'TICKET_REPLY_ERROR',
+        message: error.message || 'Failed to add message to ticket',
+        details: error.status ? undefined : error.message
+      },
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+/**
+ * @route   PUT /api/admin/support/tickets/:id/status
+ * @desc    Update support ticket status
+ * @access  Private (Admin only)
+ */
+router.put('/support/tickets/:id/status', async (req, res) => {
+  try {
+    const { id: ticketId } = req.params;
+    const { status, adminNotes } = req.body;
+    const adminId = req.user.uid || req.user.userId;
+
+    if (!status) {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'VALIDATION_ERROR',
+          message: 'status is required'
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    const data = await adminSupportTicketService.setTicketStatus({
+      ticketId,
+      status,
+      adminId,
+      adminNotes
+    });
+
+    res.json({
+      success: true,
+      message: 'Ticket status updated successfully',
+      data,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('Error updating support ticket status:', error);
+    res.status(error.status || 500).json({
+      success: false,
+      error: {
+        code: error.code || 'TICKET_STATUS_ERROR',
+        message: error.message || 'Failed to update ticket status',
+        details: error.status ? undefined : error.message
+      },
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+/**
+ * @route   PUT /api/admin/emergency/alerts/:id/status
+ * @desc    Acknowledge or resolve an emergency alert
+ * @access  Private (Admin only)
+ */
+router.put('/emergency/alerts/:id/status', async (req, res) => {
+  try {
+    const { id: alertId } = req.params;
+    const { status, note } = req.body;
+    const adminId = req.user.uid || req.user.userId;
+
+    if (!status) {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'VALIDATION_ERROR',
+          message: 'status is required'
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    const data = await adminEmergencyAlertService.updateAlertStatus({
+      alertId,
+      status,
+      adminId,
+      note
+    });
+
+    res.json({
+      success: true,
+      message: 'Emergency alert updated successfully',
+      data,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('Error updating emergency alert status:', error);
+    res.status(error.status || 500).json({
+      success: false,
+      error: {
+        code: error.code || 'UPDATE_ALERT_STATUS_ERROR',
+        message: error.message || 'Failed to update emergency alert status',
+        details: error.status ? undefined : error.message
+      },
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+/**
  * @route   POST /api/admin/support/tickets/:ticketId/resolve
  * @desc    Resolve a support ticket
  * @access  Private (Admin only)
@@ -6726,45 +6863,6 @@ router.get('/system/metrics', async (req, res) => {
       error: {
         code: 'SYSTEM_METRICS_ERROR',
         message: 'Failed to get system metrics',
-        details: error.message
-      },
-      timestamp: new Date().toISOString()
-    });
-  }
-});
-
-/**
- * @route   GET /api/admin/admins
- * @desc    Get all admin users
- * @access  Private (Admin only)
- */
-router.get('/admins', async (req, res) => {
-  try {
-    const db = getFirestore();
-    
-    const adminsSnapshot = await db.collection('adminUsers').get();
-    
-    const admins = [];
-    adminsSnapshot.forEach(doc => {
-      admins.push({
-        id: doc.id,
-        ...doc.data()
-      });
-    });
-
-    res.json({
-      success: true,
-      data: admins,
-      timestamp: new Date().toISOString()
-    });
-
-  } catch (error) {
-    console.error('❌ Error getting admins:', error);
-    res.status(500).json({
-      success: false,
-      error: {
-        code: 'ADMINS_ERROR',
-        message: 'Failed to get admin users',
         details: error.message
       },
       timestamp: new Date().toISOString()

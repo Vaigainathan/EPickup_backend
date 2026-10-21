@@ -6,6 +6,19 @@ const router = express.Router();
 const { normalizeAdminRole } = require('../constants/adminRoles');
 const { evaluateAdminAccess } = require('../services/adminLoginService');
 
+function formatAdminAuthUser(adminData, { id, email, name, role }) {
+  const source = adminData && typeof adminData === 'object' ? adminData : {};
+  return {
+    id,
+    email,
+    name,
+    role,
+    isActive: source.isActive !== false,
+    emailVerified: source.isEmailVerified === true,
+    accountStatus: source.accountStatus || 'active'
+  };
+}
+
 /**
  * @route   POST /api/admin/auth/login
  * @desc    Admin login with email and password
@@ -195,12 +208,12 @@ router.post('/login', async (req, res) => {
       success: true,
       message: 'Admin login successful',
       data: {
-        user: {
+        user: formatAdminAuthUser(adminUserData, {
           id: adminUser.id,
           email: adminUser.email,
           name: adminUser.name,
           role: adminUser.role
-        },
+        }),
         token
       },
       timestamp: new Date().toISOString()
@@ -296,12 +309,12 @@ router.post('/verify-token', async (req, res) => {
       success: true,
       message: 'Token verified successfully',
       data: {
-        user: {
+        user: formatAdminAuthUser(adminData, {
           id: adminData.id || userId,
           email: adminData.email,
           name: adminData.name || adminData.displayName,
           role
-        }
+        })
       },
       timestamp: new Date().toISOString()
     });

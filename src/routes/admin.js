@@ -10,11 +10,49 @@ const {
 } = require('../services/driverKycDocumentUrlService');
 const walletService = require('../services/walletService');
 const { sanitizeInput, validateEmail, checkValidation } = require('../middleware/validation');
-const { requireAdmin } = require('../middleware/auth');
+const { requireAdminRole } = require('../middleware/auth');
+const { requireStagingFirebaseProject } = require('../middleware/stagingFirebaseProject');
+const { createAdminStaff, disableAdminStaff } = require('../services/adminStaffService');
+const { ADMIN_ROLES, isAdminRole } = require('../constants/adminRoles');
 const router = express.Router();
 
 // Apply input sanitization to all admin routes
 router.use(sanitizeInput);
+
+const superAdminOnly = requireAdminRole(['super_admin']);
+
+const SUPER_ADMIN_PREFIXES = [
+  '/admins',
+  '/users',
+  '/settings',
+  '/revenue',
+  '/wallet/revenue',
+  '/wallet/audit-log',
+  '/wallet/transactions',
+  '/wallet/verify-payment',
+  '/analytics/revenue',
+  '/system/backup',
+  '/system/restore',
+  '/system/restart',
+  '/system/clear-cache',
+  '/system/backups',
+  '/email-verification'
+];
+SUPER_ADMIN_PREFIXES.forEach((prefix) => {
+  router.use(prefix, superAdminOnly);
+});
+
+router.use((req, res, next) => {
+  if (req.method === 'GET' && req.path === '/analytics') {
+    return superAdminOnly(req, res, next);
+  }
+  return next();
+});
+
+router.use('/debug', requireStagingFirebaseProject);
+router.use('/test-document-access', requireStagingFirebaseProject);
+router.use('/test-document-system', requireStagingFirebaseProject);
+router.use('/test-verification-flow', requireStagingFirebaseProject);
 
 // Note: Authentication is now handled by authMiddleware in server.js
 // This middleware validates backend JWT tokens and sets req.user with user data
@@ -560,85 +598,71 @@ router.post('/admins', [
   checkValidation
 ], async (req, res) => {
   try {
-    const { email, displayName, role = 'super_admin', permissions = [] } = req.body;
-    
-    if (!email || !displayName) {
+    const { email, displayName, role, temporaryPassword } = req.body;
+
+    if (!email || !displayName || !role || !temporaryPassword) {
       return res.status(400).json({
         success: false,
         error: {
           code: 'MISSING_FIELDS',
-          message: 'Email and display name are required'
+          message: 'email, displayName, role, and temporaryPassword are required'
         }
       });
     }
 
-    const db = getFirestore();
-    
-    // Check if admin already exists
-    const existingAdmin = await db.collection('adminUsers')
-      .where('email', '==', email)
-      .get();
-    
-    if (!existingAdmin.empty) {
+    if (!isAdminRole(role)) {
       return res.status(400).json({
         success: false,
         error: {
-          code: 'ADMIN_EXISTS',
-          message: 'Admin user already exists'
+          code: 'INVALID_ADMIN_ROLE',
+          message: `role must be one of: ${ADMIN_ROLES.join(', ')}`
         }
       });
     }
 
-    // Generate a unique UID for the admin
-    const adminUid = `admin_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-
-    // Create admin user data
-    const adminData = {
-      uid: adminUid,
-      id: adminUid,
-      email: email,
-      displayName: displayName,
-      role: role,
-      permissions: permissions.length > 0 ? permissions : getDefaultPermissions(role),
-      isActive: true,
-      isEmailVerified: false,
-      accountStatus: 'pending',
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-      createdBy: req.user.uid || req.user.userId,
-      lastLogin: null
-    };
-
-    // Store in adminUsers collection
-    await db.collection('adminUsers').doc(adminUid).set(adminData);
-    
-    // Also store in users collection for consistency
-    await db.collection('users').doc(adminUid).set({
-      ...adminData,
-      userType: 'admin'
+    const result = await createAdminStaff({
+      email,
+      displayName,
+      role,
+      temporaryPassword,
+      createdBy: req.user.uid || req.user.userId
     });
-    
+
+    if (!result.created) {
+      return res.status(200).json({
+        success: true,
+        message: 'Admin user already exists',
+        data: {
+          uid: result.uid,
+          email: result.email,
+          displayName: result.displayName,
+          role: result.role
+        },
+        alreadyExists: true,
+        timestamp: new Date().toISOString()
+      });
+    }
+
     res.status(201).json({
       success: true,
       message: 'Admin user created successfully',
       data: {
-        uid: adminUid,
-        email: email,
-        displayName: displayName,
-        role: role,
-        permissions: adminData.permissions,
-        status: 'pending_activation'
+        uid: result.uid,
+        email: result.email,
+        displayName: result.displayName,
+        role: result.role,
+        accountStatus: 'active'
       },
       timestamp: new Date().toISOString()
     });
-
   } catch (error) {
     console.error('Error creating admin user:', error);
-    res.status(500).json({
+    const status = error.status || 500;
+    res.status(status).json({
       success: false,
       error: {
-        code: 'CREATE_ADMIN_ERROR',
-        message: 'Failed to create admin user',
+        code: error.code || 'CREATE_ADMIN_ERROR',
+        message: error.message || 'Failed to create admin user',
         details: error.message
       },
       timestamp: new Date().toISOString()
@@ -654,7 +678,7 @@ router.post('/admins', [
 router.put('/admins/:uid', async (req, res) => {
   try {
     const { uid } = req.params;
-    const { displayName, role, permissions, isActive } = req.body;
+    const { displayName, role, isActive } = req.body;
     
     const db = getFirestore();
     
@@ -687,15 +711,49 @@ router.put('/admins/:uid', async (req, res) => {
     };
 
     if (displayName) updateData.displayName = displayName;
-    if (role && req.user.role === 'super_admin') updateData.role = role;
-    if (permissions && req.user.role === 'super_admin') updateData.permissions = permissions;
-    if (isActive !== undefined && req.user.role === 'super_admin') updateData.isActive = isActive;
+    if (role && req.user.role === 'super_admin') {
+      if (!isAdminRole(role)) {
+        return res.status(400).json({
+          success: false,
+          error: {
+            code: 'INVALID_ADMIN_ROLE',
+            message: `role must be one of: ${ADMIN_ROLES.join(', ')}`
+          }
+        });
+      }
+      updateData.role = role;
+    }
+
+    if (isActive === false && req.user.role === 'super_admin') {
+      const disabled = await disableAdminStaff(uid, {
+        disabledBy: req.user.uid || req.user.userId
+      });
+      return res.json({
+        success: true,
+        message: 'Admin user disabled successfully',
+        data: disabled,
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    if (isActive === true && req.user.role === 'super_admin') {
+      updateData.isActive = true;
+      updateData.accountStatus = 'active';
+    }
 
     // Update adminUsers collection
     await db.collection('adminUsers').doc(uid).update(updateData);
-    
+
     // Update users collection
     await db.collection('users').doc(uid).update(updateData);
+
+    if (role && req.user.role === 'super_admin') {
+      const { getAuth } = require('firebase-admin/auth');
+      await getAuth().setCustomUserClaims(uid, {
+        userType: 'admin',
+        role: updateData.role
+      });
+    }
     
     res.json({
       success: true,
@@ -766,13 +824,14 @@ router.delete('/admins/:uid', async (req, res) => {
       });
     }
 
-    // Delete from both collections
-    await db.collection('adminUsers').doc(uid).delete();
-    await db.collection('users').doc(uid).delete();
-    
+    const disabled = await disableAdminStaff(uid, {
+      disabledBy: req.user.uid || req.user.userId
+    });
+
     res.json({
       success: true,
-      message: 'Admin user deleted successfully',
+      message: 'Admin user disabled successfully',
+      data: disabled,
       timestamp: new Date().toISOString()
     });
 
@@ -4470,7 +4529,7 @@ router.get('/revenue/trends', async (req, res) => {
  * @desc    Get real money revenue from top-ups
  * @access  Private (Admin)
  */
-router.get('/revenue/real-money', requireAdmin, async (req, res) => {
+router.get('/revenue/real-money', async (req, res) => {
   try {
     const revenueService = require('../services/revenueService');
     
@@ -7232,7 +7291,7 @@ router.get('/drivers/:driverId/earnings', async (req, res) => {
  * ✅ ISOLATED: Driver-specific Firestore queries
  * ✅ AUDITABLE: Complete transaction history with timestamps
  */
-router.get('/wallet/transactions/:driverId', requireAdmin, async (req, res) => {
+router.get('/wallet/transactions/:driverId', async (req, res) => {
   try {
     const { driverId } = req.params;
     const { limit = 50, offset = 0, startDate, endDate, transactionType } = req.query;
@@ -7347,7 +7406,7 @@ router.get('/wallet/transactions/:driverId', requireAdmin, async (req, res) => {
  * ✅ ATOMIC: All revenue data from single collection
  * ✅ AUDITABLE: Revenue tracking with dates and driver info
  */
-router.get('/wallet/revenue', requireAdmin, async (req, res) => {
+router.get('/wallet/revenue', async (req, res) => {
   try {
     const { startDate, endDate, limit = 100, offset = 0 } = req.query;
     
@@ -7449,7 +7508,7 @@ router.get('/wallet/revenue', requireAdmin, async (req, res) => {
  * @access  Private (Admin only)
  * ✅ AUDITABLE: Complete audit trail with admin actions and timestamps
  */
-router.get('/wallet/audit-log', requireAdmin, async (req, res) => {
+router.get('/wallet/audit-log', async (req, res) => {
   try {
     const { startDate, endDate, limit = 100, offset = 0, eventType, adminId } = req.query;
     
@@ -7547,7 +7606,7 @@ router.get('/wallet/audit-log', requireAdmin, async (req, res) => {
  * @access  Private (Admin only)
  * ✅ AUDITABLE: Complete payment verification with signature and driver info
  */
-router.get('/wallet/verify-payment/:transactionId', requireAdmin, async (req, res) => {
+router.get('/wallet/verify-payment/:transactionId', async (req, res) => {
   try {
     const { transactionId } = req.params;
     

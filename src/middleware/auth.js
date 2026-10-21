@@ -140,23 +140,37 @@ const authMiddleware = async (req, res, next) => {
       });
     }
 
+    // ✅ CRITICAL FIX: Prefer userType from JWT token (more authoritative)
+    const userType = decodedToken.userType || userData.userType;
+
     // Check if user is active (default to true if undefined)
     if (userData.isActive === false) {
+      const inactiveCode = userType === 'admin' ? 'ADMIN_INACTIVE' : 'USER_INACTIVE';
       return res.status(403).json({
         success: false,
         error: {
-          code: 'USER_INACTIVE',
-          message: 'Your account is deactivated, contact support to reactivate',
-          details: 'Your account is deactivated, contact support to reactivate'
+          code: inactiveCode,
+          message: userType === 'admin'
+            ? 'This admin account is disabled'
+            : 'Your account is deactivated, contact support to reactivate',
+          details: userType === 'admin'
+            ? 'This admin account is disabled'
+            : 'Your account is deactivated, contact support to reactivate'
         },
         timestamp: new Date().toISOString()
       });
     }
 
-    // ✅ CRITICAL FIX: Prefer userType from JWT token (more authoritative)
-    // JWT token contains the correct userType when it was issued
-    // Fallback to Firestore userType if token doesn't have it
-    const userType = decodedToken.userType || userData.userType;
+    if (userType === 'admin' && (userData.accountStatus === 'inactive' || userData.accountStatus === 'disabled')) {
+      return res.status(403).json({
+        success: false,
+        error: {
+          code: 'ADMIN_INACTIVE',
+          message: 'This admin account is disabled'
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
     
     // ✅ CRITICAL FIX: Ensure userType is never undefined
     if (!userType) {
@@ -226,11 +240,17 @@ const authMiddleware = async (req, res, next) => {
     // ✅ CRITICAL FIX: Spread userData first, then override userType to ensure correct value
     // ✅ phoneFromToken already declared above (line 180), reuse it here
     
+    const { normalizeAdminRole } = require('../constants/adminRoles');
+    const resolvedRole = userType === 'admin'
+      ? normalizeAdminRole(userId, decodedToken.role || userData.role)
+      : (decodedToken.role || userData.role);
+
     req.user = {
       ...userData,
       uid: userId,
       phone: phoneFromToken || userData.phone || null, // ✅ Ensure phone is never undefined (phoneFromToken from line 180)
-      userType: userType // ✅ Override userType from Firestore with token userType
+      userType: userType, // ✅ Override userType from Firestore with token userType
+      role: resolvedRole
     };
     
     // ✅ IMPROVED LOGGING: Show both Firestore and token userType for clarity
@@ -489,6 +509,55 @@ const requireDriver = requireRole(['driver']);
 const requireAdmin = requireRole(['admin']);
 
 /**
+ * Admin dashboard role gate (super_admin | support).
+ * @param {Array<'super_admin'|'support'>} allowedRoles
+ */
+const requireAdminRole = (allowedRoles) => {
+  return (req, res, next) => {
+    if (!req.user) {
+      return res.status(401).json({
+        success: false,
+        error: {
+          code: 'UNAUTHORIZED',
+          message: 'Authentication required'
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    if (req.user.userType !== 'admin') {
+      return res.status(403).json({
+        success: false,
+        error: {
+          code: 'FORBIDDEN',
+          message: 'Access denied',
+          details: 'Admin access required'
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    const { normalizeAdminRole } = require('../constants/adminRoles');
+    const role = normalizeAdminRole(req.user.uid, req.user.role);
+    req.user.role = role;
+
+    if (!allowedRoles.includes(role)) {
+      return res.status(403).json({
+        success: false,
+        error: {
+          code: 'INSUFFICIENT_ADMIN_ROLE',
+          message: 'Access denied',
+          details: `This resource requires one of: ${allowedRoles.join(', ')}`
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    return next();
+  };
+};
+
+/**
  * Optional authentication middleware
  * Similar to authMiddleware but doesn't fail if no token is provided
  */
@@ -690,9 +759,12 @@ authMiddleware.getUserData = async (userId) => {
     if (userDoc.exists) {
       const userData = userDoc.data();
       userData.userType = 'admin';
+      const { normalizeAdminRole } = require('../constants/adminRoles');
+      userData.role = normalizeAdminRole(userId, userData.role);
       console.log('✅ [AUTH] Found admin user:', {
         userId,
-        userType: userData.userType
+        userType: userData.userType,
+        role: userData.role
       });
       return userData;
     }
@@ -721,6 +793,7 @@ module.exports = {
   requireCustomer,
   requireDriver,
   requireAdmin,
+  requireAdminRole,
   optionalAuth,
   requireOwnership,
   userRateLimit

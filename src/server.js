@@ -622,9 +622,10 @@ const { lightRateLimit } = require('./middleware/rateLimit');
 app.use('/api/admin/auth', adminAuthRoutes); // No auth required for admin login
 app.use('/api/admin/signup', lightRateLimit, adminSignupRoutes); // Admin signup route (no auth required, but with light rate limiting)
 // Import admin role validation
-const { requireAdmin } = require('./middleware/auth');
+const { requireAdmin, requireAdminRole } = require('./middleware/auth');
+const superAdminOnly = requireAdminRole(['super_admin']);
 app.use('/api/admin', adminLimiter, authMiddleware, requireAdmin, adminRoutes); // Admin routes require admin role
-app.use('/api/admin/revenue', adminLimiter, authMiddleware, requireAdmin, revenueRoutes); // Revenue routes require admin role
+app.use('/api/admin/revenue', adminLimiter, authMiddleware, requireAdmin, superAdminOnly, revenueRoutes);
 // Note: adminBookingManagementRoutes are included in adminRoutes to avoid conflicts
 
 // Health check routes (for keepalive script) - No auth required
@@ -632,7 +633,7 @@ app.use('/api/health', healthRoutes);
 app.use('/health', healthRoutes); // Keep both for backward compatibility
 
 // Performance metrics endpoint (Admin only)
-app.get('/api/admin/performance', authMiddleware, (req, res) => {
+app.get('/api/admin/performance', authMiddleware, requireAdmin, (req, res) => {
   try {
     // Use monitoringService instead of removed performanceMonitoringService
     const metrics = monitoringService.getMetrics();

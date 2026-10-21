@@ -1,238 +1,31 @@
 const express = require('express');
-const admin = require('firebase-admin');
-const { getFirestore } = require('firebase-admin/firestore');
 const router = express.Router();
 
 /**
  * @route   POST /api/admin/signup
- * @desc    Create new admin user (for signup flow)
- * @access  Public (but requires valid Firebase ID token)
+ * @desc    Disabled — use staging bootstrap or super_admin staff creation
+ * @access  Closed
  */
-router.post('/', async (req, res) => {
-  try {
-    // Extract token from Authorization header
-    const authHeader = req.headers.authorization;
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
-      return res.status(401).json({
-        success: false,
-        error: {
-          code: 'MISSING_TOKEN',
-          message: 'Authorization header missing or invalid format'
-        },
-        timestamp: new Date().toISOString()
-      });
-    }
+router.post('/', (req, res) => {
+  return res.status(410).json({
+    success: false,
+    error: {
+      code: 'ADMIN_SIGNUP_DISABLED',
+      message: 'Admin self-signup is disabled. Contact a super admin or use the staging bootstrap script.'
+    },
+    timestamp: new Date().toISOString()
+  });
+});
 
-    const idToken = authHeader.split(' ')[1];
-    if (!idToken) {
-      return res.status(401).json({
-        success: false,
-        error: {
-          code: 'MISSING_TOKEN',
-          message: 'Firebase ID token not provided'
-        },
-        timestamp: new Date().toISOString()
-      });
-    }
-
-    console.log('🔐 Verifying Firebase ID token for admin signup...');
-
-    // Verify Firebase ID token
-    let decodedToken;
-    try {
-      decodedToken = await admin.auth().verifyIdToken(idToken);
-      console.log('✅ Firebase ID token verified successfully');
-      console.log(`📋 User UID: ${decodedToken.uid}`);
-      console.log(`📋 User Email: ${decodedToken.email}`);
-      console.log(`📋 Custom Claims:`, decodedToken);
-    } catch (tokenError) {
-      console.error('❌ Firebase ID token verification failed:', tokenError);
-      return res.status(401).json({
-        success: false,
-        error: {
-          code: 'INVALID_TOKEN',
-          message: 'Invalid Firebase ID token provided.',
-          details: tokenError.message
-        },
-        timestamp: new Date().toISOString()
-      });
-    }
-
-    const { displayName } = req.body;
-    
-    // Force all admins to be super_admin (only one role needed)
-    const adminRole = 'super_admin';
-    
-    if (!displayName) {
-      return res.status(400).json({
-        success: false,
-        error: {
-          code: 'MISSING_FIELDS',
-          message: 'Display name is required'
-        }
-      });
-    }
-
-    const db = getFirestore();
-    
-    // Check if admin already exists
-    const existingAdmin = await db.collection('adminUsers').doc(decodedToken.uid).get();
-    
-    if (existingAdmin.exists) {
-      return res.status(400).json({
-        success: false,
-        error: {
-          code: 'ADMIN_EXISTS',
-          message: 'Admin user already exists'
-        }
-      });
-    }
-
-    // All admins get full permissions (only super_admin role)
-    const getDefaultPermissions = () => {
-      return ['all']; // All admins have complete access
-    };
-
-    // Create admin user data
-    const adminData = {
-      uid: decodedToken.uid, // Use Firebase UID directly
-      id: decodedToken.uid,
-      email: decodedToken.email,
-      displayName: displayName,
-      role: adminRole,
-      permissions: getDefaultPermissions(),
-      isActive: true,
-      isEmailVerified: decodedToken.email_verified || false,
-      accountStatus: 'active',
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-      lastLogin: new Date().toISOString()
-    };
-
-    console.log('📝 Creating admin user document...');
-
-    // Create user data for both collections
-    const userData = {
-      id: decodedToken.uid,
-      uid: decodedToken.uid,
-      originalFirebaseUID: decodedToken.uid,
-      email: decodedToken.email,
-      name: adminData.displayName,
-      userType: 'admin',
-      role: adminData.role,
-      permissions: adminData.permissions,
-      isVerified: adminData.isEmailVerified,
-      isActive: adminData.isActive,
-      accountStatus: adminData.accountStatus,
-      createdAt: adminData.createdAt,
-      updatedAt: adminData.updatedAt
-    };
-
-    // Create admin user in both collections simultaneously (automatic sync)
-    await Promise.all([
-      db.collection('adminUsers').doc(decodedToken.uid).set(adminData),
-      db.collection('users').doc(decodedToken.uid).set(userData)
-    ]);
-    
-    console.log('✅ [SIGNUP] Admin user created in both collections');
-    
-    console.log('📝 Setting custom claims on Firebase user...');
-
-    // Set custom claims on Firebase user
-    await admin.auth().setCustomUserClaims(decodedToken.uid, {
-      userType: 'admin',
-      role: adminRole,
-      permissions: getDefaultPermissions()
-    });
-
-    // Send email verification if not already verified
-    if (!decodedToken.email_verified) {
-      try {
-        console.log('📧 Sending email verification...');
-        const userRecord = await admin.auth().getUser(decodedToken.uid);
-        
-        // Generate email verification link
-        const actionCodeSettings = {
-          url: `${process.env.FRONTEND_URL || 'http://localhost:5173'}/admin/email-verified`,
-          handleCodeInApp: false,
-        };
-        
-        await admin.auth().generateEmailVerificationLink(
-          userRecord.email,
-          actionCodeSettings
-        );
-        
-        console.log('✅ Email verification link generated');
-        
-        console.log('📧 Email verification link generated for delivery');
-        
-        // TODO: Implement actual email sending service
-        await db.collection('adminUsers').doc(decodedToken.uid).update({
-          emailVerificationSent: true,
-          emailVerificationSentAt: new Date().toISOString()
-        });
-        
-        // Update admin data to indicate email verification was sent
-        await db.collection('adminUsers').doc(decodedToken.uid).update({
-          emailVerificationSent: true,
-          emailVerificationSentAt: new Date().toISOString()
-        });
-        
-      } catch (emailError) {
-        console.warn('⚠️ Email verification setup failed:', emailError.message);
-        // Don't fail the signup process if email verification fails
-      }
-    }
-
-    console.log('✅ Admin user created and custom claims set successfully');
-
-    // Generate backend JWT token for immediate use
-    const jwtService = require('../services/jwtService');
-    const backendToken = jwtService.generateAccessToken({
-      userId: adminData.id,
-      uid: adminData.uid,
-      email: adminData.email,
-      userType: 'admin',
-      role: adminData.role
-    });
-
-    res.json({
-      success: true,
-      message: 'Admin user created successfully',
-      data: {
-        user: adminData,
-        token: backendToken,
-        expiresIn: '24h'
-      }
-    });
-
-  } catch (error) {
-    console.error('❌ Admin signup failed:', error);
-    
-    let errorCode = 'SIGNUP_FAILED';
-    let errorMessage = 'Admin signup failed';
-    
-    if (error.code === 'auth/id-token-expired') {
-      errorCode = 'TOKEN_EXPIRED';
-      errorMessage = 'Firebase ID token has expired. Please refresh and try again.';
-    } else if (error.code === 'auth/invalid-id-token') {
-      errorCode = 'INVALID_TOKEN';
-      errorMessage = 'Invalid Firebase ID token provided.';
-    } else if (error.code === 'auth/user-not-found') {
-      errorCode = 'USER_NOT_FOUND';
-      errorMessage = 'User not found in Firebase Authentication.';
-    }
-
-    return res.status(500).json({
-      success: false,
-      error: {
-        code: errorCode,
-        message: errorMessage,
-        details: error.message
-      },
-      timestamp: new Date().toISOString()
-    });
-  }
+router.all('*', (req, res) => {
+  return res.status(410).json({
+    success: false,
+    error: {
+      code: 'ADMIN_SIGNUP_DISABLED',
+      message: 'Admin self-signup is disabled.'
+    },
+    timestamp: new Date().toISOString()
+  });
 });
 
 module.exports = router;

@@ -162,7 +162,7 @@ class EnvironmentConfig {
     };
 
     const defaultAllowedOrigins = [
-      'http://localhost:3000',  // Admin dashboard
+      'http://localhost:3000',  // Admin dashboard (Vite dev server)
       'http://localhost:3001',  // Customer app
       'http://localhost:8081',  // Driver app (Expo)
       'https://epickup-app.web.app',

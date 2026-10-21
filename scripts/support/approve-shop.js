@@ -10,7 +10,6 @@
 
 require('dotenv').config();
 
-const { FieldValue } = require('firebase-admin/firestore');
 const { assertStagingEnv, assertStagingAdmin } = require('../assertStagingFirebase');
 const { assertStagingShopId, planShopApproval } = require('./approveShopActions');
 
@@ -97,15 +96,9 @@ async function main() {
     return;
   }
 
-  await userRef.update({
-    'shop.approvalStatus': 'approved',
-    updatedAt: FieldValue.serverTimestamp()
-  });
-  await shopRef.update({
-    approvedAt: FieldValue.serverTimestamp(),
-    updatedAt: FieldValue.serverTimestamp()
-  });
-  console.log(`Approved shop ${shopId}`);
+  const shopOnboardingService = require('../../src/services/shopOnboardingService');
+  const result = await shopOnboardingService.adminApprove(shopId, 'script');
+  console.log(`Approved shop ${shopId}`, result);
 }
 
 main().catch((error) => {

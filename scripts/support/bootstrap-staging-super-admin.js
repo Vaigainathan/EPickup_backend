@@ -10,8 +10,6 @@
 require('dotenv').config();
 
 const { assertStagingEnv, assertStagingAdmin } = require('../assertStagingFirebase');
-const { getAuth } = require('firebase-admin/auth');
-const { getFirestore } = require('firebase-admin/firestore');
 
 function argValue(flag) {
   const index = process.argv.indexOf(flag);
@@ -43,9 +41,12 @@ async function main() {
   }
 
   assertStagingEnv();
-  const { createAdminStaff } = require('../../src/services/adminStaffService');
+  const { getFirestore } = require('../../src/services/firebase');
   const db = getFirestore();
   assertStagingAdmin();
+
+  const { getAuth } = require('firebase-admin/auth');
+  const { createAdminStaff } = require('../../src/services/adminStaffService');
 
   const superAdminCount = await countSuperAdmins(db);
   const preview = {

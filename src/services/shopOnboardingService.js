@@ -110,6 +110,42 @@ function normalizeRejectedSection(value) {
   return REJECTED_SECTIONS.has(value) ? value : null;
 }
 
+function assertValidRejectedSections(sections) {
+  if (sections === undefined || sections === null) {
+    return;
+  }
+  const list = Array.isArray(sections)
+    ? sections
+    : (typeof sections === 'string' && sections ? [sections] : []);
+  for (const item of list) {
+    if (!REJECTED_SECTIONS.has(item)) {
+      const error = new Error(
+        `Invalid section key: ${item}. Valid: business-details, documents, bank-details`
+      );
+      error.status = 400;
+      error.code = 'INVALID_SECTION';
+      throw error;
+    }
+  }
+}
+
+function normalizeRejectedSections(sections) {
+  const list = Array.isArray(sections)
+    ? sections
+    : (typeof sections === 'string' && sections ? [sections] : []);
+  const unique = [];
+  for (const item of list) {
+    const normalized = normalizeRejectedSection(item);
+    if (normalized && !unique.includes(normalized)) {
+      unique.push(normalized);
+    }
+  }
+  if (unique.length === 0) {
+    return Array.from(REJECTED_SECTIONS);
+  }
+  return unique;
+}
+
 class ShopOnboardingService {
   getDb() {
     return getFirestore();
@@ -163,7 +199,11 @@ class ShopOnboardingService {
     const ctx = await this.loadShopContext(userId);
     const approvalStatus = ctx.shop.approvalStatus || 'pending';
     const rejectionReason = ctx.shop.rejectionReason ?? null;
-    const rejectedSection = normalizeRejectedSection(
+    const rejectedSections = normalizeRejectedSections(
+      ctx.shop.rejectedSections ?? ctx.shopProfile.rejectedSections
+        ?? ctx.shop.rejectedSection ?? ctx.shopProfile.rejectedSection
+    );
+    const rejectedSection = rejectedSections[0] || normalizeRejectedSection(
       ctx.shop.rejectedSection ?? ctx.shopProfile.rejectedSection
     );
     const submitted = ctx.shop.submitted === true || ctx.shopProfile.submitted === true;
@@ -176,6 +216,7 @@ class ShopOnboardingService {
       approvalStatus,
       rejectionReason,
       rejectedSection,
+      rejectedSections,
       submitted
     });
   }
@@ -214,6 +255,9 @@ class ShopOnboardingService {
       approvalStatus: extras.approvalStatus,
       rejectionReason: extras.rejectionReason,
       rejectedSection: extras.rejectedSection,
+      rejectedSections: extras.rejectedSections || (
+        extras.rejectedSection ? [extras.rejectedSection] : []
+      ),
       submitted: extras.submitted,
       steps: inferSteps(shop, shopProfile),
       documents: {
@@ -610,6 +654,163 @@ class ShopOnboardingService {
     ]);
 
     return this.getStatus(userId);
+  }
+
+  async adminVerifyUpiName(shopId, verifiedName, verifiedBy) {
+    const name = typeof verifiedName === 'string' ? verifiedName.trim() : '';
+    if (!name) {
+      const error = new Error('verifiedName is required');
+      error.status = 400;
+      error.code = 'MISSING_VERIFIED_NAME';
+      throw error;
+    }
+
+    const db = this.getDb();
+    const shopRef = db.collection('shops').doc(shopId);
+    const snap = await shopRef.get();
+    if (!snap.exists) {
+      const error = new Error('Shop not found');
+      error.status = 404;
+      error.code = 'SHOP_NOT_FOUND';
+      throw error;
+    }
+
+    await shopRef.update({
+      'bank.upiNameVerification': {
+        verifiedName: name,
+        method: 'manual',
+        verifiedBy: verifiedBy || 'admin',
+        verifiedAt: this.now()
+      },
+      updatedAt: this.now()
+    });
+
+    return { shopId, verifiedName: name };
+  }
+
+  async adminApprove(shopId, operator) {
+    const db = this.getDb();
+    const userRef = db.collection('users').doc(shopId);
+    const shopRef = db.collection('shops').doc(shopId);
+    const [userSnap, shopSnap] = await Promise.all([userRef.get(), shopRef.get()]);
+
+    if (!userSnap.exists || !shopSnap.exists) {
+      const error = new Error('Shop user or profile not found');
+      error.status = 404;
+      error.code = 'SHOP_NOT_FOUND';
+      throw error;
+    }
+
+    const userData = userSnap.data() || {};
+    const shopData = shopSnap.data() || {};
+    const shopIdentity = userData.shop && typeof userData.shop === 'object' ? userData.shop : {};
+    const approvalStatus = typeof shopIdentity.approvalStatus === 'string' ? shopIdentity.approvalStatus : 'pending';
+    const bank = shopData.bank && typeof shopData.bank === 'object' ? shopData.bank : {};
+
+    const { planShopApproval } = require('./admin/shopApprovalPlan');
+    const plan = planShopApproval({ approvalStatus, bank });
+    if (!plan.ok) {
+      const error = new Error(plan.message);
+      error.status = 400;
+      error.code = 'APPROVAL_BLOCKED';
+      throw error;
+    }
+
+    if (plan.noop) {
+      return { shopId, noop: true, approvalStatus: 'approved' };
+    }
+
+    await userRef.update({
+      'shop.approvalStatus': 'approved',
+      'shop.rejectionReason': null,
+      'shop.rejectedSection': null,
+      'shop.rejectedSections': [],
+      updatedAt: this.now()
+    });
+    await shopRef.update({
+      approvedAt: this.now(),
+      rejectedSection: null,
+      rejectedSections: [],
+      updatedAt: this.now()
+    });
+
+    const { trySendShopOnboardingPush } = require('./admin/adminShopPush');
+    const push = await trySendShopOnboardingPush(shopId, 'approve', {
+      shopName: shopIdentity.shopName || userData.name || '',
+      orderId: '',
+      displayId: '',
+      operator
+    });
+
+    return { shopId, approvalStatus: 'approved', push };
+  }
+
+  async adminReject(shopId, { reason, sections, operator }) {
+    const rejectionReason = typeof reason === 'string' ? reason.trim() : '';
+    if (!rejectionReason) {
+      const error = new Error('reason is required');
+      error.status = 400;
+      error.code = 'MISSING_REASON';
+      throw error;
+    }
+
+    assertValidRejectedSections(sections);
+    const rejectedSections = normalizeRejectedSections(sections);
+    const rejectedSection = rejectedSections[0] || null;
+
+    const db = this.getDb();
+    const userRef = db.collection('users').doc(shopId);
+    const shopRef = db.collection('shops').doc(shopId);
+    const [userSnap, shopSnap] = await Promise.all([userRef.get(), shopRef.get()]);
+
+    if (!userSnap.exists || !shopSnap.exists) {
+      const error = new Error('Shop user or profile not found');
+      error.status = 404;
+      error.code = 'SHOP_NOT_FOUND';
+      throw error;
+    }
+
+    const userData = userSnap.data() || {};
+    const shopIdentity = userData.shop && typeof userData.shop === 'object' ? userData.shop : {};
+    if (shopIdentity.approvalStatus === 'approved') {
+      const error = new Error('Cannot reject an approved shop');
+      error.status = 409;
+      error.code = 'SHOP_ALREADY_APPROVED';
+      throw error;
+    }
+
+    await userRef.update({
+      'shop.approvalStatus': 'rejected',
+      'shop.rejectionReason': rejectionReason,
+      'shop.rejectedSection': rejectedSection,
+      'shop.rejectedSections': rejectedSections,
+      updatedAt: this.now()
+    });
+    await shopRef.update({
+      rejectedSection,
+      rejectedSections,
+      rejectedAt: this.now(),
+      rejectedBy: operator || null,
+      updatedAt: this.now()
+    });
+
+    const { trySendShopOnboardingPush } = require('./admin/adminShopPush');
+    const push = await trySendShopOnboardingPush(shopId, 'reject', {
+      shopName: shopIdentity.shopName || userData.name || '',
+      orderId: '',
+      displayId: '',
+      reason: rejectionReason,
+      operator
+    });
+
+    return {
+      shopId,
+      approvalStatus: 'rejected',
+      rejectionReason,
+      rejectedSections,
+      rejectedSection,
+      push
+    };
   }
 }
 

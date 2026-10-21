@@ -9,10 +9,8 @@
 
 require('dotenv').config();
 
-const { FieldValue } = require('firebase-admin/firestore');
 const { assertStagingEnv, assertStagingAdmin } = require('../assertStagingFirebase');
 const { STAGING_CUSTOMER_ID } = require('./marketplaceStagingActions');
-const { prepareRestrictSnapshot } = require('./userMarketplaceSnapshot');
 
 assertStagingEnv();
 
@@ -67,27 +65,9 @@ async function main() {
     return;
   }
 
-  const snapshotOutcome = prepareRestrictSnapshot(customerId, marketplace, { force });
-  if (!snapshotOutcome.ok) {
-    console.error('Snapshot already exists. Use --force to overwrite before restrict.');
-    process.exit(1);
-  }
-  if (snapshotOutcome.overwritten) {
-    console.log(`Overwrote marketplace snapshot: ${snapshotOutcome.file}`);
-  } else {
-    console.log(`Saved marketplace snapshot: ${snapshotOutcome.file}`);
-  }
-
-  await userRef.update({
-    'customer.marketplace.restriction': {
-      active: true,
-      reason,
-      setBy: operator,
-      setAt: FieldValue.serverTimestamp()
-    },
-    updatedAt: FieldValue.serverTimestamp()
-  });
-  console.log(JSON.stringify({ applied: true, customerId, restricted: true }, null, 2));
+  const { restrictCustomerMarketplace } = require('../../src/services/admin/customerMarketplaceRestrictionService');
+  const result = await restrictCustomerMarketplace(customerId, { reason, operator, force });
+  console.log(JSON.stringify({ applied: true, ...result }, null, 2));
 }
 
 main().catch((error) => {

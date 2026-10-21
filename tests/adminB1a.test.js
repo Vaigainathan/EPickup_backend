@@ -257,15 +257,44 @@ describe('adminStaffService', () => {
 });
 
 describe('bootstrap-staging-super-admin script args', () => {
+  const { spawnSync } = require('child_process');
+  const path = require('path');
+  const ROOT = path.join(__dirname, '..');
+
+  function expectNoAdminInitCrash(result) {
+    const combined = `${result.stdout || ''}${result.stderr || ''}`;
+    expect(combined).not.toContain('Firebase Admin is not initialized');
+    expect(combined).not.toContain('The default Firebase app does not exist');
+  }
+
   it('exits when required args missing', () => {
-    const { spawnSync } = require('child_process');
-    const path = require('path');
     const result = spawnSync(
       process.execPath,
       [path.join('scripts', 'support', 'bootstrap-staging-super-admin.js')],
-      { cwd: path.join(__dirname, '..'), encoding: 'utf8' }
+      { cwd: ROOT, encoding: 'utf8' }
     );
     expect(result.status).not.toBe(0);
     expect(`${result.stderr}${result.stdout}`).toMatch(/Usage:/);
+  });
+
+  it('dry-run with valid args does not crash before Firebase init', () => {
+    const result = spawnSync(
+      process.execPath,
+      [
+        path.join('scripts', 'support', 'bootstrap-staging-super-admin.js'),
+        '--email', 'bootstrap-smoke@example.com',
+        '--displayName', 'Smoke Admin',
+        '--password', 'SmokePass12345'
+      ],
+      {
+        cwd: ROOT,
+        encoding: 'utf8',
+        env: {
+          ...process.env,
+          FIREBASE_PROJECT_ID: 'epickup-app-staging'
+        }
+      }
+    );
+    expectNoAdminInitCrash(result);
   });
 });

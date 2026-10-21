@@ -1,5 +1,3 @@
-const { getFirestore } = require('./firebase');
-
 /**
  * Revenue Service
  * Handles company revenue tracking and analytics
@@ -13,12 +11,107 @@ class RevenueService {
    * Get Firestore instance (lazy initialization)
    * Returns null if Firebase is not initialized (instead of throwing)
    */
+  /**
+   * Live Razorpay wallet top-up completion writes driverTopUps (status completed).
+   * companyRevenue is a mirror in the same transaction — do not sum both for money-in.
+   * @see src/services/razorpayOrdersService.js (transaction sets driverTopUps + companyRevenue)
+   */
+  topUpAmountFromDoc(data = {}) {
+    return Number(data.realMoneyAmount ?? data.amount ?? 0) || 0;
+  }
+
+  topUpCreatedAt(data = {}) {
+    if (data.processedAt?.toDate) {
+      return data.processedAt.toDate();
+    }
+    if (data.createdAt?.toDate) {
+      return data.createdAt.toDate();
+    }
+    return new Date(data.processedAt || data.createdAt || 0);
+  }
+
+  async queryCompletedDriverTopUps(db, filters = {}) {
+    let query = db.collection('driverTopUps').where('status', '==', 'completed');
+    if (filters.startDate) {
+      query = query.where('createdAt', '>=', filters.startDate);
+    }
+    if (filters.endDate) {
+      query = query.where('createdAt', '<=', filters.endDate);
+    }
+    if (filters.driverId) {
+      query = query.where('driverId', '==', filters.driverId);
+    }
+    return query.get();
+  }
+
+  async aggregateCommissionByBookingSource(db) {
+    const commissionSnapshot = await db.collection('pointsTransactions')
+      .where('type', '==', 'debit')
+      .get();
+
+    const bookingIds = new Set();
+    const rows = [];
+    commissionSnapshot.forEach((doc) => {
+      const data = doc.data();
+      const isCommission = !!data.tripId || !!data.bookingId;
+      if (!isCommission || data.status === 'failed') {
+        return;
+      }
+      const bookingId = data.bookingId || data.tripId;
+      if (bookingId) {
+        bookingIds.add(bookingId);
+      }
+      rows.push({
+        bookingId,
+        pointsAmount: Number(data.pointsAmount || data.amount || 0) || 0
+      });
+    });
+
+    const sourceByBookingId = new Map();
+    const ids = Array.from(bookingIds);
+    for (let i = 0; i < ids.length; i += 10) {
+      const chunk = ids.slice(i, i + 10);
+      const snaps = await Promise.all(chunk.map((id) => db.collection('bookings').doc(id).get()));
+      snaps.forEach((snap, index) => {
+        const id = chunk[index];
+        if (!snap.exists) {
+          sourceByBookingId.set(id, 'unknown');
+          return;
+        }
+        const sourceType = snap.data()?.sourceType === 'marketplace' ? 'marketplace' : 'parcel';
+        sourceByBookingId.set(id, sourceType);
+      });
+    }
+
+    let parcelCommission = 0;
+    let marketplaceCommission = 0;
+    let unknownCommission = 0;
+    rows.forEach((row) => {
+      const source = sourceByBookingId.get(row.bookingId) || 'unknown';
+      if (source === 'marketplace') {
+        marketplaceCommission += row.pointsAmount;
+      } else if (source === 'parcel') {
+        parcelCommission += row.pointsAmount;
+      } else {
+        unknownCommission += row.pointsAmount;
+      }
+    });
+
+    return {
+      totalCommissionsDeducted: parcelCommission + marketplaceCommission + unknownCommission,
+      commissionTransactionCount: rows.length,
+      parcelCommission,
+      marketplaceCommission,
+      unknownCommission
+    };
+  }
+
   getDb() {
     if (!this.db) {
       try {
         // Check if Firebase app exists first
-        const { getFirebaseApp } = require('./firebase');
-        const firebaseApp = getFirebaseApp();
+        const firebase = require('./firebase');
+        const firebaseApp = firebase.getFirebaseApp();
         
         if (!firebaseApp) {
           console.warn('⚠️ [REVENUE_SERVICE] Firebase app is not initialized. Returning null.');
@@ -27,7 +120,7 @@ class RevenueService {
         }
         
         // Try to get Firestore - this may throw if Firebase is not properly initialized
-        this.db = getFirestore();
+        this.db = firebase.getFirestore();
         // Double-check that db is not null
         if (!this.db) {
           console.warn('⚠️ [REVENUE_SERVICE] Firestore instance is null. Firebase may not be properly initialized.');
@@ -71,60 +164,23 @@ class RevenueService {
         };
       }
       
-      let query = db.collection('pointsTransactions')
-        .where('type', '==', 'credit')
-        .where('transactionType', '==', 'wallet_topup');
+      const snapshot = await this.queryCompletedDriverTopUps(db, filters);
 
-      // Apply filters
-      if (filters.startDate) {
-        query = query.where('createdAt', '>=', filters.startDate);
-      }
-      if (filters.endDate) {
-        query = query.where('createdAt', '<=', filters.endDate);
-      }
-      if (filters.driverId) {
-        query = query.where('driverId', '==', filters.driverId);
-      }
-      if (filters.paymentMethod) {
-        query = query.where('method', '==', filters.paymentMethod);
-      }
-
-      const snapshot = await query.get();
-      
-      // ✅ FALLBACK: If no wallet top-ups found, try companyRevenue collection
-      let fallbackSnapshot = null;
-      if (snapshot.size === 0) {
-        console.warn('⚠️ [REVENUE_SERVICE] No wallet top-ups found, checking companyRevenue...');
-        try {
-          fallbackSnapshot = await db.collection('companyRevenue').get();
-        } catch {
-          console.warn('⚠️ [REVENUE_SERVICE] companyRevenue collection not available');
-        }
-      }
-      
       let totalRevenue = 0;
       let transactionCount = 0;
-      
-      snapshot.forEach(doc => {
+
+      snapshot.forEach((doc) => {
         const data = doc.data();
-        totalRevenue += data.amount || 0;
+        totalRevenue += this.topUpAmountFromDoc(data);
         transactionCount++;
       });
-      
-      // ✅ FALLBACK: Add companyRevenue data if snapshot was empty
-      if (fallbackSnapshot && fallbackSnapshot.size > 0) {
-        fallbackSnapshot.forEach(doc => {
-          const data = doc.data();
-          totalRevenue += data.amount || 0;
-          transactionCount++;
-        });
-      }
 
       return {
         success: true,
         totalRevenue,
         transactionCount,
-        currency: 'INR'
+        currency: 'INR',
+        revenueSource: 'driverTopUps'
       };
     } catch (error) {
       console.error('Error getting total revenue:', error);
@@ -157,17 +213,16 @@ class RevenueService {
         };
       }
       
-      const snapshot = await db.collection('companyRevenue')
-        .where('createdAt', '>=', startDate)
-        .where('createdAt', '<=', endDate)
-        .orderBy('createdAt', 'asc')
-        .get();
+      const snapshot = await this.queryCompletedDriverTopUps(db, {
+        startDate,
+        endDate
+      });
 
       const revenueByPeriod = {};
-      
-      snapshot.forEach(doc => {
+
+      snapshot.forEach((doc) => {
         const data = doc.data();
-        const createdAt = data.createdAt?.toDate ? data.createdAt.toDate() : new Date(data.createdAt);
+        const createdAt = this.topUpCreatedAt(data);
         let periodKey;
 
         if (period === 'daily') {
@@ -188,7 +243,7 @@ class RevenueService {
           };
         }
 
-        revenueByPeriod[periodKey].revenue += data.amount || 0;
+        revenueByPeriod[periodKey].revenue += this.topUpAmountFromDoc(data);
         revenueByPeriod[periodKey].transactionCount++;
       });
 
@@ -229,32 +284,11 @@ class RevenueService {
         };
       }
       
-      let query = db.collection('pointsTransactions')
-        .where('type', '==', 'credit')
-        .where('transactionType', '==', 'wallet_topup');
-
-      if (driverId) {
-        query = query.where('driverId', '==', driverId);
-      }
-
-      const snapshot = await query.get();
-      
-      // ✅ FALLBACK: If no wallet top-ups, try companyRevenue
-      let fallbackSnapshot = null;
-      if (snapshot.size === 0) {
-        console.warn('⚠️ [REVENUE_SERVICE] No wallet top-ups found for driver, checking companyRevenue...');
-        try {
-          fallbackSnapshot = await db.collection('companyRevenue')
-            .where(driverId ? 'driverId' : 'unused', driverId ? '==' : '!=', driverId || 'x')
-            .get();
-        } catch {
-          console.warn('⚠️ [REVENUE_SERVICE] companyRevenue collection not available');
-        }
-      }
+      const snapshot = await this.queryCompletedDriverTopUps(db, driverId ? { driverId } : {});
 
       const revenueByDriver = {};
-      
-      snapshot.forEach(doc => {
+
+      snapshot.forEach((doc) => {
         const data = doc.data();
         const driverIdKey = data.driverId || 'unknown';
 
@@ -266,29 +300,9 @@ class RevenueService {
           };
         }
 
-        revenueByDriver[driverIdKey].revenue += data.amount || 0;
+        revenueByDriver[driverIdKey].revenue += this.topUpAmountFromDoc(data);
         revenueByDriver[driverIdKey].transactionCount++;
       });
-      
-      // ✅ FALLBACK: Add fallback data if wallet top-ups were empty
-      if (fallbackSnapshot && fallbackSnapshot.size > 0) {
-        console.log('📊 [REVENUE_SERVICE] Adding companyRevenue fallback data...');
-        fallbackSnapshot.forEach(doc => {
-          const data = doc.data();
-          const driverIdKey = data.driverId || 'unknown';
-
-          if (!revenueByDriver[driverIdKey]) {
-            revenueByDriver[driverIdKey] = {
-              driverId: driverIdKey,
-              revenue: 0,
-              transactionCount: 0
-            };
-          }
-
-          revenueByDriver[driverIdKey].revenue += data.amount || 0;
-          revenueByDriver[driverIdKey].transactionCount++;
-        });
-      }
 
       const drivers = Object.values(revenueByDriver).sort((a, b) => b.revenue - a.revenue);
 
@@ -326,41 +340,9 @@ class RevenueService {
         };
       }
       
-      console.log('📊 [REVENUE_SERVICE] Starting getRevenueStats...');
-      
-      // ✅ FIX: Query pointsTransactions for wallet top-ups (CREDIT transactions)
-      // Driver wallet top-ups are stored as CREDIT transactions in pointsTransactions collection
-      console.log('📊 [REVENUE_SERVICE] Querying pointsTransactions for wallet top-ups...');
-      const walletTopUpsSnapshot = await db.collection('pointsTransactions')
-        .where('type', '==', 'credit')
-        .where('transactionType', '==', 'wallet_topup')
-        .get();
-      
-      console.log(`📊 [REVENUE_SERVICE] Found ${walletTopUpsSnapshot.size} wallet top-up transactions`);
-      
-      if (walletTopUpsSnapshot.size > 0) {
-        console.log('📋 [REVENUE_SERVICE] First 5 wallet top-up transactions:');
-        walletTopUpsSnapshot.docs.slice(0, 5).forEach(doc => {
-          const data = doc.data();
-          console.log(`  - ID: ${doc.id}, Amount: ${data.amount}, DriverID: ${data.driverId}, CreatedAt: ${data.createdAt}`);
-        });
-      } else {
-        console.warn('⚠️ [REVENUE_SERVICE] No wallet top-up transactions found. Checking alternative sources...');
-      }
+      console.log('📊 [REVENUE_SERVICE] Starting getRevenueStats (driverTopUps completed)...');
 
-      // ✅ FALLBACK: Also check companyRevenue collection in case it's populated
-      let companyRevenueSnapshot = null;
-      try {
-        companyRevenueSnapshot = await db.collection('companyRevenue').get();
-        if (companyRevenueSnapshot.size > 0) {
-          console.log(`📊 [REVENUE_SERVICE] Found ${companyRevenueSnapshot.size} documents in companyRevenue collection (backup source)`);
-        }
-      } catch {
-        console.warn('⚠️ [REVENUE_SERVICE] companyRevenue collection query failed or collection does not exist');
-      }
-
-      // Merge both sources: wallet top-ups (primary) + companyRevenue (fallback)
-      const snapshot = walletTopUpsSnapshot;
+      const snapshot = await this.queryCompletedDriverTopUps(db, {});
 
       let totalRevenue = 0;
       let transactionCount = 0;
@@ -372,29 +354,25 @@ class RevenueService {
       let thisMonthRevenue = 0;
       let lastMonthRevenue = 0;
 
-      // ✅ CRITICAL: Process wallet top-up transactions
-      snapshot.forEach(doc => {
+      snapshot.forEach((doc) => {
         const data = doc.data();
-        const amount = data.amount || 0;
+        const amount = this.topUpAmountFromDoc(data);
         totalRevenue += amount;
         transactionCount++;
 
-        // Revenue by payment method (or use transaction method)
-        const paymentMethod = data.paymentMethod || data.method || 'wallet';
+        const paymentMethod = data.paymentMethod || data.method || 'razorpay';
         if (!revenueByPaymentMethod[paymentMethod]) {
           revenueByPaymentMethod[paymentMethod] = 0;
         }
         revenueByPaymentMethod[paymentMethod] += amount;
 
-        // Revenue by month
-        const createdAt = data.createdAt?.toDate ? data.createdAt.toDate() : new Date(data.createdAt);
+        const createdAt = this.topUpCreatedAt(data);
         const monthKey = `${createdAt.getFullYear()}-${String(createdAt.getMonth() + 1).padStart(2, '0')}`;
         if (!revenueByMonth[monthKey]) {
           revenueByMonth[monthKey] = 0;
         }
         revenueByMonth[monthKey] += amount;
 
-        // This month vs last month
         if (createdAt >= thisMonth) {
           thisMonthRevenue += amount;
         }
@@ -402,78 +380,33 @@ class RevenueService {
           lastMonthRevenue += amount;
         }
       });
-      
-      // ✅ FALLBACK: Also aggregate from companyRevenue if it has documents
-      if (companyRevenueSnapshot && companyRevenueSnapshot.size > 0) {
-        console.log('📊 [REVENUE_SERVICE] Adding companyRevenue collection data to total...');
-        companyRevenueSnapshot.forEach(doc => {
-          const data = doc.data();
-          const amount = data.amount || 0;
-          totalRevenue += amount;
-          transactionCount++;
-
-          const paymentMethod = data.paymentMethod || 'company_revenue';
-          if (!revenueByPaymentMethod[paymentMethod]) {
-            revenueByPaymentMethod[paymentMethod] = 0;
-          }
-          revenueByPaymentMethod[paymentMethod] += amount;
-
-          const createdAt = data.createdAt?.toDate ? data.createdAt.toDate() : new Date(data.createdAt);
-          const monthKey = `${createdAt.getFullYear()}-${String(createdAt.getMonth() + 1).padStart(2, '0')}`;
-          if (!revenueByMonth[monthKey]) {
-            revenueByMonth[monthKey] = 0;
-          }
-          revenueByMonth[monthKey] += amount;
-
-          if (createdAt >= thisMonth) {
-            thisMonthRevenue += amount;
-          }
-          if (createdAt >= lastMonth && createdAt < thisMonth) {
-            lastMonthRevenue += amount;
-          }
-        });
-      }
 
       console.log(`✅ [REVENUE_SERVICE] Revenue calculated - Total: ₹${totalRevenue}, Transactions: ${transactionCount}`);
 
-      const monthOverMonthGrowth = lastMonthRevenue > 0 
-        ? ((thisMonthRevenue - lastMonthRevenue) / lastMonthRevenue) * 100 
+      const monthOverMonthGrowth = lastMonthRevenue > 0
+        ? ((thisMonthRevenue - lastMonthRevenue) / lastMonthRevenue) * 100
         : 0;
 
-      // ✅ NEW: Get commission deductions data for comprehensive revenue tracking
-      let totalCommissionsDeducted = 0;
-      let commissionTransactionCount = 0;
-      
+      let commissionSplit = {
+        totalCommissionsDeducted: 0,
+        commissionTransactionCount: 0,
+        parcelCommission: 0,
+        marketplaceCommission: 0,
+        unknownCommission: 0
+      };
+
       try {
-        console.log('📊 [REVENUE_SERVICE] Querying pointsTransactions for commission data...');
-        const commissionTransactionsSnapshot = await db.collection('pointsTransactions')
-          .where('type', '==', 'debit')
-          .get();
-
-        console.log(`📊 [REVENUE_SERVICE] Found ${commissionTransactionsSnapshot.size} debit transactions`);
-
-        commissionTransactionsSnapshot.forEach(doc => {
-          const data = doc.data();
-          const isCommission = !!data.tripId || !!data.bookingId;
-
-          if (isCommission && data.status !== 'failed') {
-            const pointsAmount = data.pointsAmount || 0;
-            totalCommissionsDeducted += pointsAmount;
-            commissionTransactionCount++;
-          }
-        });
-        
-        console.log(`✅ [REVENUE_SERVICE] Commission data calculated - Total: ₹${totalCommissionsDeducted}, Count: ${commissionTransactionCount}`);
+        commissionSplit = await this.aggregateCommissionByBookingSource(db);
       } catch (commissionError) {
         console.warn('⚠️ [REVENUE_SERVICE] Error fetching commission data:', commissionError.message);
-        // Continue without commission data
       }
 
       return {
         success: true,
         stats: {
-          totalRevenue, // Real money from driver top-ups
+          totalRevenue,
           transactionCount,
+          revenueSource: 'driverTopUps',
           averageTransactionValue: transactionCount > 0 ? totalRevenue / transactionCount : 0,
           revenueByPaymentMethod: Object.entries(revenueByPaymentMethod).map(([method, revenue]) => ({
             paymentMethod: method,
@@ -486,10 +419,11 @@ class RevenueService {
           thisMonthRevenue,
           lastMonthRevenue,
           monthOverMonthGrowth,
-          // Commission tracking (wallet points debited per trip; 1 point = ₹1)
-          totalCommissionsDeducted,
-          commissionTransactionCount,
-          // companyRevenue = driver wallet top-ups (real money in)
+          totalCommissionsDeducted: commissionSplit.totalCommissionsDeducted,
+          commissionTransactionCount: commissionSplit.commissionTransactionCount,
+          parcelCommission: commissionSplit.parcelCommission,
+          marketplaceCommission: commissionSplit.marketplaceCommission,
+          unknownCommission: commissionSplit.unknownCommission,
           netRevenue: totalRevenue
         }
       };
@@ -708,14 +642,21 @@ function getRevenueService() {
   return revenueServiceInstance;
 }
 
-// Export a proxy object that creates the instance only when methods are called
-const lazyRevenueService = new Proxy({}, {
+const revenueServiceExports = {
+  RevenueService,
+  getRevenueService
+};
+
+// Lazy proxy: static exports on target; instance methods bound so `this` is the service instance.
+const lazyRevenueService = new Proxy(revenueServiceExports, {
   get(target, prop) {
+    if (Object.prototype.hasOwnProperty.call(target, prop)) {
+      return target[prop];
+    }
     const instance = getRevenueService();
-    return instance[prop];
+    const value = instance[prop];
+    return typeof value === 'function' ? value.bind(instance) : value;
   }
 });
 
 module.exports = lazyRevenueService;
-module.exports.RevenueService = RevenueService;
-module.exports.getRevenueService = getRevenueService;

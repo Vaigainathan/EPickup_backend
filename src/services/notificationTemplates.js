@@ -133,6 +133,16 @@ const NOTIFICATION_TEMPLATES = {
       title: 'Password changed',
       body: 'Your password was changed',
       data: { type: 'password_changed', action: 'view_settings' }
+    },
+    ONBOARDING_APPROVED: {
+      title: 'Shop approved',
+      body: 'Your shop is approved — you can start selling',
+      data: { type: 'onboarding_approved', action: 'onboarding' }
+    },
+    ONBOARDING_REJECTED: {
+      title: 'Application needs changes',
+      body: 'Your application needs changes: {{reason}}',
+      data: { type: 'onboarding_rejected', action: 'onboarding' }
     }
   },
 
@@ -410,6 +420,17 @@ class NotificationTemplateProcessor {
       };
       processedTemplate.data = buildMarketplacePushData(templateKey, dataType, pushVars);
       processedTemplate.marketplace = true;
+      return processedTemplate;
+    }
+
+    if (category === 'SHOP' && templateKey) {
+      processedTemplate.data = {
+        type: String(dataType || ''),
+        orderId: cleanedVariables.orderId == null ? '' : String(cleanedVariables.orderId),
+        displayId: digitsDisplayId(cleanedVariables.displayId),
+        shopName: cleanedVariables.shopName == null ? '' : String(cleanedVariables.shopName),
+        action: String(template.data?.action || 'view_settings')
+      };
       return processedTemplate;
     }
 

@@ -14,6 +14,11 @@ const { requireAdminRole } = require('../middleware/auth');
 const { requireStagingFirebaseProject } = require('../middleware/stagingFirebaseProject');
 const { createAdminStaff, disableAdminStaff } = require('../services/adminStaffService');
 const { ADMIN_ROLES, isAdminRole } = require('../constants/adminRoles');
+const {
+  resolveBookingSourceType,
+  matchesSourceTypeFilter,
+  resolveBookingFareTotal
+} = require('../utils/bookingSourceType');
 const router = express.Router();
 
 // Apply input sanitization to all admin routes
@@ -1635,11 +1640,14 @@ router.put('/drivers/:id/ban', async (req, res) => {
 router.get('/bookings', async (req, res) => {
   try {
     const db = getFirestore();
-    const { limit = 20, offset = 0, status, dateFrom, dateTo } = req.query;
+    const { limit = 20, offset = 0, status, dateFrom, dateTo, sourceType } = req.query;
 
     let query = db.collection('bookings');
 
     // Apply filters
+    if (sourceType === 'marketplace') {
+      query = query.where('sourceType', '==', 'marketplace');
+    }
     if (status) {
       query = query.where('status', '==', status);
     }
@@ -1658,6 +1666,9 @@ router.get('/bookings', async (req, res) => {
 
     for (const doc of snapshot.docs) {
       const data = doc.data();
+      if (!matchesSourceTypeFilter(data, sourceType)) {
+        continue;
+      }
 
       const pickupVerification = await normalizeVerification(
         data.pickupVerification,
@@ -1717,6 +1728,7 @@ router.get('/bookings', async (req, res) => {
           value: data.package?.value || 0
         },
         status: data.status || 'pending',
+        sourceType: resolveBookingSourceType(data),
         // Map fare information
         fare: data.fare || data.pricing || {
           baseFare: 0,
@@ -1773,7 +1785,7 @@ router.get('/bookings', async (req, res) => {
 router.get('/bookings/active', async (req, res) => {
   try {
     const db = getFirestore();
-    const { limit = 50 } = req.query;
+    const { limit = 50, sourceType } = req.query;
 
     // ✅ UNIFIED STATUS DEFINITION: Use consistent status names
     const activeStatuses = ['pending', 'driver_assigned', 'accepted', 'driver_enroute', 'driver_arrived', 'picked_up', 'in_transit'];
@@ -1789,11 +1801,15 @@ router.get('/bookings/active', async (req, res) => {
 
       snapshot.forEach(doc => {
         const data = doc.data();
+        if (!matchesSourceTypeFilter(data, sourceType)) {
+          return;
+        }
         const mappedBooking = {
           id: doc.id,
           customerId: data.customerId,
           driverId: data.driverId,
           status: data.status,
+          sourceType: resolveBookingSourceType(data),
           pickupLocation: data.pickupLocation,
           dropoffLocation: data.dropoffLocation,
           fare: data.fare || data.pricing?.totalAmount || 0,
@@ -1871,6 +1887,7 @@ router.get('/bookings/:id', async (req, res) => {
       customerId: data.customerId,
       driverId: data.driverId,
       status: data.status,
+      sourceType: resolveBookingSourceType(data),
       pickupLocation: data.pickupLocation,
       dropoffLocation: data.dropoffLocation,
       fare: data.fare || data.pricing?.totalAmount || 0,
@@ -1891,7 +1908,8 @@ router.get('/bookings/:id', async (req, res) => {
         phone: data.dropoff?.phone || ''
       },
       pickupVerification,
-      deliveryVerification
+      deliveryVerification,
+      originalData: data
     };
 
     res.json({
@@ -4698,13 +4716,14 @@ router.get('/analytics/bookings', async (req, res) => {
     const cancellationRate = totalBookings > 0 ? Math.round((cancelledBookings / totalBookings) * 100) : 0;
 
     // Average booking value
-    const totalValue = bookings.reduce((sum, booking) => sum + (booking.fare || 0), 0);
+    const totalValue = bookings.reduce((sum, booking) => sum + resolveBookingFareTotal(booking), 0);
     const averageBookingValue = totalBookings > 0 ? totalValue / totalBookings : 0;
 
     // Peak hours analysis
     const hourlyBookings = {};
     bookings.forEach(booking => {
-      const hour = new Date(booking.createdAt.toDate()).getHours();
+      const created = booking.createdAt?.toDate ? booking.createdAt.toDate() : new Date(booking.createdAt);
+      const hour = created.getHours();
       hourlyBookings[hour] = (hourlyBookings[hour] || 0) + 1;
     });
 
@@ -7421,48 +7440,45 @@ router.get('/wallet/revenue', async (req, res) => {
       timestamp: new Date().toISOString()
     });
     
-    // Build query for revenue tracking
-    let query = db.collection('companyRevenue');
-    
+    // Live Razorpay top-ups: driverTopUps (completed) — not companyRevenue mirror
+    let query = db.collection('driverTopUps').where('status', '==', 'completed');
+
     if (startDate) {
       query = query.where('createdAt', '>=', new Date(startDate));
     }
     if (endDate) {
       query = query.where('createdAt', '<=', new Date(endDate));
     }
-    
-    // Get total count
+
     const countSnapshot = await query.get();
-    const totalRevenue = countSnapshot.docs.reduce((sum, doc) => sum + (doc.data().amount || 0), 0);
-    
-    // Get paginated results ordered by recency
+    const topUpAmount = (data) => Number(data.realMoneyAmount ?? data.amount ?? 0) || 0;
+    const totalRevenue = countSnapshot.docs.reduce((sum, doc) => sum + topUpAmount(doc.data()), 0);
+
     const snapshot = await query
-      .orderBy('createdAt', 'descending')
+      .orderBy('createdAt', 'desc')
       .limit(parseInt(limit))
       .offset(parseInt(offset))
       .get();
-    
+
     const revenueRecords = snapshot.docs.map(doc => ({
       id: doc.id,
       ...doc.data(),
       createdAt: doc.data().createdAt?.toISOString?.() || doc.data().createdAt
     }));
-    
-    // Group revenue by payment method
+
     const revenueByMethod = {};
     countSnapshot.forEach(doc => {
       const data = doc.data();
-      const method = data.paymentMethod || 'unknown';
-      revenueByMethod[method] = (revenueByMethod[method] || 0) + (data.amount || 0);
+      const method = data.paymentMethod || data.method || 'razorpay';
+      revenueByMethod[method] = (revenueByMethod[method] || 0) + topUpAmount(data);
     });
-    
-    // Group revenue by date
+
     const revenueByDate = {};
     countSnapshot.forEach(doc => {
       const data = doc.data();
-      const date = data.createdAt?.toDate?.() || new Date(data.createdAt);
+      const date = data.processedAt?.toDate?.() || data.createdAt?.toDate?.() || new Date(data.createdAt);
       const dateKey = date.toISOString().split('T')[0];
-      revenueByDate[dateKey] = (revenueByDate[dateKey] || 0) + (data.amount || 0);
+      revenueByDate[dateKey] = (revenueByDate[dateKey] || 0) + topUpAmount(data);
     });
     
     const queryTime = Date.now() - startTime;
@@ -7472,6 +7488,7 @@ router.get('/wallet/revenue', async (req, res) => {
       success: true,
       message: 'Revenue tracking data retrieved successfully',
       data: {
+        revenueSource: 'driverTopUps',
         totalRevenue: totalRevenue,
         transactionCount: countSnapshot.size,
         averageTransactionValue: countSnapshot.size > 0 ? (totalRevenue / countSnapshot.size).toFixed(2) : 0,

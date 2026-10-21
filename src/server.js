@@ -146,6 +146,8 @@ const adminSignupRoutes = require('./routes/adminSignup');
 // const adminBookingManagementRoutes = require('./routes/adminBookingManagement'); // Included in adminRoutes
 const locationTrackingRoutes = require('./routes/locationTracking');
 const revenueRoutes = require('./routes/revenue');
+const adminShopsRoutes = require('./routes/adminShops');
+const adminMarketplaceRoutes = require('./routes/adminMarketplace');
 const shopAuthRoutes = require('./routes/shopAuth');
 const shopOnboardingRoutes = require('./routes/shopOnboarding');
 const shopCategoriesRoutes = require('./routes/shopCategories');
@@ -625,6 +627,8 @@ app.use('/api/admin/signup', lightRateLimit, adminSignupRoutes); // Admin signup
 const { requireAdmin, requireAdminRole } = require('./middleware/auth');
 const superAdminOnly = requireAdminRole(['super_admin']);
 app.use('/api/admin', adminLimiter, authMiddleware, requireAdmin, adminRoutes); // Admin routes require admin role
+app.use('/api/admin/shops', adminLimiter, authMiddleware, requireAdmin, adminShopsRoutes);
+app.use('/api/admin/marketplace', adminLimiter, authMiddleware, requireAdmin, adminMarketplaceRoutes);
 app.use('/api/admin/revenue', adminLimiter, authMiddleware, requireAdmin, superAdminOnly, revenueRoutes);
 // Note: adminBookingManagementRoutes are included in adminRoutes to avoid conflicts
 

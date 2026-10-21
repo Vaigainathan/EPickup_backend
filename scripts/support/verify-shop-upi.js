@@ -10,7 +10,6 @@
 
 require('dotenv').config();
 
-const { FieldValue } = require('firebase-admin/firestore');
 const { assertStagingEnv, assertStagingAdmin } = require('../assertStagingFirebase');
 const { assertStagingShopId } = require('./approveShopActions');
 
@@ -82,16 +81,9 @@ async function main() {
     return;
   }
 
-  await ref.update({
-    'bank.upiNameVerification': {
-      verifiedName: next.verifiedName,
-      method: next.method,
-      verifiedBy: next.verifiedBy,
-      verifiedAt: FieldValue.serverTimestamp()
-    },
-    updatedAt: FieldValue.serverTimestamp()
-  });
-  console.log(`Updated shops/${shopId}.bank.upiNameVerification`);
+  const shopOnboardingService = require('../../src/services/shopOnboardingService');
+  const result = await shopOnboardingService.adminVerifyUpiName(shopId, verifiedName, 'script');
+  console.log(`Updated shops/${shopId}.bank.upiNameVerification`, result);
 }
 
 main().catch((error) => {

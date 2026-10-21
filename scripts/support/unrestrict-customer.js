@@ -77,13 +77,9 @@ async function main() {
     return;
   }
 
-  const patch = {
-    'customer.marketplace': restored,
-    updatedAt: FieldValue.serverTimestamp()
-  };
-  await userRef.update(patch);
-  deleteMarketplaceSnapshot(customerId);
-  console.log(JSON.stringify({ applied: true, ...plan }, null, 2));
+  const { unrestrictCustomerMarketplace } = require('../../src/services/admin/customerMarketplaceRestrictionService');
+  const result = await unrestrictCustomerMarketplace(customerId, { operator: 'script' });
+  console.log(JSON.stringify({ applied: true, ...plan, ...result }, null, 2));
 }
 
 main().catch((error) => {

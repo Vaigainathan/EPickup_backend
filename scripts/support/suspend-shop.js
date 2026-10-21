@@ -62,14 +62,11 @@ async function main() {
     return;
   }
 
+  const adminShopService = require('../../src/services/admin/adminShopService');
+
   if (undo) {
-    const { FieldValue } = require('firebase-admin/firestore');
-    await userRef.update({
-      isActive: true,
-      'shop.isOpen': true,
-      updatedAt: FieldValue.serverTimestamp()
-    });
-    console.log(JSON.stringify({ applied: true, shopId, reactivated: true }, null, 2));
+    const result = await adminShopService.unsuspend(shopId, operator || 'script');
+    console.log(JSON.stringify({ applied: true, shopId, reactivated: true, result }, null, 2));
     return;
   }
 
@@ -78,8 +75,7 @@ async function main() {
     process.exit(1);
   }
 
-  const shopSettingsService = require('../../src/services/shopSettingsService');
-  const result = await shopSettingsService.deactivate(shopId);
+  const result = await adminShopService.suspend(shopId, { reason, operator });
   console.log(JSON.stringify({ applied: true, shopId, reason, operator, result }, null, 2));
 }
 

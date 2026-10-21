@@ -87,7 +87,8 @@ describe('MP-16 support scripts smoke', () => {
     ]);
     expectNoAdminInitCrash(result);
     expect(result.status).toBe(1);
-    expect(result.stderr).toContain('Snapshot already exists');
+    const combined = `${result.stdout || ''}${result.stderr || ''}`;
+    expect(combined.toLowerCase()).toContain('snapshot already exists');
     expect(fs.existsSync(snapFile)).toBe(true);
   });
 

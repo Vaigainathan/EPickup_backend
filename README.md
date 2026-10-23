@@ -116,44 +116,6 @@ npm run seed                 # Seed database with sample data
 npm run create-indexes       # Create Firestore indexes
 ```
 
-## 🌍 Environment Variables
-
-### **Required Variables**
-```bash
-NODE_ENV=production
-PORT=10000
-FIREBASE_PROJECT_ID=your-project-id
-FIREBASE_PRIVATE_KEY=your-private-key
-FIREBASE_CLIENT_EMAIL=your-client-email
-JWT_SECRET=your-jwt-secret
-GOOGLE_MAPS_API_KEY=your-maps-key
-
-# PhonePe Payment Gateway
-PHONEPE_MERCHANT_ID=your-merchant-id
-PHONEPE_SALT_KEY=your-salt-key
-PHONEPE_SALT_INDEX=1
-PHONEPE_BASE_URL=https://api.phonepe.com/apis/pg
-PHONEPE_REDIRECT_URL=https://your-domain.com/payment/callback
-PHONEPE_CALLBACK_URL=https://your-domain.com/api/payments/phonepe/callback
-
-# Application URLs
-BACKEND_URL=https://your-backend-domain.com
-FRONTEND_URL=https://your-frontend-domain.com
-CUSTOMER_APP_URL=https://your-customer-app-domain.com
-DRIVER_APP_URL=https://your-driver-app-domain.com
-ADMIN_DASHBOARD_URL=https://your-admin-dashboard-domain.com
-```
-
-### **Optional Variables**
-```bash
-REDIS_URL=your-redis-url
-SENTRY_DSN=your-sentry-dsn
-EMAIL_SERVICE=gmail
-EMAIL_USER=your-email@gmail.com
-EMAIL_PASSWORD=your-app-password
-```
-
-See [`.env.production`](.env.production) for complete list.
 
 ## 🔌 API Endpoints
 

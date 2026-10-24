@@ -246,6 +246,41 @@ describe('adminStaffService', () => {
     expect(mockCreateUser).not.toHaveBeenCalled();
   });
 
+  it('rejects temporaryPassword shorter than 8 characters', async () => {
+    await expect(
+      createAdminStaff({
+        email: 'new@example.com',
+        displayName: 'N',
+        role: 'support',
+        temporaryPassword: 'short'
+      })
+    ).rejects.toMatchObject({
+      status: 400,
+      code: 'INVALID_PASSWORD'
+    });
+  });
+
+  it('refuses create when Firebase user is a non-admin role', async () => {
+    mockGetUserByEmail.mockResolvedValueOnce({ uid: 'driver-uid', emailVerified: false });
+    mockGet.mockResolvedValueOnce({
+      exists: true,
+      data: () => ({ userType: 'driver' })
+    });
+
+    await expect(
+      createAdminStaff({
+        email: 'driver@example.com',
+        displayName: 'D',
+        role: 'support',
+        temporaryPassword: 'longpassword1'
+      })
+    ).rejects.toMatchObject({
+      status: 409,
+      code: 'EMAIL_BELONGS_TO_OTHER_ROLE'
+    });
+    expect(mockCreateUser).not.toHaveBeenCalled();
+  });
+
   it('disableAdminStaff disables auth and marks inactive', async () => {
     mockGet.mockResolvedValueOnce({ exists: true, data: () => ({ email: 'x@y.com' }) });
 

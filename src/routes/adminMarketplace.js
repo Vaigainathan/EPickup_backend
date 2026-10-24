@@ -153,9 +153,15 @@ router.get('/help/tickets', async (req, res) => {
     const data = await adminMarketplaceService.listHelpTickets(req.query);
     res.json({ success: true, data, timestamp: new Date().toISOString() });
   } catch (error) {
+    const code = error.code || 'LIST_HELP_TICKETS_ERROR';
+    console.error('[ADMIN_MARKETPLACE] GET /help/tickets failed', {
+      code,
+      message: error.message,
+      statusFilter: req.query?.status || null
+    });
     res.status(500).json({
       success: false,
-      error: { code: 'LIST_HELP_TICKETS_ERROR', message: error.message },
+      error: { code: 'LIST_HELP_TICKETS_ERROR', message: 'Failed to list help tickets' },
       timestamp: new Date().toISOString()
     });
   }

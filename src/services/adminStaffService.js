@@ -60,7 +60,20 @@ async function createAdminStaff({
   let userRecord;
   try {
     userRecord = await auth.getUserByEmail(email);
+    const usersSnap = await db.collection('users').doc(userRecord.uid).get();
+    if (usersSnap.exists) {
+      const existingType = usersSnap.data()?.userType;
+      if (existingType && existingType !== 'admin') {
+        const error = new Error('This email is already registered to a non-admin account');
+        error.code = 'EMAIL_BELONGS_TO_OTHER_ROLE';
+        error.status = 409;
+        throw error;
+      }
+    }
   } catch (err) {
+    if (err.code === 'EMAIL_BELONGS_TO_OTHER_ROLE') {
+      throw err;
+    }
     if (err.code !== 'auth/user-not-found') {
       throw err;
     }

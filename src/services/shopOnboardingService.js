@@ -199,13 +199,17 @@ class ShopOnboardingService {
     const ctx = await this.loadShopContext(userId);
     const approvalStatus = ctx.shop.approvalStatus || 'pending';
     const rejectionReason = ctx.shop.rejectionReason ?? null;
-    const rejectedSections = normalizeRejectedSections(
-      ctx.shop.rejectedSections ?? ctx.shopProfile.rejectedSections
-        ?? ctx.shop.rejectedSection ?? ctx.shopProfile.rejectedSection
-    );
-    const rejectedSection = rejectedSections[0] || normalizeRejectedSection(
-      ctx.shop.rejectedSection ?? ctx.shopProfile.rejectedSection
-    );
+    let rejectedSections = [];
+    let rejectedSection = null;
+    if (approvalStatus === 'rejected') {
+      rejectedSections = normalizeRejectedSections(
+        ctx.shop.rejectedSections ?? ctx.shopProfile.rejectedSections
+          ?? ctx.shop.rejectedSection ?? ctx.shopProfile.rejectedSection
+      );
+      rejectedSection = rejectedSections[0] || normalizeRejectedSection(
+        ctx.shop.rejectedSection ?? ctx.shopProfile.rejectedSection
+      );
+    }
     const submitted = ctx.shop.submitted === true || ctx.shopProfile.submitted === true;
 
     if (ctx.shop.submitted === undefined) {

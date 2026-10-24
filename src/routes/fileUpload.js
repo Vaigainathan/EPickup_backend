@@ -133,11 +133,7 @@ router.post('/driver-document', requireDriver, upload.single('document'), async 
 
     console.log('✅ [BACKEND PROXY] File uploaded to Firebase Storage');
 
-    // Get download URL
-    const [downloadURL] = await fileRef.getSignedUrl({
-      action: 'read',
-      expires: '03-01-2500' // Far future date
-    });
+    const signed = await signDriverKycPath(filePath);
 
     // Update user document in Firestore
     try {
@@ -149,7 +145,6 @@ router.post('/driver-document', requireDriver, upload.single('document'), async 
         [`documents.${normalizedDocType}`]: {
           fileName: fileName,
           filePath: filePath,
-          downloadURL: downloadURL,
           uploadedAt: new Date().toISOString(),
           status: 'uploaded',
           uploadedBy: 'backend_proxy'
@@ -157,7 +152,6 @@ router.post('/driver-document', requireDriver, upload.single('document'), async 
         [`driver.documents.${normalizedDocType}`]: {
           fileName: fileName,
           filePath: filePath,
-          downloadURL: downloadURL,
           uploadedAt: new Date().toISOString(),
           status: 'uploaded',
           uploadedBy: 'backend_proxy'
@@ -180,7 +174,8 @@ router.post('/driver-document', requireDriver, upload.single('document'), async 
       data: {
         fileName: fileName,
         filePath: filePath,
-        downloadURL: downloadURL,
+        downloadURL: signed.url,
+        signedUrlExpiresAt: signed.signedUrlExpiresAt,
         size: file.size,
         uploadedAt: new Date().toISOString(),
         documentType: documentType,

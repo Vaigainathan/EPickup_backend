@@ -163,6 +163,19 @@ class FileUploadService {
       // Update driver's document status
       await this.updateDriverDocumentStatus(driverId, documentType, 'uploaded');
 
+      let uploadUrl = null;
+      let signedUrlExpiresAt = null;
+      if (uploadResult.filePath) {
+        try {
+          const { signDriverKycPath } = require('./driverKycDocumentUrlService');
+          const signed = await signDriverKycPath(uploadResult.filePath);
+          uploadUrl = signed.url;
+          signedUrlExpiresAt = signed.signedUrlExpiresAt;
+        } catch (signError) {
+          console.warn('⚠️ Could not sign upload response URL:', signError.message);
+        }
+      }
+
       return {
         success: true,
         message: 'Document uploaded successfully',
@@ -173,8 +186,10 @@ class FileUploadService {
           size: processedFile.size,
           type: documentType,
           status: 'uploaded',
-          uploadUrl: uploadResult.downloadURL,
-          thumbnailUrl: thumbnailPath ? uploadResult.thumbnailURL : null,
+          filePath: uploadResult.filePath,
+          uploadUrl,
+          signedUrlExpiresAt,
+          thumbnailFilePath: thumbnailPath ? uploadResult.thumbnailFilePath : null,
           uploadedAt: new Date(),
           metadata: metadata
         }
@@ -290,14 +305,8 @@ class FileUploadService {
       // Upload file
       await fileRef.save(file.buffer, fileMetadata);
 
-      // Make file publicly readable (or implement signed URLs for security)
-      await fileRef.makePublic();
-
-      // Get download URL
-      const downloadURL = `https://storage.googleapis.com/${this.bucket.name}/${filePath}`;
-
       // Upload thumbnail if exists
-      let thumbnailURL = null;
+      let thumbnailFilePath = null;
       if (file.thumbnailPath) {
         const thumbnailPath = `drivers/${driverId}/documents/${documentType}/thumbnails/${filename}`;
         const thumbnailRef = this.bucket.file(thumbnailPath);
@@ -310,15 +319,13 @@ class FileUploadService {
             isThumbnail: true
           }
         });
-        
-        await thumbnailRef.makePublic();
-        thumbnailURL = `https://storage.googleapis.com/${this.bucket.name}/${thumbnailPath}`;
+
+        thumbnailFilePath = thumbnailPath;
       }
 
       return {
-        downloadURL,
-        thumbnailURL,
         filePath,
+        thumbnailFilePath,
         size: file.size,
         contentType: file.mimetype
       };
@@ -349,9 +356,8 @@ class FileUploadService {
         status: 'uploaded',
         verificationStatus: 'pending',
         uploadDetails: {
-          downloadURL: uploadResult.downloadURL,
-          thumbnailURL: uploadResult.thumbnailURL,
           filePath: uploadResult.filePath,
+          thumbnailFilePath: uploadResult.thumbnailFilePath || null,
           size: uploadResult.size,
           contentType: uploadResult.contentType
         },
@@ -427,31 +433,36 @@ class FileUploadService {
       // Create normalized document structure
       const normalizedDocuments = {
         drivingLicense: {
-          downloadURL: userDocuments.drivingLicense?.url || userDocuments.driving_license?.url || '',
+          filePath: userDocuments.drivingLicense?.filePath || userDocuments.driving_license?.filePath || '',
+          fileName: userDocuments.drivingLicense?.fileName || userDocuments.driving_license?.fileName || '',
           verificationStatus: userDocuments.drivingLicense?.status || userDocuments.driving_license?.status || 'pending',
           uploadedAt: userDocuments.drivingLicense?.uploadedAt || userDocuments.driving_license?.uploadedAt || new Date(),
           verified: userDocuments.drivingLicense?.verified || false
         },
         aadhaarCard: {
-          downloadURL: userDocuments.aadhaarCard?.url || userDocuments.aadhaar?.url || userDocuments.aadhaar_card?.url || '',
-          verificationStatus: userDocuments.aadhaarCard?.status || userDocuments.aadhaar?.status || userDocuments.aadhaar_card?.status || 'pending',
-          uploadedAt: userDocuments.aadhaarCard?.uploadedAt || userDocuments.aadhaar?.uploadedAt || userDocuments.aadhaar_card?.uploadedAt || new Date(),
+          filePath: userDocuments.aadhaarCard?.filePath || userDocuments.aadhaar_card?.filePath || '',
+          fileName: userDocuments.aadhaarCard?.fileName || userDocuments.aadhaar_card?.fileName || '',
+          verificationStatus: userDocuments.aadhaarCard?.status || userDocuments.aadhaar_card?.status || 'pending',
+          uploadedAt: userDocuments.aadhaarCard?.uploadedAt || userDocuments.aadhaar_card?.uploadedAt || new Date(),
           verified: userDocuments.aadhaarCard?.verified || userDocuments.aadhaar?.verified || false
         },
         bikeInsurance: {
-          downloadURL: userDocuments.bikeInsurance?.url || userDocuments.insurance?.url || userDocuments.bike_insurance?.url || '',
-          verificationStatus: userDocuments.bikeInsurance?.status || userDocuments.insurance?.status || userDocuments.bike_insurance?.status || 'pending',
-          uploadedAt: userDocuments.bikeInsurance?.uploadedAt || userDocuments.insurance?.uploadedAt || userDocuments.bike_insurance?.uploadedAt || new Date(),
+          filePath: userDocuments.bikeInsurance?.filePath || userDocuments.bike_insurance?.filePath || '',
+          fileName: userDocuments.bikeInsurance?.fileName || userDocuments.bike_insurance?.fileName || '',
+          verificationStatus: userDocuments.bikeInsurance?.status || userDocuments.bike_insurance?.status || 'pending',
+          uploadedAt: userDocuments.bikeInsurance?.uploadedAt || userDocuments.bike_insurance?.uploadedAt || new Date(),
           verified: userDocuments.bikeInsurance?.verified || userDocuments.insurance?.verified || false
         },
         rcBook: {
-          downloadURL: userDocuments.rcBook?.url || userDocuments.rc_book?.url || '',
+          filePath: userDocuments.rcBook?.filePath || userDocuments.rc_book?.filePath || '',
+          fileName: userDocuments.rcBook?.fileName || userDocuments.rc_book?.fileName || '',
           verificationStatus: userDocuments.rcBook?.status || userDocuments.rc_book?.status || 'pending',
           uploadedAt: userDocuments.rcBook?.uploadedAt || userDocuments.rc_book?.uploadedAt || new Date(),
           verified: userDocuments.rcBook?.verified || false
         },
         profilePhoto: {
-          downloadURL: userDocuments.profilePhoto?.url || userDocuments.profile_photo?.url || '',
+          filePath: userDocuments.profilePhoto?.filePath || userDocuments.profile_photo?.filePath || '',
+          fileName: userDocuments.profilePhoto?.fileName || userDocuments.profile_photo?.fileName || '',
           verificationStatus: userDocuments.profilePhoto?.status || userDocuments.profile_photo?.status || 'pending',
           uploadedAt: userDocuments.profilePhoto?.uploadedAt || userDocuments.profile_photo?.uploadedAt || new Date(),
           verified: userDocuments.profilePhoto?.verified || false
@@ -459,7 +470,7 @@ class FileUploadService {
       };
 
       // Update the specific document that was just uploaded
-      if (documentData.uploadDetails?.downloadURL) {
+      if (documentData.uploadDetails?.filePath) {
         const documentTypeMap = {
           'drivingLicense': 'drivingLicense',
           'driving_license': 'drivingLicense',
@@ -478,12 +489,13 @@ class FileUploadService {
         const normalizedType = documentTypeMap[documentType] || documentType;
         if (normalizedDocuments[normalizedType]) {
           normalizedDocuments[normalizedType] = {
-            downloadURL: documentData.uploadDetails.downloadURL,
+            filePath: documentData.uploadDetails.filePath,
+            fileName: documentData.filename || documentData.originalName || '',
             verificationStatus: 'pending',
             uploadedAt: documentData.metadata.uploadedAt || new Date(),
             verified: false
           };
-          console.log(`📋 Updated ${normalizedType} document with new URL:`, { hasDownloadURL: !!documentData.uploadDetails.downloadURL });
+          console.log(`📋 Updated ${normalizedType} document with filePath:`, { hasFilePath: !!documentData.uploadDetails.filePath });
         }
       }
 
@@ -514,8 +526,8 @@ class FileUploadService {
           [documentType]: {
             documentId: documentData.id || 'pending',
             filename: documentData.filename,
-            downloadURL: documentData.uploadDetails.downloadURL,
-            thumbnailURL: documentData.uploadDetails.thumbnailURL,
+            filePath: documentData.uploadDetails.filePath,
+            thumbnailFilePath: documentData.uploadDetails.thumbnailFilePath || null,
             uploadedAt: documentData.metadata.uploadedAt,
             status: 'uploaded',
             verificationStatus: 'pending'
@@ -555,7 +567,8 @@ class FileUploadService {
       const timestamp = Date.now();
       const filename = `${documentType}_${driverId}_${timestamp}_${fileId}.jpg`;
 
-      let downloadURL = documentUrl;
+      let responseReadUrl = documentUrl;
+      let storageFilePath = null;
       let fileSize = 0;
       let contentType = 'image/jpeg';
 
@@ -593,13 +606,10 @@ class FileUploadService {
                   }
                 }
               });
-              
-              // Make file publicly readable
-              await file.makePublic();
-              
-              // Get download URL
-              downloadURL = `https://storage.googleapis.com/${bucket.name}/${filePath}`;
-              console.log('✅ Document uploaded to Firebase Storage:', { hasDownloadURL: !!downloadURL });
+
+              storageFilePath = filePath;
+              responseReadUrl = null;
+              console.log('✅ Document uploaded to Firebase Storage:', { filePath: storageFilePath });
               
             } catch (storageError) {
               console.error('❌ Firebase Storage upload failed:', storageError);
@@ -614,6 +624,25 @@ class FileUploadService {
         }
       }
 
+      const persistedFilePath = storageFilePath
+        || `drivers/${driverId}/documents/${documentType}/${filename}`;
+
+      if (storageFilePath) {
+        try {
+          const { signDriverKycPath } = require('./driverKycDocumentUrlService');
+          const signed = await signDriverKycPath(storageFilePath);
+          responseReadUrl = signed.url;
+        } catch (signError) {
+          console.warn('⚠️ Could not sign driver KYC path for response:', signError.message);
+        }
+      }
+
+      const uploadDetails = {
+        filePath: persistedFilePath,
+        size: fileSize,
+        contentType: contentType
+      };
+
       // Create document record
       const documentData = {
         driverId,
@@ -622,13 +651,7 @@ class FileUploadService {
         originalName: filename,
         status: 'uploaded',
         verificationStatus: 'pending',
-        uploadDetails: {
-          downloadURL: downloadURL,
-          thumbnailURL: null,
-          filePath: `drivers/${driverId}/documents/${documentType}/${filename}`,
-          size: fileSize,
-          contentType: contentType
-        },
+        uploadDetails,
         metadata: {
           documentNumber,
           uploadedAt: new Date(),
@@ -658,7 +681,11 @@ class FileUploadService {
       await this.updateDriverDocumentStatus(driverId, documentType, 'uploaded');
       
       // Also update the user's driver documents for verification request
-      await this.updateUserDriverDocuments(driverId, documentType, downloadURL);
+      await this.updateUserDriverDocuments(driverId, documentType, {
+        filePath: storageFilePath || (documentUrl.startsWith('data:') ? null : persistedFilePath),
+        fileName: filename,
+        legacyUrl: storageFilePath ? null : documentUrl
+      });
 
       // Invalidate driver document status cache so the mobile app sees the update immediately
       try {
@@ -677,7 +704,8 @@ class FileUploadService {
           originalName: filename,
           type: documentType,
           status: 'uploaded',
-          uploadUrl: downloadURL, // Use the actual download URL, not the original documentUrl
+          uploadUrl: responseReadUrl,
+          filePath: persistedFilePath,
           uploadedAt: new Date(),
           metadata: {
             documentNumber,
@@ -725,9 +753,9 @@ class FileUploadService {
    * Update user's driver documents for verification request
    * @param {string} driverId - Driver ID
    * @param {string} documentType - Document type
-   * @param {string} downloadURL - Document download URL
+   * @param {Object|string} documentRef - filePath object or legacy URL string
    */
-  async updateUserDriverDocuments(driverId, documentType, downloadURL) {
+  async updateUserDriverDocuments(driverId, documentType, documentRef) {
     try {
       const driverRef = this.getDb().collection('users').doc(driverId);
       
@@ -741,22 +769,42 @@ class FileUploadService {
       };
       
       const frontendDocType = documentTypeMap[documentType] || documentType;
-      
-      await driverRef.update({
-        [`driver.documents.${frontendDocType}.url`]: downloadURL,
+
+      const details = typeof documentRef === 'object' && documentRef !== null
+        ? documentRef
+        : { legacyUrl: documentRef };
+
+      const updatePayload = {
         [`driver.documents.${frontendDocType}.status`]: 'uploaded',
         [`driver.documents.${frontendDocType}.uploadedAt`]: new Date(),
         [`driver.documents.${frontendDocType}.verificationStatus`]: 'pending',
         [`driver.documents.${frontendDocType}.verified`]: false,
         'driver.updatedAt': new Date(),
         updatedAt: new Date()
-      });
+      };
+
+      if (details.filePath) {
+        updatePayload[`driver.documents.${frontendDocType}.filePath`] = details.filePath;
+      }
+      if (details.fileName) {
+        updatePayload[`driver.documents.${frontendDocType}.fileName`] = details.fileName;
+      }
+      if (details.legacyUrl) {
+        updatePayload[`driver.documents.${frontendDocType}.url`] = details.legacyUrl;
+      }
+      
+      await driverRef.update(updatePayload);
       
       // ✅ CRITICAL FIX: Update driver's overall verification status when document is uploaded
       // Set to 'pending_verification' if documents are uploaded but not verified
       await this.checkDriverVerificationStatus(driverId);
       
-      console.log('User driver documents updated:', { driverId, documentType: frontendDocType, hasDownloadURL: !!downloadURL });
+      console.log('User driver documents updated:', {
+        driverId,
+        documentType: frontendDocType,
+        hasFilePath: !!details.filePath,
+        hasLegacyUrl: !!details.legacyUrl
+      });
     } catch (error) {
       console.error('Failed to update user driver documents:', error);
       // Don't throw error as this is not critical for upload success

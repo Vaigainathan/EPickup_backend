@@ -1236,6 +1236,8 @@ router.get('/documents', requireDriver, async (req, res) => {
  * @route   POST /api/driver/documents
  * @desc    Upload driver documents
  * @access  Private (Driver only)
+ * @legacy  Prefer POST /api/file-upload/driver-document (filePath + short-lived signed reads).
+ *          Still referenced by some driver-app clients; do not remove until app migration completes.
  */
 router.post('/documents', [
   requireDriver,
@@ -1341,6 +1343,7 @@ router.post('/documents', [
  * @route   PUT /api/driver/documents/:type
  * @desc    Update specific driver document
  * @access  Private (Driver only)
+ * @legacy  Prefer POST /api/file-upload/driver-document. No current driver-app callers; kept for API compatibility.
  */
 router.put('/documents/:type', [
   requireDriver,
@@ -11449,7 +11452,6 @@ router.post('/documents/request-verification', requireDriver, async (req, res) =
       driverPhone: driverPhone, // ✅ Already validated above - never undefined
       documents: {
         drivingLicense: {
-          downloadURL: documents.driving_license?.downloadURL || '',
           fileName: documents.driving_license?.fileName || '',
           filePath: documents.driving_license?.filePath || '',
           verificationStatus: 'pending',
@@ -11457,7 +11459,6 @@ router.post('/documents/request-verification', requireDriver, async (req, res) =
           verified: false
         },
         aadhaarCard: {
-          downloadURL: documents.aadhaar_card?.downloadURL || '',
           fileName: documents.aadhaar_card?.fileName || '',
           filePath: documents.aadhaar_card?.filePath || '',
           verificationStatus: 'pending',
@@ -11465,7 +11466,6 @@ router.post('/documents/request-verification', requireDriver, async (req, res) =
           verified: false
         },
         bikeInsurance: {
-          downloadURL: documents.bike_insurance?.downloadURL || '',
           fileName: documents.bike_insurance?.fileName || '',
           filePath: documents.bike_insurance?.filePath || '',
           verificationStatus: 'pending',
@@ -11473,7 +11473,6 @@ router.post('/documents/request-verification', requireDriver, async (req, res) =
           verified: false
         },
         rcBook: {
-          downloadURL: documents.rc_book?.downloadURL || '',
           fileName: documents.rc_book?.fileName || '',
           filePath: documents.rc_book?.filePath || '',
           verificationStatus: 'pending',
@@ -11481,7 +11480,6 @@ router.post('/documents/request-verification', requireDriver, async (req, res) =
           verified: false
         },
         profilePhoto: {
-          downloadURL: documents.profile_photo?.downloadURL || '',
           fileName: documents.profile_photo?.fileName || '',
           filePath: documents.profile_photo?.filePath || '',
           verificationStatus: 'pending',

@@ -774,6 +774,7 @@ class CustomerMarketplaceService {
       thumbUrl: full.thumbUrl ?? null,
       thumbKey: full.thumbKey ?? null,
       isActive: full.isActive !== false,
+      soldOut: full.soldOut === true,
       stock: full.stock ?? 0,
       hasVariants: full.hasVariants === true,
       variants: variants.map((row) => ({

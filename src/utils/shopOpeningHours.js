@@ -31,6 +31,101 @@ function formatClock(minutes) {
   return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
 }
 
+/**
+ * One weekday entry: closed → exactly { closed: true }; open → { closed: false, open, close }.
+ */
+function normalizeDayEntry(entry, day) {
+  if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+    throw openingHoursError(`${day} must be an object`);
+  }
+
+  if (entry.closed === true) {
+    return { closed: true };
+  }
+
+  if (entry.closed !== false && entry.closed !== undefined) {
+    throw openingHoursError(`${day}.closed must be a boolean`);
+  }
+
+  const entryKeys = Object.keys(entry);
+  const allowed = new Set(['closed', 'open', 'close']);
+  for (let keyIndex = 0; keyIndex < entryKeys.length; keyIndex += 1) {
+    const key = entryKeys[keyIndex];
+    if (!allowed.has(key)) {
+      throw openingHoursError(`${day} has invalid field: ${key}`);
+    }
+  }
+
+  const open = parseClock(entry.open);
+  const close = parseClock(entry.close);
+  if (open == null || close == null) {
+    throw openingHoursError(`${day} requires open and close when not closed`);
+  }
+  if (close === open) {
+    throw openingHoursError(`${day} close must be after open on the same day`);
+  }
+
+  return {
+    closed: false,
+    open: formatClock(open),
+    close: formatClock(close)
+  };
+}
+
+/**
+ * Normalize a stored day for planning/patches; strips stale open/close on closed days.
+ */
+function normalizeStoredDayEntry(entry) {
+  if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+    return { closed: true };
+  }
+  if (entry.closed === true) {
+    return { closed: true };
+  }
+  const open = parseClock(entry.open ?? entry.start);
+  const close = parseClock(entry.close ?? entry.end);
+  if (open != null && close != null && close !== open) {
+    return {
+      closed: false,
+      open: formatClock(open),
+      close: formatClock(close)
+    };
+  }
+  return { closed: true };
+}
+
+function staleFieldsOnClosedDay(entry) {
+  if (!entry || typeof entry !== 'object' || entry.closed !== true) {
+    return [];
+  }
+  return Object.keys(entry).filter((key) => key !== 'closed');
+}
+
+function inspectOpeningHours(input) {
+  if (input == null) {
+    return { valid: true, warnings: [], normalized: null };
+  }
+  const warnings = [];
+  for (let index = 0; index < WEEKDAYS.length; index += 1) {
+    const day = WEEKDAYS[index];
+    const stale = staleFieldsOnClosedDay(input[day]);
+    if (stale.length > 0) {
+      warnings.push(`${day} must only include closed when closed is true (extra: ${stale.join(', ')})`);
+    }
+  }
+  try {
+    const normalized = validateOpeningHours(input);
+    return {
+      valid: warnings.length === 0,
+      warnings,
+      normalized
+    };
+  } catch (error) {
+    warnings.push(error.message);
+    return { valid: false, warnings, normalized: null };
+  }
+}
+
 function validateOpeningHours(input) {
   if (input === null || input === undefined) {
     throw openingHoursError('openingHours is required');
@@ -61,49 +156,7 @@ function validateOpeningHours(input) {
   const normalized = {};
   for (let index = 0; index < WEEKDAYS.length; index += 1) {
     const day = WEEKDAYS[index];
-    const entry = input[day];
-    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
-      throw openingHoursError(`${day} must be an object`);
-    }
-
-    const entryKeys = Object.keys(entry);
-    if (entry.closed === true) {
-      for (let keyIndex = 0; keyIndex < entryKeys.length; keyIndex += 1) {
-        const key = entryKeys[keyIndex];
-        if (key !== 'closed') {
-          throw openingHoursError(`${day} must only include closed when closed is true`);
-        }
-      }
-      normalized[day] = { closed: true };
-      continue;
-    }
-
-    if (entry.closed !== false && entry.closed !== undefined) {
-      throw openingHoursError(`${day}.closed must be a boolean`);
-    }
-
-    const allowed = new Set(['closed', 'open', 'close']);
-    for (let keyIndex = 0; keyIndex < entryKeys.length; keyIndex += 1) {
-      const key = entryKeys[keyIndex];
-      if (!allowed.has(key)) {
-        throw openingHoursError(`${day} has invalid field: ${key}`);
-      }
-    }
-
-    const open = parseClock(entry.open);
-    const close = parseClock(entry.close);
-    if (open == null || close == null) {
-      throw openingHoursError(`${day} requires open and close when not closed`);
-    }
-    if (close === open) {
-      throw openingHoursError(`${day} close must be after open on the same day`);
-    }
-
-    normalized[day] = {
-      closed: false,
-      open: formatClock(open),
-      close: formatClock(close)
-    };
+    normalized[day] = normalizeDayEntry(input[day], day);
   }
 
   return normalized;
@@ -378,6 +431,9 @@ module.exports = {
   WEEKDAYS,
   parseClock,
   formatClock,
+  normalizeDayEntry,
+  normalizeStoredDayEntry,
+  inspectOpeningHours,
   validateOpeningHours,
   istParts,
   shopOpenToggleIsOn,

@@ -103,6 +103,10 @@ async function main() {
     applyIgnored: parsed.apply && parsed.show,
     hoursBefore,
     hoursAfter,
+    hoursInspection: plan.hoursInspection || null,
+    validationWarning: plan.hoursInspection && plan.hoursInspection.warnings.length > 0
+      ? plan.hoursInspection.warnings.join('; ')
+      : null,
     previewBefore,
     previewAfter,
     write: serializeWritePayload(firestoreUpdate)

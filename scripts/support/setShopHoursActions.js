@@ -1,6 +1,8 @@
 const {
   WEEKDAYS,
   validateOpeningHours,
+  normalizeStoredDayEntry,
+  inspectOpeningHours,
   isShopOpenNow,
   nextOpensAt,
   currentClosesAt
@@ -150,11 +152,7 @@ function cloneOpeningHours(currentHours) {
   for (let index = 0; index < WEEKDAYS.length; index += 1) {
     const day = WEEKDAYS[index];
     const entry = currentHours[day];
-    if (entry && typeof entry === 'object') {
-      clone[day] = { ...entry };
-    } else {
-      clone[day] = { closed: true };
-    }
+    clone[day] = normalizeStoredDayEntry(entry);
   }
   return clone;
 }
@@ -191,11 +189,12 @@ function applyDayPatches(week, dayPatches) {
 
 function buildPlannedOpeningHours(parsed, currentHours) {
   if (parsed.show) {
-    const hoursAfter = currentHours == null ? null : validateOpeningHours(cloneOpeningHours(currentHours));
+    const inspection = inspectOpeningHours(currentHours);
     return {
       clear: false,
-      hoursAfter,
-      daysDefaultedToClosed: []
+      hoursAfter: currentHours == null ? null : currentHours,
+      daysDefaultedToClosed: [],
+      hoursInspection: inspection
     };
   }
 
@@ -274,5 +273,6 @@ module.exports = {
   buildFirestoreUpdate,
   serializeWritePayload,
   computeMarketplacePreview,
-  daysDefaultedToClosed
+  daysDefaultedToClosed,
+  inspectOpeningHours
 };

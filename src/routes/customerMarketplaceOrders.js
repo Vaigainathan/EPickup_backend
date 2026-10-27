@@ -142,6 +142,9 @@ function sendError(res, error, fallbackMessage) {
   if (error.lines) {
     errorBody.lines = error.lines;
   }
+  if (error.productIds) {
+    errorBody.productIds = error.productIds;
+  }
   if (status === 500) {
     console.error('❌ [MARKETPLACE_ORDER]', error);
   }

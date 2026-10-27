@@ -87,6 +87,17 @@ router.put('/:id/stock', authMiddleware, requireRole(['shop']), async (req, res)
   });
 });
 
+router.patch('/:id/availability', authMiddleware, requireRole(['shop']), async (req, res) => {
+  return withShop(req, res, async (shopId) => {
+    const data = await shopCatalogueService.updateProductAvailability(
+      shopId,
+      req.params.id,
+      req.body || {}
+    );
+    return res.json({ success: true, data });
+  });
+});
+
 router.post('/', authMiddleware, requireRole(['shop']), fileUploadLimiter, handleMulter, async (req, res) => {
   return withShop(req, res, async (shopId) => {
     const product = await shopCatalogueService.createProduct(

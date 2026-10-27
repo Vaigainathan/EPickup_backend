@@ -103,24 +103,31 @@ class ShopStorefrontService {
     const openingHours = validateOpeningHours(body.openingHours);
     const ctx = await shopOnboardingService.loadShopContext(shopId);
     const existing = ctx.shopProfile.storefront || {};
+    const photoPath = typeof existing.photoPath === 'string' && existing.photoPath.trim() !== ''
+      ? existing.photoPath
+      : null;
 
-    const storefront = {
-      tagline,
-      openingHours,
-      updatedAt: this.now()
+    const updatedAt = this.now();
+    const updatePayload = {
+      'storefront.tagline': tagline,
+      'storefront.openingHours': openingHours,
+      'storefront.updatedAt': updatedAt,
+      updatedAt
     };
-    if (typeof existing.photoPath === 'string' && existing.photoPath.trim() !== '') {
-      storefront.photoPath = existing.photoPath;
+    if (photoPath) {
+      updatePayload['storefront.photoPath'] = photoPath;
+    }
+    if (typeof existing.thumbPath === 'string' && existing.thumbPath.trim() !== '') {
+      updatePayload['storefront.thumbPath'] = existing.thumbPath;
     }
 
-    await ctx.shopRef.set({
-      storefront,
-      updatedAt: this.now()
-    }, { merge: true });
+    await ctx.shopRef.update(updatePayload);
 
     return this.presentStorefront({
-      ...storefront,
-      photoPath: storefront.photoPath
+      tagline,
+      openingHours,
+      photoPath,
+      thumbPath: existing.thumbPath
     });
   }
 

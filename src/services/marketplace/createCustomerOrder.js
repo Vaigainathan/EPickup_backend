@@ -125,6 +125,33 @@ function variantFieldsFromVariant(variant) {
   return { variantLabel, variantValue };
 }
 
+function productSoldOut(product) {
+  return Boolean(product && product.soldOut === true);
+}
+
+function collectSoldOutConflict(items, productsById) {
+  const lines = [];
+  const productIdSet = new Set();
+  (Array.isArray(items) ? items : []).forEach((item) => {
+    if (!item || typeof item.productId !== 'string' || item.productId.trim() === '') {
+      return;
+    }
+    const product = productsById.get(item.productId) || null;
+    if (!productSoldOut(product)) {
+      return;
+    }
+    const variantId = typeof item.variantId === 'string' && item.variantId.trim() !== ''
+      ? item.variantId
+      : null;
+    productIdSet.add(item.productId);
+    lines.push({ productId: item.productId, variantId });
+  });
+  return {
+    productIds: [...productIdSet],
+    lines
+  };
+}
+
 function classifyOrderLines(items, productsById, shopId) {
   const badLines = [];
   const goodLines = [];
@@ -535,6 +562,14 @@ async function createMarketplaceOrder({ customerId, idempotencyKey, body }) {
         productsById.set(snap.id, snap.data() || {});
       }
     });
+    const soldOutConflict = collectSoldOutConflict(body.items, productsById);
+    if (soldOutConflict.lines.length > 0) {
+      throw httpError(409, 'ITEM_SOLD_OUT', 'One or more items are sold out', {
+        productIds: soldOutConflict.productIds,
+        lines: soldOutConflict.lines
+      });
+    }
+
     const classified = classifyOrderLines(body.items, productsById, shopId);
     if (classified.badLines.length > 0) {
       throw httpError(409, 'ITEMS_CHANGED', 'One or more items changed', {
@@ -695,6 +730,8 @@ module.exports = {
   orderIdFor,
   validateCreateInput,
   variantFieldsFromVariant,
+  productSoldOut,
+  collectSoldOutConflict,
   classifyOrderLines,
   storedOrderItems,
   sumItemsTotalPaise,

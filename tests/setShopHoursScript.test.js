@@ -126,6 +126,50 @@ describe('setShopHoursActions', () => {
     expect(parseTimeWindow('9:00-21:00')).toEqual({ open: '09:00', close: '21:00' });
   });
 
+  test('buildPlannedOpeningHours --show keeps stored hours and warns on stale closed day', () => {
+    const staleSunday = {
+      monday: { closed: false, open: '09:00', close: '21:00' },
+      tuesday: { closed: false, open: '09:00', close: '21:00' },
+      wednesday: { closed: false, open: '09:00', close: '21:00' },
+      thursday: { closed: false, open: '09:00', close: '21:00' },
+      friday: { closed: false, open: '09:00', close: '21:00' },
+      saturday: { closed: false, open: '09:00', close: '21:00' },
+      sunday: { closed: true, open: '09:00', close: '21:00' }
+    };
+    const parsed = parseSetShopHoursArgv([
+      'node', 'script',
+      '--shop', STAGING_SHOP,
+      '--show'
+    ]);
+    const plan = buildPlannedOpeningHours(parsed, staleSunday);
+    expect(plan.hoursAfter.sunday).toEqual({
+      closed: true,
+      open: '09:00',
+      close: '21:00'
+    });
+    expect(plan.hoursInspection.valid).toBe(false);
+    expect(plan.hoursInspection.warnings.join(' ')).toMatch(/sunday/i);
+  });
+
+  test('buildPlannedOpeningHours --day closed replaces day object without stale keys', () => {
+    const parsed = parseSetShopHoursArgv([
+      'node', 'script',
+      '--shop', STAGING_SHOP,
+      '--day', 'sun', 'closed'
+    ]);
+    const current = {
+      monday: { closed: false, open: '09:00', close: '21:00' },
+      tuesday: { closed: false, open: '09:00', close: '21:00' },
+      wednesday: { closed: false, open: '09:00', close: '21:00' },
+      thursday: { closed: false, open: '09:00', close: '21:00' },
+      friday: { closed: false, open: '09:00', close: '21:00' },
+      saturday: { closed: false, open: '09:00', close: '21:00' },
+      sunday: { closed: true, open: '09:00', close: '21:00' }
+    };
+    const plan = buildPlannedOpeningHours(parsed, current);
+    expect(plan.hoursAfter.sunday).toEqual({ closed: true });
+  });
+
   test('computeMarketplacePreview toggle-only when no hours', () => {
     const now = new Date('2026-06-15T12:00:00+05:30');
     const preview = computeMarketplacePreview({
@@ -146,6 +190,7 @@ describe('set-shop-hours.js smoke', () => {
     expect(result.status).toBe(0);
     expect(result.stdout).toContain('"previewBefore"');
     expect(result.stdout).toContain('"apply": false');
+    expect(result.stdout).toContain('"hoursBefore"');
     expect(result.stdout).not.toContain('Updated shops/');
   });
 

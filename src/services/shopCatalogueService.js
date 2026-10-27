@@ -36,6 +36,27 @@ function httpError(status, code, message) {
   return error;
 }
 
+function productSoldOut(data) {
+  return Boolean(data && data.soldOut === true);
+}
+
+function presentTimestamp(value) {
+  if (value == null) {
+    return null;
+  }
+  if (typeof value.toDate === 'function') {
+    const date = value.toDate();
+    return date instanceof Date ? date.toISOString() : null;
+  }
+  if (value instanceof Date) {
+    return value.toISOString();
+  }
+  if (typeof value === 'string') {
+    return value;
+  }
+  return null;
+}
+
 function isStorageNotFound(error) {
   if (!error) {
     return false;
@@ -273,6 +294,7 @@ class ShopCatalogueService {
       thumbUrl,
       thumbKey,
       isActive: data.isActive !== false,
+      soldOut: productSoldOut(data),
       stock: data.stock ?? 0,
       lowStockThreshold: data.lowStockThreshold ?? 0,
       hasVariants: data.hasVariants === true,
@@ -609,6 +631,39 @@ class ShopCatalogueService {
     const saved = await owned.ref.get();
     return this.presentProduct(saved.data(), productId);
   }
+
+  async updateProductAvailability(shopId, productId, body) {
+    const payload = body && typeof body === 'object' ? body : {};
+    if (!Object.prototype.hasOwnProperty.call(payload, 'soldOut') || typeof payload.soldOut !== 'boolean') {
+      throw httpError(400, 'INVALID_AVAILABILITY', 'soldOut must be a boolean');
+    }
+    const nextSoldOut = payload.soldOut === true;
+
+    const snap = await this.getDb().collection('products').doc(productId).get();
+    if (!snap.exists) {
+      throw httpError(404, 'PRODUCT_NOT_FOUND', 'Product not found');
+    }
+    const data = snap.data() || {};
+    if (data.shopId !== shopId) {
+      throw httpError(403, 'FORBIDDEN', 'You do not have access to this product');
+    }
+
+    const currentSoldOut = productSoldOut(data);
+    if (currentSoldOut !== nextSoldOut) {
+      await snap.ref.update({
+        soldOut: nextSoldOut,
+        updatedAt: this.now()
+      });
+    }
+
+    const saved = await snap.ref.get();
+    const savedData = saved.data() || {};
+    return {
+      id: productId,
+      soldOut: productSoldOut(savedData),
+      updatedAt: presentTimestamp(savedData.updatedAt)
+    };
+  }
 }
 
 const catalogueService = new ShopCatalogueService();
@@ -616,3 +671,4 @@ const catalogueService = new ShopCatalogueService();
 module.exports = catalogueService;
 module.exports.clearSignedUrlCacheForTests = clearSignedUrlCacheForTests;
 module.exports.getSignedUrlCacheSizeForTests = getSignedUrlCacheSizeForTests;
+module.exports.productSoldOut = productSoldOut;

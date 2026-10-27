@@ -89,12 +89,12 @@ router.put('/:id/stock', authMiddleware, requireRole(['shop']), async (req, res)
 
 router.patch('/:id/availability', authMiddleware, requireRole(['shop']), async (req, res) => {
   return withShop(req, res, async (shopId) => {
-    const data = await shopCatalogueService.updateProductAvailability(
+    const product = await shopCatalogueService.updateProductAvailability(
       shopId,
       req.params.id,
       req.body || {}
     );
-    return res.json({ success: true, data });
+    return res.json({ success: true, data: { product } });
   });
 });
 

@@ -40,23 +40,6 @@ function productSoldOut(data) {
   return Boolean(data && data.soldOut === true);
 }
 
-function presentTimestamp(value) {
-  if (value == null) {
-    return null;
-  }
-  if (typeof value.toDate === 'function') {
-    const date = value.toDate();
-    return date instanceof Date ? date.toISOString() : null;
-  }
-  if (value instanceof Date) {
-    return value.toISOString();
-  }
-  if (typeof value === 'string') {
-    return value;
-  }
-  return null;
-}
-
 function isStorageNotFound(error) {
   if (!error) {
     return false;
@@ -657,12 +640,7 @@ class ShopCatalogueService {
     }
 
     const saved = await snap.ref.get();
-    const savedData = saved.data() || {};
-    return {
-      id: productId,
-      soldOut: productSoldOut(savedData),
-      updatedAt: presentTimestamp(savedData.updatedAt)
-    };
+    return this.presentProduct(saved.data(), productId);
   }
 }
 

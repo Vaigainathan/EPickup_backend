@@ -12,6 +12,31 @@ jest.mock('../src/services/shopCatalogueService', () => ({
 const shopProductsRoutes = require('../src/routes/shopProducts');
 const { setTestShopUid, resetTestShopUid } = require('./helpers/mockShopAuth');
 
+const fullPresentedProduct = {
+  id: 'prod-1',
+  shopId: 'shop-owner',
+  categoryId: 'cat-1',
+  name: 'Biryani',
+  description: null,
+  price: 120,
+  unitType: 'Plate',
+  taxClass: null,
+  weight: null,
+  barcode: null,
+  photoUrl: null,
+  photoKey: null,
+  thumbUrl: null,
+  thumbKey: null,
+  isActive: true,
+  soldOut: true,
+  stock: 10,
+  lowStockThreshold: 0,
+  hasVariants: false,
+  variants: [],
+  createdAt: null,
+  updatedAt: '2026-10-27T10:00:00.000Z'
+};
+
 function buildApp() {
   const app = express();
   app.use(express.json());
@@ -26,12 +51,8 @@ describe('PATCH /api/shop/products/:id/availability', () => {
     setTestShopUid('shop-owner');
   });
 
-  it('returns 200 for owner with expected shape', async () => {
-    mockUpdateProductAvailability.mockResolvedValue({
-      id: 'prod-1',
-      soldOut: true,
-      updatedAt: '2026-10-27T10:00:00.000Z'
-    });
+  it('returns 200 with full product envelope matching GET /:id', async () => {
+    mockUpdateProductAvailability.mockResolvedValue(fullPresentedProduct);
 
     const res = await request(buildApp())
       .patch('/api/shop/products/prod-1/availability')
@@ -40,11 +61,7 @@ describe('PATCH /api/shop/products/:id/availability', () => {
     expect(res.status).toBe(200);
     expect(res.body).toEqual({
       success: true,
-      data: {
-        id: 'prod-1',
-        soldOut: true,
-        updatedAt: '2026-10-27T10:00:00.000Z'
-      }
+      data: { product: fullPresentedProduct }
     });
     expect(mockUpdateProductAvailability).toHaveBeenCalledWith('shop-owner', 'prod-1', { soldOut: true });
   });
@@ -78,13 +95,8 @@ describe('PATCH /api/shop/products/:id/availability', () => {
     expect(res.body.error.code).toBe('INVALID_AVAILABILITY');
   });
 
-  it('is idempotent when service returns stable soldOut', async () => {
-    const payload = {
-      id: 'prod-1',
-      soldOut: true,
-      updatedAt: '2026-10-27T10:00:00.000Z'
-    };
-    mockUpdateProductAvailability.mockResolvedValue(payload);
+  it('is idempotent when service returns stable full product', async () => {
+    mockUpdateProductAvailability.mockResolvedValue(fullPresentedProduct);
 
     const app = buildApp();
     const first = await request(app)
@@ -96,7 +108,10 @@ describe('PATCH /api/shop/products/:id/availability', () => {
 
     expect(first.status).toBe(200);
     expect(second.status).toBe(200);
-    expect(second.body.data.soldOut).toBe(true);
+    expect(second.body.data.product.soldOut).toBe(true);
+    expect(second.body.data.product.name).toBe('Biryani');
+    expect(second.body.data.product.price).toBe(120);
+    expect(second.body.data.product.unitType).toBe('Plate');
     expect(mockUpdateProductAvailability).toHaveBeenCalledTimes(2);
   });
 });

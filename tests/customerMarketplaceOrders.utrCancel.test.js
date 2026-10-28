@@ -166,8 +166,9 @@ function seedOrder(id, overrides = {}) {
     shopId: 'shop-1',
     displayId: 62191,
     orderStatus: 'awaiting_payment',
-    handoverOtp: '654321',
-    private: { handover: { otp: '654321' } },
+    expectedAmount: 1540,
+    customerSnapshot: { name: 'Test Customer' },
+    shopSnapshot: { name: 'Test Shop' },
     items: [{ name: 'Statue' }],
     window: { start: stamp(Date.now() - HOUR), end: stamp(Date.now()) },
     ...overrides,
@@ -260,7 +261,14 @@ describe('customer UTR submit', () => {
       'shop-1',
       'MARKETPLACE',
       'UTR_SUBMITTED',
-      { displayId: '62191', orderId: 'order-1' }
+      {
+        displayId: '62191',
+        orderId: 'order-1',
+        shopName: 'Test Shop',
+        customerName: 'Test Customer',
+        amount: 1540,
+        utr: UTR
+      }
     );
 
     const replay = await postUtr('order-1', UTR);
@@ -619,7 +627,14 @@ describe('balance UTR', () => {
       'shop-1',
       'MARKETPLACE',
       'UTR_SUBMITTED',
-      { displayId: '62191', orderId: 'order-b1' }
+      {
+        displayId: '62191',
+        orderId: 'order-b1',
+        shopName: 'Test Shop',
+        customerName: 'Test Customer',
+        amount: 1540,
+        utr: BALANCE
+      }
     );
 
     const replay = await postBalance('order-b1', BALANCE);

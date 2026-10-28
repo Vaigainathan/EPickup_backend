@@ -1,6 +1,5 @@
 const mockEmit = jest.fn();
 const mockTo = jest.fn(() => ({ emit: mockEmit }));
-const mockBookingGet = jest.fn();
 
 jest.mock('../src/services/notificationService', () => ({
   sendTemplateNotification: jest.fn(async () => ({ success: true }))
@@ -10,63 +9,67 @@ jest.mock('../src/services/socket', () => ({
   getSocketIO: jest.fn(() => ({ to: mockTo }))
 }));
 
-jest.mock('../src/services/firebase', () => ({
-  getFirestore: jest.fn(() => ({
-    collection: jest.fn((name) => {
-      if (name === 'bookings') {
-        return {
-          doc: jest.fn(() => ({
-            get: mockBookingGet
-          }))
-        };
-      }
-      return { doc: jest.fn() };
-    })
-  }))
+jest.mock('../src/services/marketplace/orderEvents', () => ({
+  appendEvent: jest.fn()
 }));
 
-jest.mock('firebase-admin', () => {
-  const blockRealFirestore = () => {
-    throw new Error('REAL FIRESTORE IN TEST');
-  };
-  return {
-    apps: [{ name: '[DEFAULT]' }],
-    initializeApp: jest.fn(blockRealFirestore),
-    app: jest.fn(),
-    credential: { cert: jest.fn() },
-    firestore: blockRealFirestore
-  };
-});
+jest.mock('../src/services/firebase', () => ({
+  getFirestore: jest.fn()
+}));
 
-const shopOrderService = require('../src/services/shopOrderService');
+jest.mock('firebase-admin', () => ({
+  apps: [],
+  initializeApp: jest.fn(),
+  firestore: {
+    FieldValue: {
+      serverTimestamp: jest.fn(() => ({ __ts: true }))
+    }
+  }
+}));
 
-describe('confirmHandover driver socket', () => {
+const { getFirestore } = require('../src/services/firebase');
+const { installRealFirestoreGuard } = require('./helpers/realFirestoreGuard');
+const { recordMarketplaceHandoverAfterPickup } = require('../src/services/marketplace/marketplacePickupHandover');
+
+describe('marketplace pickup handover socket', () => {
+  installRealFirestoreGuard(getFirestore);
+
   beforeEach(() => {
     mockEmit.mockReset();
     mockTo.mockClear();
-    mockBookingGet.mockReset();
-    jest.restoreAllMocks();
+    getFirestore.mockReset();
   });
 
-  test('emits marketplace_handover_confirmed to assigned driver', async () => {
-    jest.spyOn(shopOrderService, 'runOwnedTransition').mockResolvedValue({
-      alreadyProcessed: false,
-      order: {
-        linkedBookingId: 'booking-1',
-        displayId: 4242,
-        customerId: 'customer-1'
-      },
-      handoverSource: {}
-    });
-
-    mockBookingGet.mockResolvedValue({
+  test('emits marketplace_handover_confirmed after pickup handover', async () => {
+    const orderSnap = {
       exists: true,
-      data: () => ({ driverId: 'driver-9' })
+      data: () => ({
+        orderStatus: 'ready',
+        shopId: 'shop-1',
+        customerId: 'cust-1',
+        displayId: 4242
+      })
+    };
+
+    getFirestore.mockReturnValue({
+      collection: jest.fn(() => ({
+        doc: jest.fn(() => ({}))
+      })),
+      runTransaction: jest.fn(async (fn) => fn({
+        get: async () => orderSnap,
+        update: jest.fn()
+      }))
     });
 
-    await shopOrderService.confirmHandover('shop-1', 'order-1', {
-      otp: '111111',
-      displayId: 4242
+    await recordMarketplaceHandoverAfterPickup({
+      bookingId: 'booking-1',
+      booking: {
+        sourceType: 'marketplace',
+        driverId: 'driver-9',
+        driverInfo: { name: 'Driver', phone: '1', vehicleNumber: 'TN' }
+      },
+      driverId: 'driver-9',
+      marketplaceOrderId: 'order-1'
     });
 
     expect(mockTo).toHaveBeenCalledWith('user:driver-9');
@@ -75,19 +78,5 @@ describe('confirmHandover driver socket', () => {
       marketplaceOrderId: 'order-1',
       displayId: 4242
     });
-  });
-
-  test('does not emit when handover already processed', async () => {
-    jest.spyOn(shopOrderService, 'runOwnedTransition').mockResolvedValue({
-      alreadyProcessed: true,
-      order: { linkedBookingId: 'booking-1', displayId: 1 }
-    });
-
-    await shopOrderService.confirmHandover('shop-1', 'order-1', {
-      otp: '111111',
-      displayId: 1
-    });
-
-    expect(mockEmit).not.toHaveBeenCalled();
   });
 });

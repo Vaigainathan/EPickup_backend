@@ -3,6 +3,15 @@ const { getFirestore } = require('./firebase');
 const { appendEvent, touchOrderSignal, bumpOrderSignal } = require('./marketplace/orderEvents');
 const notificationService = require('./notificationService');
 const { marketplacePushVariables } = require('./marketplace/marketplacePush');
+const { presentMarketplaceDriverInfo } = require('./marketplace/presentMarketplaceDriverInfo');
+const {
+  orderNeedsHandoverCatchup
+} = require('./marketplace/marketplaceHandoverCompat');
+const {
+  snapshotDriverInfo
+} = require('./marketplace/marketplacePickupHandover');
+const { assertTransition } = require('./marketplace/orderStateMachine');
+const { debugLog } = require('../utils/debugLog');
 
 const STAGE_ORDER = ['searching', 'assigned', 'at_shop', 'picked_up', 'on_the_way', 'delivered'];
 const STAGE_TIMES_TRACKED = ['assigned', 'at_shop', 'picked_up', 'on_the_way', 'delivered'];
@@ -11,7 +20,13 @@ const BELOW_PICKUP = new Set(['searching', 'assigned', 'at_shop']);
 const PUSH_BY_STAGE = {
   assigned: 'ORDER_ASSIGNED',
   at_shop: 'DRIVER_AT_SHOP',
+  on_the_way: 'OUT_FOR_DELIVERY',
   delivered: 'ORDER_DELIVERED'
+};
+
+const SHOP_PUSH_BY_STAGE = {
+  assigned: 'DRIVER_ASSIGNED_SHOP',
+  at_shop: 'DRIVER_AT_SHOP_SHOP'
 };
 
 const STATUS_TO_STAGE = {
@@ -33,18 +48,7 @@ const STATUS_TO_STAGE = {
 };
 
 function presentDriverInfo(raw) {
-  if (!raw || typeof raw !== 'object') {
-    return null;
-  }
-  const name = typeof raw.name === 'string' ? raw.name : '';
-  const phone = typeof raw.phone === 'string' ? raw.phone : '';
-  const vehicle = typeof raw.vehicle === 'string'
-    ? raw.vehicle
-    : (typeof raw.vehicleNumber === 'string' ? raw.vehicleNumber : '');
-  if (!name && !phone && !vehicle) {
-    return null;
-  }
-  return { name, phone, vehicle };
+  return presentMarketplaceDriverInfo(raw);
 }
 
 function currentStageOf(order) {
@@ -71,6 +75,8 @@ function emptyPlan(stage) {
     orderStatus: null,
     deliveredAt: null,
     completedAt: null,
+    handedOverAt: null,
+    catchupHandover: false,
     push: null,
     supportAlert: null
   };
@@ -194,6 +200,16 @@ function planDeliverySync(order, booking) {
   applyDriver(plan, source, booking);
   applyFare(plan, source, booking);
 
+  if (orderNeedsHandoverCatchup(source, status)) {
+    plan.catchupHandover = true;
+    if (!plan.driverInfo) {
+      const fromBooking = snapshotDriverInfo(booking);
+      if (fromBooking) {
+        plan.driverInfo = fromBooking;
+      }
+    }
+  }
+
   const finalStage = plan.stage || currentStage;
   if (!terminal && finalStage === 'delivered' && source.orderStatus === 'handed_over' && plan.event) {
     plan.complete = true;
@@ -237,6 +253,10 @@ function buildMarketplaceSyncOrderUpdates(order, plan) {
   if (plan.orderStatus) {
     updates.orderStatus = plan.orderStatus;
   }
+  if (plan.catchupHandover) {
+    updates.orderStatus = 'handed_over';
+    updates.handedOverAt = admin.firestore.FieldValue.serverTimestamp();
+  }
   if (Object.keys(updates).length > 0) {
     updates.updatedAt = admin.firestore.FieldValue.serverTimestamp();
   }
@@ -246,6 +266,9 @@ function buildMarketplaceSyncOrderUpdates(order, plan) {
 function planWrites(plan, order) {
   if (!plan) {
     return false;
+  }
+  if (plan.catchupHandover) {
+    return true;
   }
   if (plan.event || plan.complete || plan.clearDriverInfo || plan.driverInfo || plan.deliveredAt) {
     return true;
@@ -349,6 +372,14 @@ class MarketplaceSyncService {
           data: plan.event
         }, order.customerId);
         bumpOrderSignal(transaction, orderRef, order.customerId, 'delivery_stage');
+      } else if (plan.catchupHandover) {
+        assertTransition('ready', 'handed_over', { actor: { type: 'system', id: 'marketplace-sync' } });
+        appendEvent(transaction, orderRef, {
+          type: 'handed_over',
+          actor: { type: 'system', id: 'marketplace-sync' },
+          data: { bookingStatus: booking.status, catchup: true }
+        }, order.customerId);
+        bumpOrderSignal(transaction, orderRef, order.customerId, 'handed_over');
       } else if (Object.keys(updates).length > 0) {
         const signalType = (plan.driverInfo || plan.clearDriverInfo) ? 'delivery_driver' : 'delivery_fare';
         touchOrderSignal(transaction, orderRef, order.customerId, signalType);
@@ -371,11 +402,11 @@ class MarketplaceSyncService {
     }
 
     if (outcome.wrote && outcome.plan && outcome.plan.push) {
-      await this.notifyStage(outcome.order, outcome.orderId, outcome.plan.push);
+      await this.notifyStage(outcome.order, outcome.orderId, outcome.plan.push, booking);
     }
 
     if (outcome.wrote) {
-      console.log('✅ [MARKETPLACE_SYNC] Mirrored booking change', {
+      debugLog('✅ [MARKETPLACE_SYNC] Mirrored booking change', {
         bookingId: bookingId || null,
         orderId,
         bookingStatus: booking.status,
@@ -387,29 +418,53 @@ class MarketplaceSyncService {
     return outcome;
   }
 
-  async notifyStage(order, orderId, stage) {
+  async notifyStage(order, orderId, stage, booking) {
     const template = PUSH_BY_STAGE[stage];
     const customerId = order && order.customerId;
-    if (!template || !customerId) {
-      return;
-    }
-    const driverInfo = presentDriverInfo(order.driverInfo);
+    const driverInfo = presentDriverInfo(order.driverInfo)
+      || (booking && presentDriverInfo(booking.driverInfo));
     const driverName = driverInfo && driverInfo.name ? driverInfo.name : 'Your driver';
-    try {
-      const result = await notificationService.sendTemplateNotification(
-        customerId,
-        'MARKETPLACE',
-        template,
-        {
-          ...marketplacePushVariables(order, orderId),
-          driverName
+    const pushVars = {
+      ...marketplacePushVariables(order, orderId),
+      driverName
+    };
+    if (stage === 'on_the_way') {
+      pushVars.deliveryFee = order.deliveryFee
+        ?? (order.delivery && order.delivery.fare);
+    }
+
+    if (template && customerId) {
+      try {
+        const result = await notificationService.sendTemplateNotification(
+          customerId,
+          'MARKETPLACE',
+          template,
+          pushVars
+        );
+        if (result && result.success === false) {
+          console.error('❌ [MARKETPLACE_SYNC] Notification failed:', (result.error && result.error.code) || result.error);
         }
-      );
-      if (result && result.success === false) {
-        console.error('❌ [MARKETPLACE_SYNC] Notification failed:', (result.error && result.error.code) || result.error);
+      } catch (error) {
+        console.error('❌ [MARKETPLACE_SYNC] Notification failed:', error.message);
       }
-    } catch (error) {
-      console.error('❌ [MARKETPLACE_SYNC] Notification failed:', error.message);
+    }
+
+    const shopTemplate = SHOP_PUSH_BY_STAGE[stage];
+    const shopId = order && order.shopId;
+    if (shopTemplate && shopId) {
+      try {
+        const result = await notificationService.sendTemplateNotification(
+          shopId,
+          'MARKETPLACE',
+          shopTemplate,
+          pushVars
+        );
+        if (result && result.success === false) {
+          console.error('❌ [MARKETPLACE_SYNC] Shop notification failed:', (result.error && result.error.code) || result.error);
+        }
+      } catch (error) {
+        console.error('❌ [MARKETPLACE_SYNC] Shop notification failed:', error.message);
+      }
     }
   }
 }
@@ -422,5 +477,7 @@ marketplaceSyncService.deliveryTimestampFromBooking = deliveryTimestampFromBooki
 marketplaceSyncService.buildMarketplaceSyncOrderUpdates = buildMarketplaceSyncOrderUpdates;
 marketplaceSyncService.stageTimeStored = stageTimeStored;
 marketplaceSyncService.STAGE_TIMES_TRACKED = STAGE_TIMES_TRACKED;
+marketplaceSyncService.SHOP_PUSH_BY_STAGE = SHOP_PUSH_BY_STAGE;
+marketplaceSyncService.PUSH_BY_STAGE = PUSH_BY_STAGE;
 
 module.exports = marketplaceSyncService;

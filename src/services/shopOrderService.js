@@ -30,7 +30,8 @@ const {
 } = require('./marketplace/refunds');
 const { presentDeliveryAddress } = require('./marketplace/presentDeliveryAddress');
 const { buildSystemAvailabilityUpdate } = require('../utils/driverAvailabilityMetadata');
-const { emitBookingCancelled, emitMarketplaceHandoverConfirmed } = require('./bookingCancelEvents');
+const { emitBookingCancelled } = require('./bookingCancelEvents');
+const { presentMarketplaceDriverInfo } = require('./marketplace/presentMarketplaceDriverInfo');
 
 function refundRowsFromQuerySnap(snap) {
   const docs = snap && Array.isArray(snap.docs) ? snap.docs : [];
@@ -112,12 +113,8 @@ function pushVariables(data, orderId) {
   return marketplacePushVariables(data, orderId);
 }
 
-function shouldSendOutForDeliveryPush(order) {
-  if (!order || order.orderStatus !== 'handed_over') {
-    return false;
-  }
-  const stage = order.delivery && order.delivery.stage;
-  return stage !== 'delivered';
+function presentDriverInfo(raw) {
+  return presentMarketplaceDriverInfo(raw);
 }
 
 function presentLocation(location) {
@@ -130,21 +127,6 @@ function presentLocation(location) {
     return null;
   }
   return { lat, lng };
-}
-
-function presentDriverInfo(raw) {
-  if (!raw || typeof raw !== 'object') {
-    return null;
-  }
-  const name = typeof raw.name === 'string' ? raw.name : '';
-  const phone = typeof raw.phone === 'string' ? raw.phone : '';
-  const vehicle = typeof raw.vehicle === 'string'
-    ? raw.vehicle
-    : (typeof raw.vehicleNumber === 'string' ? raw.vehicleNumber : '');
-  if (!name && !phone && !vehicle) {
-    return null;
-  }
-  return { name, phone, vehicle };
 }
 
 function marketplaceBookingFareFields(fareDetails, distanceKm) {
@@ -304,7 +286,6 @@ class ShopOrderService {
     const amount = payment.amount ?? itemsTotal;
     const cancellation = data.cancellation || {};
     const address = data.deliveryAddress || {};
-    const handoverOtp = await this.readHandoverOtp(id, data);
 
     return {
       id,
@@ -325,8 +306,7 @@ class ShopOrderService {
       window: data.window && typeof data.window === 'object'
         ? { start: toIso(data.window.start), end: toIso(data.window.end) }
         : null,
-      // Shop-facing only. Do not reuse this presenter on a customer GET without stripping handoverOtp.
-      handoverOtp,
+      handedOverAt: toIso(data.handedOverAt),
       linkedBookingId: data.linkedBookingId ?? null,
       driverInfo: presentDriverInfo(data.driverInfo),
       payment: {
@@ -621,8 +601,7 @@ class ShopOrderService {
 
     if (!result.alreadyProcessed && result.notify) {
       await this.notifyCustomer(result.order.customerId, result.notify.type, {
-        displayId: digitsDisplayId(result.order.displayId),
-        orderId: result.order.id,
+        ...pushVariables(result.order, result.order.id),
         amount: result.order.payment.amount
       });
     }
@@ -745,8 +724,7 @@ class ShopOrderService {
 
     if (!result.alreadyProcessed && result.notify) {
       await this.notifyCustomer(result.order.customerId, 'ORDER_CANCELLED', {
-        displayId: digitsDisplayId(result.order.displayId),
-        orderId: result.order.id,
+        ...pushVariables(result.order, result.order.id),
         reasonLine: ' '
       });
     }
@@ -985,91 +963,6 @@ class ShopOrderService {
         updatedAt: new Date()
       });
     });
-  }
-
-  async confirmHandover(shopId, orderId, payload = {}) {
-    const otp = typeof payload.otp === 'string' ? payload.otp.trim() : '';
-    const displayId = parseDisplayId(payload.displayId ?? payload.orderId);
-    if (!otp || displayId === null) {
-      throw httpError(400, 'INVALID_HANDOVER', 'otp and displayId are required');
-    }
-
-    const result = await this.runOwnedTransition(shopId, orderId, async (data, tx) => {
-      if (data.orderStatus === 'handed_over') {
-        return alreadyProcessed(data);
-      }
-      if (data.orderStatus !== 'ready') {
-        throw httpError(409, 'INVALID_TRANSITION', 'Order must be ready before handover');
-      }
-      const privateSnap = await tx.get(this.handoverPrivateRef(orderId));
-      const privateOtp = privateSnap.exists
-        ? otpFromValue(privateSnap.data() && privateSnap.data().otp)
-        : null;
-      const expectedOtp = privateOtp || otpFromValue(data.handoverOtp) || '';
-      const expectedDisplay = Number(data.displayId);
-      if (otp !== expectedOtp || displayId !== expectedDisplay) {
-        throw httpError(409, 'HANDOVER_MISMATCH', 'Order ID or OTP does not match');
-      }
-      const orderRef = this.orders().doc(orderId);
-      const stage = data.delivery && data.delivery.stage;
-      if (stage === 'delivered') {
-        if (data.shopId) {
-          tx.set(this.getDb().collection('shops').doc(data.shopId), {
-            orderCount: admin.firestore.FieldValue.increment(1)
-          }, { merge: true });
-        }
-        appendEvent(tx, orderRef, {
-          type: 'completed',
-          actor: { type: 'shop', id: shopId }
-        }, data.customerId);
-        return {
-          updates: { orderStatus: 'completed' }
-        };
-      }
-      appendEvent(tx, orderRef, {
-        type: 'handed_over',
-        actor: { type: 'shop', id: shopId }
-      }, data.customerId);
-      return {
-        updates: { orderStatus: 'handed_over' },
-        handoverSource: data
-      };
-    });
-
-    if (!result.alreadyProcessed && result.order && shouldSendOutForDeliveryPush(result.order)) {
-      const source = result.handoverSource || {};
-      const deliveryFee = result.order.deliveryFee
-        ?? (result.order.delivery && result.order.delivery.fare);
-      await this.notifyCustomer(result.order.customerId, 'OUT_FOR_DELIVERY', {
-        ...pushVariables(source, orderId),
-        deliveryFee
-      });
-    }
-
-    if (!result.alreadyProcessed && result.order) {
-      const linkedBookingId = result.order.linkedBookingId;
-      if (linkedBookingId) {
-        try {
-          const bookingSnap = await this.getDb().collection('bookings').doc(linkedBookingId).get();
-          const booking = bookingSnap.exists ? (bookingSnap.data() || {}) : null;
-          const driverId = booking && booking.driverId;
-          if (driverId) {
-            const { getSocketIO } = require('./socket');
-            const io = getSocketIO();
-            emitMarketplaceHandoverConfirmed(io, {
-              driverId,
-              bookingId: linkedBookingId,
-              marketplaceOrderId: orderId,
-              displayId: result.order.displayId ?? null
-            });
-          }
-        } catch (error) {
-          console.error('❌ [SHOP_ORDERS] Handover driver socket failed:', error.message);
-        }
-      }
-    }
-
-    return result;
   }
 
   async markUnavailable(shopId, orderId, payload = {}) {
@@ -1670,5 +1563,4 @@ class ShopOrderService {
 
 const shopOrderService = new ShopOrderService();
 shopOrderService.marketplaceBookingFareFields = marketplaceBookingFareFields;
-shopOrderService.shouldSendOutForDeliveryPush = shouldSendOutForDeliveryPush;
 module.exports = shopOrderService;

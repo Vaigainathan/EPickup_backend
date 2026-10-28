@@ -56,10 +56,16 @@ class InvalidStateError extends Error {
   }
 }
 
-function assertTransition(from, to) {
+function assertTransition(from, to, options = {}) {
   const allowed = ALLOWED_TRANSITIONS[from];
   if (!allowed || !allowed.includes(to)) {
     throw new InvalidStateError(from, to);
+  }
+  if (from === 'ready' && to === 'handed_over') {
+    const actorType = options.actor && options.actor.type;
+    if (actorType !== 'driver' && actorType !== 'system') {
+      throw new InvalidStateError(from, to);
+    }
   }
 }
 

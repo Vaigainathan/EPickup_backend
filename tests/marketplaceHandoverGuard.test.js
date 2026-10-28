@@ -39,7 +39,6 @@ const {
   isHandedOver,
   isHandoverGatedStatus
 } = require('../src/services/marketplace/marketplaceHandoverGuard');
-const { DriverStatusError } = require('../src/services/driverStatusWorkflowService');
 
 describe('marketplaceHandoverGuard', () => {
   beforeEach(() => {
@@ -58,56 +57,12 @@ describe('marketplaceHandoverGuard', () => {
     expect(isHandoverGatedStatus('driver_arrived')).toBe(false);
   });
 
-  test('parcel booking skips order read', async () => {
-    await assertHandoverComplete(mockDb, { sourceType: 'parcel' }, 'photo_captured');
+  test('assertHandoverComplete is a no-op (pickup = handover)', async () => {
+    await assertHandoverComplete(
+      mockDb,
+      { sourceType: 'marketplace', marketplaceOrderId: 'order-1' },
+      'picked_up'
+    );
     expect(mockOrderGet).not.toHaveBeenCalled();
-  });
-
-  test('marketplace booking with ready order throws HANDOVER_PENDING', async () => {
-    mockOrderGet.mockResolvedValue({
-      exists: true,
-      data: () => ({ orderStatus: 'ready' })
-    });
-
-    await expect(
-      assertHandoverComplete(
-        mockDb,
-        { sourceType: 'marketplace', marketplaceOrderId: 'order-1' },
-        'picked_up'
-      )
-    ).rejects.toMatchObject({ code: 'HANDOVER_PENDING', statusCode: 409 });
-    expect(mockOrderGet).toHaveBeenCalled();
-  });
-
-  test('marketplace booking proceeds when order handed_over', async () => {
-    mockOrderGet.mockResolvedValue({
-      exists: true,
-      data: () => ({ orderStatus: 'handed_over' })
-    });
-
-    await expect(
-      assertHandoverComplete(
-        mockDb,
-        { sourceType: 'marketplace', marketplaceOrderId: 'order-1' },
-        'picked_up'
-      )
-    ).resolves.toBeUndefined();
-  });
-
-  test('throws DriverStatusError instance', async () => {
-    mockOrderGet.mockResolvedValue({
-      exists: true,
-      data: () => ({ orderStatus: 'ready' })
-    });
-
-    try {
-      await assertHandoverComplete(
-        mockDb,
-        { sourceType: 'marketplace', marketplaceOrderId: 'order-1' },
-        'in_transit'
-      );
-    } catch (error) {
-      expect(error).toBeInstanceOf(DriverStatusError);
-    }
   });
 });

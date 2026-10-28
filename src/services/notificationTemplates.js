@@ -8,6 +8,21 @@ const {
   digitsDisplayId
 } = require('./marketplace/marketplacePush');
 
+function finalizeNotificationCopy(text) {
+  if (!text || typeof text !== 'string' || !/\{\{\w+\}\}/.test(text)) {
+    return text;
+  }
+  const nodeEnv = process.env.NODE_ENV || 'development';
+  if (nodeEnv === 'development' || nodeEnv === 'staging') {
+    console.warn('[NOTIFICATION] Unresolved template placeholder:', text);
+    return text;
+  }
+  if (nodeEnv === 'production') {
+    return text.replace(/\{\{\w+\}\}/g, '');
+  }
+  return text;
+}
+
 const formatNotificationVariableValue = (variableName, value) => {
   if (value === undefined || value === null) return value;
 
@@ -297,6 +312,21 @@ const NOTIFICATION_TEMPLATES = {
       body: '{{driverName}} has reached {{shopName}}',
       data: { type: 'driver_at_shop', action: 'tracking' }
     },
+    DRIVER_ASSIGNED_SHOP: {
+      title: 'Driver assigned',
+      body: '{{driverName}} is assigned to order #{{displayId}}',
+      data: { type: 'order_driver_assigned', action: 'order' }
+    },
+    DRIVER_AT_SHOP_SHOP: {
+      title: 'Driver at shop',
+      body: '{{driverName}} has arrived for order #{{displayId}}',
+      data: { type: 'order_driver_arrived', action: 'order' }
+    },
+    ORDER_PICKED_UP_SHOP: {
+      title: 'Order picked up',
+      body: 'Order #{{displayId}} picked up by {{driverName}}',
+      data: { type: 'order_picked_up', action: 'order' }
+    },
     OUT_FOR_DELIVERY: {
       title: 'Out for delivery',
       body: 'Your {{shopName}} order is on the way — delivery charge ₹{{deliveryFee}} in cash',
@@ -406,8 +436,8 @@ class NotificationTemplateProcessor {
     };
 
     const processedTemplate = {
-      title: this.substituteVariables(template.title, displayForBody),
-      body: this.substituteVariables(template.body, displayForBody),
+      title: finalizeNotificationCopy(this.substituteVariables(template.title, displayForBody)),
+      body: finalizeNotificationCopy(this.substituteVariables(template.body, displayForBody)),
       data: { ...template.data }
     };
 
@@ -663,5 +693,6 @@ class NotificationBuilder {
 module.exports = {
   NOTIFICATION_TEMPLATES,
   NotificationTemplateProcessor,
-  NotificationBuilder
+  NotificationBuilder,
+  finalizeNotificationCopy
 };

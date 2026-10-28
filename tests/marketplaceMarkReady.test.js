@@ -418,7 +418,8 @@ describe('delivery sync', () => {
       }
     });
     expect(ready.plan.complete).toBe(false);
-    expect(order('order-ready').orderStatus).toBe('ready');
+    expect(ready.plan.catchupHandover).toBe(true);
+    expect(order('order-ready').orderStatus).toBe('handed_over');
     expect(order('order-ready').delivery.stage).toBe('delivered');
     expect(events('order-ready').map((event) => event.type)).toEqual(['delivery_stage']);
     expect(mockDocs.get('marketplaceOrders/order-ready/signal/latest').type).toBe('delivery_stage');
@@ -478,10 +479,11 @@ describe('delivery sync', () => {
     expect(order('order-1').deliveryFee).toBe(55);
     expect(order('order-1').delivery.fare).toBe(55);
     expect(order('order-1').delivery.stage).toBe('on_the_way');
-    expect(events('order-1')).toHaveLength(0);
+    expect(order('order-1').orderStatus).toBe('handed_over');
+    expect(events('order-1').map((event) => event.type)).toEqual(['handed_over']);
     expect(mockDocs.get('marketplaceOrders/order-1/signal/latest')).toMatchObject({
       customerId: 'cust-1',
-      type: 'delivery_fare'
+      type: 'handed_over'
     });
 
     const same = await marketplaceSyncService.syncBooking({
@@ -511,10 +513,16 @@ describe('delivery sync', () => {
       }
     });
     expect(changed.wrote).toBe(true);
-    expect(events('order-1')).toHaveLength(0);
-    expect(order('order-1').driverInfo).toEqual({ name: 'Ravi', phone: '9000000000', vehicle: 'TN01' });
+    expect(order('order-1').orderStatus).toBe('handed_over');
+    expect(events('order-1').map((event) => event.type)).toEqual(['handed_over']);
+    expect(order('order-1').driverInfo).toEqual({
+      name: 'Ravi',
+      phone: '9000000000',
+      vehicle: 'TN01',
+      photoUrl: null
+    });
     expect(order('order-1').delivery.fare).toBe(55);
-    expect(mockDocs.get('marketplaceOrders/order-1/signal/latest').type).toBe('delivery_driver');
+    expect(mockDocs.get('marketplaceOrders/order-1/signal/latest').type).toBe('handed_over');
   });
 
   test('the initial pending add and a removal are ignored', async () => {
@@ -532,52 +540,24 @@ describe('delivery sync', () => {
   });
 });
 
-describe('confirmHandover completion', () => {
-  test('handover completes once when the stage is already delivered', async () => {
-    seedOrder('order-1', {
-      orderStatus: 'ready',
-      displayId: 12,
-      delivery: { stage: 'delivered', fare: 40 },
-      deliveryFee: 40
-    });
-    mockDocs.set('marketplaceOrders/order-1/private/handover', { otp: '123456' });
-    const result = await shopOrderService.confirmHandover('shop-1', 'order-1', {
-      otp: '123456',
-      displayId: 12
-    });
-    expect(result.order.orderStatus).toBe('completed');
-    expect(events('order-1').map((event) => event.type)).toEqual(['completed']);
-    expect(events('order-1')[0].actor).toEqual({ type: 'shop', id: 'shop-1' });
-    expect(mockDocs.get('marketplaceOrders/order-1/signal/latest')).toMatchObject({
-      customerId: 'cust-1',
-      type: 'completed'
-    });
-    expect(mockDocs.get('shops/shop-1').orderCount.constructor.name).toBe('NumericIncrementTransform');
-
-    await expect(shopOrderService.confirmHandover('shop-1', 'order-1', {
-      otp: '123456',
-      displayId: 12
-    })).rejects.toMatchObject({ status: 409, code: 'INVALID_TRANSITION' });
-  });
-
-  test('handover before delivery writes handed_over and one signal', async () => {
+describe('sync catchup handed_over', () => {
+  test('sets handed_over when booking is in_transit but order still ready', async () => {
     seedOrder('order-2', {
       orderStatus: 'ready',
       displayId: 12,
       delivery: { stage: 'at_shop', fare: 40 },
       deliveryFee: 40
     });
-    mockDocs.set('marketplaceOrders/order-2/private/handover', { otp: '123456' });
-    const result = await shopOrderService.confirmHandover('shop-1', 'order-2', {
-      otp: '123456',
-      displayId: 12
+    await marketplaceSyncService.syncBooking({
+      bookingId: 'book-2',
+      booking: {
+        status: 'in_transit',
+        marketplaceOrderId: 'order-2',
+        driverInfo: { name: 'Driver', phone: '1', vehicleNumber: 'TN' }
+      }
     });
-    expect(result.order.orderStatus).toBe('handed_over');
-    expect(events('order-2').map((event) => event.type)).toEqual(['handed_over']);
-    expect(mockDocs.get('marketplaceOrders/order-2/signal/latest')).toMatchObject({
-      customerId: 'cust-1',
-      type: 'handed_over'
-    });
+    expect(order('order-2').orderStatus).toBe('handed_over');
+    expect(events('order-2').map((event) => event.type)).toEqual(['delivery_stage']);
   });
 });
 

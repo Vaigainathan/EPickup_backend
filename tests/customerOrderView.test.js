@@ -125,7 +125,7 @@ describe('presentCustomerOrder', () => {
     });
   });
 
-  test('driverInfo is shaped to name, vehicle, phone only', () => {
+  test('driverInfo includes photoUrl null when absent', () => {
     expect(presentCustomerDriverInfo({
       id: 'drv-1',
       name: 'Ravi',
@@ -135,13 +135,14 @@ describe('presentCustomerOrder', () => {
     })).toEqual({
       name: 'Ravi',
       vehicle: 'TN 09 AB 1234',
-      phone: '9000000001'
+      phone: '9000000001',
+      photoUrl: null
     });
     const view = presentCustomerOrder({
       id: 'ord-driver',
       driverInfo: { id: 'drv-1', name: 'Ravi', phone: '1', vehicle: 'TN01', extra: true }
     });
-    expect(view.driverInfo).toEqual({ name: 'Ravi', vehicle: 'TN01', phone: '1' });
+    expect(view.driverInfo).toEqual({ name: 'Ravi', vehicle: 'TN01', phone: '1', photoUrl: null });
     expect(JSON.stringify(view)).not.toContain('drv-1');
     expect(presentCustomerDriverInfo({ id: 'only' })).toBeNull();
   });

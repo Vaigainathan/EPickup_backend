@@ -5217,6 +5217,10 @@ router.post('/bookings/:id/accept', idempotencyKeyMiddleware, requireDriver, asy
           rating: freshDriverData.driver?.rating || 0,
           vehicleNumber: freshDriverData.driver?.vehicleDetails?.vehicleNumber || '',
           vehicleModel: freshDriverData.driver?.vehicleDetails?.vehicleModel || '',
+          photoUrl: freshDriverData.profilePicture
+            || freshDriverData.photoURL
+            || freshDriverData.profilePhoto
+            || null,
           // ✅ CRITICAL FIX: Include isVerified status so admin dashboard can display correctly
           isVerified: driverIsVerified
         },
@@ -8747,8 +8751,51 @@ router.post('/confirm-pickup', [
     const { uid } = req.user;
     const { bookingId, location, photoUrl, notes, eventId, timestamp: eventTimestamp } = req.body;
     const db = getFirestore();
-    
-    console.log('📦 [CONFIRM_PICKUP] Confirming pickup for booking:', bookingId, 'driver:', uid);
+
+    const bookingRef = db.collection('bookings').doc(bookingId);
+    const bookingSnap = await bookingRef.get();
+    if (!bookingSnap.exists) {
+      return res.status(404).json({
+        success: false,
+        error: {
+          code: 'BOOKING_NOT_FOUND',
+          message: 'Booking not found'
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+    const bookingBeforePickup = bookingSnap.data() || {};
+    if (bookingBeforePickup.sourceType === 'marketplace') {
+      const marketplaceOrderId = bookingBeforePickup.marketplaceOrderId;
+      let orderData = null;
+      if (typeof marketplaceOrderId === 'string' && marketplaceOrderId !== '') {
+        const orderSnap = await db.collection('marketplaceOrders').doc(marketplaceOrderId).get();
+        orderData = orderSnap.exists ? orderSnap.data() : null;
+      }
+      const {
+        assertMarketplacePickupAllowed,
+        recordMarketplaceHandoverAfterPickup
+      } = require('../services/marketplace/marketplacePickupHandover');
+      try {
+        assertMarketplacePickupAllowed({
+          booking: bookingBeforePickup,
+          driverId: uid,
+          order: orderData
+        });
+      } catch (preError) {
+        if (preError && preError.name === 'DriverStatusError') {
+          return res.status(preError.status || 409).json({
+            success: false,
+            error: {
+              code: preError.code || 'INVALID_STATE_TRANSITION',
+              message: preError.message
+            },
+            timestamp: new Date().toISOString()
+          });
+        }
+        throw preError;
+      }
+    }
 
     const statusResult = await driverStatusWorkflowService.updateStatus({
       bookingId,
@@ -8760,6 +8807,19 @@ router.post('/confirm-pickup', [
       eventTimestamp,
       source: 'driver_app'
     });
+
+    if (
+      bookingBeforePickup.sourceType === 'marketplace'
+      && statusResult.status === 'picked_up'
+    ) {
+      const { recordMarketplaceHandoverAfterPickup } = require('../services/marketplace/marketplacePickupHandover');
+      await recordMarketplaceHandoverAfterPickup({
+        bookingId,
+        booking: statusResult.booking || bookingBeforePickup,
+        driverId: uid,
+        marketplaceOrderId: bookingBeforePickup.marketplaceOrderId
+      });
+    }
 
     // ✅ CRITICAL FIX: Update photo status to 'confirmed' when confirming pickup
     // Handle both cases: from 'photo_captured' OR from 'driver_arrived' (in case photo status update failed earlier)

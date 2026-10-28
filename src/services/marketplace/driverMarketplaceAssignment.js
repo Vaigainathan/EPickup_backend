@@ -1,4 +1,5 @@
 const { isHandedOver } = require('./marketplaceHandoverGuard');
+const { bookingStatusAllowsCompatHandedOver } = require('./marketplaceHandoverCompat');
 
 function mapDriverMarketplaceItems(items) {
   if (!Array.isArray(items)) {
@@ -11,14 +12,6 @@ function mapDriverMarketplaceItems(items) {
       variantLabel: line.variantLabel ?? null,
       qty: Number(line.qty) || 0
     }));
-}
-
-function otpToHandoverCode(privateData) {
-  if (!privateData || privateData.otp == null) {
-    return null;
-  }
-  const raw = privateData.otp;
-  return typeof raw === 'string' ? raw : String(raw);
 }
 
 async function loadAssignedMarketplaceContext(db, booking, driverId) {
@@ -34,25 +27,22 @@ async function loadAssignedMarketplaceContext(db, booking, driverId) {
   }
 
   const orderRef = db.collection('marketplaceOrders').doc(orderId);
-  const privateRef = orderRef.collection('private').doc('handover');
-  const [orderSnap, privateSnap] = await Promise.all([
-    orderRef.get(),
-    privateRef.get()
-  ]);
+  const orderSnap = await orderRef.get();
 
   if (!orderSnap.exists) {
     return null;
   }
 
   const order = orderSnap.data() || {};
-  const handoverCode = privateSnap.exists
-    ? otpToHandoverCode(privateSnap.data())
-    : null;
+  const handedOver = isHandedOver(order.orderStatus)
+    || bookingStatusAllowsCompatHandedOver(booking.status);
+  const pickup = booking.pickup && typeof booking.pickup === 'object' ? booking.pickup : {};
 
   return {
     displayId: order.displayId ?? booking.displayId ?? null,
-    handoverCode,
-    handedOver: isHandedOver(order.orderStatus),
+    handedOver,
+    shopName: typeof pickup.name === 'string' ? pickup.name : (order.shopSnapshot && order.shopSnapshot.name) || null,
+    shopPhone: typeof pickup.phone === 'string' ? pickup.phone : (order.shopSnapshot && order.shopSnapshot.phone) || null,
     items: mapDriverMarketplaceItems(order.items)
   };
 }

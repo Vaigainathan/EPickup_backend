@@ -6,7 +6,7 @@ const { presentCustomerOrder } = require('./customerOrderView');
 const { appendEvent } = require('./orderEvents');
 const { createRefund, refundRemainder, readRefundDocs } = require('./refunds');
 const { restoreLines } = require('./stock');
-const { digitsDisplayId } = require('./marketplacePush');
+const { marketplaceUtrNotifyVariables, digitsDisplayId } = require('./marketplacePush');
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const CUSTOMER_CANCEL_REASONS = new Set([
@@ -275,10 +275,7 @@ async function submitCustomerUtr({ customerId, orderId, idempotencyKey, utr, now
     await notifyCustomer(customerId, 'PAYMENT_UNDER_REVIEW', variables);
     await notifyShop(outcome.shopId, 'PAYMENT_REVIEW_SHOP', variables);
   } else if (!outcome.replay) {
-    await notifyShop(outcome.shopId, 'UTR_SUBMITTED', {
-      displayId: outcome.displayId,
-      orderId
-    });
+    await notifyShop(outcome.shopId, 'UTR_SUBMITTED', marketplaceUtrNotifyVariables(outcome.data, orderId, utr));
   }
   return orderResponse(200, outcome.data, orderId);
 }
@@ -351,10 +348,7 @@ async function submitBalanceUtr({ customerId, orderId, idempotencyKey, utr, nowM
   });
 
   if (!outcome.replay) {
-    await notifyShop(outcome.shopId, 'UTR_SUBMITTED', {
-      displayId: outcome.displayId,
-      orderId
-    });
+    await notifyShop(outcome.shopId, 'UTR_SUBMITTED', marketplaceUtrNotifyVariables(outcome.data, orderId, utr));
   }
   return orderResponse(200, outcome.data, orderId);
 }

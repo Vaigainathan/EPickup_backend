@@ -701,130 +701,22 @@ router.get('/available-drivers', authMiddleware, async (req, res) => {
 
 /**
  * @route   POST /api/admin/bookings/:bookingId/cancel
- * @desc    Cancel booking (Admin only)
+ * @desc    Removed — use POST /api/admin/bookings/:id/intervene { action: "cancel" }
  * @access  Private (Admin only)
  */
-router.post('/bookings/:bookingId/cancel', [
-  authMiddleware,
-  body('reason').notEmpty().withMessage('Cancellation reason is required')
-], async (req, res) => {
-  try {
-    const errors = validationResult(req);
-    if (!errors.isEmpty()) {
-      return res.status(400).json({
-        success: false,
-        error: {
-          code: 'VALIDATION_ERROR',
-          message: 'Validation failed',
-          details: errors.array()
-        },
-        timestamp: new Date().toISOString()
-      });
-    }
-
-    const { userType } = req.user;
-    if (userType !== 'admin') {
-      return res.status(403).json({
-        success: false,
-        error: {
-          code: 'PERMISSION_DENIED',
-          message: 'Only admins can cancel bookings'
-        },
-        timestamp: new Date().toISOString()
-      });
-    }
-
-    const { bookingId } = req.params;
-    const { reason } = req.body;
-
-    const db = getFirestore();
-    const batch = db.batch();
-
-    // Get booking
-    const bookingRef = db.collection('bookings').doc(bookingId);
-    const bookingDoc = await bookingRef.get();
-
-    if (!bookingDoc.exists) {
-      return res.status(404).json({
-        success: false,
-        error: {
-          code: 'BOOKING_NOT_FOUND',
-          message: 'Booking not found'
-        },
-        timestamp: new Date().toISOString()
-      });
-    }
-
-    const bookingData = bookingDoc.data();
-
-    // Update booking
-    batch.update(bookingRef, {
-      status: 'cancelled',
-      cancellationReason: reason,
-      cancelledBy: req.user.uid,
-      cancelledAt: new Date(),
-      updatedAt: new Date()
-    });
-
-    // Update driver's active bookings count if assigned
-    if (bookingData.driverId) {
-      const driverRef = db.collection('users').doc(bookingData.driverId);
-      const driverDoc = await driverRef.get();
-      const driverData = driverDoc.data();
-      
-      batch.update(driverRef, {
-        'driver.activeBookings': Math.max((driverData.driver?.activeBookings || 1) - 1, 0),
-        updatedAt: new Date()
-      });
-    }
-
-    await batch.commit();
-
-    // Send notifications
-    await Promise.all([
-      // Parcel customers only. Marketplace orders use their own sync pushes.
-      bookingData.sourceType !== 'marketplace' && notificationService.sendTemplateNotification(
-        bookingData.customerId,
-        'CUSTOMER',
-        'BOOKING_CANCELLED',
-        {
-          bookingId,
-          reason
-        }
-      ),
-      
-      // Notify driver if assigned
-      bookingData.driverId && notificationService.sendTemplateNotification(
-        bookingData.driverId,
-        'DRIVER',
-        'BOOKING_CANCELLED',
-        {
-          bookingId,
-          reason: 'Booking cancelled by admin'
-        }
-      )
-    ].filter(Boolean));
-
-    res.status(200).json({
-      success: true,
-      message: 'Booking cancelled successfully',
-      data: {
-        bookingId,
-        reason,
-        cancelledAt: new Date().toISOString()
-      },
-      timestamp: new Date().toISOString()
-    });
-
-  } catch (error) {
-    console.error('Error cancelling booking:', error);
-    const errorResponse = errorHandlingService.handleApiError(error, {
-      endpoint: '/api/admin/bookings/:bookingId/cancel',
-      method: 'POST',
-      bookingId: req.params.bookingId
-    });
-    res.status(errorResponse.statusCode || 500).json(errorResponse);
-  }
+router.post('/bookings/:bookingId/cancel', authMiddleware, (req, res) => {
+  return res.status(410).json({
+    success: false,
+    error: {
+      code: 'ENDPOINT_REMOVED',
+      message: 'This endpoint was removed. Use POST /api/admin/bookings/:id/intervene with action cancel.',
+      details: {
+        replacement: 'POST /api/admin/bookings/:id/intervene',
+        body: { action: 'cancel', reason: 'string' }
+      }
+    },
+    timestamp: new Date().toISOString()
+  });
 });
 
 /**

@@ -92,11 +92,12 @@ describe('parcel side effects', () => {
     sendToUser.mockRestore();
   });
 
-  test('admin cancel does not send the parcel customer template for marketplace', () => {
+  test('legacy admin booking cancel route is removed (use intervene)', () => {
     const fs = require('fs');
     const path = require('path');
     const source = fs.readFileSync(path.join(__dirname, '../src/routes/adminBookingManagement.js'), 'utf8');
-    expect(source).toContain("bookingData.sourceType !== 'marketplace' && notificationService.sendTemplateNotification");
+    expect(source).toContain('ENDPOINT_REMOVED');
+    expect(source).toContain('/intervene');
   });
 
   test('money_collection stays allowed', () => {

@@ -4,6 +4,8 @@
 
 jest.mock('../instrument.js', () => ({}));
 
+jest.mock('sanitize-html', () => jest.fn((value) => value));
+
 jest.mock('../src/services/firebase', () => ({
   getFirestore: jest.fn(() => ({
     collection: jest.fn(() => ({ doc: jest.fn(() => ({})) }))
@@ -19,6 +21,16 @@ jest.mock('../src/services/notificationService', () => ({
 
 jest.mock('../src/services/socket', () => ({
   getSocketIO: jest.fn(() => null)
+}));
+
+jest.mock('firebase-admin/firestore', () => ({
+  getFirestore: jest.fn(() => ({
+    collection: jest.fn(() => ({ doc: jest.fn(() => ({})) }))
+  }))
+}));
+
+jest.mock('../src/services/shopOrderService', () => ({
+  supportCancelBeforeHandover: jest.fn()
 }));
 
 jest.mock('firebase-admin', () => {
@@ -69,7 +81,8 @@ const BATCH_MODULES = [
   '../src/services/admin/adminMarketplaceService',
   '../src/services/bookingStateMachine',
   '../src/services/bookingCancelEvents',
-  '../src/routes/adminMarketplace'
+  '../src/routes/adminMarketplace',
+  '../src/routes/admin'
 ];
 
 describe('B-BATCH-2 boot requires', () => {

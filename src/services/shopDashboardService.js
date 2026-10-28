@@ -1,37 +1,6 @@
 const admin = require('firebase-admin');
 const { getFirestore } = require('./firebase');
 
-function toJsDate(value) {
-  if (!value) {
-    return null;
-  }
-  if (typeof value.toDate === 'function') {
-    return value.toDate();
-  }
-  const date = value instanceof Date ? value : new Date(value);
-  return Number.isNaN(date.getTime()) ? null : date;
-}
-
-function kolkataDateKey(date) {
-  return new Intl.DateTimeFormat('en-CA', {
-    timeZone: 'Asia/Kolkata',
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit'
-  }).format(date);
-}
-
-function isConfirmedTodayIst(payment) {
-  if (!payment || payment.status !== 'confirmed') {
-    return false;
-  }
-  const confirmedAt = toJsDate(payment.confirmedAt);
-  if (!confirmedAt) {
-    return false;
-  }
-  return kolkataDateKey(confirmedAt) === kolkataDateKey(new Date());
-}
-
 function httpError(status, code, message) {
   const error = new Error(message);
   error.status = status;
@@ -91,12 +60,17 @@ class ShopDashboardService {
       } else if (data.orderStatus === 'ready') {
         stats.ready += 1;
       }
-
-      const payment = data.payment || {};
-      if (isConfirmedTodayIst(payment)) {
-        stats.todayEarnings += Number(payment.amount) || 0;
-      }
     });
+
+    const {
+      buildOrderEntriesFromSnapshot,
+      aggregateEarnings,
+      presentAggregate
+    } = require('./marketplace/shopEarningsService');
+    const now = new Date();
+    const entries = await buildOrderEntriesFromSnapshot(snapshot);
+    const earningsState = aggregateEarnings(entries, now);
+    stats.todayEarnings = presentAggregate(earningsState, now).periods.today.net;
 
     return stats;
   }

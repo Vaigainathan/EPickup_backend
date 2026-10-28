@@ -10,6 +10,47 @@ const {
 
 const router = express.Router();
 const superAdminMarketplaceMutations = requireAdminRole(['super_admin']);
+const superAdminOnly = requireAdminRole(['super_admin']);
+const {
+  computeShopEarnings,
+  listAdminShopEarnings
+} = require('../services/marketplace/shopEarningsService');
+
+router.get('/shops/earnings', superAdminOnly, async (req, res) => {
+  try {
+    const period = req.query.period || 'today';
+    const data = await listAdminShopEarnings(period, { now: new Date() });
+    res.json({ success: true, data, timestamp: new Date().toISOString() });
+  } catch (error) {
+    res.status(error.status || 500).json({
+      success: false,
+      error: { code: error.code || 'SHOP_EARNINGS_ERROR', message: error.message },
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+router.get('/shops/:shopId/earnings', superAdminOnly, async (req, res) => {
+  try {
+    const db = getFirestore();
+    const shopDoc = await db.collection('users').doc(req.params.shopId).get();
+    if (!shopDoc.exists || (shopDoc.data() || {}).userType !== 'shop') {
+      return res.status(404).json({
+        success: false,
+        error: { code: 'SHOP_NOT_FOUND', message: 'Shop not found' },
+        timestamp: new Date().toISOString()
+      });
+    }
+    const data = await computeShopEarnings(req.params.shopId, { now: new Date() });
+    res.json({ success: true, data, timestamp: new Date().toISOString() });
+  } catch (error) {
+    res.status(error.status || 500).json({
+      success: false,
+      error: { code: error.code || 'SHOP_EARNINGS_ERROR', message: error.message },
+      timestamp: new Date().toISOString()
+    });
+  }
+});
 
 router.get('/enforcement', async (req, res) => {
   try {

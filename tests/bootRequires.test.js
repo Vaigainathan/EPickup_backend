@@ -71,6 +71,7 @@ const BATCH_MODULES = [
   '../src/services/marketplace/marketplacePush',
   '../src/services/marketplace/customerOrderView',
   '../src/services/marketplace/customerOrderActions',
+  '../src/services/marketplace/shopEarningsService',
   '../src/services/marketplace/createCustomerOrder',
   '../src/services/marketplaceSyncService',
   '../src/services/notificationTemplates',
@@ -83,6 +84,7 @@ const BATCH_MODULES = [
   '../src/services/bookingStateMachine',
   '../src/services/bookingCancelEvents',
   '../src/routes/adminMarketplace',
+  '../src/routes/shop',
   '../src/routes/admin'
 ];
 

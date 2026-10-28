@@ -85,7 +85,8 @@ const BATCH_MODULES = [
   '../src/services/bookingCancelEvents',
   '../src/routes/adminMarketplace',
   '../src/routes/shop',
-  '../src/routes/admin'
+  '../src/routes/admin',
+  '../src/services/admin/adminDashboardCountsService'
 ];
 
 const BATCH4_MODULES = [

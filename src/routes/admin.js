@@ -25,8 +25,16 @@ const { ADMIN_ROLES, isAdminRole } = require('../constants/adminRoles');
 const {
   resolveBookingSourceType,
   matchesSourceTypeFilter,
-  resolveBookingFareTotal
+  resolveBookingFareTotal,
+  canExpressSourceTypeInFirestore
 } = require('../utils/bookingSourceType');
+const {
+  fetchDashboardCounts,
+  ADMIN_LIST_ACTIVE_BOOKING_STATUSES,
+  buildAdminDriversFilterQuery,
+  buildAdminBookingsFilterQuery,
+  firestoreCount
+} = require('../services/admin/adminDashboardCountsService');
 const router = express.Router();
 
 // Apply input sanitization to all admin routes
@@ -442,6 +450,32 @@ router.get('/profile', async (req, res) => {
         code: 'PROFILE_RETRIEVAL_ERROR',
         message: 'Failed to retrieve admin profile',
         details: error.message
+      },
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+/**
+ * @route   GET /api/admin/dashboard/counts
+ * @desc    Dashboard aggregate counts (no monetary fields)
+ * @access  Private (Admin only)
+ */
+router.get('/dashboard/counts', async (req, res) => {
+  try {
+    const data = await fetchDashboardCounts();
+    res.json({
+      success: true,
+      data,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('Error fetching dashboard counts:', error);
+    res.status(500).json({
+      success: false,
+      error: {
+        code: 'DASHBOARD_COUNTS_ERROR',
+        message: 'Failed to fetch dashboard counts'
       },
       timestamp: new Date().toISOString()
     });
@@ -907,7 +941,8 @@ function getDefaultPermissions(role) {
 router.get('/drivers', async (req, res) => {
   try {
     const db = getFirestore();
-    const { limit = 20, offset = 0, status, verificationStatus } = req.query;
+    const { limit = 20, offset = 0, status, verificationStatus, online } = req.query;
+    const filterOnline = online === 'true' || online === true;
 
     // ✅ CORE FIX: First, ensure all drivers have createdAt field (fix missing ones)
     // This prevents drivers from being excluded from queries
@@ -942,15 +977,7 @@ router.get('/drivers', async (req, res) => {
       // Continue anyway - fallback query will handle it
     }
 
-    let query = db.collection('users').where('userType', '==', 'driver');
-
-    // Apply filters
-    if (status) {
-      query = query.where('isActive', '==', status === 'active');
-    }
-    if (verificationStatus) {
-      query = query.where('isVerified', '==', verificationStatus === 'verified');
-    }
+    let query = buildAdminDriversFilterQuery(db, { status, verificationStatus, online: filterOnline });
 
     // ✅ CRITICAL FIX: Try indexed query first, fallback to simple query if it fails
     let snapshot;
@@ -961,15 +988,7 @@ router.get('/drivers', async (req, res) => {
     } catch (indexError) {
       // Fallback: Query without orderBy if index is missing or createdAt has wrong type
       console.warn('⚠️ [ADMIN] Indexed query failed, using fallback query:', indexError.message);
-      let fallbackQuery = db.collection('users').where('userType', '==', 'driver');
-      
-      if (status) {
-        fallbackQuery = fallbackQuery.where('isActive', '==', status === 'active');
-      }
-      if (verificationStatus) {
-        fallbackQuery = fallbackQuery.where('isVerified', '==', verificationStatus === 'verified');
-      }
-      
+      let fallbackQuery = buildAdminDriversFilterQuery(db, { status, verificationStatus, online: filterOnline });
       // Get all matching drivers, then sort in-memory
       const allDrivers = await fallbackQuery.get();
       const driversArray = allDrivers.docs.map(doc => {
@@ -1414,13 +1433,23 @@ router.get('/drivers', async (req, res) => {
       }
     }
 
+    let totalCount = 0;
+    try {
+      totalCount = await firestoreCount(
+        buildAdminDriversFilterQuery(db, { status, verificationStatus, online: filterOnline })
+      );
+    } catch (countError) {
+      console.warn('⚠️ [ADMIN] Failed to get driver totalCount:', countError.message);
+    }
+
     res.json({
       success: true,
       data: drivers,
       pagination: {
         limit: Math.max(1, Math.min(100, parseInt(limit) || 20)),
         offset: Math.max(0, parseInt(offset) || 0),
-        total: drivers.length
+        total: drivers.length,
+        totalCount
       },
       timestamp: new Date().toISOString()
     });
@@ -1785,13 +1814,26 @@ router.get('/bookings', async (req, res) => {
       bookings.push(mappedBooking);
     }
 
+    let totalCount = null;
+    if (canExpressSourceTypeInFirestore(sourceType)) {
+      try {
+        totalCount = await firestoreCount(
+          buildAdminBookingsFilterQuery(db, { status, dateFrom, dateTo, sourceType })
+        );
+      } catch (countError) {
+        console.warn('⚠️ [ADMIN] Failed to get booking totalCount:', countError.message);
+        totalCount = 0;
+      }
+    }
+
     res.json({
       success: true,
       data: bookings,
       pagination: {
         limit: Math.max(1, Math.min(100, parseInt(limit) || 20)),
         offset: Math.max(0, parseInt(offset) || 0),
-        total: bookings.length
+        total: bookings.length,
+        totalCount
       },
       timestamp: new Date().toISOString()
     });
@@ -1820,8 +1862,8 @@ router.get('/bookings/active', async (req, res) => {
     const db = getFirestore();
     const { limit = 50, sourceType } = req.query;
 
-    // ✅ UNIFIED STATUS DEFINITION: Use consistent status names
-    const activeStatuses = ['pending', 'driver_assigned', 'accepted', 'driver_enroute', 'driver_arrived', 'picked_up', 'in_transit'];
+    // ✅ UNIFIED STATUS DEFINITION: Use consistent status names (see ADMIN_LIST_ACTIVE_BOOKING_STATUSES)
+    const activeStatuses = ADMIN_LIST_ACTIVE_BOOKING_STATUSES;
     const bookings = [];
 
     for (const status of activeStatuses) {
@@ -2277,72 +2319,12 @@ router.get('/emergency/alerts/active', async (req, res) => {
       });
     });
 
-    // If no alerts exist, create some mock data for testing
-    if (activeAlerts.length === 0) {
-      const mockAlerts = [
-        {
-          id: 'mock-alert-1',
-          alertId: 'mock-alert-1',
-          userId: 'customer-1',
-          userType: 'customer',
-          userInfo: {
-            name: 'Alice Johnson',
-            phone: '+1234567890'
-          },
-          type: 'medical',
-          priority: 'high',
-          status: 'active',
-          location: {
-            address: '123 Main St, New York, NY',
-            latitude: 40.7128,
-            longitude: -74.0060
-          },
-          description: 'Customer experiencing chest pain during ride',
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString()
-        },
-        {
-          id: 'mock-alert-2',
-          alertId: 'mock-alert-2',
-          userId: 'customer-2',
-          userType: 'customer',
-          userInfo: {
-            name: 'Bob Smith',
-            phone: '+1234567891'
-          },
-          type: 'other',
-          priority: 'medium',
-          status: 'active',
-          location: {
-            address: '456 Broadway, New York, NY',
-            latitude: 40.7589,
-            longitude: -73.9851
-          },
-          description: 'Driver reported aggressive behavior from customer',
-          createdAt: new Date(Date.now() - 300000).toISOString(), // 5 minutes ago
-          updatedAt: new Date(Date.now() - 300000).toISOString()
-        }
-      ];
-
-      // Store mock alerts in Firestore for future use
-      for (const alert of mockAlerts) {
-        await db.collection('emergencyAlerts').doc(alert.id).set(alert);
-      }
-
-      res.json({
-        success: true,
-        data: mockAlerts,
-        count: mockAlerts.length,
-        timestamp: new Date().toISOString()
-      });
-    } else {
-      res.json({
-        success: true,
-        data: activeAlerts,
-        count: activeAlerts.length,
-        timestamp: new Date().toISOString()
-      });
-    }
+    res.json({
+      success: true,
+      data: activeAlerts,
+      count: activeAlerts.length,
+      timestamp: new Date().toISOString()
+    });
 
   } catch (error) {
     console.error('Error fetching active emergency alerts:', error);
@@ -6264,47 +6246,6 @@ router.get('/support-tickets', async (req, res) => {
       error: {
         code: 'SUPPORT_TICKETS_ERROR',
         message: 'Failed to get support tickets',
-        details: error.message
-      },
-      timestamp: new Date().toISOString()
-    });
-  }
-});
-
-/**
- * @route   GET /api/admin/system/users/online
- * @desc    Get online users count
- * @access  Private (Admin only)
- */
-router.get('/system/users/online', async (req, res) => {
-  try {
-    const db = getFirestore();
-    
-    // Get users who were active in the last 5 minutes
-    const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000);
-    
-    const onlineUsersSnapshot = await db.collection('users')
-      .where('lastSeen', '>=', fiveMinutesAgo)
-      .get();
-    
-    const onlineCount = onlineUsersSnapshot.size;
-    
-    res.json({
-      success: true,
-      data: {
-        onlineUsers: onlineCount,
-        lastChecked: new Date().toISOString()
-      },
-      timestamp: new Date().toISOString()
-    });
-
-  } catch (error) {
-    console.error('❌ Error getting online users:', error);
-    res.status(500).json({
-      success: false,
-      error: {
-        code: 'ONLINE_USERS_ERROR',
-        message: 'Failed to get online users count',
         details: error.message
       },
       timestamp: new Date().toISOString()

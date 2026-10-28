@@ -15,6 +15,31 @@ function emitBookingCancelled(io, { driverId, bookingId, reason, cancelledBy }) 
   io.to(bookingRoom).emit('booking_cancelled', payload);
 }
 
+function emitBookingReassigned(io, { driverId, customerId, bookingId, reason }) {
+  if (!io || !bookingId) {
+    return;
+  }
+  const payload = {
+    bookingId,
+    reason: reason || 'Admin reassignment',
+    timestamp: new Date().toISOString()
+  };
+  if (driverId) {
+    io.to(`user:${driverId}`).emit('booking_cancelled', payload);
+    io.to(`user:${driverId}`).emit('booking_reassigned', {
+      ...payload,
+      role: 'removed_driver'
+    });
+  }
+  if (customerId) {
+    io.to(`user:${customerId}`).emit('booking_reassigned', {
+      ...payload,
+      role: 'customer'
+    });
+  }
+  io.to(`booking:${bookingId}`).emit('booking_reassigned', payload);
+}
+
 function emitMarketplaceHandoverConfirmed(io, {
   driverId,
   bookingId,
@@ -33,5 +58,6 @@ function emitMarketplaceHandoverConfirmed(io, {
 
 module.exports = {
   emitBookingCancelled,
+  emitBookingReassigned,
   emitMarketplaceHandoverConfirmed
 };

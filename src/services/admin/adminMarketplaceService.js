@@ -3,6 +3,9 @@ const shopOrderService = require('../shopOrderService');
 const { resolvePaidCheckSupport } = require('../marketplace/shopPaymentVerification');
 const { markRefundSent, resolveRefundDispute } = require('../marketplace/refunds');
 const { resolveMarketplaceHelp } = require('../marketplace/helpRequests');
+const {
+  evaluateAdminMarketplaceCancel
+} = require('../marketplace/marketplaceAdminCancelPolicy');
 
 const MARKETPLACE_HELP_TICKET_CATEGORY = 'marketplace_order';
 
@@ -40,7 +43,7 @@ class AdminMarketplaceService {
     };
   }
 
-  presentOrderSummary(orderId, data) {
+  presentOrderSummary(orderId, data, cancelMeta = {}) {
     const payment = data.payment && typeof data.payment === 'object' ? data.payment : {};
     return {
       orderId,
@@ -51,6 +54,8 @@ class AdminMarketplaceService {
       amount: payment.amountDue ?? payment.amount ?? data.amount ?? null,
       customerUtrLast4: typeof payment.customerUtr === 'string' ? payment.customerUtr.slice(-4) : null,
       linkedBookingId: data.linkedBookingId || null,
+      canAdminCancel: cancelMeta.canAdminCancel === true,
+      cancelBlockedReason: cancelMeta.cancelBlockedReason || null,
       createdAt: data.createdAt,
       updatedAt: data.updatedAt
     };
@@ -67,6 +72,20 @@ class AdminMarketplaceService {
     }
 
     const data = orderSnap.data() || {};
+
+    let linkedBooking = null;
+    if (data.linkedBookingId) {
+      const bookingSnap = await db.collection('bookings').doc(data.linkedBookingId).get();
+      if (bookingSnap.exists) {
+        linkedBooking = bookingSnap.data() || {};
+      }
+    }
+    const cancelEval = evaluateAdminMarketplaceCancel(data, linkedBooking);
+    const cancelMeta = {
+      canAdminCancel: cancelEval.allowed,
+      cancelBlockedReason: cancelEval.reason
+    };
+
     const eventsSnap = await db.collection('marketplaceOrders').doc(orderId)
       .collection('events')
       .orderBy('at', 'desc')
@@ -102,7 +121,7 @@ class AdminMarketplaceService {
 
     return {
       order: { id: orderId, ...data },
-      summary: this.presentOrderSummary(orderId, data),
+      summary: this.presentOrderSummary(orderId, data, cancelMeta),
       customer,
       shop,
       events: eventsSnap.docs.map((d) => ({ id: d.id, ...d.data() })),

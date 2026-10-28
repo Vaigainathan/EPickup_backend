@@ -48,6 +48,13 @@ class BookingStateMachine {
   }
 
   /**
+   * List valid target states from a current booking state.
+   */
+  getAllowedTransitions(currentState) {
+    return [...(this.stateTransitions[currentState] || [])];
+  }
+
+  /**
    * Validate state transition
    * @param {string} currentState - Current booking state
    * @param {string} newState - Desired new state

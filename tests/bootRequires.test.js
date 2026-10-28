@@ -63,7 +63,13 @@ const BATCH_MODULES = [
   '../src/services/notificationTemplates',
   '../src/services/shopOrderService',
   '../src/routes/shopOrders',
-  '../src/routes/driver'
+  '../src/routes/driver',
+  '../src/services/marketplace/marketplaceAdminCancelPolicy',
+  '../src/services/admin/adminBookingInterventionService',
+  '../src/services/admin/adminMarketplaceService',
+  '../src/services/bookingStateMachine',
+  '../src/services/bookingCancelEvents',
+  '../src/routes/adminMarketplace'
 ];
 
 describe('B-BATCH-2 boot requires', () => {

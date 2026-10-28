@@ -32,6 +32,7 @@ const { presentDeliveryAddress } = require('./marketplace/presentDeliveryAddress
 const { buildSystemAvailabilityUpdate } = require('../utils/driverAvailabilityMetadata');
 const { emitBookingCancelled } = require('./bookingCancelEvents');
 const { presentMarketplaceDriverInfo } = require('./marketplace/presentMarketplaceDriverInfo');
+const { evaluateAdminMarketplaceCancel } = require('./marketplace/marketplaceAdminCancelPolicy');
 
 function refundRowsFromQuerySnap(snap) {
   const docs = snap && Array.isArray(snap.docs) ? snap.docs : [];
@@ -43,15 +44,6 @@ function refundRowsFromQuerySnap(snap) {
 }
 
 const COLLECTION = 'marketplaceOrders';
-const PAST_PICKUP_BOOKING = new Set([
-  'photo_captured',
-  'picked_up',
-  'in_transit',
-  'at_dropoff',
-  'delivered',
-  'money_collection',
-  'completed'
-]);
 const SUPPORT_READY_STAGES = new Set(['searching', 'assigned', 'at_shop']);
 const DISPLAY_ID_ATTEMPTS = 8;
 
@@ -1223,15 +1215,6 @@ class ShopOrderService {
       )) {
         return { alreadyProcessed: true, data };
       }
-      const stage = data.delivery && data.delivery.stage;
-      const stageBlocked = stage === 'picked_up' || stage === 'on_the_way' || stage === 'delivered';
-      const statusBlocked = data.orderStatus === 'handed_over' || data.orderStatus === 'completed';
-      const allowed = data.orderStatus === 'preparing'
-        || (data.orderStatus === 'ready' && (stage == null || SUPPORT_READY_STAGES.has(stage)));
-      if (statusBlocked || stageBlocked || !allowed) {
-        throw httpError(409, 'CANCEL_NOT_ALLOWED', 'This order cannot be cancelled');
-      }
-
       let booking = null;
       let bookingRef = null;
       if (data.linkedBookingId) {
@@ -1239,12 +1222,14 @@ class ShopOrderService {
         const bookingSnap = await tx.get(bookingRef);
         if (bookingSnap.exists) {
           booking = bookingSnap.data() || {};
-          if (PAST_PICKUP_BOOKING.has(booking.status)) {
-            throw httpError(409, 'CANCEL_NOT_ALLOWED', 'This order cannot be cancelled');
-          }
         } else {
           bookingRef = null;
         }
+      }
+
+      const cancelEval = evaluateAdminMarketplaceCancel(data, booking);
+      if (!cancelEval.allowed) {
+        throw httpError(409, 'CANCEL_NOT_ALLOWED', cancelEval.reason || 'This order cannot be cancelled');
       }
 
       const payment = data.payment || {};

@@ -1,11 +1,15 @@
 const express = require('express');
 const adminMarketplaceService = require('../services/admin/adminMarketplaceService');
+const { requireAdminRole } = require('../middleware/auth');
+const { getFirestore } = require('../services/firebase');
+const { writeAdminLog } = require('../services/admin/adminBookingInterventionService');
 const {
   restrictCustomerMarketplace,
   unrestrictCustomerMarketplace
 } = require('../services/admin/customerMarketplaceRestrictionService');
 
 const router = express.Router();
+const superAdminMarketplaceMutations = requireAdminRole(['super_admin']);
 
 router.get('/enforcement', async (req, res) => {
   try {
@@ -46,13 +50,27 @@ router.get('/orders/:orderId', async (req, res) => {
   }
 });
 
-router.post('/orders/:orderId/cancel', async (req, res) => {
+router.post('/orders/:orderId/cancel', superAdminMarketplaceMutations, async (req, res) => {
   try {
     const operator = req.body?.operator || req.user.uid || req.user.userId;
+    const orderId = req.params.orderId;
+    const note = req.body?.reason || req.body?.note || 'Admin cancel';
     const data = await adminMarketplaceService.cancelOrder({
-      orderId: req.params.orderId,
+      orderId,
       operator,
-      note: req.body?.reason || req.body?.note || 'Admin cancel'
+      note
+    });
+    const db = getFirestore();
+    await writeAdminLog(db, {
+      action: 'marketplace_order_cancel',
+      adminId: operator,
+      targetOrderId: orderId,
+      details: {
+        orderId,
+        reason: note,
+        wrote: data.wrote === true,
+        alreadyProcessed: data.alreadyProcessed === true
+      }
     });
     res.json({ success: true, data, timestamp: new Date().toISOString() });
   } catch (error) {

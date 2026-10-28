@@ -106,6 +106,11 @@ const NOTIFICATION_TEMPLATES = {
       title: "Booking Cancelled",
       body: "Your booking has been cancelled. {{reason}}",
       data: { type: 'booking_cancelled', action: 'book_again' }
+    },
+    FINDING_NEW_DRIVER: {
+      title: 'Finding a new delivery partner',
+      body: 'We are finding a new delivery partner for your order.',
+      data: { type: 'finding_new_driver', action: 'track_booking' }
     }
   },
 
@@ -125,6 +130,11 @@ const NOTIFICATION_TEMPLATES = {
       title: "Booking Cancelled",
       body: "The booking has been cancelled by the customer.",
       data: { type: 'booking_cancelled', action: 'find_new_booking' }
+    },
+    BOOKING_REASSIGNED: {
+      title: 'Booking reassigned',
+      body: 'This trip was reassigned by support. You are no longer assigned.',
+      data: { type: 'booking_reassigned', action: 'find_new_booking' }
     },
     PAYMENT_RECEIVED: {
       title: "Payment Received! 💰",

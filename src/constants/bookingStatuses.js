@@ -106,6 +106,30 @@ const CUSTOMER_NON_CANCELLABLE_STATUSES = [
   'rejected'
 ];
 
+/** Matches shopOrderService PAST_PICKUP_BOOKING — real pickup started on linked parcel booking. */
+const BOOKING_PAST_PICKUP_STATUSES = [
+  'photo_captured',
+  'picked_up',
+  'in_transit',
+  'at_dropoff',
+  'delivered',
+  'money_collection',
+  'completed'
+];
+
+const BOOKING_PAST_PICKUP_SET = new Set(BOOKING_PAST_PICKUP_STATUSES);
+
+function isBookingPastPickup(status) {
+  return BOOKING_PAST_PICKUP_SET.has(status || '');
+}
+
+/** Admin PUT status must not skip payment / earnings flows. */
+const ADMIN_STATUS_EDIT_BLOCKED_TARGETS = new Set([
+  'delivered',
+  'money_collection',
+  'completed'
+]);
+
 function customerCancelRefusal(status) {
   const currentStatus = status || '';
   if (!CUSTOMER_NON_CANCELLABLE_STATUSES.includes(currentStatus)) {
@@ -171,6 +195,9 @@ module.exports = {
   PAYMENT_STATUSES,
   CUSTOMER_PARCEL_BLOCKING_STATUSES,
   CUSTOMER_NON_CANCELLABLE_STATUSES,
+  BOOKING_PAST_PICKUP_STATUSES,
+  isBookingPastPickup,
+  ADMIN_STATUS_EDIT_BLOCKED_TARGETS,
   customerCancelRefusal,
   planCustomerActiveCancel,
   activeCancelHttp

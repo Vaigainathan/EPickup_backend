@@ -296,18 +296,36 @@ async function notifyReassignParties({ booking, bookingId, removedDriverId, admi
       await notificationService.sendTemplateNotification(
         removedDriverId,
         'DRIVER',
+        'BOOKING_CANCELLED',
+        { bookingId, reason: 'reassigned' }
+      );
+      await notificationService.sendTemplateNotification(
+        removedDriverId,
+        'DRIVER',
         'BOOKING_REASSIGNED',
         { bookingId, reason: note }
       );
     }
     if (booking.customerId) {
-      const template = isMarketplace ? 'FINDING_NEW_DRIVER' : 'FINDING_NEW_DRIVER';
-      await notificationService.sendTemplateNotification(
-        booking.customerId,
-        'CUSTOMER',
-        template,
-        { bookingId }
-      );
+      if (isMarketplace && booking.marketplaceOrderId) {
+        const db = getFirestore();
+        const orderSnap = await db.collection('marketplaceOrders').doc(booking.marketplaceOrderId).get();
+        const orderData = orderSnap.exists ? (orderSnap.data() || {}) : {};
+        const { marketplacePushVariables } = require('../marketplace/marketplacePush');
+        await notificationService.sendTemplateNotification(
+          booking.customerId,
+          'MARKETPLACE',
+          'FINDING_NEW_DRIVER',
+          marketplacePushVariables(orderData, booking.marketplaceOrderId)
+        );
+      } else {
+        await notificationService.sendTemplateNotification(
+          booking.customerId,
+          'CUSTOMER',
+          'FINDING_NEW_DRIVER',
+          { bookingId }
+        );
+      }
     }
   } catch (error) {
     console.error('❌ [ADMIN_INTERVENE] Reassign notification failed:', error.message);

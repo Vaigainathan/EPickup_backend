@@ -29,8 +29,11 @@ const {
   refundRemainder
 } = require('./marketplace/refunds');
 const { presentDeliveryAddress } = require('./marketplace/presentDeliveryAddress');
-const { buildSystemAvailabilityUpdate } = require('../utils/driverAvailabilityMetadata');
-const { emitBookingCancelled } = require('./bookingCancelEvents');
+const {
+  readLinkedBookingForCancel,
+  applyLinkedBookingCancel,
+  notifyAssignedDriverBookingCancelled
+} = require('./marketplace/marketplaceLinkedBookingCancel');
 const { presentMarketplaceDriverInfo } = require('./marketplace/presentMarketplaceDriverInfo');
 const { evaluateAdminMarketplaceCancel } = require('./marketplace/marketplaceAdminCancelPolicy');
 
@@ -499,7 +502,8 @@ class ShopOrderService {
         alreadyProcessed: false,
         notify: applied.notify || null,
         extra: applied.extra || {},
-        handoverSource: applied.handoverSource || null
+        handoverSource: applied.handoverSource || null,
+        linkedCancel: applied.linkedCancel || null
       };
     });
 
@@ -1093,6 +1097,15 @@ class ShopOrderService {
         throw httpError(409, 'CANCEL_NOT_ALLOWED', 'This order cannot be cancelled');
       }
       const db = ref.firestore;
+
+      let linkedRead = null;
+      if (data.linkedBookingId) {
+        linkedRead = await readLinkedBookingForCancel(tx, db, {
+          order: data,
+          linkedBookingId: data.linkedBookingId
+        });
+      }
+
       const release = data.orderStatus === 'awaiting_payment'
         ? await readUnpaidRelease(tx, db, {
           customerId: data.customerId,
@@ -1119,6 +1132,15 @@ class ShopOrderService {
       if (release) {
         writeUnpaidRelease(tx, release, orderId, true);
       }
+
+      let linkedCancel = { driverId: null, bookingId: null, cancelledBooking: false };
+      if (linkedRead) {
+        linkedCancel = applyLinkedBookingCancel(tx, linkedRead, {
+          cancelledBy: 'shop',
+          reason: 'Marketplace order cancelled'
+        });
+      }
+
       appendEvent(tx, ref, {
         type: 'cancelled',
         actor: { type: 'shop', id: shopId },
@@ -1135,6 +1157,9 @@ class ShopOrderService {
       };
       if (nextItems !== data.items) {
         updates.items = nextItems;
+      }
+      if (linkedCancel.cancelledBooking) {
+        updates['delivery.stage'] = 'cancelled';
       }
 
       if (paid) {
@@ -1164,14 +1189,16 @@ class ShopOrderService {
             type: remainderPaise > 0 ? 'REFUND_INITIATED' : 'ORDER_CANCELLED',
             shopReason: reason
           },
-          extra: { refundRequired: true }
+          extra: { refundRequired: true },
+          linkedCancel
         };
       }
 
       return {
         updates,
         notify: { type: 'ORDER_CANCELLED', shopReason: reason },
-        extra: { refundRequired: false }
+        extra: { refundRequired: false },
+        linkedCancel
       };
     });
 
@@ -1188,7 +1215,15 @@ class ShopOrderService {
     }
 
     if (!result.alreadyProcessed) {
-      await this.cancelLinkedPendingBooking(result.order.linkedBookingId);
+      const linked = result.linkedCancel;
+      if (linked && linked.driverId && linked.bookingId && linked.cancelledBooking) {
+        await notifyAssignedDriverBookingCancelled({
+          driverId: linked.driverId,
+          bookingId: linked.bookingId,
+          reason: 'Marketplace order cancelled',
+          cancelledBy: 'shop'
+        });
+      }
     }
 
     return result;
@@ -1215,21 +1250,18 @@ class ShopOrderService {
       )) {
         return { alreadyProcessed: true, data };
       }
-      let booking = null;
-      let bookingRef = null;
-      if (data.linkedBookingId) {
-        bookingRef = db.collection('bookings').doc(data.linkedBookingId);
-        const bookingSnap = await tx.get(bookingRef);
-        if (bookingSnap.exists) {
-          booking = bookingSnap.data() || {};
-        } else {
-          bookingRef = null;
-        }
-      }
 
-      const cancelEval = evaluateAdminMarketplaceCancel(data, booking);
-      if (!cancelEval.allowed) {
-        throw httpError(409, 'CANCEL_NOT_ALLOWED', cancelEval.reason || 'This order cannot be cancelled');
+      let linkedRead = null;
+      if (data.linkedBookingId) {
+        linkedRead = await readLinkedBookingForCancel(tx, db, {
+          order: data,
+          linkedBookingId: data.linkedBookingId
+        });
+      } else {
+        const cancelEval = evaluateAdminMarketplaceCancel(data, null);
+        if (!cancelEval.allowed) {
+          throw httpError(409, 'CANCEL_NOT_ALLOWED', cancelEval.reason || 'This order cannot be cancelled');
+        }
       }
 
       const payment = data.payment || {};
@@ -1238,14 +1270,6 @@ class ShopOrderService {
         ? Number(payment.receivedAmountPaise)
         : (payment.receivedAmount != null ? toPaise(payment.receivedAmount) : 0);
       const remainder = await refundRemainder(tx, orderRef, receivedPaise);
-
-      let driverRef = null;
-      let driverSnap = null;
-      const driverId = booking && booking.driverId ? booking.driverId : null;
-      if (driverId) {
-        driverRef = db.collection('users').doc(driverId);
-        driverSnap = await tx.get(driverRef);
-      }
 
       let nextItems = data.items;
       if (cancelRestoresStock(data)) {
@@ -1258,24 +1282,11 @@ class ShopOrderService {
         nextItems = restored.items;
       }
 
-      const at = new Date();
-      if (bookingRef) {
-        tx.update(bookingRef, {
-          status: 'cancelled',
-          cancellationReason: 'Marketplace order cancelled',
+      let linkedCancel = { driverId: null, bookingId: null, cancelledBooking: false };
+      if (linkedRead) {
+        linkedCancel = applyLinkedBookingCancel(tx, linkedRead, {
           cancelledBy: 'support',
-          cancelledAt: at,
-          updatedAt: at
-        });
-      }
-      if (driverRef && driverSnap && driverSnap.exists) {
-        const driverData = driverSnap.data() || {};
-        const active = driverData.driver && driverData.driver.activeBookings;
-        tx.update(driverRef, {
-          ...buildSystemAvailabilityUpdate(true),
-          'driver.currentBookingId': null,
-          'driver.activeBookings': Math.max((active || 1) - 1, 0),
-          updatedAt: at
+          reason: 'Marketplace order cancelled'
         });
       }
 
@@ -1290,7 +1301,7 @@ class ShopOrderService {
         'cancellation.support': { operator: operatorId, note: noteText },
         updatedAt: admin.firestore.FieldValue.serverTimestamp()
       };
-      if (bookingRef) {
+      if (data.linkedBookingId) {
         orderPatch['delivery.stage'] = 'cancelled';
       }
       tx.update(orderRef, orderPatch);
@@ -1328,8 +1339,9 @@ class ShopOrderService {
         shopName: data.shopSnapshot && typeof data.shopSnapshot.name === 'string'
           ? data.shopSnapshot.name
           : '',
-        driverId,
-        bookingId: data.linkedBookingId || null,
+        driverId: linkedCancel.driverId,
+        bookingId: linkedCancel.bookingId || data.linkedBookingId || null,
+        linkedCancelledBooking: linkedCancel.cancelledBooking === true,
         refundCreated,
         refundAmount
       };
@@ -1357,32 +1369,13 @@ class ShopOrderService {
     } catch (error) {
       console.error('❌ [SHOP_ORDERS] Support cancel notification failed:', error.message);
     }
-    if (outcome.driverId && outcome.bookingId) {
-      try {
-        await notificationService.sendTemplateNotification(
-          outcome.driverId,
-          'DRIVER',
-          'BOOKING_CANCELLED',
-          {
-            bookingId: outcome.bookingId,
-            reason: 'Booking cancelled by admin'
-          }
-        );
-      } catch (error) {
-        console.error('❌ [SHOP_ORDERS] Driver cancel notification failed:', error.message);
-      }
-      try {
-        const { getSocketIO } = require('./socket');
-        const io = getSocketIO();
-        emitBookingCancelled(io, {
-          driverId: outcome.driverId,
-          bookingId: outcome.bookingId,
-          reason: 'Marketplace order cancelled',
-          cancelledBy: 'support'
-        });
-      } catch (error) {
-        console.error('❌ [SHOP_ORDERS] Driver cancel socket failed:', error.message);
-      }
+    if (outcome.linkedCancelledBooking && outcome.driverId && outcome.bookingId) {
+      await notifyAssignedDriverBookingCancelled({
+        driverId: outcome.driverId,
+        bookingId: outcome.bookingId,
+        reason: 'Marketplace order cancelled',
+        cancelledBy: 'support'
+      });
     }
     return { alreadyProcessed: false, wrote: true };
   }

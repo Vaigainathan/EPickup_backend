@@ -44,6 +44,8 @@ const MARKETPLACE_TEMPLATE_ACTION = {
   ORDER_PICKED_UP_SHOP: 'order',
   OUT_FOR_DELIVERY: 'tracking',
   ORDER_DELIVERED: 'rate',
+  ORDER_DELIVERED_SHOP: 'order',
+  FINDING_NEW_DRIVER: 'tracking',
   HELP_UPDATE: 'help',
   HELP_SHOP_RESPONSE: 'help',
   BALANCE_NOT_PAID: 'refund',

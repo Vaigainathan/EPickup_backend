@@ -7,6 +7,11 @@ const { appendEvent } = require('./orderEvents');
 const { createRefund, refundRemainder, readRefundDocs } = require('./refunds');
 const { restoreLines } = require('./stock');
 const { marketplaceUtrNotifyVariables, digitsDisplayId } = require('./marketplacePush');
+const {
+  readLinkedBookingForCancel,
+  applyLinkedBookingCancel,
+  notifyAssignedDriverBookingCancelled
+} = require('./marketplaceLinkedBookingCancel');
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const CUSTOMER_CANCEL_REASONS = new Set([
@@ -108,6 +113,38 @@ function orderResponse(status, data, orderId, extras) {
       data: payload
     }
   };
+}
+
+/** Defensive: apply pre-read linked booking teardown (call after all tx reads for this cancel). */
+function applyLinkedBookingCancelFromRead(tx, linkedRead, reason) {
+  if (!linkedRead) {
+    return { driverId: null, bookingId: null, cancelledBooking: false };
+  }
+  try {
+    return applyLinkedBookingCancel(tx, linkedRead, {
+      cancelledBy: 'customer',
+      reason: reason || 'Marketplace order cancelled'
+    });
+  } catch (error) {
+    console.error('❌ [MARKETPLACE_ORDER] Linked booking cancel apply failed:', error.message);
+    return { driverId: null, bookingId: linkedRead.bookingId, cancelledBooking: false };
+  }
+}
+
+async function notifyLinkedDriverAfterCustomerCancel(outcome) {
+  if (!outcome || outcome.replay || !outcome.linkedCancel) {
+    return;
+  }
+  const linked = outcome.linkedCancel;
+  if (!linked.cancelledBooking || !linked.driverId || !linked.bookingId) {
+    return;
+  }
+  await notifyAssignedDriverBookingCancelled({
+    driverId: linked.driverId,
+    bookingId: linked.bookingId,
+    reason: 'Marketplace order cancelled',
+    cancelledBy: 'customer'
+  });
 }
 
 async function notifyCustomer(customerId, template, variables) {
@@ -370,6 +407,15 @@ async function cancelCustomerOrder({ customerId, orderId, idempotencyKey, nowMs 
     if (data.orderStatus === 'cancelled' && CUSTOMER_CANCEL_REASONS.has(cancellation.reason)) {
       return { replay: true, data };
     }
+
+    let linkedRead = null;
+    if (data.linkedBookingId) {
+      linkedRead = await readLinkedBookingForCancel(tx, db, {
+        order: data,
+        linkedBookingId: data.linkedBookingId
+      });
+    }
+
     if (payment.status === 'short') {
       if (data.orderStatus !== 'awaiting_payment') {
         throw httpError(409, 'CANCEL_NOT_ALLOWED', 'This order cannot be cancelled');
@@ -405,6 +451,7 @@ async function cancelCustomerOrder({ customerId, orderId, idempotencyKey, nowMs 
         resultingOrderStatus: 'cancelled',
         existingRefunds
       });
+      const linkedCancel = applyLinkedBookingCancelFromRead(tx, linkedRead, reason);
       tx.update(orderRef, {
         orderStatus: 'cancelled',
         closedReason: reason,
@@ -438,6 +485,7 @@ async function cancelCustomerOrder({ customerId, orderId, idempotencyKey, nowMs 
         },
         shopId: data.shopId,
         displayId: digitsDisplayId(data.displayId),
+        linkedCancel,
         data: {
           ...data,
           orderStatus: 'cancelled',
@@ -470,6 +518,7 @@ async function cancelCustomerOrder({ customerId, orderId, idempotencyKey, nowMs 
         cancelledBy: 'customer',
         cancelledAt: at
       };
+      const linkedCancel = applyLinkedBookingCancelFromRead(tx, linkedRead, reason);
       tx.update(orderRef, {
         orderStatus: 'cancelled',
         closedReason: reason,
@@ -515,6 +564,7 @@ async function cancelCustomerOrder({ customerId, orderId, idempotencyKey, nowMs 
         refundAmount,
         shopId: data.shopId,
         displayId: digitsDisplayId(data.displayId),
+        linkedCancel,
         data: {
           ...data,
           orderStatus: 'cancelled',
@@ -552,6 +602,7 @@ async function cancelCustomerOrder({ customerId, orderId, idempotencyKey, nowMs 
       ...payment,
       status: hasUtr ? payment.status : 'cancelled'
     };
+    const linkedCancel = applyLinkedBookingCancelFromRead(tx, linkedRead, reason);
     tx.update(orderRef, {
       orderStatus: 'cancelled',
       closedReason: reason,
@@ -579,6 +630,7 @@ async function cancelCustomerOrder({ customerId, orderId, idempotencyKey, nowMs 
       hasUtr,
       shopId: data.shopId,
       displayId: digitsDisplayId(data.displayId),
+      linkedCancel,
       data: {
         ...data,
         orderStatus: 'cancelled',
@@ -589,6 +641,8 @@ async function cancelCustomerOrder({ customerId, orderId, idempotencyKey, nowMs 
       }
     };
   });
+
+  await notifyLinkedDriverAfterCustomerCancel(outcome);
 
   if (!outcome.replay && outcome.groupB) {
     const snapshot = outcome.data && outcome.data.shopSnapshot && typeof outcome.data.shopSnapshot === 'object'

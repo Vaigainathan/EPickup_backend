@@ -303,8 +303,8 @@ const NOTIFICATION_TEMPLATES = {
       data: { type: 'customer_cancelled', action: 'order' }
     },
     ORDER_PACKED: {
-      title: 'Order packed',
-      body: 'Your {{shopName}} order is packed — delivery charge ₹{{deliveryFee}} in cash',
+      title: 'Order ready',
+      body: 'Your order is ready — finding a delivery partner — delivery charge ₹{{deliveryFee}} in cash',
       data: { type: 'order_packed', action: 'tracking' }
     },
     DRIVER_SLOW: {
@@ -346,6 +346,16 @@ const NOTIFICATION_TEMPLATES = {
       title: 'Delivered',
       body: 'Delivered — rate your {{shopName}} order',
       data: { type: 'order_delivered', action: 'rate' }
+    },
+    ORDER_DELIVERED_SHOP: {
+      title: 'Delivered',
+      body: 'Order #{{displayId}} delivered',
+      data: { type: 'order_delivered', action: 'order' }
+    },
+    FINDING_NEW_DRIVER: {
+      title: 'Finding a new delivery partner',
+      body: 'We are finding a new delivery partner for your order.',
+      data: { type: 'finding_new_driver', action: 'tracking' }
     },
     HELP_UPDATE: {
       title: 'Help request update',

@@ -26,7 +26,8 @@ const PUSH_BY_STAGE = {
 
 const SHOP_PUSH_BY_STAGE = {
   assigned: 'DRIVER_ASSIGNED_SHOP',
-  at_shop: 'DRIVER_AT_SHOP_SHOP'
+  at_shop: 'DRIVER_AT_SHOP_SHOP',
+  delivered: 'ORDER_DELIVERED_SHOP'
 };
 
 const STATUS_TO_STAGE = {

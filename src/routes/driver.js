@@ -4895,6 +4895,32 @@ router.post('/bookings/:id/accept', idempotencyKeyMiddleware, requireDriver, asy
 
     const driverData = driverDoc.data();
     
+    const {
+      isDriverVerified,
+      driverAccountSuspensionReason
+    } = require('../utils/driverBookingEligibility');
+
+    const suspensionReason = driverAccountSuspensionReason(driverData);
+    if (suspensionReason) {
+      return res.status(403).json({
+        success: false,
+        error: {
+          code: 'DRIVER_ACCOUNT_SUSPENDED',
+          message: 'Driver account suspended',
+          details: 'Your account cannot accept bookings at this time',
+          accountStatus: suspensionReason
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    if (!isDriverVerified(driverData)) {
+      return sendDriverNotVerified(
+        res,
+        driverData.driver?.verificationStatus || driverData.verificationStatus || 'pending'
+      );
+    }
+    
     // ✅ DEBUG: Log driver status when accepting booking
     console.log('🔍 [ACCEPT_BOOKING] Driver status check:', {
       uid,

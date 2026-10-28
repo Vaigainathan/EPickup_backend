@@ -3,6 +3,8 @@ const { getFirestore } = require('./firebase');
 const firestoreSessionService = require('./firestoreSessionService');
 const expoPushService = require('./expoPushService');
 const { NEW_ORDER_CHANNEL_ID } = require('../constants/notifications');
+const { passesDriverNewBookingNotifyEligibility } = require('../utils/driverBookingEligibility');
+const { buildNewBookingDisplayPush } = require('../utils/newBookingDisplayPush');
 const { withParcelSource } = require('./parcelSourceFilter');
 const { authorizeBookingRoomJoin } = require('./bookingRoomAuth');
 const { buildNewBookingSocketFields } = require('./marketplace/newBookingAvailablePayload');
@@ -2217,7 +2219,16 @@ class WebSocketEventHandler {
         console.warn('⚠️ [NOTIFY_DRIVERS] Active-booking filter failed, proceeding with all drivers:', e?.message);
       }
 
-      const eligibleDocs = driversSnapshot.docs.filter(doc => !busyDriverIds.has(doc.id));
+      const eligibleDocs = driversSnapshot.docs.filter((doc) => {
+        if (busyDriverIds.has(doc.id)) {
+          return false;
+        }
+        const driverData = doc.data();
+        if (!passesDriverNewBookingNotifyEligibility(driverData)) {
+          return false;
+        }
+        return true;
+      });
       const eligibleSnapshot = {
         docs: eligibleDocs,
         size: eligibleDocs.length,
@@ -2225,7 +2236,7 @@ class WebSocketEventHandler {
       };
 
       if (eligibleSnapshot.size === 0) {
-        console.log(`🔔 [NOTIFY_DRIVERS] No eligible drivers for booking ${bookingData.id} (after filters: online, available, verified, no active booking, within range)`);
+        console.log(`🔔 [NOTIFY_DRIVERS] No eligible drivers for booking ${bookingData.id} (after filters: online, available, verified, account active, no active booking, within range)`);
         return;
       }
 
@@ -2497,10 +2508,11 @@ class WebSocketEventHandler {
 
         console.log(`✅ [PUSH_NOTIFICATION] Data-only pushes sent: ${dataOnlyResult.successCount} success, ${dataOnlyResult.failureCount} failed`);
 
+        const displayCopy = buildNewBookingDisplayPush(bookingData);
         // Thing 2: Normal display notification for the status bar/banner
         const displayNotification = {
-          title: '🚗 New Booking Available!',
-          body: `Pickup: ${bookingData.pickup?.address || 'Location'}`,
+          title: displayCopy.title,
+          body: displayCopy.body,
           type: 'new_booking_display',
           bookingId: bookingData.id,
           data: {

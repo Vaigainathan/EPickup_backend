@@ -19,25 +19,32 @@ function emitBookingReassigned(io, { driverId, customerId, bookingId, reason }) 
   if (!io || !bookingId) {
     return;
   }
-  const payload = {
+  const note = reason || 'Admin reassignment';
+  const cancelledPayload = {
     bookingId,
-    reason: reason || 'Admin reassignment',
+    reason: 'reassigned',
+    cancelledBy: 'admin',
+    timestamp: new Date().toISOString()
+  };
+  const reassignPayload = {
+    bookingId,
+    reason: note,
     timestamp: new Date().toISOString()
   };
   if (driverId) {
-    io.to(`user:${driverId}`).emit('booking_cancelled', payload);
+    io.to(`user:${driverId}`).emit('booking_cancelled', cancelledPayload);
     io.to(`user:${driverId}`).emit('booking_reassigned', {
-      ...payload,
+      ...reassignPayload,
       role: 'removed_driver'
     });
   }
   if (customerId) {
     io.to(`user:${customerId}`).emit('booking_reassigned', {
-      ...payload,
+      ...reassignPayload,
       role: 'customer'
     });
   }
-  io.to(`booking:${bookingId}`).emit('booking_reassigned', payload);
+  io.to(`booking:${bookingId}`).emit('booking_reassigned', reassignPayload);
 }
 
 function emitMarketplaceHandoverConfirmed(io, {

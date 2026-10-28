@@ -1,5 +1,6 @@
 /**
  * B-BATCH-2: every module touched in this batch must resolve at boot (mocked Firebase).
+ * B-BATCH-4: notification gap modules.
  */
 
 jest.mock('../instrument.js', () => ({}));
@@ -85,8 +86,22 @@ const BATCH_MODULES = [
   '../src/routes/admin'
 ];
 
+const BATCH4_MODULES = [
+  '../src/utils/driverBookingEligibility',
+  '../src/utils/newBookingDisplayPush',
+  '../src/services/marketplace/marketplaceLinkedBookingCancel'
+];
+
 describe('B-BATCH-2 boot requires', () => {
   test.each(BATCH_MODULES)('loads %s without throw', (modulePath) => {
+    jest.isolateModules(() => {
+      expect(() => require(modulePath)).not.toThrow();
+    });
+  });
+});
+
+describe('B-BATCH-4 boot requires', () => {
+  test.each(BATCH4_MODULES)('loads %s without throw', (modulePath) => {
     jest.isolateModules(() => {
       expect(() => require(modulePath)).not.toThrow();
     });

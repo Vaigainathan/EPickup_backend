@@ -885,6 +885,24 @@
           "order": "ASCENDING"
         },
         {
+          "fieldPath": "isSelected",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "startTime",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "workSlots",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "driverId",
+          "order": "ASCENDING"
+        },
+        {
           "fieldPath": "status",
           "order": "ASCENDING"
         },

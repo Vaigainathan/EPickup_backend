@@ -1,6 +1,7 @@
 const { getAuth } = require('firebase-admin/auth');
-const { getFirestore } = require('firebase-admin/firestore');
+const { getFirestore, FieldValue } = require('firebase-admin/firestore');
 const { assertAdminRole, isAdminRole } = require('../constants/adminRoles');
+const { invalidateAdminVerificationCache } = require('../middleware/auth');
 
 async function findAdminByEmail(db, email) {
   const normalized = email.trim().toLowerCase();
@@ -155,9 +156,113 @@ async function disableAdminStaff(uid, { disabledBy } = {}) {
   return { uid, ...patch };
 }
 
+const ADMIN_USER_OVERLAY_FIELDS = [
+  'role',
+  'userType',
+  'isActive',
+  'accountStatus',
+  'disabledAt',
+  'disabledBy',
+  'permissions',
+  'createdBy',
+  'lastLogin',
+  'isEmailVerified',
+  'emailVerificationLink'
+];
+
+async function deleteAdminStaff(uid, { deletedBy } = {}) {
+  const db = getFirestore();
+  const auth = getAuth();
+
+  const adminRef = db.collection('adminUsers').doc(uid);
+  const adminDoc = await adminRef.get();
+  if (!adminDoc.exists) {
+    const error = new Error('Admin user not found');
+    error.code = 'ADMIN_NOT_FOUND';
+    error.status = 404;
+    throw error;
+  }
+
+  const adminData = adminDoc.data();
+
+  if (adminData.role === 'super_admin') {
+    const activeSuperSnap = await db.collection('adminUsers')
+      .where('role', '==', 'super_admin')
+      .where('isActive', '==', true)
+      .get();
+    const activeSuperIds = activeSuperSnap.docs.map((d) => d.id);
+    if (activeSuperIds.length === 1 && activeSuperIds[0] === uid) {
+      const error = new Error('Cannot delete the last active super admin');
+      error.code = 'LAST_SUPER_ADMIN';
+      error.status = 400;
+      throw error;
+    }
+  }
+
+  const deletedAt = new Date();
+  const deletedAtIso = deletedAt.toISOString();
+  const batch = db.batch();
+
+  batch.delete(adminRef);
+
+  const userRef = db.collection('users').doc(uid);
+  const userDoc = await userRef.get();
+  if (userDoc.exists) {
+    const userData = userDoc.data();
+    if (userData.userType === 'admin') {
+      batch.delete(userRef);
+    } else {
+      const strip = {};
+      for (const field of ADMIN_USER_OVERLAY_FIELDS) {
+        strip[field] = FieldValue.delete();
+      }
+      strip.updatedAt = deletedAtIso;
+      batch.update(userRef, strip);
+    }
+  }
+
+  const auditLogRef = db.collection('adminLogs').doc();
+  batch.set(auditLogRef, {
+    action: 'admin_deleted',
+    adminId: deletedBy || null,
+    targetUserId: uid,
+    targetUserType: 'admin',
+    details: {
+      email: adminData.email || null,
+      displayName: adminData.displayName || adminData.name || null,
+      role: adminData.role || null,
+      deletedAt
+    },
+    timestamp: deletedAt
+  });
+
+  await batch.commit();
+
+  try {
+    await auth.revokeRefreshTokens(uid);
+  } catch (err) {
+    if (err.code !== 'auth/user-not-found') {
+      throw err;
+    }
+  }
+
+  try {
+    await auth.deleteUser(uid);
+  } catch (err) {
+    if (err.code !== 'auth/user-not-found') {
+      throw err;
+    }
+  }
+
+  invalidateAdminVerificationCache(uid);
+
+  return { uid, deletedAt: deletedAtIso };
+}
+
 module.exports = {
   createAdminStaff,
   disableAdminStaff,
+  deleteAdminStaff,
   findAdminByEmail,
   isAdminRole
 };

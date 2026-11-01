@@ -18,7 +18,8 @@ const {
   AdminInterventionError
 } = require('../services/admin/adminBookingInterventionService');
 const { requireStagingFirebaseProject } = require('../middleware/stagingFirebaseProject');
-const { createAdminStaff, disableAdminStaff } = require('../services/adminStaffService');
+const adminStaffService = require('../services/adminStaffService');
+const { createAdminStaff, disableAdminStaff } = adminStaffService;
 const adminSupportTicketService = require('../services/admin/adminSupportTicketService');
 const adminEmergencyAlertService = require('../services/admin/adminEmergencyAlertService');
 const { ADMIN_ROLES, isAdminRole } = require('../constants/adminRoles');
@@ -859,61 +860,37 @@ router.put('/admins/:uid', async (req, res) => {
 router.delete('/admins/:uid', async (req, res) => {
   try {
     const { uid } = req.params;
-    
-    // Only super admin can delete other admins
-    if (req.user.role !== 'super_admin') {
-      return res.status(403).json({
-        success: false,
-        error: {
-          code: 'INSUFFICIENT_PERMISSIONS',
-          message: 'Only super admin can delete admin users'
-        }
-      });
-    }
 
-    // Cannot delete self
     if ((req.user.uid || req.user.userId) === uid) {
       return res.status(400).json({
         success: false,
         error: {
           code: 'CANNOT_DELETE_SELF',
           message: 'You cannot delete your own account'
-        }
+        },
+        timestamp: new Date().toISOString()
       });
     }
 
-    const db = getFirestore();
-    
-    // Check if admin exists
-    const adminDoc = await db.collection('adminUsers').doc(uid).get();
-    if (!adminDoc.exists) {
-      return res.status(404).json({
-        success: false,
-        error: {
-          code: 'ADMIN_NOT_FOUND',
-          message: 'Admin user not found'
-        }
-      });
-    }
-
-    const disabled = await disableAdminStaff(uid, {
-      disabledBy: req.user.uid || req.user.userId
+    const deleted = await adminStaffService.deleteAdminStaff(uid, {
+      deletedBy: req.user.uid || req.user.userId
     });
 
     res.json({
       success: true,
-      message: 'Admin user disabled successfully',
-      data: disabled,
+      message: 'Admin user deleted successfully',
+      data: deleted,
       timestamp: new Date().toISOString()
     });
 
   } catch (error) {
     console.error('Error deleting admin user:', error);
-    res.status(500).json({
+    const status = error.status || 500;
+    res.status(status).json({
       success: false,
       error: {
-        code: 'DELETE_ADMIN_ERROR',
-        message: 'Failed to delete admin user',
+        code: error.code || 'DELETE_ADMIN_ERROR',
+        message: error.message || 'Failed to delete admin user',
         details: error.message
       },
       timestamp: new Date().toISOString()

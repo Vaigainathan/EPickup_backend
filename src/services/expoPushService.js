@@ -322,8 +322,13 @@ class ExpoPushService {
       // ✅ NEW: High-signal debug logging when there are failures so we know WHY Expo rejected pushes
       if (failureCount > 0) {
         const failed = results.filter(result => result.status === 'error');
-        const pushContext = options.pushContext || {};
-        failed.forEach((ticket, index) => {
+        const pushContexts = Array.isArray(options.pushContexts) ? options.pushContexts : null;
+        const defaultContext = options.pushContext || {};
+        results.forEach((ticket, index) => {
+          if (ticket.status !== 'error') {
+            return;
+          }
+          const pushContext = pushContexts?.[index] || defaultContext;
           console.warn('[ExpoPushService] Push failure:', {
             userId: pushContext.userId || null,
             notificationType: pushContext.notificationType || notification.type || 'unknown',

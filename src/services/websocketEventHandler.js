@@ -1,7 +1,12 @@
 const admin = require('firebase-admin');
+const { Expo } = require('expo-server-sdk');
 const { getFirestore } = require('./firebase');
 const firestoreSessionService = require('./firestoreSessionService');
 const expoPushService = require('./expoPushService');
+const {
+  logDriverNewBookingOfferPushResults,
+  buildPushContextsForDrivers
+} = require('./driverOfferPushNotificationLog');
 const { NEW_ORDER_CHANNEL_ID } = require('../constants/notifications');
 const { passesDriverNewBookingNotifyEligibility } = require('../utils/driverBookingEligibility');
 const { buildNewBookingDisplayPush } = require('../utils/newBookingDisplayPush');
@@ -2419,15 +2424,15 @@ class WebSocketEventHandler {
         
         // ✅ CRITICAL: Check for Expo push token (primary) or FCM token (fallback)
         const pushToken = driverData.expoPushToken || driverData.fcmToken;
-        
-        if (!pushToken) {
+
+        if (!pushToken || !Expo.isExpoPushToken(pushToken)) {
           driversSkippedNoToken.push(driverId);
-          console.warn(`⚠️ [PUSH_DEBUG] Driver ${driverId} has no push token; WebSocket delivery was still attempted`);
+          console.warn(`⚠️ [PUSH_DEBUG] Driver ${driverId} has no valid Expo push token; WebSocket delivery was still attempted`);
           continue;
         }
-        
+
         driversWithToken++;
-        
+
         const loc = driverData.driver?.currentLocation;
         if (!loc) {
           driversSkippedNoLocation.push(driverId);
@@ -2491,6 +2496,8 @@ class WebSocketEventHandler {
 
       // Send two pushes: (1) data-only to trigger headless JS (play ringtone), (2) display notification for status bar
       try {
+        const offerPushContexts = buildPushContextsForDrivers(driverIds, 'new_booking');
+
         // Thing 1: Data-only push to wake headless task (no title/body/sound)
         const dataOnlyNotification = {
           // no title/body
@@ -2505,7 +2512,8 @@ class WebSocketEventHandler {
 
         const dataOnlyResult = await this.expoPushService.sendToTokens(tokens, dataOnlyNotification, {
           priority: 'high',
-          dataOnly: true
+          dataOnly: true,
+          pushContexts: offerPushContexts
         });
 
         console.log(`✅ [PUSH_NOTIFICATION] Data-only pushes sent: ${dataOnlyResult.successCount} success, ${dataOnlyResult.failureCount} failed`);
@@ -2531,10 +2539,22 @@ class WebSocketEventHandler {
         const displayResult = await this.expoPushService.sendToTokens(tokens, displayNotification, {
           priority: 'high',
           sound: 'new_order.wav',
-          channelId: NEW_ORDER_CHANNEL_ID
+          channelId: NEW_ORDER_CHANNEL_ID,
+          pushContexts: offerPushContexts
         });
 
         console.log(`✅ [PUSH_NOTIFICATION] Display pushes sent: ${displayResult.successCount} success, ${displayResult.failureCount} failed`);
+
+        void logDriverNewBookingOfferPushResults(this.db, {
+          driverIds,
+          tickets: displayResult.results || [],
+          bookingId: bookingData.id,
+          title: displayCopy.title,
+          body: displayCopy.body
+        }).catch((logError) => {
+          console.warn('[DriverOfferPushLog] Offer notification log failed:', logError.message);
+        });
+
         if (driverIds.length > 0) {
           await bookingRef.set({
             notifiedDrivers: admin.firestore.FieldValue.arrayUnion(...driverIds),

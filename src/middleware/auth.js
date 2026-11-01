@@ -529,6 +529,10 @@ function clearAdminVerificationCacheForTests() {
   adminVerificationCache.clear();
 }
 
+function invalidateAdminVerificationCache(uid) {
+  adminVerificationCache.delete(uid);
+}
+
 /**
  * Admin-only middleware — JWT userType plus Firestore proof (fail closed on read errors).
  */
@@ -936,5 +940,8 @@ module.exports = {
   optionalAuth,
   requireOwnership,
   userRateLimit,
-  clearAdminVerificationCacheForTests
+  clearAdminVerificationCacheForTests,
+  invalidateAdminVerificationCache,
+  setCachedAdminVerification,
+  getCachedAdminVerification
 };

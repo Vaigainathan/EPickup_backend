@@ -1,5 +1,6 @@
 const crypto = require('crypto');
 const Razorpay = require('razorpay');
+const { v4: uuidv4 } = require('uuid');
 const { getFirestore } = require('./firebase');
 
 class RazorpayService {
@@ -41,28 +42,25 @@ class RazorpayService {
       const rzp = this.getInstance();
       const amountInPaise = Math.round(Number(amount) * 100);
 
-      // ✅ FIX: Razorpay Payment Links API requires reference_id max 40 characters
-      // Create short reference: WLT_<timestamp>_<shortId>
       const timestamp = Date.now();
-      const shortDriverId = driverId.substring(0, 8); // First 8 chars of driver ID
+      const shortDriverId = driverId.substring(0, 8);
       const shortReference = `WLT_${timestamp}_${shortDriverId}`.substring(0, 40);
 
       const payload = {
         amount: amountInPaise,
         currency: 'INR',
         accept_partial: false,
-        reference_id: shortReference,  // ✅ Now guaranteed under 40 chars
+        reference_id: shortReference,
         description: `EPickup wallet top-up (${driverId})`,
         reminder_enable: false,
         notes: {
-          transactionId,              // ✅ Full ID stored in notes for tracking
+          transactionId,
           shortReference,
           driverId,
           purpose: 'driver_wallet_topup'
         }
       };
 
-      // ✅ FIX: Only add customer details if they're valid
       const validContact = this.normalizeIndianContact(mobileNumber);
       const validEmail = customerEmail && customerEmail.includes('@') ? customerEmail : undefined;
       const validName = customerName && customerName.length > 0 ? customerName : undefined;
@@ -74,7 +72,6 @@ class RazorpayService {
         if (validEmail) payload.customer.email = validEmail;
       }
 
-      // ✅ Only add notification settings if contact/email exist
       if (validContact || validEmail) {
         payload.notify = {
           sms: Boolean(validContact),
@@ -106,21 +103,26 @@ class RazorpayService {
     }
   }
 
-  verifyWebhookSignature(body, signature) {
+  verifyWebhookSignature(rawBody, signature) {
     try {
       const secret = process.env.RAZORPAY_WEBHOOK_SECRET;
-      if (!secret || !signature) return false;
+      if (!secret || !signature || rawBody == null) {
+        return false;
+      }
 
-      const payload = typeof body === 'string' ? body : JSON.stringify(body);
+      const payload = Buffer.isBuffer(rawBody) ? rawBody : Buffer.from(String(rawBody), 'utf8');
       const expectedSignature = crypto
         .createHmac('sha256', secret)
         .update(payload)
         .digest('hex');
 
-      return crypto.timingSafeEqual(
-        Buffer.from(expectedSignature),
-        Buffer.from(signature)
-      );
+      const expectedBuffer = Buffer.from(expectedSignature, 'utf8');
+      const signatureBuffer = Buffer.from(signature, 'utf8');
+      if (expectedBuffer.length !== signatureBuffer.length) {
+        return false;
+      }
+
+      return crypto.timingSafeEqual(expectedBuffer, signatureBuffer);
     } catch (error) {
       console.error('❌ [RAZORPAY] verifyWebhookSignature error:', error.message);
       return false;
@@ -152,6 +154,194 @@ class RazorpayService {
     return null;
   }
 
+  async emitWalletTopUpSideEffects(driverId, {
+    newPointsBalance,
+    pointsAdded,
+    currentBalance,
+    transactionId,
+    paymentMethod,
+    realMoneyAmount
+  }) {
+    try {
+      const cachingService = require('./cachingService');
+      await cachingService.delete(`wallet:balance:${driverId}`, 'memory');
+      await cachingService.invalidatePattern(`wallet:full:${driverId}:`, 'memory');
+      await cachingService.delete(`wallet:transactions:count:${driverId}`, 'memory');
+    } catch (cacheError) {
+      console.warn('⚠️ [RAZORPAY] Failed to invalidate cache after top-up:', cacheError.message);
+    }
+
+    try {
+      const socketService = require('./socket');
+      const walletData = {
+        balance: newPointsBalance,
+        transactions: [{
+          id: transactionId,
+          type: 'credit',
+          amount: pointsAdded,
+          previousBalance: currentBalance,
+          newBalance: newPointsBalance,
+          paymentMethod,
+          status: 'completed',
+          createdAt: new Date().toISOString()
+        }]
+      };
+      socketService.emitWalletUpdate(driverId, walletData);
+      socketService.emitTransactionEvent(driverId, walletData.transactions[0]);
+      socketService.emitRevenueUpdate({
+        totalRevenue: Number(realMoneyAmount),
+        driverId,
+        source: 'driver_topup'
+      });
+    } catch (socketError) {
+      console.error('❌ [RAZORPAY] Failed to emit wallet update event:', socketError.message);
+    }
+  }
+
+  async completeWalletTopUpInTransaction(topupDocRef, meta = {}) {
+    const outcome = await this.db.runTransaction(async (transaction) => {
+      const topupSnap = await transaction.get(topupDocRef);
+      if (!topupSnap.exists) {
+        return { success: false, error: 'Top-up transaction not found' };
+      }
+
+      const topup = topupSnap.data();
+      const topupDocId = topup.id || topupSnap.id;
+
+      if (topup.status === 'completed') {
+        return {
+          success: true,
+          idempotent: true,
+          data: {
+            alreadyProcessed: true,
+            transactionId: topupDocId,
+            newBalance: topup.newPointsBalance || 0,
+            pointsAwarded: topup.pointsAwarded || 0
+          }
+        };
+      }
+
+      if (topup.status !== 'pending') {
+        return { success: false, error: `Top-up status is ${topup.status}` };
+      }
+
+      const driverId = topup.driverId;
+      const realMoneyAmount = Number(topup.amount);
+      const paymentMethod = topup.paymentMethod || 'upi';
+      const paymentDetails = {
+        transactionId: topupDocId,
+        gateway: 'razorpay',
+        razorpayPaymentId: meta.razorpayPaymentId || null,
+        razorpayPaymentLinkId: meta.razorpayPaymentLinkId || topup.razorpayPaymentLinkId || null
+      };
+      const pointsToAdd = realMoneyAmount;
+
+      const walletRef = this.db.collection('driverPointsWallets').doc(driverId);
+      const walletSnap = await transaction.get(walletRef);
+
+      let currentBalance = 0;
+      let currentTotalEarned = 0;
+      if (walletSnap.exists) {
+        const walletData = walletSnap.data();
+        currentBalance = Number(walletData.pointsBalance || 0);
+        currentTotalEarned = Number(walletData.totalPointsEarned || 0);
+      }
+
+      const newPointsBalance = currentBalance + pointsToAdd;
+      const newTotalEarned = currentTotalEarned + pointsToAdd;
+      const pointsTransactionId = uuidv4();
+      const revenueId = uuidv4();
+      const completedAt = new Date();
+
+      if (!walletSnap.exists) {
+        transaction.set(walletRef, {
+          driverId,
+          pointsBalance: newPointsBalance,
+          totalPointsEarned: newTotalEarned,
+          totalPointsSpent: 0,
+          status: 'active',
+          requiresTopUp: false,
+          createdAt: completedAt,
+          lastUpdated: completedAt,
+          transactions: []
+        });
+      } else {
+        transaction.update(walletRef, {
+          pointsBalance: newPointsBalance,
+          totalPointsEarned: newTotalEarned,
+          requiresTopUp: false,
+          lastUpdated: completedAt
+        });
+      }
+
+      transaction.set(this.db.collection('pointsTransactions').doc(pointsTransactionId), {
+        id: pointsTransactionId,
+        driverId,
+        type: 'credit',
+        pointsAmount: pointsToAdd,
+        realMoneyAmount,
+        previousBalance: currentBalance,
+        newBalance: newPointsBalance,
+        paymentMethod,
+        paymentDetails,
+        status: 'completed',
+        createdAt: completedAt
+      });
+
+      transaction.set(this.db.collection('companyRevenue').doc(revenueId), {
+        id: revenueId,
+        source: 'driver_topup',
+        amount: realMoneyAmount,
+        driverId,
+        paymentMethod,
+        paymentDetails,
+        pointsAwarded: pointsToAdd,
+        phonepeTransactionId: paymentDetails.transactionId || null,
+        transactionId: pointsTransactionId,
+        createdAt: completedAt
+      });
+
+      transaction.update(topupDocRef, {
+        status: 'completed',
+        paymentGateway: 'razorpay',
+        razorpayPaymentId: meta.razorpayPaymentId || topup.razorpayPaymentId || null,
+        razorpayPaymentLinkId: meta.razorpayPaymentLinkId || topup.razorpayPaymentLinkId || null,
+        completedAt,
+        updatedAt: completedAt,
+        pointsAwarded: pointsToAdd,
+        newPointsBalance: newPointsBalance
+      });
+
+      return {
+        success: true,
+        idempotent: false,
+        data: {
+          transactionId: topupDocId,
+          newBalance: newPointsBalance,
+          pointsAwarded: pointsToAdd,
+          pointsTransactionId,
+          driverId,
+          paymentMethod,
+          realMoneyAmount,
+          currentBalance
+        }
+      };
+    });
+
+    if (outcome.success && !outcome.idempotent && outcome.data) {
+      await this.emitWalletTopUpSideEffects(outcome.data.driverId, {
+        newPointsBalance: outcome.data.newBalance,
+        pointsAdded: outcome.data.pointsAwarded,
+        currentBalance: outcome.data.currentBalance,
+        transactionId: outcome.data.pointsTransactionId,
+        paymentMethod: outcome.data.paymentMethod,
+        realMoneyAmount: outcome.data.realMoneyAmount
+      });
+    }
+
+    return outcome;
+  }
+
   async processWalletTopupPayment(transactionId, meta = {}) {
     try {
       const topupDoc = await this.findTopupByTransactionId(transactionId);
@@ -159,59 +349,21 @@ class RazorpayService {
         return { success: false, error: 'Top-up transaction not found' };
       }
 
-      const topup = topupDoc.data();
-      if (topup.status === 'completed') {
-        return {
-          success: true,
-          data: {
-            alreadyProcessed: true,
-            transactionId: topup.id || topupDoc.id,
-            newBalance: topup.newPointsBalance || 0,
-            pointsAwarded: topup.pointsAwarded || 0
-          }
-        };
-      }
-
-      const walletService = require('./walletService');
-      const pointsResult = await walletService.addPoints(
-        topup.driverId,
-        topup.amount,
-        topup.paymentMethod || 'upi',
-        {
-          transactionId: topup.id || topupDoc.id,
-          gateway: 'razorpay',
-          razorpayPaymentId: meta.razorpayPaymentId || null,
-          razorpayPaymentLinkId: meta.razorpayPaymentLinkId || topup.razorpayPaymentLinkId || null
+      const result = await this.completeWalletTopUpInTransaction(topupDoc.ref, meta);
+      if (!result.success) {
+        if (result.error && result.error !== 'Top-up transaction not found') {
+          await topupDoc.ref.update({
+            status: 'failed',
+            updatedAt: new Date(),
+            pointsError: result.error
+          }).catch(() => {});
         }
-      );
-
-      if (!pointsResult.success) {
-        await topupDoc.ref.update({
-          status: 'failed',
-          updatedAt: new Date(),
-          pointsError: pointsResult.error || 'Failed to add points'
-        });
-        return { success: false, error: pointsResult.error || 'Failed to add points' };
+        return result;
       }
-
-      await topupDoc.ref.update({
-        status: 'completed',
-        paymentGateway: 'razorpay',
-        razorpayPaymentId: meta.razorpayPaymentId || topup.razorpayPaymentId || null,
-        razorpayPaymentLinkId: meta.razorpayPaymentLinkId || topup.razorpayPaymentLinkId || null,
-        completedAt: new Date(),
-        updatedAt: new Date(),
-        pointsAwarded: pointsResult.data.pointsAdded,
-        newPointsBalance: pointsResult.data.newBalance
-      });
 
       return {
         success: true,
-        data: {
-          transactionId: topup.id || topupDoc.id,
-          newBalance: pointsResult.data.newBalance,
-          pointsAwarded: pointsResult.data.pointsAdded
-        }
+        data: result.data
       };
     } catch (error) {
       console.error('❌ [RAZORPAY] processWalletTopupPayment failed:', error);
@@ -283,32 +435,16 @@ class RazorpayService {
     }
   }
 
-  async handlePaymentCallback(body, signature) {
+  async handlePaymentCallback(body, _signature) {
     try {
       console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
       console.log('🔍 [RAZORPAY_WEBHOOK_HANDLER] Processing webhook callback');
       console.log('   Event:', body?.event);
-      console.log('   Has signature:', !!signature);
-      console.log('   Has payload:', !!body?.payload);
       console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-
-      const hasWebhookSecret = Boolean(process.env.RAZORPAY_WEBHOOK_SECRET);
-      console.log('🔐 [RAZORPAY_WEBHOOK] Webhook secret configured:', hasWebhookSecret);
-      
-      if (hasWebhookSecret && !this.verifyWebhookSignature(body, signature)) {
-        console.error('❌ [RAZORPAY_WEBHOOK] Invalid webhook signature');
-        return { success: false, error: 'Invalid webhook signature' };
-      }
 
       const event = body?.event;
       const paymentEntity = body?.payload?.payment?.entity || {};
       const paymentLinkEntity = body?.payload?.payment_link?.entity || {};
-
-      console.log('📋 [RAZORPAY_WEBHOOK] Parsed entities:');
-      console.log('   Payment entity keys:', Object.keys(paymentEntity));
-      console.log('   Payment Link entity keys:', Object.keys(paymentLinkEntity));
-      console.log('   Payment notes:', paymentEntity.notes);
-      console.log('   Payment Link reference_id:', paymentLinkEntity.reference_id);
 
       const transactionId =
         paymentEntity.notes?.transactionId ||
@@ -316,28 +452,23 @@ class RazorpayService {
         paymentEntity.notes?.merchantTransactionId ||
         paymentLinkEntity.reference_id;
 
-      console.log('🔍 [RAZORPAY_WEBHOOK] Extracted transactionId:', transactionId);
-
       if (!transactionId) {
         console.warn('⚠️ [RAZORPAY_WEBHOOK] No transaction reference found in webhook');
         return { success: true, message: 'Webhook ignored: no transaction reference' };
       }
 
       if (event === 'payment_link.paid' || event === 'payment.captured') {
-        console.log('✅ [RAZORPAY_WEBHOOK] Payment successful event detected:', event);
         const processed = await this.processWalletTopupPayment(transactionId, {
           razorpayPaymentId: paymentEntity.id || null,
           razorpayPaymentLinkId: paymentLinkEntity.id || null
         });
 
-        console.log('📊 [RAZORPAY_WEBHOOK] Payment processing result:', processed);
         return processed.success
           ? { success: true, message: 'Top-up processed' }
           : { success: false, error: processed.error || 'Top-up processing failed' };
       }
 
       if (event === 'payment.failed' || event === 'payment_link.cancelled' || event === 'payment_link.expired') {
-        console.log('❌ [RAZORPAY_WEBHOOK] Payment failed/cancelled event:', event);
         const doc = await this.findTopupByTransactionId(transactionId);
         if (doc && doc.exists) {
           await doc.ref.update({
@@ -352,14 +483,9 @@ class RazorpayService {
         return { success: true, message: 'Failure webhook processed' };
       }
 
-      console.log('⊘ [RAZORPAY_WEBHOOK] Webhook ignored for event:', event);
       return { success: true, message: `Webhook ignored for event: ${event}` };
     } catch (error) {
-      console.error('❌ [RAZORPAY] handlePaymentCallback failed:', {
-        message: error.message,
-        stack: error.stack,
-        fullError: error
-      });
+      console.error('❌ [RAZORPAY] handlePaymentCallback failed:', error.message);
       return { success: false, error: error.message || 'Webhook handling failed' };
     }
   }

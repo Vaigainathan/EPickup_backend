@@ -87,7 +87,7 @@ class AdminShopService {
     };
   }
 
-  async getShopDetail(shopId) {
+  async getShopDetail(shopId, { viewerRole } = {}) {
     const db = this.getDb();
     const [userSnap, shopSnap] = await Promise.all([
       db.collection('users').doc(shopId).get(),
@@ -106,6 +106,16 @@ class AdminShopService {
     const onboardingStatus = await shopOnboardingService.getStatus(shopId);
     const profile = shopSnap.exists ? (shopSnap.data() || {}) : {};
     const bank = profile.bank && typeof profile.bank === 'object' ? profile.bank : {};
+    const isSupportViewer = viewerRole === 'support';
+
+    let profileForResponse = profile;
+    if (isSupportViewer) {
+      const { bank: _bank, accountNumber, ifsc, upi, upiId, ...profileRest } = profile;
+      profileForResponse = { ...profileRest };
+      if (profileForResponse.bank) {
+        delete profileForResponse.bank;
+      }
+    }
 
     return {
       shopId,
@@ -124,7 +134,7 @@ class AdminShopService {
         isActive: userData.isActive !== false,
         shop: userData.shop || {}
       },
-      profile,
+      profile: profileForResponse,
       upiVerified: Boolean(verifiedNameFromBank(bank)),
       onboardingStatus
     };

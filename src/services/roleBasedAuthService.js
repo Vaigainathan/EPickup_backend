@@ -74,12 +74,12 @@ class RoleBasedAuthService {
    */
   generateRoleSpecificUID(phoneNumber, userType) {
     const normalizedType = (userType || '').toString().trim().toLowerCase();
-    const allowed = new Set(['customer', 'driver', 'admin', 'shop']);
+    const allowed = new Set(['customer', 'driver', 'shop']);
     
     // ✅ CRITICAL FIX: Never default to customer - validate userType
     if (!normalizedType || !allowed.has(normalizedType)) {
       console.error('❌ [ROLE_BASED_AUTH] Invalid or missing userType for UID generation:', userType);
-      throw new Error(`Invalid userType: ${userType}. Must be one of: customer, driver, admin, shop`);
+      throw new Error(`Invalid userType: ${userType}. Must be one of: customer, driver, shop`);
     }
     
     const safeType = normalizedType; // Now guaranteed to be valid
@@ -107,13 +107,13 @@ class RoleBasedAuthService {
     try {
       const phoneNumber = decodedToken.phone_number;
       const normalizedType = (userType || '').toString().trim().toLowerCase();
-      const allowed = new Set(['customer', 'driver', 'admin', 'shop']);
+      const allowed = new Set(['customer', 'driver', 'shop']);
       
       // ✅ CRITICAL FIX: Never default to customer without validation
       // This ensures driver users don't accidentally get customer role
       if (!normalizedType || !allowed.has(normalizedType)) {
         console.error('❌ [ROLE_BASED_AUTH] Invalid or missing userType:', userType);
-        throw new Error(`Invalid userType: ${userType}. Must be one of: customer, driver, admin, shop`);
+        throw new Error(`Invalid userType: ${userType}. Must be one of: customer, driver, shop`);
       }
       
       const safeType = normalizedType; // Now guaranteed to be valid
@@ -331,12 +331,6 @@ class RoleBasedAuthService {
           transactions: []
         }
       };
-    } else if (userType === 'admin') {
-      baseUserData.role = additionalData.role || 'super_admin';
-      baseUserData.permissions = additionalData.permissions || ['all'];
-      baseUserData.isEmailVerified = true;
-      baseUserData.isActive = true;
-      baseUserData.accountStatus = 'active';
     } else if (userType === 'shop') {
       baseUserData.hasPassword = false;
       baseUserData.passwordSetAt = null;

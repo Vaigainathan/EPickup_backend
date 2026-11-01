@@ -81,7 +81,7 @@ function sendDriverNotVerified(res, verificationStatus) {
  */
 router.post('/tracking/update', [
   requireDriver,
-  body('bookingId').notEmpty().withMessage('Booking ID is required'),
+  body('bookingId').optional({ nullable: true, checkFalsy: true }),
   body('location').custom((v) => typeof v === 'object' && v !== null).withMessage('location object is required')
 ], async (req, res) => {
   try {
@@ -96,9 +96,12 @@ router.post('/tracking/update', [
         }
       });
     }
-    const { bookingId, location, estimatedArrival, speed, heading, status } = req.body;
+    const { bookingId: rawBookingId, location, estimatedArrival, speed, heading, status } = req.body;
+    const bookingId = rawBookingId ? String(rawBookingId) : null;
     const driverId = req.user.uid;
 
+    const admin = require('firebase-admin');
+    const { COMPLETED_BOOKING_STATUSES } = require('../constants/bookingStatuses');
     const { getFirestore } = require('../services/firebase');
     const db = getFirestore();
     const currentTime = new Date();
@@ -112,7 +115,57 @@ router.post('/tracking/update', [
       timestamp: currentTime
     };
 
-    // Persist latest location for driver (compatible with existing shape)
+    const writeDriverLocationOnly = async () => {
+      await db.collection('driverLocations').doc(driverId).set({
+        currentLocation: locationUpdate,
+        lastUpdated: currentTime,
+        bookingId: admin.firestore.FieldValue.delete(),
+        currentTripId: admin.firestore.FieldValue.delete()
+      }, { merge: true });
+    };
+
+    if (!bookingId) {
+      await writeDriverLocationOnly();
+      return res.status(200).json({
+        success: true,
+        message: 'Location updated',
+        data: { timestamp: currentTime.toISOString() }
+      });
+    }
+
+    const bookingRef = db.collection('bookings').doc(bookingId);
+    const bookingDoc = await bookingRef.get();
+
+    if (!bookingDoc.exists) {
+      console.warn('⚠️ [DRIVER_TRACKING] Booking not found for tracking update', { bookingId, driverId });
+      return res.status(403).json({
+        success: false,
+        error: { code: 'ACCESS_DENIED', message: 'Access denied', details: 'Booking not found' }
+      });
+    }
+
+    const bookingData = bookingDoc.data();
+    if (bookingData.driverId !== driverId) {
+      console.warn('⚠️ [DRIVER_TRACKING] Driver attempted tracking for another driver booking', {
+        bookingId,
+        driverId,
+        assignedDriverId: bookingData.driverId
+      });
+      return res.status(403).json({
+        success: false,
+        error: { code: 'ACCESS_DENIED', message: 'Access denied', details: 'You can only update tracking for your own trips' }
+      });
+    }
+
+    if (COMPLETED_BOOKING_STATUSES.includes(bookingData.status)) {
+      await writeDriverLocationOnly();
+      return res.status(200).json({
+        success: true,
+        message: 'Location updated',
+        data: { bookingId, timestamp: currentTime.toISOString() }
+      });
+    }
+
     await db.collection('driverLocations').doc(driverId).set({
       currentLocation: locationUpdate,
       lastUpdated: currentTime,
@@ -120,99 +173,78 @@ router.post('/tracking/update', [
       currentTripId: bookingId
     }, { merge: true });
 
-    // ✅ ROOT CAUSE FIX: Emit to customer and booking rooms
-    // Always attempt to emit even if booking lookup fails (defensive programming)
-    const bookingRef = db.collection('bookings').doc(bookingId);
-    const bookingDoc = await bookingRef.get();
-    let customerId = null;
-    let bookingData = null;
+    const customerId = bookingData.customerId;
+    const tripTrackingRef = db.collection('tripTracking').doc(bookingId);
+    const tripTrackingDoc = await tripTrackingRef.get();
+    let tripTrackingData = tripTrackingDoc.exists ? tripTrackingDoc.data() : null;
 
-    if (bookingDoc.exists) {
-      bookingData = bookingDoc.data();
-      customerId = bookingData.customerId;
-
-      // Maintain tripTracking + booking.tracking for API/Firestore fallbacks
-      const tripTrackingRef = db.collection('tripTracking').doc(bookingId);
-      const tripTrackingDoc = await tripTrackingRef.get();
-      let tripTrackingData = tripTrackingDoc.exists ? tripTrackingDoc.data() : null;
-
-      if (!tripTrackingDoc.exists) {
-        if (bookingData.driverId !== driverId) {
-          return res.status(403).json({
-            success: false,
-            error: { code: 'ACCESS_DENIED', message: 'Access denied', details: 'You can only update tracking for your own trips' }
-          });
-        }
-        tripTrackingData = {
-          tripId: bookingId,
-          bookingId,
-          driverId,
-          customerId: bookingData.customerId,
-          currentStatus: bookingData.status || 'driver_assigned',
-          currentLocation: locationUpdate,
-          route: {
-            pickup: bookingData.pickup?.coordinates,
-            dropoff: bookingData.dropoff?.coordinates,
-            currentRoute: null,
-            distance: null,
-            duration: null
-          },
-          trackingHistory: [{ location: locationUpdate, status: bookingData.status || 'driver_assigned', timestamp: currentTime }],
-          isActive: true,
-          startedAt: currentTime,
-          lastUpdated: currentTime,
-          createdAt: currentTime,
-          updatedAt: currentTime
-        };
-        await tripTrackingRef.set(tripTrackingData);
-      } else {
-        if (tripTrackingData.driverId !== driverId) {
-          return res.status(403).json({
-            success: false,
-            error: { code: 'ACCESS_DENIED', message: 'Access denied', details: 'You can only update tracking for your own trips' }
-          });
-        }
-        if (!tripTrackingData.isActive) {
-          return res.status(400).json({
-            success: false,
-            error: { code: 'TRIP_NOT_ACTIVE', message: 'Trip not active', details: 'Trip tracking is not active for this booking' }
-          });
-        }
-
-        const trackingHistory = tripTrackingData.trackingHistory || [];
-        trackingHistory.push({
-          location: locationUpdate,
-          status: status || tripTrackingData.currentStatus,
-          timestamp: currentTime
+    if (!tripTrackingDoc.exists) {
+      tripTrackingData = {
+        tripId: bookingId,
+        bookingId,
+        driverId,
+        customerId: bookingData.customerId,
+        currentStatus: bookingData.status || 'driver_assigned',
+        currentLocation: locationUpdate,
+        route: {
+          pickup: bookingData.pickup?.coordinates,
+          dropoff: bookingData.dropoff?.coordinates,
+          currentRoute: null,
+          distance: null,
+          duration: null
+        },
+        trackingHistory: [{ location: locationUpdate, status: bookingData.status || 'driver_assigned', timestamp: currentTime }],
+        isActive: true,
+        startedAt: currentTime,
+        lastUpdated: currentTime,
+        createdAt: currentTime,
+        updatedAt: currentTime
+      };
+      await tripTrackingRef.set(tripTrackingData);
+    } else {
+      if (tripTrackingData.driverId !== driverId) {
+        console.warn('⚠️ [DRIVER_TRACKING] tripTracking driver mismatch', { bookingId, driverId });
+        return res.status(403).json({
+          success: false,
+          error: { code: 'ACCESS_DENIED', message: 'Access denied', details: 'You can only update tracking for your own trips' }
         });
-        if (trackingHistory.length > 100) {
-          trackingHistory.splice(0, trackingHistory.length - 100);
-        }
-
-        const tripUpdateData = {
-          currentLocation: locationUpdate,
-          lastUpdated: currentTime,
-          updatedAt: currentTime,
-          trackingHistory
-        };
-        if (status) {
-          tripUpdateData.currentStatus = status;
-        }
-        await tripTrackingRef.update(tripUpdateData);
+      }
+      if (!tripTrackingData.isActive) {
+        return res.status(400).json({
+          success: false,
+          error: { code: 'TRIP_NOT_ACTIVE', message: 'Trip not active', details: 'Trip tracking is not active for this booking' }
+        });
       }
 
-      await bookingRef.update({
-        'tracking.isActive': true,
-        'tracking.currentLocation': locationUpdate,
-        'driver.currentLocation': locationUpdate,
-        updatedAt: currentTime
+      const trackingHistory = tripTrackingData.trackingHistory || [];
+      trackingHistory.push({
+        location: locationUpdate,
+        status: status || tripTrackingData.currentStatus,
+        timestamp: currentTime
       });
-    } else {
-      console.warn(`⚠️ [DRIVER_TRACKING] Booking ${bookingId} not found in database, attempting to emit to booking room only`);
+      if (trackingHistory.length > 100) {
+        trackingHistory.splice(0, trackingHistory.length - 100);
+      }
+
+      const tripUpdateData = {
+        currentLocation: locationUpdate,
+        lastUpdated: currentTime,
+        updatedAt: currentTime,
+        trackingHistory
+      };
+      if (status) {
+        tripUpdateData.currentStatus = status;
+      }
+      await tripTrackingRef.update(tripUpdateData);
     }
 
-    // ✅ ROOT CAUSE FIX: Always emit to booking room (even if customerId is missing)
-    // This ensures location updates are delivered if customer is in booking room
+    await bookingRef.update({
+      'tracking.isActive': true,
+      'tracking.currentLocation': locationUpdate,
+      'driver.currentLocation': locationUpdate,
+      updatedAt: currentTime
+    });
+
     const bookingRoom = `booking:${bookingId}`;
     const payload = {
       bookingId,
@@ -222,55 +254,24 @@ router.post('/tracking/update', [
         timestamp: locationUpdate.timestamp.toISOString()
       },
       estimatedArrival,
-      // Top-level timestamp for consumers that expect it outside the location object
       timestamp: currentTime.toISOString()
     };
-    
+
     try {
       const { getSocketIO } = require('../services/socket');
       const io = getSocketIO();
-      
-      // ✅ ROOT CAUSE FIX: Always emit to booking room
-      const bookingRoomSize = io.sockets.adapter.rooms.get(bookingRoom)?.size || 0;
       io.to(bookingRoom).emit('driver_location_update', payload);
-      
-      // ✅ ROOT CAUSE FIX: Also emit to user room if customerId is available
       if (customerId) {
-        const userRoom = `user:${customerId}`;
-        const userRoomSize = io.sockets.adapter.rooms.get(userRoom)?.size || 0;
-        io.to(userRoom).emit('driver_location_update', payload);
-        
-        console.log(`📍 [DRIVER_TRACKING] Location update emitted to both rooms:`, {
-          bookingId,
-          driverId,
-          customerId,
-          userRoom,
-          bookingRoom,
-          userRoomSize,
-          bookingRoomSize,
-          location: { lat: payload.location.latitude, lng: payload.location.longitude },
-          payload: JSON.stringify(payload)
-        });
-      } else {
-        console.log(`📍 [DRIVER_TRACKING] Location update emitted to booking room only:`, {
-          bookingId,
-          driverId,
-          bookingRoom,
-          bookingRoomSize,
-          location: { lat: payload.location.latitude, lng: payload.location.longitude },
-          reason: 'customerId not found in booking document',
-          payload: JSON.stringify(payload)
-        });
+        io.to(`user:${customerId}`).emit('driver_location_update', payload);
       }
     } catch (ioErr) {
       console.error('❌ [DRIVER] Emit location failed:', ioErr);
-      // Don't fail the request - location is still saved to database
     }
 
     return res.status(200).json({
       success: true,
       message: 'Location updated',
-      data: { bookingId, timestamp: new Date().toISOString() }
+      data: { bookingId, timestamp: currentTime.toISOString() }
     });
   } catch (error) {
     console.error('❌ [DRIVER] tracking/update error:', error);
@@ -13277,58 +13278,10 @@ router.get('/documents/download-all', requireDriver, async (req, res) => {
  * 
  * Validates webhook signature for security.
  */
-router.post('/webhooks/razorpay-payment', async (req, res) => {
-  try {
-    // ✅ Log ALL webhook requests for debugging
-    const signature = req.headers['x-razorpay-signature'];
-    const event = req.body?.event;
-    const referenceId = req.body?.payload?.payment_link?.entity?.reference_id || req.body?.payload?.payment?.entity?.notes?.transactionId;
-
-    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-    console.log('📩 [RAZORPAY_WEBHOOK] ⚠️ WEBHOOK RECEIVED');
-    console.log('   Event:', event);
-    console.log('   Signature present:', !!signature);
-    console.log('   Reference ID:', referenceId || 'not found');
-    console.log('   Header keys:', Object.keys(req.headers || {}));
-    console.log('   Full body keys:', Object.keys(req.body || {}));
-    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-
-    // ✅ Use razorpayService which handles BOTH Orders API and Payment Links webhooks
-    const razorpayService = require('../services/razorpayService');
-
-    // Get event type and payload
-    const eventType = req.body.event;
-    const payload = req.body.payload;
-
-    if (!eventType || !payload) {
-      console.warn('⚠️ [RAZORPAY_WEBHOOK] Invalid webhook format - missing event or payload');
-      return res.status(400).json({
-        success: false,
-        error: { code: 'INVALID_WEBHOOK', message: 'Invalid webhook format' }
-      });
-    }
-
-    // ✅ Process webhook with razorpayService (handles both Payment Links and Orders API)
-    const result = await razorpayService.handlePaymentCallback(req.body, signature);
-
-    if (result.success) {
-      console.log('✅ [RAZORPAY_WEBHOOK] Webhook processed successfully');
-      console.log('   Message:', result.message);
-      return res.status(200).json({ success: true, message: result.message });
-    } else {
-      console.warn('⚠️ [RAZORPAY_WEBHOOK] Webhook processing failed:', result.error);
-      return res.status(200).json({ success: true, message: 'Webhook acknowledged but processing failed' }); // Return 200 anyway
-    }
-
-  } catch (error) {
-    console.error('❌ [RAZORPAY_WEBHOOK] Webhook error:', {
-      message: error.message,
-      stack: error.stack,
-      fullError: error
-    });
-    // Return 200 to prevent Razorpay from retrying and spamming logs
-    res.status(200).json({ success: true, message: 'Webhook received and acknowledged' });
-  }
+router.post('/webhooks/razorpay-payment', (req, res) => {
+  const razorpayService = require('../services/razorpayService');
+  const { handleRazorpayWebhookHttpRequest } = require('../utils/razorpayWebhook');
+  return handleRazorpayWebhookHttpRequest(req, res, razorpayService);
 });
 
 module.exports = router;

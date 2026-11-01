@@ -329,6 +329,21 @@ class RazorpayOrdersService {
 
       // Use transaction to ensure atomicity across all collections
       const result = await this.db.runTransaction(async (transaction) => {
+        const topupSnapInTxn = await transaction.get(topupRef);
+        if (!topupSnapInTxn.exists) {
+          return { success: false, error: 'Transaction not found' };
+        }
+        const topupInTxn = topupSnapInTxn.data();
+        if (topupInTxn.status === 'completed') {
+          return {
+            success: true,
+            idempotent: true,
+            previousBalance: topupInTxn.newPointsBalance || 0,
+            newBalance: topupInTxn.newPointsBalance || 0,
+            pointsAwarded: topupInTxn.pointsAwarded || 0
+          };
+        }
+
         // Step 1: Get current wallet state (read within transaction)
         const currentWalletDoc = await transaction.get(walletRef);
         let currentBalance = 0;

@@ -941,6 +941,9 @@ function getDefaultPermissions(role) {
 router.get('/drivers', async (req, res) => {
   try {
     const db = getFirestore();
+    const { normalizeAdminRole } = require('../constants/adminRoles');
+    const viewerRole = normalizeAdminRole(req.user.uid, req.user.role);
+    const isSupportViewer = viewerRole === 'support';
     const { limit = 20, offset = 0, status, verificationStatus, online } = req.query;
     const filterOnline = online === 'true' || online === true;
 
@@ -1361,7 +1364,7 @@ router.get('/drivers', async (req, res) => {
       
       // ✅ CRITICAL FIX: Flatten nested driver data for admin dashboard
       // Admin expects isOnline/isAvailable at top level, not nested under driver object
-      drivers.push({
+      const driverEntry = {
         id: doc.id,
         uid: doc.id,
         ...data,
@@ -1411,7 +1414,17 @@ router.get('/drivers', async (req, res) => {
         documents: presentedDocuments,
         createdAt: data.createdAt?.toDate?.() || data.createdAt,
         updatedAt: data.updatedAt?.toDate?.() || data.updatedAt
-      });
+      };
+
+      if (isSupportViewer) {
+        delete driverEntry.earnings;
+        if (driverEntry.driver && typeof driverEntry.driver === 'object') {
+          const { wallet, ...driverWithoutWallet } = driverEntry.driver;
+          driverEntry.driver = driverWithoutWallet;
+        }
+      }
+
+      drivers.push(driverEntry);
     }
 
     console.log(`✅ [ADMIN] Fetched ${drivers.length} drivers with flattened status data`);
@@ -2053,7 +2066,7 @@ router.put('/bookings/:id/status', superAdminBookingControl, async (req, res) =>
  * @desc    Delete a booking (admin only)
  * @access  Private (Admin only)
  */
-router.delete('/bookings/:id', async (req, res) => {
+router.delete('/bookings/:id', superAdminOnly, async (req, res) => {
   try {
     const { id } = req.params;
     const db = getFirestore();
@@ -7025,7 +7038,7 @@ router.post('/bookings/:id/intervene', superAdminBookingControl, async (req, res
  * @desc    Get driver wallet details
  * @access  Private (Admin only)
  */
-router.get('/drivers/:driverId/wallet', async (req, res) => {
+router.get('/drivers/:driverId/wallet', superAdminOnly, async (req, res) => {
   try {
     const { driverId } = req.params;
     const db = getFirestore();
@@ -7134,7 +7147,7 @@ router.get('/drivers/:driverId/wallet', async (req, res) => {
  * @desc    Get driver wallet transactions
  * @access  Private (Admin only)
  */
-router.get('/drivers/:driverId/wallet/transactions', async (req, res) => {
+router.get('/drivers/:driverId/wallet/transactions', superAdminOnly, async (req, res) => {
   try {
     const { driverId } = req.params;
     const { limit = 50, offset = 0, type, startDate, endDate } = req.query;
@@ -7183,7 +7196,7 @@ router.get('/drivers/:driverId/wallet/transactions', async (req, res) => {
  * @desc    Get driver earnings
  * @access  Private (Admin only)
  */
-router.get('/drivers/:driverId/earnings', async (req, res) => {
+router.get('/drivers/:driverId/earnings', superAdminOnly, async (req, res) => {
   try {
     const { driverId } = req.params;
     const { startDate, endDate, period = 'all' } = req.query;

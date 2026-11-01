@@ -149,23 +149,6 @@ service cloud.firestore {
         isValidEmail(request.resource.data.email) &&
         request.resource.data.userType in ['customer', 'driver'];
       
-      // Allow admin users to be created in users collection
-      allow create: if isAuthenticated() && 
-        isOwner(userId) &&
-        request.resource.data.email == request.auth.token.email &&
-        request.resource.data.userType == 'admin' &&
-        request.resource.data.role == 'super_admin' &&
-        request.resource.data.keys().hasAll(['uid', 'email', 'name', 'userType', 'role', 'createdAt']) &&
-        isValidEmail(request.resource.data.email);
-      
-      // TEMPORARY: Allow creation for initial setup (remove after first admin is created)
-      allow create: if isAuthenticated() && 
-        isOwner(userId) &&
-        request.resource.data.userType == 'admin' &&
-        request.resource.data.role == 'super_admin' &&
-        request.resource.data.keys().hasAll(['uid', 'email', 'name', 'userType', 'role', 'createdAt']);
-      
-      
       allow update: if isAuthenticated() && (
         // Admin can update anything
         isAdmin() ||
@@ -181,7 +164,7 @@ service cloud.firestore {
         // Drivers can update their driver-specific fields
         (isOwner(userId) && isDriver() &&
          request.writeFields.hasOnly(['driver', 'updatedAt', 'lastSeen']) &&
-         request.resource.data.driver.keys().hasOnly(['isOnline', 'isAvailable', 'currentLocation', 'vehicleInfo', 'vehicleDetails', 'status', 'verificationStatus', 'wallet']) &&
+         request.resource.data.driver.keys().hasOnly(['isOnline', 'isAvailable', 'currentLocation', 'vehicleInfo', 'vehicleDetails', 'status', 'verificationStatus']) &&
          isValidDriverStatus(request.resource.data.driver.status) &&
          (request.resource.data.driver.vehicleDetails == null || isValidVehicleDetails(request.resource.data.driver.vehicleDetails)))
       );
@@ -608,12 +591,7 @@ service cloud.firestore {
       
       // Allow authenticated users to create their own admin profile
       // This supports both client-side and backend admin creation
-      allow create: if request.auth != null && 
-        request.resource.data.uid == request.auth.uid &&
-        request.resource.data.email == request.auth.token.email &&
-        request.resource.data.role == 'super_admin' &&
-        request.resource.data.keys().hasAll(['uid', 'email', 'displayName', 'role', 'permissions', 'createdAt']) &&
-        isValidEmail(request.resource.data.email);
+      allow create: if false;
       
       // Allow admin users to update their own profile
       allow update: if request.auth != null && 

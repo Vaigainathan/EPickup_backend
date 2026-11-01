@@ -270,13 +270,12 @@ if (process.env.NODE_ENV === 'development') {
 }
 
 // Body parsing middleware with security limits
+const { captureRawBodyForRazorpayWebhook } = require('./utils/razorpayWebhook');
+
 app.use(express.json({ 
   limit: '1mb', // Reduced from 10mb for security
   verify: (req, res, buf) => {
-    // Additional security check for JSON payload
-    if (buf.length > 1024 * 1024) { // 1MB limit
-      throw new Error('Payload too large');
-    }
+    captureRawBodyForRazorpayWebhook(req, res, buf);
   }
 }));
 app.use(express.urlencoded({ 
@@ -493,51 +492,11 @@ app.use('/api/bookings', versionEnforcer, appCheckMiddleware.optionalMiddleware(
 // Payment gateway webhooks don't have user tokens - they use signature verification
 // Register webhook route BEFORE the authenticated payment routes
 const razorpayService = require('./services/razorpayService');
+const { handleRazorpayWebhookHttpRequest } = require('./utils/razorpayWebhook');
 
 app.post('/api/payments/razorpay/webhook',
   appCheckMiddleware.optionalMiddleware(),
-  async (req, res) => {
-    try {
-      console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-      console.log('📥 [WEBHOOK] Received Razorpay callback (public endpoint)');
-      console.log('📋 [WEBHOOK] Request details:', {
-        method: req.method,
-        url: req.url,
-        bodyKeys: req.body ? Object.keys(req.body) : [],
-        event: req.body?.event || 'unknown'
-      });
-      console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-
-      const signature = req.headers['x-razorpay-signature'];
-      const result = await razorpayService.handlePaymentCallback(req.body, signature);
-
-      if (result.success) {
-        return res.json({
-          success: true,
-          message: result.message || 'Webhook processed successfully',
-          timestamp: new Date().toISOString()
-        });
-      }
-
-      return res.status(400).json({
-        success: false,
-        message: 'Webhook processing failed',
-        error: result.error,
-        timestamp: new Date().toISOString()
-      });
-    } catch (error) {
-      console.error('❌ [WEBHOOK] Razorpay callback error:', error);
-      return res.status(500).json({
-        success: false,
-        message: 'Internal server error',
-        error: {
-          code: 'RAZORPAY_CALLBACK_ERROR',
-          message: error.message
-        },
-        timestamp: new Date().toISOString()
-      });
-    }
-  }
+  (req, res) => handleRazorpayWebhookHttpRequest(req, res, razorpayService)
 );
 
 // All payment routes require authentication

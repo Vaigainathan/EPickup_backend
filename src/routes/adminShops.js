@@ -20,7 +20,9 @@ router.get('/', async (req, res) => {
 
 router.get('/:shopId', async (req, res) => {
   try {
-    const data = await adminShopService.getShopDetail(req.params.shopId);
+    const { normalizeAdminRole } = require('../constants/adminRoles');
+    const viewerRole = normalizeAdminRole(req.user.uid, req.user.role);
+    const data = await adminShopService.getShopDetail(req.params.shopId, { viewerRole });
     res.json({ success: true, data, timestamp: new Date().toISOString() });
   } catch (error) {
     res.status(error.status || 500).json({

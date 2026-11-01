@@ -346,15 +346,36 @@ class MarketplaceSyncService {
 
     const db = getFirestore();
     const orderRef = db.collection('marketplaceOrders').doc(orderId);
+    const orderSnap = await orderRef.get();
+    if (!orderSnap.exists) {
+      console.warn('⚠️ [MARKETPLACE_SYNC] Skipping booking; marketplace order missing', {
+        bookingId: bookingId || null,
+        orderId
+      });
+      return null;
+    }
+
+    const orderPreview = orderSnap.data() || {};
+    if (!orderPreview.customerId) {
+      console.warn('⚠️ [MARKETPLACE_SYNC] Skipping booking; marketplace order has no customerId', {
+        bookingId: bookingId || null,
+        orderId
+      });
+      return null;
+    }
+
     const outcome = await db.runTransaction(async (transaction) => {
-      const orderSnap = await transaction.get(orderRef);
-      if (!orderSnap.exists) {
+      const orderSnapTxn = await transaction.get(orderRef);
+      if (!orderSnapTxn.exists) {
         return null;
       }
-      const order = orderSnap.data() || {};
+      const order = orderSnapTxn.data() || {};
+      if (!order.customerId) {
+        return { skip: true, reason: 'missing_customerId', orderId: orderSnapTxn.id };
+      }
       const plan = planDeliverySync(order, booking);
       if (!planWrites(plan, order)) {
-        return { wrote: false, plan, order, orderId: orderSnap.id };
+        return { wrote: false, plan, order, orderId: orderSnapTxn.id };
       }
 
       const updates = buildMarketplaceSyncOrderUpdates(order, plan);
@@ -387,10 +408,18 @@ class MarketplaceSyncService {
         bumpOrderSignal(transaction, orderRef, order.customerId, signalType);
       }
 
-      return { wrote: true, plan, order, orderId: orderSnap.id };
+      return { wrote: true, plan, order, orderId: orderSnapTxn.id };
     });
 
     if (!outcome) {
+      return null;
+    }
+
+    if (outcome.skip) {
+      console.warn('⚠️ [MARKETPLACE_SYNC] Skipping booking; marketplace order has no customerId', {
+        bookingId: bookingId || null,
+        orderId: outcome.orderId || orderId
+      });
       return null;
     }
 

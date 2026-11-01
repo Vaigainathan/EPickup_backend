@@ -74,9 +74,17 @@ describe('buildMarketplaceSyncOrderUpdates stageTimes', () => {
 describe('syncBooking transaction stageTimes', () => {
   function mockDbForOrder(orderData) {
     let updatePayload = null;
+    const orderSnapshot = () => ({
+      exists: true,
+      id: 'order-1',
+      data: () => orderData
+    });
     const orderRef = {
       id: 'order-1',
       path: 'marketplaceOrders/order-1',
+      async get() {
+        return orderSnapshot();
+      },
       collection() {
         return { doc: () => ({ id: 'evt-1' }) };
       }
@@ -95,7 +103,7 @@ describe('syncBooking transaction stageTimes', () => {
         const tx = {
           async get(ref) {
             if (ref === orderRef) {
-              return { exists: true, id: 'order-1', data: () => orderData };
+              return orderSnapshot();
             }
             return { exists: false };
           },

@@ -81,43 +81,14 @@ router.post('/calculate', authenticateToken, async (req, res) => {
  * @desc Complete trip and process commission deduction
  * @access Private (Driver)
  */
-router.post('/complete-trip', authenticateToken, async (req, res) => {
-    try {
-        const { tripId, fareDetails, driverId } = req.body;
-
-        // Validate input
-        if (!tripId || !fareDetails || !driverId) {
-            return res.status(400).json({
-                success: false,
-                message: 'Missing required fields'
-            });
-        }
-
-        // Validate fare calculation
-        if (!fareCalculationService.validateFareCalculation(fareDetails.fare)) {
-            return res.status(400).json({
-                success: false,
-                message: 'Invalid fare calculation'
-            });
-        }
-
-        const tripCompletion = await fareCalculationService.processTripCompletion(
-            tripId, 
-            fareDetails, 
-            driverId
-        );
-
-        res.json({
-            success: true,
-            data: tripCompletion
-        });
-    } catch (error) {
-        console.error('Trip completion error:', error);
-        res.status(500).json({
-            success: false,
-            message: 'Failed to complete trip'
-        });
+router.post('/complete-trip', authenticateToken, (_req, res) => {
+  res.status(410).json({
+    success: false,
+    error: {
+      code: 'ENDPOINT_REMOVED',
+      message: 'This fare completion API has been removed.'
     }
+  });
 });
 
 /**

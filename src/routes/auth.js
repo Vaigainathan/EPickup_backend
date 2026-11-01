@@ -365,10 +365,19 @@ router.post('/firebase/verify-token', firebaseTokenVerifyLimiter, createProgress
     const headerAppType = (req.headers['x-app-type'] || req.headers['X-App-Type'] || '').toString().trim().toLowerCase();
     console.log('🔐 [FIREBASE_AUTH] Header app type:', headerAppType);
     console.log('🔐 [FIREBASE_AUTH] Body userType:', userType);
-    
-    // Normalize and validate userType from body
+
     const normalizedType = (userType || '').toString().trim().toLowerCase();
-    const allowedTypes = new Set(['customer', 'driver', 'admin', 'shop']);
+    if (headerAppType.includes('admin') || headerAppType === 'admin_dashboard' || normalizedType === 'admin') {
+      return res.status(403).json({
+        success: false,
+        error: {
+          code: 'ADMIN_LOGIN_NOT_ALLOWED',
+          message: 'Admin accounts must sign in through the admin dashboard login.'
+        }
+      });
+    }
+    
+    const allowedTypes = new Set(['customer', 'driver', 'shop']);
     
     let finalUserType = undefined;
     
@@ -377,9 +386,6 @@ router.post('/firebase/verify-token', firebaseTokenVerifyLimiter, createProgress
     if (headerAppType.includes('driver') || headerAppType === 'driver_app') {
       finalUserType = 'driver';
       console.log('✅ [FIREBASE_AUTH] User type determined from header: driver');
-    } else if (headerAppType.includes('admin') || headerAppType === 'admin_dashboard') {
-      finalUserType = 'admin';
-      console.log('✅ [FIREBASE_AUTH] User type determined from header: admin');
     } else if (headerAppType.includes('customer') || headerAppType === 'customer_app') {
       finalUserType = 'customer';
       console.log('✅ [FIREBASE_AUTH] User type determined from header: customer');
@@ -524,7 +530,7 @@ router.post('/firebase/verify-token', firebaseTokenVerifyLimiter, createProgress
 
     // Set Firebase custom claims with role-based UID
     try {
-      const appTypeMap = { customer: 'customer_app', driver: 'driver_app', admin: 'admin_dashboard', shop: 'shop_app' };
+      const appTypeMap = { customer: 'customer_app', driver: 'driver_app', shop: 'shop_app' };
       await firebaseAuthService.setCustomClaims(decodedToken.uid, {
         roleBasedUID: roleBasedUID,
         userType: finalUserType,

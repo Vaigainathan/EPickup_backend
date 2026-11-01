@@ -504,10 +504,148 @@ const requireCustomer = requireRole(['customer']);
  */
 const requireDriver = requireRole(['driver']);
 
+const adminVerificationCache = new Map();
+const ADMIN_VERIFICATION_TTL_MS = 60 * 1000;
+
+function getCachedAdminVerification(uid) {
+  const entry = adminVerificationCache.get(uid);
+  if (!entry || entry.expiresAt <= Date.now()) {
+    if (entry) {
+      adminVerificationCache.delete(uid);
+    }
+    return null;
+  }
+  return entry;
+}
+
+function setCachedAdminVerification(uid, role) {
+  adminVerificationCache.set(uid, {
+    role,
+    expiresAt: Date.now() + ADMIN_VERIFICATION_TTL_MS
+  });
+}
+
+function clearAdminVerificationCacheForTests() {
+  adminVerificationCache.clear();
+}
+
 /**
- * Admin-only middleware
+ * Admin-only middleware — JWT userType plus Firestore proof (fail closed on read errors).
  */
-const requireAdmin = requireRole(['admin']);
+const requireAdmin = async (req, res, next) => {
+  if (!req.user) {
+    return res.status(401).json({
+      success: false,
+      error: {
+        code: 'UNAUTHORIZED',
+        message: 'Authentication required'
+      },
+      timestamp: new Date().toISOString()
+    });
+  }
+
+  if (req.user.userType !== 'admin') {
+    return res.status(403).json({
+      success: false,
+      error: {
+        code: 'FORBIDDEN',
+        message: 'Access denied',
+        details: 'Admin access required'
+      },
+      timestamp: new Date().toISOString()
+    });
+  }
+
+  const uid = req.user.uid;
+  const cached = getCachedAdminVerification(uid);
+  if (cached) {
+    req.user.role = cached.role;
+    return next();
+  }
+
+  try {
+    const db = getFirestore();
+    const { evaluateAdminAccess } = require('../services/adminLoginService');
+    const { normalizeAdminRole, isAdminRole } = require('../constants/adminRoles');
+
+    const [adminUsersDoc, usersDoc] = await Promise.all([
+      db.collection('adminUsers').doc(uid).get(),
+      db.collection('users').doc(uid).get()
+    ]);
+
+    const access = evaluateAdminAccess({
+      customClaims: {},
+      adminUsersDoc,
+      usersDoc
+    });
+
+    if (!access.allowed || !access.adminUserData) {
+      return res.status(403).json({
+        success: false,
+        error: {
+          code: 'INSUFFICIENT_PRIVILEGES',
+          message: 'This account does not have admin privileges.'
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    const adminUserData = access.adminUserData;
+    if (adminUserData.isActive === false
+      || adminUserData.accountStatus === 'inactive'
+      || adminUserData.accountStatus === 'disabled') {
+      return res.status(403).json({
+        success: false,
+        error: {
+          code: 'ADMIN_INACTIVE',
+          message: 'This admin account is disabled'
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    const role = normalizeAdminRole(uid, adminUserData.role || req.user.role);
+    if (!isAdminRole(role)) {
+      return res.status(403).json({
+        success: false,
+        error: {
+          code: 'INSUFFICIENT_PRIVILEGES',
+          message: 'This account does not have admin privileges.'
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    const hasAdminUsersDoc = adminUsersDoc.exists;
+    const usersData = usersDoc.exists ? usersDoc.data() : null;
+    const hasUsersAdminDoc = Boolean(usersData && usersData.userType === 'admin');
+
+    if (!hasAdminUsersDoc && !hasUsersAdminDoc) {
+      return res.status(403).json({
+        success: false,
+        error: {
+          code: 'INSUFFICIENT_PRIVILEGES',
+          message: 'This account does not have admin privileges.'
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    req.user.role = role;
+    setCachedAdminVerification(uid, role);
+    return next();
+  } catch (error) {
+    console.error('❌ [AUTH] Admin verification failed:', error.message);
+    return res.status(503).json({
+      success: false,
+      error: {
+        code: 'ADMIN_CHECK_UNAVAILABLE',
+        message: 'Admin verification is temporarily unavailable'
+      },
+      timestamp: new Date().toISOString()
+    });
+  }
+};
 
 /**
  * Admin dashboard role gate (super_admin | support).
@@ -797,5 +935,6 @@ module.exports = {
   requireAdminRole,
   optionalAuth,
   requireOwnership,
-  userRateLimit
+  userRateLimit,
+  clearAdminVerificationCacheForTests
 };

@@ -39,8 +39,13 @@ const MARKETPLACE_TEMPLATE_ACTION = {
   DRIVER_SLOW: 'tracking',
   ORDER_ASSIGNED: 'tracking',
   DRIVER_AT_SHOP: 'tracking',
+  DRIVER_ASSIGNED_SHOP: 'order',
+  DRIVER_AT_SHOP_SHOP: 'order',
+  ORDER_PICKED_UP_SHOP: 'order',
   OUT_FOR_DELIVERY: 'tracking',
   ORDER_DELIVERED: 'rate',
+  ORDER_DELIVERED_SHOP: 'order',
+  FINDING_NEW_DRIVER: 'tracking',
   HELP_UPDATE: 'help',
   HELP_SHOP_RESPONSE: 'help',
   BALANCE_NOT_PAID: 'refund',
@@ -98,6 +103,31 @@ function buildMarketplacePushData(templateKey, eventType, variables) {
   };
 }
 
+function marketplaceShopDisplayName(data) {
+  const name = shopNameFromOrder(data);
+  return name || 'Shop';
+}
+
+function marketplaceCustomerDisplayName(data) {
+  const order = data && typeof data === 'object' ? data : {};
+  const snapshot = order.customerSnapshot && typeof order.customerSnapshot === 'object'
+    ? order.customerSnapshot
+    : {};
+  const raw = typeof snapshot.name === 'string' ? snapshot.name.trim() : '';
+  return raw || 'Customer';
+}
+
+function marketplaceUtrNotifyVariables(data, orderId, utr) {
+  const order = data && typeof data === 'object' ? data : {};
+  return {
+    ...marketplacePushVariables(order, orderId),
+    shopName: marketplaceShopDisplayName(order),
+    customerName: marketplaceCustomerDisplayName(order),
+    amount: order.expectedAmount ?? (order.payment && order.payment.amount) ?? '',
+    utr
+  };
+}
+
 module.exports = {
   MARKETPLACE_PUSH_DATA_KEYS,
   MARKETPLACE_ALLOWED_ACTIONS,
@@ -105,6 +135,9 @@ module.exports = {
   digitsDisplayId,
   shopNameFromOrder,
   marketplacePushVariables,
+  marketplaceShopDisplayName,
+  marketplaceCustomerDisplayName,
+  marketplaceUtrNotifyVariables,
   isMarketplacePushData,
   buildMarketplacePushData
 };

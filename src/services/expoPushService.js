@@ -93,7 +93,14 @@ class ExpoPushService {
       }
 
       // Send notification
-      const result = await this.sendToTokens([userData.expoPushToken], notification, options);
+      const pushContext = options.pushContext || {
+        userId,
+        notificationType: notification.type || options.notificationType || 'unknown'
+      };
+      const result = await this.sendToTokens([userData.expoPushToken], notification, {
+        ...options,
+        pushContext
+      });
 
       // Save notification to database
       await this.saveNotification(userId, notification, 'sent');
@@ -304,6 +311,8 @@ class ExpoPushService {
       for (const chunk of chunks) {
         const chunkResults = await this.expo.sendPushNotificationsAsync(chunk);
         results.push(...chunkResults);
+        const { registerExpoTickets } = require('./expoPushReceiptQueue');
+        registerExpoTickets(chunkResults, chunk.map((message) => message.to), options.pushContext || {});
       }
 
       // Process results
@@ -313,6 +322,22 @@ class ExpoPushService {
       // ✅ NEW: High-signal debug logging when there are failures so we know WHY Expo rejected pushes
       if (failureCount > 0) {
         const failed = results.filter(result => result.status === 'error');
+        const pushContexts = Array.isArray(options.pushContexts) ? options.pushContexts : null;
+        const defaultContext = options.pushContext || {};
+        results.forEach((ticket, index) => {
+          if (ticket.status !== 'error') {
+            return;
+          }
+          const pushContext = pushContexts?.[index] || defaultContext;
+          console.warn('[ExpoPushService] Push failure:', {
+            userId: pushContext.userId || null,
+            notificationType: pushContext.notificationType || notification.type || 'unknown',
+            status: ticket.status,
+            message: ticket.message,
+            details: ticket.details,
+            tokenIndex: index
+          });
+        });
         console.warn('[ExpoPushService] Push failures detail:', failed);
 
         // Detect FCM server key missing (Android) – fix: upload FCM V1 service account to Expo project

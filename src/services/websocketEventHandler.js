@@ -1,8 +1,15 @@
 const admin = require('firebase-admin');
+const { Expo } = require('expo-server-sdk');
 const { getFirestore } = require('./firebase');
 const firestoreSessionService = require('./firestoreSessionService');
 const expoPushService = require('./expoPushService');
+const {
+  logDriverNewBookingOfferPushResults,
+  buildPushContextsForDrivers
+} = require('./driverOfferPushNotificationLog');
 const { NEW_ORDER_CHANNEL_ID } = require('../constants/notifications');
+const { passesDriverNewBookingNotifyEligibility } = require('../utils/driverBookingEligibility');
+const { buildNewBookingDisplayPush } = require('../utils/newBookingDisplayPush');
 const { withParcelSource } = require('./parcelSourceFilter');
 const { authorizeBookingRoomJoin } = require('./bookingRoomAuth');
 const { buildNewBookingSocketFields } = require('./marketplace/newBookingAvailablePayload');
@@ -267,7 +274,8 @@ class WebSocketEventHandler {
         if (this.db) {
           // ✅ CRITICAL FIX: Check if driver has active bookings before any status changes
           // If driver has active booking, they MUST stay online (cannot go offline)
-          const activeBookingStatuses = ['driver_assigned', 'accepted', 'driver_enroute', 'driver_arrived', 'picked_up', 'in_transit', 'at_dropoff', 'delivered', 'money_collection'];
+          const { DRIVER_GET_ACTIVE_BOOKING_STATUSES } = require('../constants/bookingStatuses');
+          const activeBookingStatuses = DRIVER_GET_ACTIVE_BOOKING_STATUSES;
           const activeBookingQuery = this.db.collection('bookings')
             .where('driverId', '==', userId)
             .where('status', 'in', activeBookingStatuses)
@@ -1899,7 +1907,8 @@ class WebSocketEventHandler {
       // ✅ CRITICAL FIX: Check for active booking before allowing offline via WebSocket
       // This prevents WebSocket from bypassing active booking protection
       if (isOnline === false) {
-        const activeBookingStatuses = ['driver_assigned', 'accepted', 'driver_enroute', 'driver_arrived', 'picked_up', 'in_transit', 'at_dropoff', 'delivered', 'money_collection'];
+        const { DRIVER_GET_ACTIVE_BOOKING_STATUSES } = require('../constants/bookingStatuses');
+        const activeBookingStatuses = DRIVER_GET_ACTIVE_BOOKING_STATUSES;
         const activeBookingQuery = this.db.collection('bookings')
           .where('driverId', '==', userId)
           .where('status', 'in', activeBookingStatuses)
@@ -2217,7 +2226,16 @@ class WebSocketEventHandler {
         console.warn('⚠️ [NOTIFY_DRIVERS] Active-booking filter failed, proceeding with all drivers:', e?.message);
       }
 
-      const eligibleDocs = driversSnapshot.docs.filter(doc => !busyDriverIds.has(doc.id));
+      const eligibleDocs = driversSnapshot.docs.filter((doc) => {
+        if (busyDriverIds.has(doc.id)) {
+          return false;
+        }
+        const driverData = doc.data();
+        if (!passesDriverNewBookingNotifyEligibility(driverData)) {
+          return false;
+        }
+        return true;
+      });
       const eligibleSnapshot = {
         docs: eligibleDocs,
         size: eligibleDocs.length,
@@ -2225,7 +2243,7 @@ class WebSocketEventHandler {
       };
 
       if (eligibleSnapshot.size === 0) {
-        console.log(`🔔 [NOTIFY_DRIVERS] No eligible drivers for booking ${bookingData.id} (after filters: online, available, verified, no active booking, within range)`);
+        console.log(`🔔 [NOTIFY_DRIVERS] No eligible drivers for booking ${bookingData.id} (after filters: online, available, verified, account active, no active booking, within range)`);
         return;
       }
 
@@ -2406,15 +2424,15 @@ class WebSocketEventHandler {
         
         // ✅ CRITICAL: Check for Expo push token (primary) or FCM token (fallback)
         const pushToken = driverData.expoPushToken || driverData.fcmToken;
-        
-        if (!pushToken) {
+
+        if (!pushToken || !Expo.isExpoPushToken(pushToken)) {
           driversSkippedNoToken.push(driverId);
-          console.warn(`⚠️ [PUSH_DEBUG] Driver ${driverId} has no push token; WebSocket delivery was still attempted`);
+          console.warn(`⚠️ [PUSH_DEBUG] Driver ${driverId} has no valid Expo push token; WebSocket delivery was still attempted`);
           continue;
         }
-        
+
         driversWithToken++;
-        
+
         const loc = driverData.driver?.currentLocation;
         if (!loc) {
           driversSkippedNoLocation.push(driverId);
@@ -2478,6 +2496,8 @@ class WebSocketEventHandler {
 
       // Send two pushes: (1) data-only to trigger headless JS (play ringtone), (2) display notification for status bar
       try {
+        const offerPushContexts = buildPushContextsForDrivers(driverIds, 'new_booking');
+
         // Thing 1: Data-only push to wake headless task (no title/body/sound)
         const dataOnlyNotification = {
           // no title/body
@@ -2492,15 +2512,17 @@ class WebSocketEventHandler {
 
         const dataOnlyResult = await this.expoPushService.sendToTokens(tokens, dataOnlyNotification, {
           priority: 'high',
-          dataOnly: true
+          dataOnly: true,
+          pushContexts: offerPushContexts
         });
 
         console.log(`✅ [PUSH_NOTIFICATION] Data-only pushes sent: ${dataOnlyResult.successCount} success, ${dataOnlyResult.failureCount} failed`);
 
+        const displayCopy = buildNewBookingDisplayPush(bookingData);
         // Thing 2: Normal display notification for the status bar/banner
         const displayNotification = {
-          title: '🚗 New Booking Available!',
-          body: `Pickup: ${bookingData.pickup?.address || 'Location'}`,
+          title: displayCopy.title,
+          body: displayCopy.body,
           type: 'new_booking_display',
           bookingId: bookingData.id,
           data: {
@@ -2517,10 +2539,22 @@ class WebSocketEventHandler {
         const displayResult = await this.expoPushService.sendToTokens(tokens, displayNotification, {
           priority: 'high',
           sound: 'new_order.wav',
-          channelId: NEW_ORDER_CHANNEL_ID
+          channelId: NEW_ORDER_CHANNEL_ID,
+          pushContexts: offerPushContexts
         });
 
         console.log(`✅ [PUSH_NOTIFICATION] Display pushes sent: ${displayResult.successCount} success, ${displayResult.failureCount} failed`);
+
+        void logDriverNewBookingOfferPushResults(this.db, {
+          driverIds,
+          tickets: displayResult.results || [],
+          bookingId: bookingData.id,
+          title: displayCopy.title,
+          body: displayCopy.body
+        }).catch((logError) => {
+          console.warn('[DriverOfferPushLog] Offer notification log failed:', logError.message);
+        });
+
         if (driverIds.length > 0) {
           await bookingRef.set({
             notifiedDrivers: admin.firestore.FieldValue.arrayUnion(...driverIds),

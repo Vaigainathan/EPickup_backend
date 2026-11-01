@@ -102,35 +102,39 @@ describe('driverStatusWorkflowService marketplace handover', () => {
     expect(mockTransitionBooking).toHaveBeenCalled();
   });
 
-  test('marketplace booking blocks photo_captured until handover', async () => {
-    mockBookingGet.mockResolvedValue({
-      exists: true,
-      data: () => ({
-        driverId: 'driver-1',
-        status: 'driver_arrived',
-        sourceType: 'marketplace',
-        marketplaceOrderId: 'order-1',
-        pickup: { coordinates: { latitude: 12, longitude: 78 } }
+  test('marketplace booking allows photo_captured without shop handover gate', async () => {
+    mockBookingGet
+      .mockResolvedValueOnce({
+        exists: true,
+        data: () => ({
+          driverId: 'driver-1',
+          status: 'driver_arrived',
+          sourceType: 'marketplace',
+          marketplaceOrderId: 'order-1',
+          pickup: { coordinates: { latitude: 12, longitude: 78 } }
+        })
       })
-    });
-    mockOrderGet.mockResolvedValue({
-      exists: true,
-      data: () => ({ orderStatus: 'ready' })
+      .mockResolvedValueOnce({
+        data: () => ({
+          driverId: 'driver-1',
+          status: 'photo_captured',
+          statusMeta: { sequence: 1 }
+        })
+      });
+
+    const result = await driverStatusWorkflowService.updateStatus({
+      bookingId: 'booking-1',
+      driverId: 'driver-1',
+      requestedStatus: 'photo_captured',
+      location: { latitude: 12, longitude: 78 }
     });
 
-    await expect(
-      driverStatusWorkflowService.updateStatus({
-        bookingId: 'booking-1',
-        driverId: 'driver-1',
-        requestedStatus: 'photo_captured',
-        location: { latitude: 12, longitude: 78 }
-      })
-    ).rejects.toMatchObject({ code: 'HANDOVER_PENDING', statusCode: 409 });
-
-    expect(mockTransitionBooking).not.toHaveBeenCalled();
+    expect(result.status).toBe('photo_captured');
+    expect(mockOrderGet).not.toHaveBeenCalled();
+    expect(mockTransitionBooking).toHaveBeenCalled();
   });
 
-  test('marketplace booking allows photo_captured after handover', async () => {
+  test('marketplace booking allows photo_captured when order still ready', async () => {
     mockBookingGet
       .mockResolvedValueOnce({
         exists: true,
@@ -151,7 +155,7 @@ describe('driverStatusWorkflowService marketplace handover', () => {
       });
     mockOrderGet.mockResolvedValue({
       exists: true,
-      data: () => ({ orderStatus: 'handed_over' })
+      data: () => ({ orderStatus: 'ready' })
     });
 
     const result = await driverStatusWorkflowService.updateStatus({
@@ -162,35 +166,6 @@ describe('driverStatusWorkflowService marketplace handover', () => {
     });
 
     expect(result.status).toBe('photo_captured');
-    expect(mockOrderGet).toHaveBeenCalled();
     expect(mockTransitionBooking).toHaveBeenCalled();
-  });
-
-  test('HANDOVER_PENDING is DriverStatusError', async () => {
-    mockBookingGet.mockResolvedValue({
-      exists: true,
-      data: () => ({
-        driverId: 'driver-1',
-        status: 'driver_arrived',
-        sourceType: 'marketplace',
-        marketplaceOrderId: 'order-1',
-        pickup: { coordinates: { latitude: 12, longitude: 78 } }
-      })
-    });
-    mockOrderGet.mockResolvedValue({
-      exists: true,
-      data: () => ({ orderStatus: 'ready' })
-    });
-
-    try {
-      await driverStatusWorkflowService.updateStatus({
-        bookingId: 'booking-1',
-        driverId: 'driver-1',
-        requestedStatus: 'picked_up',
-        location: { latitude: 12, longitude: 78 }
-      });
-    } catch (error) {
-      expect(error).toBeInstanceOf(DriverStatusError);
-    }
   });
 });

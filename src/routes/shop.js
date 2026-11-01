@@ -67,6 +67,17 @@ router.get('/dashboard/stats', authMiddleware, requireRole(['shop']), async (req
 });
 
 /**
+ * GET /api/shop/earnings
+ */
+router.get('/earnings', authMiddleware, requireRole(['shop']), async (req, res) => {
+  return withShop(req, res, async (shopId) => {
+    const { computeShopEarnings } = require('../services/marketplace/shopEarningsService');
+    const data = await computeShopEarnings(shopId, { now: new Date() });
+    return res.json({ success: true, data });
+  });
+});
+
+/**
  * GET /api/shop/profile
  */
 router.get('/profile', authMiddleware, requireRole(['shop']), async (req, res) => {

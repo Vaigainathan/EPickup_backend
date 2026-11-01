@@ -109,6 +109,14 @@ class AdminShopService {
 
     return {
       shopId,
+      pushRegistered: Boolean(
+        (typeof userData.expoPushToken === 'string' && userData.expoPushToken.trim() !== '')
+        || (typeof userData.fcmToken === 'string' && userData.fcmToken.trim() !== '')
+      ),
+      pushMissing: !(
+        (typeof userData.expoPushToken === 'string' && userData.expoPushToken.trim() !== '')
+        || (typeof userData.fcmToken === 'string' && userData.fcmToken.trim() !== '')
+      ),
       user: {
         name: userData.name,
         email: userData.email,

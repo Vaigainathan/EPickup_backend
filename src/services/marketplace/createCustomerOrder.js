@@ -678,7 +678,6 @@ async function createMarketplaceOrder({ customerId, idempotencyKey, body }) {
     };
 
     tx.set(orderRef, orderData);
-    tx.set(orderRef.collection('private').doc('handover'), { otp: generateHandoverOtp() });
     tx.set(lockRef, { orderId: resolvedOrderId, createdAt: now });
     tx.update(customerRef, {
       'customer.marketplace.unpaidCount': FieldValue.increment(1),

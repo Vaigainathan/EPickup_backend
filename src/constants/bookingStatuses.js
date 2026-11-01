@@ -44,6 +44,23 @@ const ACTIVE_BOOKING_WITH_DRIVER_STATUSES = [
 ];
 
 /**
+ * GET /api/driver/bookings/active and orphan-release queries (driver assigned → money_collection).
+ * Must include photo_captured (pickup photo workflow).
+ */
+const DRIVER_GET_ACTIVE_BOOKING_STATUSES = [
+  'driver_assigned',
+  'accepted',
+  'driver_enroute',
+  'driver_arrived',
+  'photo_captured',
+  'picked_up',
+  'in_transit',
+  'at_dropoff',
+  'delivered',
+  'money_collection'
+];
+
+/**
  * Pending booking statuses - waiting for driver assignment
  */
 const PENDING_BOOKING_STATUSES = [
@@ -106,6 +123,30 @@ const CUSTOMER_NON_CANCELLABLE_STATUSES = [
   'rejected'
 ];
 
+/** Matches shopOrderService PAST_PICKUP_BOOKING — real pickup started on linked parcel booking. */
+const BOOKING_PAST_PICKUP_STATUSES = [
+  'photo_captured',
+  'picked_up',
+  'in_transit',
+  'at_dropoff',
+  'delivered',
+  'money_collection',
+  'completed'
+];
+
+const BOOKING_PAST_PICKUP_SET = new Set(BOOKING_PAST_PICKUP_STATUSES);
+
+function isBookingPastPickup(status) {
+  return BOOKING_PAST_PICKUP_SET.has(status || '');
+}
+
+/** Admin PUT status must not skip payment / earnings flows. */
+const ADMIN_STATUS_EDIT_BLOCKED_TARGETS = new Set([
+  'delivered',
+  'money_collection',
+  'completed'
+]);
+
 function customerCancelRefusal(status) {
   const currentStatus = status || '';
   if (!CUSTOMER_NON_CANCELLABLE_STATUSES.includes(currentStatus)) {
@@ -165,12 +206,16 @@ function activeCancelHttp(result) {
 module.exports = {
   ACTIVE_BOOKING_STATUSES,
   ACTIVE_BOOKING_WITH_DRIVER_STATUSES,
+  DRIVER_GET_ACTIVE_BOOKING_STATUSES,
   PENDING_BOOKING_STATUSES,
   COMPLETED_BOOKING_STATUSES,
   VALID_BOOKING_STATUSES,
   PAYMENT_STATUSES,
   CUSTOMER_PARCEL_BLOCKING_STATUSES,
   CUSTOMER_NON_CANCELLABLE_STATUSES,
+  BOOKING_PAST_PICKUP_STATUSES,
+  isBookingPastPickup,
+  ADMIN_STATUS_EDIT_BLOCKED_TARGETS,
   customerCancelRefusal,
   planCustomerActiveCancel,
   activeCancelHttp

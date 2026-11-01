@@ -1,6 +1,7 @@
 // Customers read marketplace orders through the API. The signal document is the only client-readable change notice.
 const { presentCustomerRefund } = require('./refunds');
 const { presentDeliveryAddress } = require('./presentDeliveryAddress');
+const { presentMarketplaceDriverInfo } = require('./presentMarketplaceDriverInfo');
 
 const PAYMENT_FIELDS = [
   'status',
@@ -156,20 +157,7 @@ function presentDeliveryStageTimes(delivery) {
 }
 
 function presentCustomerDriverInfo(raw) {
-  if (!raw || typeof raw !== 'object') {
-    return null;
-  }
-  const name = typeof raw.name === 'string' && raw.name.trim() !== '' ? raw.name : null;
-  const phone = typeof raw.phone === 'string' && raw.phone.trim() !== '' ? raw.phone : null;
-  const vehicle = typeof raw.vehicle === 'string' && raw.vehicle.trim() !== ''
-    ? raw.vehicle
-    : (typeof raw.vehicleNumber === 'string' && raw.vehicleNumber.trim() !== ''
-      ? raw.vehicleNumber
-      : null);
-  if (!name && !phone && !vehicle) {
-    return null;
-  }
-  return { name, vehicle, phone };
+  return presentMarketplaceDriverInfo(raw);
 }
 
 function presentShopSnapshotCoordinates(raw) {
@@ -252,6 +240,7 @@ function presentCustomerOrder(order) {
     },
     orderStatus: source.orderStatus ?? null,
     displayId: source.displayId ?? null,
+    handedOverAt: toIso(source.handedOverAt),
     linkedBookingId: source.linkedBookingId ?? null,
     driverInfo: presentCustomerDriverInfo(source.driverInfo),
     payment: {

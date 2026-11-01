@@ -9,7 +9,6 @@ const {
   MARKETPLACE_TEMPLATE_ACTION,
   isMarketplacePushData
 } = require('../src/services/marketplace/marketplacePush');
-const shopOrderService = require('../src/services/shopOrderService');
 const expoPushService = require('../src/services/expoPushService');
 const notificationService = require('../src/services/notificationService');
 
@@ -132,26 +131,31 @@ describe('marketplace notification audit (MP-18)', () => {
     isoSpy.mockRestore();
   });
 
-  describe('OUT_FOR_DELIVERY handover rules', () => {
-    it('shouldSendOutForDeliveryPush when handed_over and not delivered', () => {
-      expect(shopOrderService.shouldSendOutForDeliveryPush({
-        orderStatus: 'handed_over',
-        delivery: { stage: 'on_the_way' }
-      })).toBe(true);
+  describe('OUT_FOR_DELIVERY via marketplace sync', () => {
+    const marketplaceSyncService = require('../src/services/marketplaceSyncService');
+
+    it('plans customer OUT_FOR_DELIVERY when booking reaches in_transit', () => {
+      const plan = marketplaceSyncService.planDeliverySync(
+        { orderStatus: 'handed_over', delivery: { stage: 'picked_up' } },
+        { status: 'in_transit', driverInfo: { name: 'D', phone: '1', vehicleNumber: 'X' } }
+      );
+      expect(plan.push).toBe('on_the_way');
     });
 
-    it('does not send when already delivered', () => {
-      expect(shopOrderService.shouldSendOutForDeliveryPush({
-        orderStatus: 'handed_over',
-        delivery: { stage: 'delivered' }
-      })).toBe(false);
+    it('does not plan push when stage already on_the_way', () => {
+      const plan = marketplaceSyncService.planDeliverySync(
+        { orderStatus: 'handed_over', delivery: { stage: 'on_the_way' } },
+        { status: 'in_transit', driverInfo: { name: 'D', phone: '1', vehicleNumber: 'X' } }
+      );
+      expect(plan.push).toBeNull();
     });
 
-    it('does not send when not handed_over', () => {
-      expect(shopOrderService.shouldSendOutForDeliveryPush({
-        orderStatus: 'ready',
-        delivery: { stage: 'searching' }
-      })).toBe(false);
+    it('does not plan push when booking is still at shop', () => {
+      const plan = marketplaceSyncService.planDeliverySync(
+        { orderStatus: 'handed_over', delivery: { stage: 'at_shop' } },
+        { status: 'driver_arrived', driverInfo: { name: 'D', phone: '1', vehicleNumber: 'X' } }
+      );
+      expect(plan.push).toBeNull();
     });
   });
 });

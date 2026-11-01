@@ -1,4 +1,5 @@
 const admin = require('firebase-admin');
+const { debugLog } = require('../utils/debugLog');
 const environmentConfig = require('../config/environment');
 
 /**
@@ -149,12 +150,12 @@ class AppCheckMiddleware {
           const decodedToken = await this.validateToken(appCheckToken);
           if (decodedToken) {
             req.appCheckToken = decodedToken;
-            console.log(`🔒 Optional App Check validation passed for app: ${decodedToken.appId || decodedToken.sub || 'unknown'}`);
+            debugLog(`🔒 Optional App Check validation passed for app: ${decodedToken.appId || decodedToken.sub || 'unknown'}`);
           } else {
             console.warn('⚠️ App Check token provided but validation failed (continuing without it)');
           }
         } else {
-          console.log('ℹ️ No App Check token provided (optional validation)');
+          debugLog('ℹ️ No App Check token provided (optional validation)');
           // In development, warn about missing App Check token
           if (process.env.NODE_ENV === 'development') {
             console.warn('⚠️ [DEV] No App Check token in request - this is expected for development builds');

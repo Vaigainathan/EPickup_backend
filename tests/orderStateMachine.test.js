@@ -23,7 +23,6 @@ const ALLOWED = [
   ['payment_review', 'cancelled'],
   ['preparing', 'ready'],
   ['preparing', 'cancelled'],
-  ['ready', 'handed_over'],
   ['ready', 'cancelled'],
   ['handed_over', 'completed'],
   ['handed_over', 'delivery_failed']
@@ -58,6 +57,22 @@ describe('assertTransition', () => {
 
   test('preparing → preparing is rejected', () => {
     expect(() => assertTransition('preparing', 'preparing')).toThrow(InvalidStateError);
+  });
+
+  test('ready → handed_over without actor is rejected', () => {
+    expect(() => assertTransition('ready', 'handed_over')).toThrow(InvalidStateError);
+  });
+
+  test('ready → handed_over rejects shop actor', () => {
+    expect(() => assertTransition('ready', 'handed_over', { actor: { type: 'shop', id: 's1' } }))
+      .toThrow(InvalidStateError);
+  });
+
+  test('ready → handed_over allows driver and system actors', () => {
+    expect(() => assertTransition('ready', 'handed_over', { actor: { type: 'driver', id: 'd1' } }))
+      .not.toThrow();
+    expect(() => assertTransition('ready', 'handed_over', { actor: { type: 'system', id: 'sync' } }))
+      .not.toThrow();
   });
 });
 

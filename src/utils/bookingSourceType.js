@@ -35,8 +35,24 @@ function resolveBookingFareTotal(booking = {}) {
   return 0;
 }
 
+/** Firestore can filter marketplace; parcel is inferred in app code only. */
+function canExpressSourceTypeInFirestore(sourceType) {
+  if (sourceType === undefined || sourceType === null || sourceType === '') {
+    return true;
+  }
+  const normalized = String(sourceType).toLowerCase();
+  if (normalized === 'marketplace') {
+    return true;
+  }
+  if (normalized === 'parcel') {
+    return false;
+  }
+  return true;
+}
+
 module.exports = {
   resolveBookingSourceType,
   matchesSourceTypeFilter,
-  resolveBookingFareTotal
+  resolveBookingFareTotal,
+  canExpressSourceTypeInFirestore
 };

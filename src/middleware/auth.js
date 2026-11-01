@@ -1,4 +1,5 @@
 const jwt = require('jsonwebtoken');
+const { debugLog } = require('../utils/debugLog');
 const { getFirestore } = require('../services/firebase');
 
 /**
@@ -254,7 +255,7 @@ const authMiddleware = async (req, res, next) => {
     };
     
     // ✅ IMPROVED LOGGING: Show both Firestore and token userType for clarity
-    console.log('✅ [AUTH] User authenticated:', {
+    debugLog('✅ [AUTH] User authenticated:', {
       userId,
       userType: userType,
       source: decodedToken.userType ? 'JWT_TOKEN' : 'FIRESTORE',
@@ -464,7 +465,7 @@ const requireRole = (allowedRoles) => {
     }
 
     // Log the user type for debugging
-    console.log('🔍 [AUTH] Role check:', {
+    debugLog('🔍 [AUTH] Role check:', {
       userId: req.user.uid,
       userType: req.user.userType,
       allowedRoles: allowedRoles,

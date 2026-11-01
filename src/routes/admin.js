@@ -11,6 +11,12 @@ const {
 const walletService = require('../services/walletService');
 const { sanitizeInput, validateEmail, checkValidation } = require('../middleware/validation');
 const { requireAdminRole } = require('../middleware/auth');
+const {
+  getAllowedAdminTransitions,
+  adminUpdateBookingStatus,
+  adminIntervene,
+  AdminInterventionError
+} = require('../services/admin/adminBookingInterventionService');
 const { requireStagingFirebaseProject } = require('../middleware/stagingFirebaseProject');
 const { createAdminStaff, disableAdminStaff } = require('../services/adminStaffService');
 const adminSupportTicketService = require('../services/admin/adminSupportTicketService');
@@ -19,14 +25,47 @@ const { ADMIN_ROLES, isAdminRole } = require('../constants/adminRoles');
 const {
   resolveBookingSourceType,
   matchesSourceTypeFilter,
-  resolveBookingFareTotal
+  resolveBookingFareTotal,
+  canExpressSourceTypeInFirestore
 } = require('../utils/bookingSourceType');
+const {
+  fetchDashboardCounts,
+  ADMIN_LIST_ACTIVE_BOOKING_STATUSES,
+  buildAdminDriversFilterQuery,
+  buildAdminBookingsFilterQuery,
+  firestoreCount
+} = require('../services/admin/adminDashboardCountsService');
 const router = express.Router();
 
 // Apply input sanitization to all admin routes
 router.use(sanitizeInput);
 
 const superAdminOnly = requireAdminRole(['super_admin']);
+const superAdminBookingControl = requireAdminRole(['super_admin']);
+
+function respondAdminInterventionError(res, error, fallbackCode) {
+  if (error instanceof AdminInterventionError) {
+    return res.status(error.status).json({
+      success: false,
+      error: {
+        code: error.code,
+        message: error.message,
+        details: error.details
+      },
+      timestamp: new Date().toISOString()
+    });
+  }
+  console.error(fallbackCode, error);
+  return res.status(500).json({
+    success: false,
+    error: {
+      code: fallbackCode,
+      message: error.message || 'Request failed',
+      details: error.message
+    },
+    timestamp: new Date().toISOString()
+  });
+}
 
 const SUPER_ADMIN_PREFIXES = [
   '/admins',
@@ -411,6 +450,32 @@ router.get('/profile', async (req, res) => {
         code: 'PROFILE_RETRIEVAL_ERROR',
         message: 'Failed to retrieve admin profile',
         details: error.message
+      },
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+/**
+ * @route   GET /api/admin/dashboard/counts
+ * @desc    Dashboard aggregate counts (no monetary fields)
+ * @access  Private (Admin only)
+ */
+router.get('/dashboard/counts', async (req, res) => {
+  try {
+    const data = await fetchDashboardCounts();
+    res.json({
+      success: true,
+      data,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('Error fetching dashboard counts:', error);
+    res.status(500).json({
+      success: false,
+      error: {
+        code: 'DASHBOARD_COUNTS_ERROR',
+        message: 'Failed to fetch dashboard counts'
       },
       timestamp: new Date().toISOString()
     });
@@ -876,7 +941,8 @@ function getDefaultPermissions(role) {
 router.get('/drivers', async (req, res) => {
   try {
     const db = getFirestore();
-    const { limit = 20, offset = 0, status, verificationStatus } = req.query;
+    const { limit = 20, offset = 0, status, verificationStatus, online } = req.query;
+    const filterOnline = online === 'true' || online === true;
 
     // ✅ CORE FIX: First, ensure all drivers have createdAt field (fix missing ones)
     // This prevents drivers from being excluded from queries
@@ -911,15 +977,7 @@ router.get('/drivers', async (req, res) => {
       // Continue anyway - fallback query will handle it
     }
 
-    let query = db.collection('users').where('userType', '==', 'driver');
-
-    // Apply filters
-    if (status) {
-      query = query.where('isActive', '==', status === 'active');
-    }
-    if (verificationStatus) {
-      query = query.where('isVerified', '==', verificationStatus === 'verified');
-    }
+    let query = buildAdminDriversFilterQuery(db, { status, verificationStatus, online: filterOnline });
 
     // ✅ CRITICAL FIX: Try indexed query first, fallback to simple query if it fails
     let snapshot;
@@ -930,15 +988,7 @@ router.get('/drivers', async (req, res) => {
     } catch (indexError) {
       // Fallback: Query without orderBy if index is missing or createdAt has wrong type
       console.warn('⚠️ [ADMIN] Indexed query failed, using fallback query:', indexError.message);
-      let fallbackQuery = db.collection('users').where('userType', '==', 'driver');
-      
-      if (status) {
-        fallbackQuery = fallbackQuery.where('isActive', '==', status === 'active');
-      }
-      if (verificationStatus) {
-        fallbackQuery = fallbackQuery.where('isVerified', '==', verificationStatus === 'verified');
-      }
-      
+      let fallbackQuery = buildAdminDriversFilterQuery(db, { status, verificationStatus, online: filterOnline });
       // Get all matching drivers, then sort in-memory
       const allDrivers = await fallbackQuery.get();
       const driversArray = allDrivers.docs.map(doc => {
@@ -1383,13 +1433,23 @@ router.get('/drivers', async (req, res) => {
       }
     }
 
+    let totalCount = 0;
+    try {
+      totalCount = await firestoreCount(
+        buildAdminDriversFilterQuery(db, { status, verificationStatus, online: filterOnline })
+      );
+    } catch (countError) {
+      console.warn('⚠️ [ADMIN] Failed to get driver totalCount:', countError.message);
+    }
+
     res.json({
       success: true,
       data: drivers,
       pagination: {
         limit: Math.max(1, Math.min(100, parseInt(limit) || 20)),
         offset: Math.max(0, parseInt(offset) || 0),
-        total: drivers.length
+        total: drivers.length,
+        totalCount
       },
       timestamp: new Date().toISOString()
     });
@@ -1754,13 +1814,26 @@ router.get('/bookings', async (req, res) => {
       bookings.push(mappedBooking);
     }
 
+    let totalCount = null;
+    if (canExpressSourceTypeInFirestore(sourceType)) {
+      try {
+        totalCount = await firestoreCount(
+          buildAdminBookingsFilterQuery(db, { status, dateFrom, dateTo, sourceType })
+        );
+      } catch (countError) {
+        console.warn('⚠️ [ADMIN] Failed to get booking totalCount:', countError.message);
+        totalCount = 0;
+      }
+    }
+
     res.json({
       success: true,
       data: bookings,
       pagination: {
         limit: Math.max(1, Math.min(100, parseInt(limit) || 20)),
         offset: Math.max(0, parseInt(offset) || 0),
-        total: bookings.length
+        total: bookings.length,
+        totalCount
       },
       timestamp: new Date().toISOString()
     });
@@ -1789,8 +1862,8 @@ router.get('/bookings/active', async (req, res) => {
     const db = getFirestore();
     const { limit = 50, sourceType } = req.query;
 
-    // ✅ UNIFIED STATUS DEFINITION: Use consistent status names
-    const activeStatuses = ['pending', 'driver_assigned', 'accepted', 'driver_enroute', 'driver_arrived', 'picked_up', 'in_transit'];
+    // ✅ UNIFIED STATUS DEFINITION: Use consistent status names (see ADMIN_LIST_ACTIVE_BOOKING_STATUSES)
+    const activeStatuses = ADMIN_LIST_ACTIVE_BOOKING_STATUSES;
     const bookings = [];
 
     for (const status of activeStatuses) {
@@ -1911,6 +1984,7 @@ router.get('/bookings/:id', async (req, res) => {
       },
       pickupVerification,
       deliveryVerification,
+      allowedAdminTransitions: getAllowedAdminTransitions(data.status),
       originalData: data
     };
 
@@ -1939,76 +2013,38 @@ router.get('/bookings/:id', async (req, res) => {
  * @desc    Update booking status
  * @access  Private (Admin only)
  */
-router.put('/bookings/:id/status', async (req, res) => {
+router.put('/bookings/:id/status', superAdminBookingControl, async (req, res) => {
   try {
     const { id } = req.params;
-    const { status } = req.body;
-    const db = getFirestore();
+    const { status, reason } = req.body;
+    const adminId = req.user.uid || req.user.userId;
 
-    // ✅ CRITICAL FIX: Use unified status definitions
-    const validStatuses = ['pending', 'driver_assigned', 'accepted', 'driver_enroute', 'driver_arrived', 'picked_up', 'in_transit', 'delivered', 'completed', 'cancelled', 'rejected', 'payment_pending'];
-    if (!validStatuses.includes(status)) {
+    if (!status) {
       return res.status(400).json({
         success: false,
         error: {
           code: 'INVALID_STATUS',
-          message: 'Invalid booking status',
-          details: `Status must be one of: ${validStatuses.join(', ')}`
+          message: 'Status is required'
         },
         timestamp: new Date().toISOString()
       });
     }
 
-    // Get booking
-    const bookingRef = db.collection('bookings').doc(id);
-    const bookingDoc = await bookingRef.get();
-
-    if (!bookingDoc.exists) {
-      return res.status(404).json({
-        success: false,
-        error: {
-          code: 'BOOKING_NOT_FOUND',
-          message: 'Booking not found'
-        },
-        timestamp: new Date().toISOString()
-      });
-    }
-
-    // Update booking status
-    await bookingRef.update({
-      status: status,
-      updatedAt: new Date(),
-      'statusHistory': db.FieldValue.arrayUnion({
-        status: status,
-        updatedBy: req.user.uid || req.user.userId,
-        updatedAt: new Date(),
-        role: 'admin'
-      })
+    const data = await adminUpdateBookingStatus({
+      bookingId: id,
+      status,
+      adminId,
+      reason
     });
-
-    console.log(`✅ [ADMIN] Booking ${id} status updated to ${status} by admin ${req.user.email || req.user.userId}`);
 
     res.json({
       success: true,
       message: 'Booking status updated successfully',
-      data: {
-        bookingId: id,
-        status: status
-      },
+      data,
       timestamp: new Date().toISOString()
     });
-
   } catch (error) {
-    console.error('Error updating booking status:', error);
-    res.status(500).json({
-      success: false,
-      error: {
-        code: 'UPDATE_BOOKING_STATUS_ERROR',
-        message: 'Failed to update booking status',
-        details: error.message
-      },
-      timestamp: new Date().toISOString()
-    });
+    return respondAdminInterventionError(res, error, 'UPDATE_BOOKING_STATUS_ERROR');
   }
 });
 
@@ -2041,6 +2077,22 @@ router.delete('/bookings/:id', async (req, res) => {
     }
 
     const bookingData = bookingDoc.data();
+
+    const { COMPLETED_BOOKING_STATUSES } = require('../constants/bookingStatuses');
+    if (!COMPLETED_BOOKING_STATUSES.includes(bookingData.status)) {
+      return res.status(409).json({
+        success: false,
+        error: {
+          code: 'BOOKING_ACTIVE',
+          message: 'Cannot delete an active booking. Cancel or use admin intervention instead.',
+          details: {
+            bookingId: id,
+            status: bookingData.status
+          }
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
 
     // Get reason from body or query params
     const reason = req.body.reason || req.query.reason || 'No reason provided';
@@ -2283,72 +2335,12 @@ router.get('/emergency/alerts/active', async (req, res) => {
       });
     });
 
-    // If no alerts exist, create some mock data for testing
-    if (activeAlerts.length === 0) {
-      const mockAlerts = [
-        {
-          id: 'mock-alert-1',
-          alertId: 'mock-alert-1',
-          userId: 'customer-1',
-          userType: 'customer',
-          userInfo: {
-            name: 'Alice Johnson',
-            phone: '+1234567890'
-          },
-          type: 'medical',
-          priority: 'high',
-          status: 'active',
-          location: {
-            address: '123 Main St, New York, NY',
-            latitude: 40.7128,
-            longitude: -74.0060
-          },
-          description: 'Customer experiencing chest pain during ride',
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString()
-        },
-        {
-          id: 'mock-alert-2',
-          alertId: 'mock-alert-2',
-          userId: 'customer-2',
-          userType: 'customer',
-          userInfo: {
-            name: 'Bob Smith',
-            phone: '+1234567891'
-          },
-          type: 'other',
-          priority: 'medium',
-          status: 'active',
-          location: {
-            address: '456 Broadway, New York, NY',
-            latitude: 40.7589,
-            longitude: -73.9851
-          },
-          description: 'Driver reported aggressive behavior from customer',
-          createdAt: new Date(Date.now() - 300000).toISOString(), // 5 minutes ago
-          updatedAt: new Date(Date.now() - 300000).toISOString()
-        }
-      ];
-
-      // Store mock alerts in Firestore for future use
-      for (const alert of mockAlerts) {
-        await db.collection('emergencyAlerts').doc(alert.id).set(alert);
-      }
-
-      res.json({
-        success: true,
-        data: mockAlerts,
-        count: mockAlerts.length,
-        timestamp: new Date().toISOString()
-      });
-    } else {
-      res.json({
-        success: true,
-        data: activeAlerts,
-        count: activeAlerts.length,
-        timestamp: new Date().toISOString()
-      });
-    }
+    res.json({
+      success: true,
+      data: activeAlerts,
+      count: activeAlerts.length,
+      timestamp: new Date().toISOString()
+    });
 
   } catch (error) {
     console.error('Error fetching active emergency alerts:', error);
@@ -6278,47 +6270,6 @@ router.get('/support-tickets', async (req, res) => {
 });
 
 /**
- * @route   GET /api/admin/system/users/online
- * @desc    Get online users count
- * @access  Private (Admin only)
- */
-router.get('/system/users/online', async (req, res) => {
-  try {
-    const db = getFirestore();
-    
-    // Get users who were active in the last 5 minutes
-    const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000);
-    
-    const onlineUsersSnapshot = await db.collection('users')
-      .where('lastSeen', '>=', fiveMinutesAgo)
-      .get();
-    
-    const onlineCount = onlineUsersSnapshot.size;
-    
-    res.json({
-      success: true,
-      data: {
-        onlineUsers: onlineCount,
-        lastChecked: new Date().toISOString()
-      },
-      timestamp: new Date().toISOString()
-    });
-
-  } catch (error) {
-    console.error('❌ Error getting online users:', error);
-    res.status(500).json({
-      success: false,
-      error: {
-        code: 'ONLINE_USERS_ERROR',
-        message: 'Failed to get online users count',
-        details: error.message
-      },
-      timestamp: new Date().toISOString()
-    });
-  }
-});
-
-/**
  * @route   GET /api/admin/system/logs
  * @desc    Get system logs
  * @access  Private (Admin only)
@@ -7034,112 +6985,38 @@ router.get('/test-document-system/:driverId', async (req, res) => {
  * @desc    Admin intervention in booking (cancel, reassign, etc.)
  * @access  Private (Admin only)
  */
-router.post('/bookings/:id/intervene', async (req, res) => {
+router.post('/bookings/:id/intervene', superAdminBookingControl, async (req, res) => {
   try {
     const { id } = req.params;
     const { action, reason } = req.body;
-    const db = getFirestore();
+    const adminId = req.user.uid || req.user.userId;
 
-    // Validate action
-    const validActions = ['cancel', 'reassign', 'escalate', 'refund'];
-    if (!validActions.includes(action)) {
+    if (!action) {
       return res.status(400).json({
         success: false,
         error: {
           code: 'INVALID_ACTION',
-          message: 'Invalid intervention action',
-          details: `Action must be one of: ${validActions.join(', ')}`
+          message: 'Intervention action is required'
         },
         timestamp: new Date().toISOString()
       });
     }
 
-    // Get booking
-    const bookingRef = db.collection('bookings').doc(id);
-    const bookingDoc = await bookingRef.get();
-
-    if (!bookingDoc.exists) {
-      return res.status(404).json({
-        success: false,
-        error: {
-          code: 'BOOKING_NOT_FOUND',
-          message: 'Booking not found'
-        },
-        timestamp: new Date().toISOString()
-      });
-    }
-
-    const bookingData = bookingDoc.data();
-    const updateData = {
-      updatedAt: new Date()
-    };
-
-    // Handle different actions
-    switch (action) {
-      case 'cancel':
-        updateData.status = 'cancelled';
-        updateData.cancelledAt = new Date();
-        updateData.cancellationReason = reason || 'Admin intervention';
-        break;
-      case 'reassign':
-        // This would require additional logic to reassign driver
-        updateData.status = 'pending';
-        updateData.driverId = null;
-        updateData.driverName = null;
-        updateData.reassignmentReason = reason || 'Admin reassignment';
-        break;
-      case 'escalate':
-        updateData.escalatedAt = new Date();
-        updateData.escalationReason = reason || 'Admin escalation';
-        break;
-      case 'refund':
-        updateData.refundedAt = new Date();
-        updateData.refundReason = reason || 'Admin refund';
-        break;
-    }
-
-    await bookingRef.update(updateData);
-
-    // Log the intervention
-    const auditLogRef = db.collection('adminLogs').doc();
-    await auditLogRef.set({
-      action: `booking_${action}`,
-      adminId: req.user.uid,
-      targetBookingId: id,
-      details: {
-        bookingId: id,
-        action,
-        reason: reason || 'No reason provided',
-        previousStatus: bookingData.status,
-        newStatus: updateData.status || bookingData.status,
-        timestamp: new Date()
-      },
-      timestamp: new Date()
+    const data = await adminIntervene({
+      bookingId: id,
+      action,
+      adminId,
+      reason
     });
 
     res.json({
       success: true,
-      message: `Booking ${action} successful`,
-      data: {
-        bookingId: id,
-        action,
-        status: updateData.status || bookingData.status,
-        updatedAt: new Date().toISOString()
-      },
+      message: `Booking ${data.action} successful`,
+      data,
       timestamp: new Date().toISOString()
     });
-
   } catch (error) {
-    console.error('Error intervening in booking:', error);
-    res.status(500).json({
-      success: false,
-      error: {
-        code: 'BOOKING_INTERVENTION_ERROR',
-        message: 'Failed to intervene in booking',
-        details: error.message
-      },
-      timestamp: new Date().toISOString()
-    });
+    return respondAdminInterventionError(res, error, 'BOOKING_INTERVENTION_ERROR');
   }
 });
 

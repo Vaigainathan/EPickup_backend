@@ -114,9 +114,12 @@ router.post('/:id/mark-ready', authMiddleware, requireRole(['shop']), async (req
 });
 
 router.post('/:id/confirm-handover', authMiddleware, requireRole(['shop']), async (req, res) => {
-  return withShop(req, res, async (shopId) => {
-    const result = await shopOrderService.confirmHandover(shopId, req.params.id, req.body || {});
-    return sendTransition(res, result, 'Handover confirmed');
+  return res.status(410).json({
+    success: false,
+    error: {
+      code: 'HANDOVER_REMOVED',
+      message: 'The delivery partner confirms pickup in their app'
+    }
   });
 });
 

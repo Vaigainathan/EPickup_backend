@@ -1,5 +1,4 @@
 const mockOrderGet = jest.fn();
-const mockPrivateGet = jest.fn();
 
 jest.mock('../src/services/firebase', () => ({
   getFirestore: jest.fn()
@@ -30,12 +29,7 @@ function buildDb() {
       if (name === 'marketplaceOrders') {
         return {
           doc: jest.fn(() => ({
-            get: mockOrderGet,
-            collection: jest.fn(() => ({
-              doc: jest.fn(() => ({
-                get: mockPrivateGet
-              }))
-            }))
+            get: mockOrderGet
           }))
         };
       }
@@ -47,7 +41,6 @@ function buildDb() {
 describe('driverMarketplaceAssignment', () => {
   beforeEach(() => {
     mockOrderGet.mockReset();
-    mockPrivateGet.mockReset();
   });
 
   test('mapDriverMarketplaceItems excludes unavailable and prices', () => {
@@ -71,18 +64,14 @@ describe('driverMarketplaceAssignment', () => {
     expect(mockOrderGet).not.toHaveBeenCalled();
   });
 
-  test('loadAssignedMarketplaceContext loads handover and items', async () => {
+  test('loadAssignedMarketplaceContext loads compat handedOver and items', async () => {
     mockOrderGet.mockResolvedValue({
       exists: true,
       data: () => ({
         displayId: 42,
-        orderStatus: 'handed_over',
+        orderStatus: 'ready',
         items: [{ name: 'Tea', variantLabel: null, qty: 1 }]
       })
-    });
-    mockPrivateGet.mockResolvedValue({
-      exists: true,
-      data: () => ({ otp: '123456' })
     });
 
     const ctx = await loadAssignedMarketplaceContext(
@@ -90,15 +79,18 @@ describe('driverMarketplaceAssignment', () => {
       {
         sourceType: 'marketplace',
         driverId: 'driver-1',
-        marketplaceOrderId: 'order-1'
+        marketplaceOrderId: 'order-1',
+        status: 'driver_assigned',
+        pickup: { name: 'Corner Store', phone: '9000000002' }
       },
       'driver-1'
     );
 
     expect(ctx).toEqual({
       displayId: 42,
-      handoverCode: '123456',
       handedOver: true,
+      shopName: 'Corner Store',
+      shopPhone: '9000000002',
       items: [{ name: 'Tea', variantLabel: null, qty: 1 }]
     });
   });
@@ -107,11 +99,10 @@ describe('driverMarketplaceAssignment', () => {
     const booking = { id: 'b1', status: 'driver_assigned' };
     const withMarketplace = attachMarketplaceToDriverBooking(booking, {
       displayId: 1,
-      handoverCode: '99',
       handedOver: false,
       items: []
     });
-    expect(withMarketplace.marketplace.handoverCode).toBe('99');
+    expect(withMarketplace.marketplace.handedOver).toBe(false);
     expect(withMarketplace.id).toBe('b1');
   });
 });

@@ -8,6 +8,21 @@ const {
   digitsDisplayId
 } = require('./marketplace/marketplacePush');
 
+function finalizeNotificationCopy(text) {
+  if (!text || typeof text !== 'string' || !/\{\{\w+\}\}/.test(text)) {
+    return text;
+  }
+  const nodeEnv = process.env.NODE_ENV || 'development';
+  if (nodeEnv === 'development' || nodeEnv === 'staging') {
+    console.warn('[NOTIFICATION] Unresolved template placeholder:', text);
+    return text;
+  }
+  if (nodeEnv === 'production') {
+    return text.replace(/\{\{\w+\}\}/g, '');
+  }
+  return text;
+}
+
 const formatNotificationVariableValue = (variableName, value) => {
   if (value === undefined || value === null) return value;
 
@@ -91,6 +106,11 @@ const NOTIFICATION_TEMPLATES = {
       title: "Booking Cancelled",
       body: "Your booking has been cancelled. {{reason}}",
       data: { type: 'booking_cancelled', action: 'book_again' }
+    },
+    FINDING_NEW_DRIVER: {
+      title: 'Finding a new delivery partner',
+      body: 'We are finding a new delivery partner for your order.',
+      data: { type: 'finding_new_driver', action: 'track_booking' }
     }
   },
 
@@ -110,6 +130,11 @@ const NOTIFICATION_TEMPLATES = {
       title: "Booking Cancelled",
       body: "The booking has been cancelled by the customer.",
       data: { type: 'booking_cancelled', action: 'find_new_booking' }
+    },
+    BOOKING_REASSIGNED: {
+      title: 'Booking reassigned',
+      body: 'This trip was reassigned by support. You are no longer assigned.',
+      data: { type: 'booking_reassigned', action: 'find_new_booking' }
     },
     PAYMENT_RECEIVED: {
       title: "Payment Received! 💰",
@@ -278,8 +303,8 @@ const NOTIFICATION_TEMPLATES = {
       data: { type: 'customer_cancelled', action: 'order' }
     },
     ORDER_PACKED: {
-      title: 'Order packed',
-      body: 'Your {{shopName}} order is packed — delivery charge ₹{{deliveryFee}} in cash',
+      title: 'Order ready',
+      body: 'Your order is ready — finding a delivery partner — delivery charge ₹{{deliveryFee}} in cash',
       data: { type: 'order_packed', action: 'tracking' }
     },
     DRIVER_SLOW: {
@@ -297,6 +322,21 @@ const NOTIFICATION_TEMPLATES = {
       body: '{{driverName}} has reached {{shopName}}',
       data: { type: 'driver_at_shop', action: 'tracking' }
     },
+    DRIVER_ASSIGNED_SHOP: {
+      title: 'Driver assigned',
+      body: '{{driverName}} is assigned to order #{{displayId}}',
+      data: { type: 'order_driver_assigned', action: 'order' }
+    },
+    DRIVER_AT_SHOP_SHOP: {
+      title: 'Driver at shop',
+      body: '{{driverName}} has arrived for order #{{displayId}}',
+      data: { type: 'order_driver_arrived', action: 'order' }
+    },
+    ORDER_PICKED_UP_SHOP: {
+      title: 'Order picked up',
+      body: 'Order #{{displayId}} picked up by {{driverName}}',
+      data: { type: 'order_picked_up', action: 'order' }
+    },
     OUT_FOR_DELIVERY: {
       title: 'Out for delivery',
       body: 'Your {{shopName}} order is on the way — delivery charge ₹{{deliveryFee}} in cash',
@@ -306,6 +346,16 @@ const NOTIFICATION_TEMPLATES = {
       title: 'Delivered',
       body: 'Delivered — rate your {{shopName}} order',
       data: { type: 'order_delivered', action: 'rate' }
+    },
+    ORDER_DELIVERED_SHOP: {
+      title: 'Delivered',
+      body: 'Order #{{displayId}} delivered',
+      data: { type: 'order_delivered', action: 'order' }
+    },
+    FINDING_NEW_DRIVER: {
+      title: 'Finding a new delivery partner',
+      body: 'We are finding a new delivery partner for your order.',
+      data: { type: 'finding_new_driver', action: 'tracking' }
     },
     HELP_UPDATE: {
       title: 'Help request update',
@@ -406,8 +456,8 @@ class NotificationTemplateProcessor {
     };
 
     const processedTemplate = {
-      title: this.substituteVariables(template.title, displayForBody),
-      body: this.substituteVariables(template.body, displayForBody),
+      title: finalizeNotificationCopy(this.substituteVariables(template.title, displayForBody)),
+      body: finalizeNotificationCopy(this.substituteVariables(template.body, displayForBody)),
       data: { ...template.data }
     };
 
@@ -663,5 +713,6 @@ class NotificationBuilder {
 module.exports = {
   NOTIFICATION_TEMPLATES,
   NotificationTemplateProcessor,
-  NotificationBuilder
+  NotificationBuilder,
+  finalizeNotificationCopy
 };

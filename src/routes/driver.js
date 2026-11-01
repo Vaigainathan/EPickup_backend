@@ -2800,17 +2800,8 @@ router.put('/status', [
     if (isOnline === false) {
       // ✅ COMPREHENSIVE: Include all statuses where driver is actively working on an order
       // This includes: assigned, accepted, enroute, arrived, picked up, in transit, at dropoff, delivered (waiting for payment), money collection
-      const activeBookingStatuses = [
-        'driver_assigned', 
-        'accepted', 
-        'driver_enroute', 
-        'driver_arrived', 
-        'picked_up', 
-        'in_transit', 
-        'at_dropoff', 
-        'delivered', // ✅ CRITICAL: Driver still needs to collect payment
-        'money_collection' // ✅ CRITICAL: Payment collection in progress
-      ];
+      const { DRIVER_GET_ACTIVE_BOOKING_STATUSES } = require('../constants/bookingStatuses');
+      const activeBookingStatuses = DRIVER_GET_ACTIVE_BOOKING_STATUSES;
       
       // ✅ ENHANCED: Use transaction to ensure atomic check (prevents race conditions)
       try {
@@ -2957,7 +2948,8 @@ router.put('/status', [
       try {
         // ✅ STEP 1: Check if driver has active booking (EXEMPTION RULE)
         // ✅ CRITICAL: Include 'delivered' - driver still needs to collect payment
-        const activeBookingStatuses = ['driver_assigned', 'accepted', 'driver_enroute', 'driver_arrived', 'picked_up', 'in_transit', 'at_dropoff', 'delivered', 'money_collection'];
+        const { DRIVER_GET_ACTIVE_BOOKING_STATUSES } = require('../constants/bookingStatuses');
+        const activeBookingStatuses = DRIVER_GET_ACTIVE_BOOKING_STATUSES;
         const activeBookingQuery = db.collection('bookings')
           .where('driverId', '==', uid)
           .where('status', 'in', activeBookingStatuses)
@@ -4273,35 +4265,32 @@ router.get('/bookings/active', requireDriver, async (req, res) => {
   try {
     const { uid } = req.user;
     const db = getFirestore();
+    const { DRIVER_GET_ACTIVE_BOOKING_STATUSES } = require('../constants/bookingStatuses');
+    const { trySelfHealDriverOrphanRelease } = require('../services/driverOrphanReleaseService');
     
     console.log(`🔍 [DRIVER_ACTIVE_BOOKING] Getting active booking for driver: ${uid}`);
     
-    // ✅ INDUSTRY STANDARD: Check for active booking statuses
-    // ✅ CRITICAL: Include 'delivered' - driver still needs to collect payment
-    const activeBookingStatuses = [
-      'driver_assigned', 
-      'accepted', 
-      'driver_enroute', 
-      'driver_arrived', 
-      'picked_up', 
-      'in_transit', 
-      'at_dropoff',
-      'delivered', // ✅ CRITICAL: Driver still at dropoff, needs to collect payment
-      'money_collection'
-    ];
-    
-    // ✅ FIX: No orderBy needed - just check if any active booking exists
-    const activeBookingsQuery = db.collection('bookings')
+    const runQuery = () => db.collection('bookings')
       .where('driverId', '==', uid)
-      .where('status', 'in', activeBookingStatuses)
-      .limit(1);
-    
-    const snapshot = await activeBookingsQuery.get();
+      .where('status', 'in', DRIVER_GET_ACTIVE_BOOKING_STATUSES)
+      .limit(1)
+      .get();
+
+    let snapshot = await runQuery();
+    let selfHealed = false;
+
+    if (snapshot.empty) {
+      const heal = await trySelfHealDriverOrphanRelease(db, uid);
+      if (heal.healed) {
+        selfHealed = true;
+        snapshot = await runQuery();
+      }
+    }
     
     if (snapshot.empty) {
       return res.json({
         success: true,
-        data: { booking: null },
+        data: { booking: null, ...(selfHealed ? { selfHealed: true } : {}) },
         message: 'No active booking found'
       });
     }
@@ -4328,7 +4317,10 @@ router.get('/bookings/active', requireDriver, async (req, res) => {
     
     res.json({
       success: true,
-      data: { booking },
+      data: {
+        booking,
+        ...(selfHealed ? { selfHealed: true } : {})
+      },
       message: 'Active booking retrieved successfully'
     });
     
@@ -4355,7 +4347,10 @@ router.get('/bookings/available', requireDriver, async (req, res) => {
     
     // If driver already has an active booking, return empty list
     try {
-      const activeStatuses = ['driver_assigned', 'accepted', 'driver_enroute', 'driver_arrived', 'picked_up', 'in_transit'];
+      const { DRIVER_GET_ACTIVE_BOOKING_STATUSES } = require('../constants/bookingStatuses');
+      const activeStatuses = DRIVER_GET_ACTIVE_BOOKING_STATUSES.filter(
+        (status) => status !== 'delivered' && status !== 'money_collection'
+      );
       const activeForDriver = await db.collection('bookings')
         .where('driverId', '==', uid)
         .where('status', 'in', activeStatuses)
@@ -4895,6 +4890,32 @@ router.post('/bookings/:id/accept', idempotencyKeyMiddleware, requireDriver, asy
 
     const driverData = driverDoc.data();
     
+    const {
+      isDriverVerified,
+      driverAccountSuspensionReason
+    } = require('../utils/driverBookingEligibility');
+
+    const suspensionReason = driverAccountSuspensionReason(driverData);
+    if (suspensionReason) {
+      return res.status(403).json({
+        success: false,
+        error: {
+          code: 'DRIVER_ACCOUNT_SUSPENDED',
+          message: 'Driver account suspended',
+          details: 'Your account cannot accept bookings at this time',
+          accountStatus: suspensionReason
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    if (!isDriverVerified(driverData)) {
+      return sendDriverNotVerified(
+        res,
+        driverData.driver?.verificationStatus || driverData.verificationStatus || 'pending'
+      );
+    }
+    
     // ✅ DEBUG: Log driver status when accepting booking
     console.log('🔍 [ACCEPT_BOOKING] Driver status check:', {
       uid,
@@ -5217,6 +5238,10 @@ router.post('/bookings/:id/accept', idempotencyKeyMiddleware, requireDriver, asy
           rating: freshDriverData.driver?.rating || 0,
           vehicleNumber: freshDriverData.driver?.vehicleDetails?.vehicleNumber || '',
           vehicleModel: freshDriverData.driver?.vehicleDetails?.vehicleModel || '',
+          photoUrl: freshDriverData.profilePicture
+            || freshDriverData.photoURL
+            || freshDriverData.profilePhoto
+            || null,
           // ✅ CRITICAL FIX: Include isVerified status so admin dashboard can display correctly
           isVerified: driverIsVerified
         },
@@ -8747,8 +8772,51 @@ router.post('/confirm-pickup', [
     const { uid } = req.user;
     const { bookingId, location, photoUrl, notes, eventId, timestamp: eventTimestamp } = req.body;
     const db = getFirestore();
-    
-    console.log('📦 [CONFIRM_PICKUP] Confirming pickup for booking:', bookingId, 'driver:', uid);
+
+    const bookingRef = db.collection('bookings').doc(bookingId);
+    const bookingSnap = await bookingRef.get();
+    if (!bookingSnap.exists) {
+      return res.status(404).json({
+        success: false,
+        error: {
+          code: 'BOOKING_NOT_FOUND',
+          message: 'Booking not found'
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+    const bookingBeforePickup = bookingSnap.data() || {};
+    if (bookingBeforePickup.sourceType === 'marketplace') {
+      const marketplaceOrderId = bookingBeforePickup.marketplaceOrderId;
+      let orderData = null;
+      if (typeof marketplaceOrderId === 'string' && marketplaceOrderId !== '') {
+        const orderSnap = await db.collection('marketplaceOrders').doc(marketplaceOrderId).get();
+        orderData = orderSnap.exists ? orderSnap.data() : null;
+      }
+      const {
+        assertMarketplacePickupAllowed,
+        recordMarketplaceHandoverAfterPickup
+      } = require('../services/marketplace/marketplacePickupHandover');
+      try {
+        assertMarketplacePickupAllowed({
+          booking: bookingBeforePickup,
+          driverId: uid,
+          order: orderData
+        });
+      } catch (preError) {
+        if (preError && preError.name === 'DriverStatusError') {
+          return res.status(preError.status || 409).json({
+            success: false,
+            error: {
+              code: preError.code || 'INVALID_STATE_TRANSITION',
+              message: preError.message
+            },
+            timestamp: new Date().toISOString()
+          });
+        }
+        throw preError;
+      }
+    }
 
     const statusResult = await driverStatusWorkflowService.updateStatus({
       bookingId,
@@ -8760,6 +8828,19 @@ router.post('/confirm-pickup', [
       eventTimestamp,
       source: 'driver_app'
     });
+
+    if (
+      bookingBeforePickup.sourceType === 'marketplace'
+      && statusResult.status === 'picked_up'
+    ) {
+      const { recordMarketplaceHandoverAfterPickup } = require('../services/marketplace/marketplacePickupHandover');
+      await recordMarketplaceHandoverAfterPickup({
+        bookingId,
+        booking: statusResult.booking || bookingBeforePickup,
+        driverId: uid,
+        marketplaceOrderId: bookingBeforePickup.marketplaceOrderId
+      });
+    }
 
     // ✅ CRITICAL FIX: Update photo status to 'confirmed' when confirming pickup
     // Handle both cases: from 'photo_captured' OR from 'driver_arrived' (in case photo status update failed earlier)

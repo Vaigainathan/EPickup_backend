@@ -29,8 +29,13 @@ const {
   refundRemainder
 } = require('./marketplace/refunds');
 const { presentDeliveryAddress } = require('./marketplace/presentDeliveryAddress');
-const { buildSystemAvailabilityUpdate } = require('../utils/driverAvailabilityMetadata');
-const { emitBookingCancelled, emitMarketplaceHandoverConfirmed } = require('./bookingCancelEvents');
+const {
+  readLinkedBookingForCancel,
+  applyLinkedBookingCancel,
+  notifyAssignedDriverBookingCancelled
+} = require('./marketplace/marketplaceLinkedBookingCancel');
+const { presentMarketplaceDriverInfo } = require('./marketplace/presentMarketplaceDriverInfo');
+const { evaluateAdminMarketplaceCancel } = require('./marketplace/marketplaceAdminCancelPolicy');
 
 function refundRowsFromQuerySnap(snap) {
   const docs = snap && Array.isArray(snap.docs) ? snap.docs : [];
@@ -42,15 +47,6 @@ function refundRowsFromQuerySnap(snap) {
 }
 
 const COLLECTION = 'marketplaceOrders';
-const PAST_PICKUP_BOOKING = new Set([
-  'photo_captured',
-  'picked_up',
-  'in_transit',
-  'at_dropoff',
-  'delivered',
-  'money_collection',
-  'completed'
-]);
 const SUPPORT_READY_STAGES = new Set(['searching', 'assigned', 'at_shop']);
 const DISPLAY_ID_ATTEMPTS = 8;
 
@@ -112,12 +108,8 @@ function pushVariables(data, orderId) {
   return marketplacePushVariables(data, orderId);
 }
 
-function shouldSendOutForDeliveryPush(order) {
-  if (!order || order.orderStatus !== 'handed_over') {
-    return false;
-  }
-  const stage = order.delivery && order.delivery.stage;
-  return stage !== 'delivered';
+function presentDriverInfo(raw) {
+  return presentMarketplaceDriverInfo(raw);
 }
 
 function presentLocation(location) {
@@ -130,21 +122,6 @@ function presentLocation(location) {
     return null;
   }
   return { lat, lng };
-}
-
-function presentDriverInfo(raw) {
-  if (!raw || typeof raw !== 'object') {
-    return null;
-  }
-  const name = typeof raw.name === 'string' ? raw.name : '';
-  const phone = typeof raw.phone === 'string' ? raw.phone : '';
-  const vehicle = typeof raw.vehicle === 'string'
-    ? raw.vehicle
-    : (typeof raw.vehicleNumber === 'string' ? raw.vehicleNumber : '');
-  if (!name && !phone && !vehicle) {
-    return null;
-  }
-  return { name, phone, vehicle };
 }
 
 function marketplaceBookingFareFields(fareDetails, distanceKm) {
@@ -304,7 +281,6 @@ class ShopOrderService {
     const amount = payment.amount ?? itemsTotal;
     const cancellation = data.cancellation || {};
     const address = data.deliveryAddress || {};
-    const handoverOtp = await this.readHandoverOtp(id, data);
 
     return {
       id,
@@ -325,8 +301,7 @@ class ShopOrderService {
       window: data.window && typeof data.window === 'object'
         ? { start: toIso(data.window.start), end: toIso(data.window.end) }
         : null,
-      // Shop-facing only. Do not reuse this presenter on a customer GET without stripping handoverOtp.
-      handoverOtp,
+      handedOverAt: toIso(data.handedOverAt),
       linkedBookingId: data.linkedBookingId ?? null,
       driverInfo: presentDriverInfo(data.driverInfo),
       payment: {
@@ -527,7 +502,8 @@ class ShopOrderService {
         alreadyProcessed: false,
         notify: applied.notify || null,
         extra: applied.extra || {},
-        handoverSource: applied.handoverSource || null
+        handoverSource: applied.handoverSource || null,
+        linkedCancel: applied.linkedCancel || null
       };
     });
 
@@ -621,8 +597,7 @@ class ShopOrderService {
 
     if (!result.alreadyProcessed && result.notify) {
       await this.notifyCustomer(result.order.customerId, result.notify.type, {
-        displayId: digitsDisplayId(result.order.displayId),
-        orderId: result.order.id,
+        ...pushVariables(result.order, result.order.id),
         amount: result.order.payment.amount
       });
     }
@@ -745,8 +720,7 @@ class ShopOrderService {
 
     if (!result.alreadyProcessed && result.notify) {
       await this.notifyCustomer(result.order.customerId, 'ORDER_CANCELLED', {
-        displayId: digitsDisplayId(result.order.displayId),
-        orderId: result.order.id,
+        ...pushVariables(result.order, result.order.id),
         reasonLine: ' '
       });
     }
@@ -987,91 +961,6 @@ class ShopOrderService {
     });
   }
 
-  async confirmHandover(shopId, orderId, payload = {}) {
-    const otp = typeof payload.otp === 'string' ? payload.otp.trim() : '';
-    const displayId = parseDisplayId(payload.displayId ?? payload.orderId);
-    if (!otp || displayId === null) {
-      throw httpError(400, 'INVALID_HANDOVER', 'otp and displayId are required');
-    }
-
-    const result = await this.runOwnedTransition(shopId, orderId, async (data, tx) => {
-      if (data.orderStatus === 'handed_over') {
-        return alreadyProcessed(data);
-      }
-      if (data.orderStatus !== 'ready') {
-        throw httpError(409, 'INVALID_TRANSITION', 'Order must be ready before handover');
-      }
-      const privateSnap = await tx.get(this.handoverPrivateRef(orderId));
-      const privateOtp = privateSnap.exists
-        ? otpFromValue(privateSnap.data() && privateSnap.data().otp)
-        : null;
-      const expectedOtp = privateOtp || otpFromValue(data.handoverOtp) || '';
-      const expectedDisplay = Number(data.displayId);
-      if (otp !== expectedOtp || displayId !== expectedDisplay) {
-        throw httpError(409, 'HANDOVER_MISMATCH', 'Order ID or OTP does not match');
-      }
-      const orderRef = this.orders().doc(orderId);
-      const stage = data.delivery && data.delivery.stage;
-      if (stage === 'delivered') {
-        if (data.shopId) {
-          tx.set(this.getDb().collection('shops').doc(data.shopId), {
-            orderCount: admin.firestore.FieldValue.increment(1)
-          }, { merge: true });
-        }
-        appendEvent(tx, orderRef, {
-          type: 'completed',
-          actor: { type: 'shop', id: shopId }
-        }, data.customerId);
-        return {
-          updates: { orderStatus: 'completed' }
-        };
-      }
-      appendEvent(tx, orderRef, {
-        type: 'handed_over',
-        actor: { type: 'shop', id: shopId }
-      }, data.customerId);
-      return {
-        updates: { orderStatus: 'handed_over' },
-        handoverSource: data
-      };
-    });
-
-    if (!result.alreadyProcessed && result.order && shouldSendOutForDeliveryPush(result.order)) {
-      const source = result.handoverSource || {};
-      const deliveryFee = result.order.deliveryFee
-        ?? (result.order.delivery && result.order.delivery.fare);
-      await this.notifyCustomer(result.order.customerId, 'OUT_FOR_DELIVERY', {
-        ...pushVariables(source, orderId),
-        deliveryFee
-      });
-    }
-
-    if (!result.alreadyProcessed && result.order) {
-      const linkedBookingId = result.order.linkedBookingId;
-      if (linkedBookingId) {
-        try {
-          const bookingSnap = await this.getDb().collection('bookings').doc(linkedBookingId).get();
-          const booking = bookingSnap.exists ? (bookingSnap.data() || {}) : null;
-          const driverId = booking && booking.driverId;
-          if (driverId) {
-            const { getSocketIO } = require('./socket');
-            const io = getSocketIO();
-            emitMarketplaceHandoverConfirmed(io, {
-              driverId,
-              bookingId: linkedBookingId,
-              marketplaceOrderId: orderId,
-              displayId: result.order.displayId ?? null
-            });
-          }
-        } catch (error) {
-          console.error('❌ [SHOP_ORDERS] Handover driver socket failed:', error.message);
-        }
-      }
-    }
-
-    return result;
-  }
-
   async markUnavailable(shopId, orderId, payload = {}) {
     const rawIds = payload && Array.isArray(payload.itemIds) ? payload.itemIds : null;
     if (!rawIds) {
@@ -1208,6 +1097,15 @@ class ShopOrderService {
         throw httpError(409, 'CANCEL_NOT_ALLOWED', 'This order cannot be cancelled');
       }
       const db = ref.firestore;
+
+      let linkedRead = null;
+      if (data.linkedBookingId) {
+        linkedRead = await readLinkedBookingForCancel(tx, db, {
+          order: data,
+          linkedBookingId: data.linkedBookingId
+        });
+      }
+
       const release = data.orderStatus === 'awaiting_payment'
         ? await readUnpaidRelease(tx, db, {
           customerId: data.customerId,
@@ -1234,6 +1132,15 @@ class ShopOrderService {
       if (release) {
         writeUnpaidRelease(tx, release, orderId, true);
       }
+
+      let linkedCancel = { driverId: null, bookingId: null, cancelledBooking: false };
+      if (linkedRead) {
+        linkedCancel = applyLinkedBookingCancel(tx, linkedRead, {
+          cancelledBy: 'shop',
+          reason: 'Marketplace order cancelled'
+        });
+      }
+
       appendEvent(tx, ref, {
         type: 'cancelled',
         actor: { type: 'shop', id: shopId },
@@ -1250,6 +1157,9 @@ class ShopOrderService {
       };
       if (nextItems !== data.items) {
         updates.items = nextItems;
+      }
+      if (linkedCancel.cancelledBooking) {
+        updates['delivery.stage'] = 'cancelled';
       }
 
       if (paid) {
@@ -1279,14 +1189,16 @@ class ShopOrderService {
             type: remainderPaise > 0 ? 'REFUND_INITIATED' : 'ORDER_CANCELLED',
             shopReason: reason
           },
-          extra: { refundRequired: true }
+          extra: { refundRequired: true },
+          linkedCancel
         };
       }
 
       return {
         updates,
         notify: { type: 'ORDER_CANCELLED', shopReason: reason },
-        extra: { refundRequired: false }
+        extra: { refundRequired: false },
+        linkedCancel
       };
     });
 
@@ -1303,7 +1215,15 @@ class ShopOrderService {
     }
 
     if (!result.alreadyProcessed) {
-      await this.cancelLinkedPendingBooking(result.order.linkedBookingId);
+      const linked = result.linkedCancel;
+      if (linked && linked.driverId && linked.bookingId && linked.cancelledBooking) {
+        await notifyAssignedDriverBookingCancelled({
+          driverId: linked.driverId,
+          bookingId: linked.bookingId,
+          reason: 'Marketplace order cancelled',
+          cancelledBy: 'shop'
+        });
+      }
     }
 
     return result;
@@ -1330,27 +1250,17 @@ class ShopOrderService {
       )) {
         return { alreadyProcessed: true, data };
       }
-      const stage = data.delivery && data.delivery.stage;
-      const stageBlocked = stage === 'picked_up' || stage === 'on_the_way' || stage === 'delivered';
-      const statusBlocked = data.orderStatus === 'handed_over' || data.orderStatus === 'completed';
-      const allowed = data.orderStatus === 'preparing'
-        || (data.orderStatus === 'ready' && (stage == null || SUPPORT_READY_STAGES.has(stage)));
-      if (statusBlocked || stageBlocked || !allowed) {
-        throw httpError(409, 'CANCEL_NOT_ALLOWED', 'This order cannot be cancelled');
-      }
 
-      let booking = null;
-      let bookingRef = null;
+      let linkedRead = null;
       if (data.linkedBookingId) {
-        bookingRef = db.collection('bookings').doc(data.linkedBookingId);
-        const bookingSnap = await tx.get(bookingRef);
-        if (bookingSnap.exists) {
-          booking = bookingSnap.data() || {};
-          if (PAST_PICKUP_BOOKING.has(booking.status)) {
-            throw httpError(409, 'CANCEL_NOT_ALLOWED', 'This order cannot be cancelled');
-          }
-        } else {
-          bookingRef = null;
+        linkedRead = await readLinkedBookingForCancel(tx, db, {
+          order: data,
+          linkedBookingId: data.linkedBookingId
+        });
+      } else {
+        const cancelEval = evaluateAdminMarketplaceCancel(data, null);
+        if (!cancelEval.allowed) {
+          throw httpError(409, 'CANCEL_NOT_ALLOWED', cancelEval.reason || 'This order cannot be cancelled');
         }
       }
 
@@ -1360,14 +1270,6 @@ class ShopOrderService {
         ? Number(payment.receivedAmountPaise)
         : (payment.receivedAmount != null ? toPaise(payment.receivedAmount) : 0);
       const remainder = await refundRemainder(tx, orderRef, receivedPaise);
-
-      let driverRef = null;
-      let driverSnap = null;
-      const driverId = booking && booking.driverId ? booking.driverId : null;
-      if (driverId) {
-        driverRef = db.collection('users').doc(driverId);
-        driverSnap = await tx.get(driverRef);
-      }
 
       let nextItems = data.items;
       if (cancelRestoresStock(data)) {
@@ -1380,24 +1282,11 @@ class ShopOrderService {
         nextItems = restored.items;
       }
 
-      const at = new Date();
-      if (bookingRef) {
-        tx.update(bookingRef, {
-          status: 'cancelled',
-          cancellationReason: 'Marketplace order cancelled',
+      let linkedCancel = { driverId: null, bookingId: null, cancelledBooking: false };
+      if (linkedRead) {
+        linkedCancel = applyLinkedBookingCancel(tx, linkedRead, {
           cancelledBy: 'support',
-          cancelledAt: at,
-          updatedAt: at
-        });
-      }
-      if (driverRef && driverSnap && driverSnap.exists) {
-        const driverData = driverSnap.data() || {};
-        const active = driverData.driver && driverData.driver.activeBookings;
-        tx.update(driverRef, {
-          ...buildSystemAvailabilityUpdate(true),
-          'driver.currentBookingId': null,
-          'driver.activeBookings': Math.max((active || 1) - 1, 0),
-          updatedAt: at
+          reason: 'Marketplace order cancelled'
         });
       }
 
@@ -1412,7 +1301,7 @@ class ShopOrderService {
         'cancellation.support': { operator: operatorId, note: noteText },
         updatedAt: admin.firestore.FieldValue.serverTimestamp()
       };
-      if (bookingRef) {
+      if (data.linkedBookingId) {
         orderPatch['delivery.stage'] = 'cancelled';
       }
       tx.update(orderRef, orderPatch);
@@ -1450,8 +1339,9 @@ class ShopOrderService {
         shopName: data.shopSnapshot && typeof data.shopSnapshot.name === 'string'
           ? data.shopSnapshot.name
           : '',
-        driverId,
-        bookingId: data.linkedBookingId || null,
+        driverId: linkedCancel.driverId,
+        bookingId: linkedCancel.bookingId || data.linkedBookingId || null,
+        linkedCancelledBooking: linkedCancel.cancelledBooking === true,
         refundCreated,
         refundAmount
       };
@@ -1479,32 +1369,13 @@ class ShopOrderService {
     } catch (error) {
       console.error('❌ [SHOP_ORDERS] Support cancel notification failed:', error.message);
     }
-    if (outcome.driverId && outcome.bookingId) {
-      try {
-        await notificationService.sendTemplateNotification(
-          outcome.driverId,
-          'DRIVER',
-          'BOOKING_CANCELLED',
-          {
-            bookingId: outcome.bookingId,
-            reason: 'Booking cancelled by admin'
-          }
-        );
-      } catch (error) {
-        console.error('❌ [SHOP_ORDERS] Driver cancel notification failed:', error.message);
-      }
-      try {
-        const { getSocketIO } = require('./socket');
-        const io = getSocketIO();
-        emitBookingCancelled(io, {
-          driverId: outcome.driverId,
-          bookingId: outcome.bookingId,
-          reason: 'Marketplace order cancelled',
-          cancelledBy: 'support'
-        });
-      } catch (error) {
-        console.error('❌ [SHOP_ORDERS] Driver cancel socket failed:', error.message);
-      }
+    if (outcome.linkedCancelledBooking && outcome.driverId && outcome.bookingId) {
+      await notifyAssignedDriverBookingCancelled({
+        driverId: outcome.driverId,
+        bookingId: outcome.bookingId,
+        reason: 'Marketplace order cancelled',
+        cancelledBy: 'support'
+      });
     }
     return { alreadyProcessed: false, wrote: true };
   }
@@ -1670,5 +1541,4 @@ class ShopOrderService {
 
 const shopOrderService = new ShopOrderService();
 shopOrderService.marketplaceBookingFareFields = marketplaceBookingFareFields;
-shopOrderService.shouldSendOutForDeliveryPush = shouldSendOutForDeliveryPush;
 module.exports = shopOrderService;

@@ -71,7 +71,14 @@ class NotificationService {
       // ✅ Prefer Expo token if available (since we're using Expo in apps)
       if (expoToken) {
         console.log(`📱 [NotificationService] Using Expo push token for user: ${userId}`);
-        return await this.expoService.sendToUser(userId, notification, options);
+        const pushContext = options.pushContext || {
+          userId,
+          notificationType: notification.type || options.notificationType || 'unknown'
+        };
+        return await this.expoService.sendToUser(userId, notification, {
+          ...options,
+          pushContext
+        });
       }
 
       // Fallback to FCM if Expo token not available (backward compatibility)
@@ -943,13 +950,44 @@ class NotificationService {
         category,
         templateKey: type
       });
-      const options = {};
+      const userDoc = await this.db.collection('users').doc(userId).get();
+      const userType = userDoc.exists ? userDoc.data().userType : null;
+
+      let shopRingDowngrade = false;
+      if (userType === 'shop' && type === 'INCOMING_PAYMENT') {
+        const { shouldDowngradeShopIncomingRing } = require('./shopRingBurstCooldown');
+        shopRingDowngrade = await shouldDowngradeShopIncomingRing(this.db, userId);
+      }
+
+      const { resolvePushDeliveryOptions } = require('../constants/pushChannels');
+      const delivery = resolvePushDeliveryOptions({
+        userType,
+        category,
+        templateKey: type,
+        shopRingDowngrade
+      });
+
+      const options = {
+        marketplace: category === 'MARKETPLACE',
+        ...delivery,
+        pushContext: {
+          userId,
+          notificationType: type || notification.type || 'unknown'
+        }
+      };
       if (category === 'MARKETPLACE') {
         options.marketplace = true;
       } else if (variables.bookingId) {
         notification.bookingId = variables.bookingId;
       }
-      return await this.sendToUser(userId, notification, options);
+      const result = await this.sendToUser(userId, notification, options);
+
+      if (userType === 'shop' && type === 'INCOMING_PAYMENT' && !shopRingDowngrade && result.success) {
+        const { markShopRingSent } = require('./shopRingBurstCooldown');
+        markShopRingSent(userId);
+      }
+
+      return result;
     } catch (error) {
       console.error('Error sending template notification:', error);
       return { success: false, error: error.message };

@@ -44,6 +44,23 @@ const ACTIVE_BOOKING_WITH_DRIVER_STATUSES = [
 ];
 
 /**
+ * GET /api/driver/bookings/active and orphan-release queries (driver assigned → money_collection).
+ * Must include photo_captured (pickup photo workflow).
+ */
+const DRIVER_GET_ACTIVE_BOOKING_STATUSES = [
+  'driver_assigned',
+  'accepted',
+  'driver_enroute',
+  'driver_arrived',
+  'photo_captured',
+  'picked_up',
+  'in_transit',
+  'at_dropoff',
+  'delivered',
+  'money_collection'
+];
+
+/**
  * Pending booking statuses - waiting for driver assignment
  */
 const PENDING_BOOKING_STATUSES = [
@@ -189,6 +206,7 @@ function activeCancelHttp(result) {
 module.exports = {
   ACTIVE_BOOKING_STATUSES,
   ACTIVE_BOOKING_WITH_DRIVER_STATUSES,
+  DRIVER_GET_ACTIVE_BOOKING_STATUSES,
   PENDING_BOOKING_STATUSES,
   COMPLETED_BOOKING_STATUSES,
   VALID_BOOKING_STATUSES,

@@ -80,6 +80,7 @@ describe('releaseStuckDriverActions', () => {
       'accepted',
       'driver_enroute',
       'driver_arrived',
+      'photo_captured',
       'picked_up',
       'in_transit',
       'at_dropoff',

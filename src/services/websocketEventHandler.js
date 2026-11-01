@@ -269,7 +269,8 @@ class WebSocketEventHandler {
         if (this.db) {
           // ✅ CRITICAL FIX: Check if driver has active bookings before any status changes
           // If driver has active booking, they MUST stay online (cannot go offline)
-          const activeBookingStatuses = ['driver_assigned', 'accepted', 'driver_enroute', 'driver_arrived', 'picked_up', 'in_transit', 'at_dropoff', 'delivered', 'money_collection'];
+          const { DRIVER_GET_ACTIVE_BOOKING_STATUSES } = require('../constants/bookingStatuses');
+          const activeBookingStatuses = DRIVER_GET_ACTIVE_BOOKING_STATUSES;
           const activeBookingQuery = this.db.collection('bookings')
             .where('driverId', '==', userId)
             .where('status', 'in', activeBookingStatuses)
@@ -1901,7 +1902,8 @@ class WebSocketEventHandler {
       // ✅ CRITICAL FIX: Check for active booking before allowing offline via WebSocket
       // This prevents WebSocket from bypassing active booking protection
       if (isOnline === false) {
-        const activeBookingStatuses = ['driver_assigned', 'accepted', 'driver_enroute', 'driver_arrived', 'picked_up', 'in_transit', 'at_dropoff', 'delivered', 'money_collection'];
+        const { DRIVER_GET_ACTIVE_BOOKING_STATUSES } = require('../constants/bookingStatuses');
+        const activeBookingStatuses = DRIVER_GET_ACTIVE_BOOKING_STATUSES;
         const activeBookingQuery = this.db.collection('bookings')
           .where('driverId', '==', userId)
           .where('status', 'in', activeBookingStatuses)

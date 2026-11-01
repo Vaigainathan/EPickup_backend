@@ -2800,17 +2800,8 @@ router.put('/status', [
     if (isOnline === false) {
       // ✅ COMPREHENSIVE: Include all statuses where driver is actively working on an order
       // This includes: assigned, accepted, enroute, arrived, picked up, in transit, at dropoff, delivered (waiting for payment), money collection
-      const activeBookingStatuses = [
-        'driver_assigned', 
-        'accepted', 
-        'driver_enroute', 
-        'driver_arrived', 
-        'picked_up', 
-        'in_transit', 
-        'at_dropoff', 
-        'delivered', // ✅ CRITICAL: Driver still needs to collect payment
-        'money_collection' // ✅ CRITICAL: Payment collection in progress
-      ];
+      const { DRIVER_GET_ACTIVE_BOOKING_STATUSES } = require('../constants/bookingStatuses');
+      const activeBookingStatuses = DRIVER_GET_ACTIVE_BOOKING_STATUSES;
       
       // ✅ ENHANCED: Use transaction to ensure atomic check (prevents race conditions)
       try {
@@ -2957,7 +2948,8 @@ router.put('/status', [
       try {
         // ✅ STEP 1: Check if driver has active booking (EXEMPTION RULE)
         // ✅ CRITICAL: Include 'delivered' - driver still needs to collect payment
-        const activeBookingStatuses = ['driver_assigned', 'accepted', 'driver_enroute', 'driver_arrived', 'picked_up', 'in_transit', 'at_dropoff', 'delivered', 'money_collection'];
+        const { DRIVER_GET_ACTIVE_BOOKING_STATUSES } = require('../constants/bookingStatuses');
+        const activeBookingStatuses = DRIVER_GET_ACTIVE_BOOKING_STATUSES;
         const activeBookingQuery = db.collection('bookings')
           .where('driverId', '==', uid)
           .where('status', 'in', activeBookingStatuses)
@@ -4273,35 +4265,32 @@ router.get('/bookings/active', requireDriver, async (req, res) => {
   try {
     const { uid } = req.user;
     const db = getFirestore();
+    const { DRIVER_GET_ACTIVE_BOOKING_STATUSES } = require('../constants/bookingStatuses');
+    const { trySelfHealDriverOrphanRelease } = require('../services/driverOrphanReleaseService');
     
     console.log(`🔍 [DRIVER_ACTIVE_BOOKING] Getting active booking for driver: ${uid}`);
     
-    // ✅ INDUSTRY STANDARD: Check for active booking statuses
-    // ✅ CRITICAL: Include 'delivered' - driver still needs to collect payment
-    const activeBookingStatuses = [
-      'driver_assigned', 
-      'accepted', 
-      'driver_enroute', 
-      'driver_arrived', 
-      'picked_up', 
-      'in_transit', 
-      'at_dropoff',
-      'delivered', // ✅ CRITICAL: Driver still at dropoff, needs to collect payment
-      'money_collection'
-    ];
-    
-    // ✅ FIX: No orderBy needed - just check if any active booking exists
-    const activeBookingsQuery = db.collection('bookings')
+    const runQuery = () => db.collection('bookings')
       .where('driverId', '==', uid)
-      .where('status', 'in', activeBookingStatuses)
-      .limit(1);
-    
-    const snapshot = await activeBookingsQuery.get();
+      .where('status', 'in', DRIVER_GET_ACTIVE_BOOKING_STATUSES)
+      .limit(1)
+      .get();
+
+    let snapshot = await runQuery();
+    let selfHealed = false;
+
+    if (snapshot.empty) {
+      const heal = await trySelfHealDriverOrphanRelease(db, uid);
+      if (heal.healed) {
+        selfHealed = true;
+        snapshot = await runQuery();
+      }
+    }
     
     if (snapshot.empty) {
       return res.json({
         success: true,
-        data: { booking: null },
+        data: { booking: null, ...(selfHealed ? { selfHealed: true } : {}) },
         message: 'No active booking found'
       });
     }
@@ -4328,7 +4317,10 @@ router.get('/bookings/active', requireDriver, async (req, res) => {
     
     res.json({
       success: true,
-      data: { booking },
+      data: {
+        booking,
+        ...(selfHealed ? { selfHealed: true } : {})
+      },
       message: 'Active booking retrieved successfully'
     });
     
@@ -4355,7 +4347,10 @@ router.get('/bookings/available', requireDriver, async (req, res) => {
     
     // If driver already has an active booking, return empty list
     try {
-      const activeStatuses = ['driver_assigned', 'accepted', 'driver_enroute', 'driver_arrived', 'picked_up', 'in_transit'];
+      const { DRIVER_GET_ACTIVE_BOOKING_STATUSES } = require('../constants/bookingStatuses');
+      const activeStatuses = DRIVER_GET_ACTIVE_BOOKING_STATUSES.filter(
+        (status) => status !== 'delivered' && status !== 'money_collection'
+      );
       const activeForDriver = await db.collection('bookings')
         .where('driverId', '==', uid)
         .where('status', 'in', activeStatuses)

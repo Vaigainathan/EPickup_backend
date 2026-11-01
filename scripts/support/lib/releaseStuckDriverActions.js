@@ -5,18 +5,9 @@ const USAGE = 'Usage: node scripts/support/release-stuck-driver.js --driver <uid
 
 const TERMINAL_CANDIDATE_STATUSES = new Set(['completed', 'cancelled', 'rejected']);
 
-/** Same list as GET /api/driver/bookings/active (src/routes/driver.js). */
-const DRIVER_ACTIVE_BOOKING_STATUSES = [
-  'driver_assigned',
-  'accepted',
-  'driver_enroute',
-  'driver_arrived',
-  'picked_up',
-  'in_transit',
-  'at_dropoff',
-  'delivered',
-  'money_collection'
-];
+const {
+  DRIVER_GET_ACTIVE_BOOKING_STATUSES: DRIVER_ACTIVE_BOOKING_STATUSES
+} = require('../../../src/constants/bookingStatuses');
 
 const DRY_RUN_APP_WARNING =
   "Make sure the driver's app is closed before --apply (batch, not a transaction).";

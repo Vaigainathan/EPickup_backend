@@ -2078,6 +2078,22 @@ router.delete('/bookings/:id', async (req, res) => {
 
     const bookingData = bookingDoc.data();
 
+    const { COMPLETED_BOOKING_STATUSES } = require('../constants/bookingStatuses');
+    if (!COMPLETED_BOOKING_STATUSES.includes(bookingData.status)) {
+      return res.status(409).json({
+        success: false,
+        error: {
+          code: 'BOOKING_ACTIVE',
+          message: 'Cannot delete an active booking. Cancel or use admin intervention instead.',
+          details: {
+            bookingId: id,
+            status: bookingData.status
+          }
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
     // Get reason from body or query params
     const reason = req.body.reason || req.query.reason || 'No reason provided';
 

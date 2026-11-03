@@ -95,6 +95,12 @@ const BATCH4_MODULES = [
   '../src/services/marketplace/marketplaceLinkedBookingCancel'
 ];
 
+const BATCH7_MODULES = [
+  '../src/services/revenueService',
+  '../src/services/admin/adminShopService',
+  '../src/services/marketplace/customerDriverLocation'
+];
+
 describe('B-BATCH-2 boot requires', () => {
   test.each(BATCH_MODULES)('loads %s without throw', (modulePath) => {
     jest.isolateModules(() => {
@@ -105,6 +111,14 @@ describe('B-BATCH-2 boot requires', () => {
 
 describe('B-BATCH-4 boot requires', () => {
   test.each(BATCH4_MODULES)('loads %s without throw', (modulePath) => {
+    jest.isolateModules(() => {
+      expect(() => require(modulePath)).not.toThrow();
+    });
+  });
+});
+
+describe('B-BATCH-7 boot requires', () => {
+  test.each(BATCH7_MODULES)('loads %s without throw', (modulePath) => {
     jest.isolateModules(() => {
       expect(() => require(modulePath)).not.toThrow();
     });

@@ -157,6 +157,51 @@ const normalizeTimestamp = (value) => {
   return Number.isNaN(parsed.getTime()) ? value : parsed.toISOString();
 };
 
+const statusUpdateSortMillis = (value) => {
+  if (!value) return 0;
+  if (typeof value === 'string') {
+    const parsed = Date.parse(value);
+    return Number.isNaN(parsed) ? 0 : parsed;
+  }
+  if (value instanceof Date) {
+    return Number.isNaN(value.getTime()) ? 0 : value.getTime();
+  }
+  if (typeof value.toDate === 'function') {
+    try {
+      const date = value.toDate();
+      return date instanceof Date && !Number.isNaN(date.getTime()) ? date.getTime() : 0;
+    } catch {
+      return 0;
+    }
+  }
+  if (typeof value.seconds === 'number') {
+    return value.seconds * 1000 + (value.nanoseconds || 0) / 1_000_000;
+  }
+  return 0;
+};
+
+async function fetchBookingStatusUpdatesForAdmin(db, bookingId) {
+  const snapshot = await db.collection('booking_status_updates')
+    .where('bookingId', '==', bookingId)
+    .limit(200)
+    .get();
+
+  const rows = snapshot.docs.map((doc) => {
+    const data = doc.data() || {};
+    const rawTimestamp = data.timestamp;
+    return {
+      status: data.status,
+      notes: data.metadata?.notes ?? null,
+      timestamp: normalizeTimestamp(rawTimestamp)
+        || (typeof rawTimestamp === 'string' ? rawTimestamp : null),
+      _sortMs: statusUpdateSortMillis(rawTimestamp)
+    };
+  });
+
+  rows.sort((a, b) => a._sortMs - b._sortMs);
+  return rows.map(({ _sortMs, ...entry }) => entry);
+}
+
 const SIGNED_URL_TTL_MS = 1000 * 60 * 60 * 6; // 6 hours
 let cachedStorageInstance;
 
@@ -1947,6 +1992,8 @@ router.get('/bookings/:id', async (req, res) => {
       data.photoVerification?.delivery
     );
 
+    const statusUpdates = await fetchBookingStatusUpdatesForAdmin(db, id);
+
     const booking = {
       id: bookingDoc.id,
       customerId: data.customerId,
@@ -1974,6 +2021,7 @@ router.get('/bookings/:id', async (req, res) => {
       },
       pickupVerification,
       deliveryVerification,
+      statusUpdates,
       allowedAdminTransitions: getAllowedAdminTransitions(data.status),
       originalData: data
     };
@@ -4594,37 +4642,25 @@ router.get('/revenue/summary', async (req, res) => {
 router.get('/revenue/trends', async (req, res) => {
   try {
     const revenueService = require('../services/revenueService');
-    
-    // Check if method exists
-    if (typeof revenueService.getRevenueTrends !== 'function') {
-      console.error('❌ [ADMIN] getRevenueTrends method not found in revenueService');
-      // Fallback: use getRevenueByPeriod for last 30 days
-      const endDate = new Date();
-      const startDate = new Date();
-      startDate.setDate(startDate.getDate() - 30);
-      
-      const revenueTrends = await revenueService.getRevenueByPeriod(startDate, endDate, 'daily');
-      
-      if (!revenueTrends || revenueTrends.success === false) {
-        return res.status(500).json({
-          success: false,
-          error: {
-            code: 'REVENUE_TRENDS_ERROR',
-            message: 'Failed to get revenue trends',
-            details: revenueTrends?.details || 'Unknown error occurred'
-          },
-          timestamp: new Date().toISOString()
-        });
-      }
-      
-      return res.json({
-        success: true,
-        data: revenueTrends,
+    const { startDate, endDate, period = 'daily' } = req.query;
+
+    if (period && !['daily', 'weekly', 'monthly'].includes(String(period))) {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'INVALID_PERIOD',
+          message: 'Invalid period',
+          details: 'period must be daily, weekly, or monthly'
+        },
         timestamp: new Date().toISOString()
       });
     }
-    
-    const revenueTrends = await revenueService.getRevenueTrends();
+
+    const revenueTrends = await revenueService.getRevenueTrends({
+      startDate,
+      endDate,
+      period: String(period)
+    });
 
     // Check if the revenue service returned an error
     if (!revenueTrends || revenueTrends.success === false) {
@@ -4642,7 +4678,7 @@ router.get('/revenue/trends', async (req, res) => {
 
     res.json({
       success: true,
-      data: revenueTrends,
+      data: revenueTrends.trends || [],
       timestamp: new Date().toISOString()
     });
 

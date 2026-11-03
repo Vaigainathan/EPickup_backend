@@ -1,7 +1,8 @@
 const { httpError } = require('./httpError');
 
 const LIVE_STAGES = new Set(['assigned', 'at_shop', 'picked_up', 'on_the_way']);
-const FRESH_MS = 60 * 1000;
+/** Driver app may skip sends while stationary (~10 m filter); keep pin visible while waiting. */
+const MARKETPLACE_DRIVER_LOCATION_MAX_AGE_MS = 5 * 60 * 1000;
 
 function lastUpdatedMillis(value) {
   if (value instanceof Date) {
@@ -37,7 +38,10 @@ function locationFromFix(fix, linkedBookingId, now) {
   if (updatedMs == null) {
     return null;
   }
-  if (updatedMs > now + FRESH_MS || now - updatedMs > FRESH_MS) {
+  if (
+    updatedMs > now + MARKETPLACE_DRIVER_LOCATION_MAX_AGE_MS
+    || now - updatedMs > MARKETPLACE_DRIVER_LOCATION_MAX_AGE_MS
+  ) {
     return null;
   }
   const currentLocation = fix.currentLocation && typeof fix.currentLocation === 'object'
@@ -94,5 +98,6 @@ async function getCustomerDriverLocation(db, customerId, orderId, now = Date.now
 
 module.exports = {
   getCustomerDriverLocation,
-  locationFromFix
+  locationFromFix,
+  MARKETPLACE_DRIVER_LOCATION_MAX_AGE_MS
 };

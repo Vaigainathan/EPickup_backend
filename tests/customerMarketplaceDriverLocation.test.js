@@ -141,7 +141,7 @@ describe('customer marketplace driver location', () => {
     expect(serialized).not.toContain(DRIVER_PHONE);
   });
 
-  test('no booking, no driver, no location doc, a 61s-old fix, and a bookingId mismatch are null', async () => {
+  test('no booking, no driver, no location doc, a 6min-old fix, and a bookingId mismatch are null', async () => {
     putOrder('order-1', { linkedBookingId: '' });
     let response = await getLocation();
     expect(response.body.data).toEqual({ location: null });
@@ -155,13 +155,27 @@ describe('customer marketplace driver location', () => {
     response = await getLocation();
     expect(response.body.data).toEqual({ location: null });
 
-    putFix({ lastUpdated: new Date(Date.now() - 61000) });
+    putFix({ lastUpdated: new Date(Date.now() - 6 * 60 * 1000) });
     response = await getLocation();
     expect(response.body.data).toEqual({ location: null });
 
     putFix({ bookingId: 'some-other-booking', lastUpdated: new Date() });
     response = await getLocation();
     expect(response.body.data).toEqual({ location: null });
+  });
+
+  test('a 3min-old fix still returns lat, lng, and updatedAt', async () => {
+    const updated = new Date(Date.now() - 3 * 60 * 1000);
+    putOrder('order-1');
+    putBooking();
+    putFix({ lastUpdated: updated });
+    const response = await getLocation();
+    expect(response.status).toBe(200);
+    expect(response.body.data.location).toEqual({
+      lat: 12.9716,
+      lng: 77.5946,
+      updatedAt: updated.toISOString()
+    });
   });
 
   test('at_shop, picked_up, and on_the_way also return a fresh fix', async () => {
@@ -198,10 +212,10 @@ describe('customer marketplace driver location', () => {
     expect(response.body.data.location.updatedAt).toBe(new Date(updatedMs).toISOString());
   });
 
-  test('a lastUpdated more than 60s in the future is null', async () => {
+  test('a lastUpdated more than 5min in the future is null', async () => {
     putOrder('order-1');
     putBooking();
-    putFix({ lastUpdated: new Date(Date.now() + 61000) });
+    putFix({ lastUpdated: new Date(Date.now() + 5 * 60 * 1000 + 1000) });
     const response = await getLocation();
     expect(response.status).toBe(200);
     expect(response.body.data).toEqual({ location: null });

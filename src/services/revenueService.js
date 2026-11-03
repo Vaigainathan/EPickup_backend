@@ -286,6 +286,75 @@ class RevenueService {
   }
 
   /**
+   * Revenue trend series for admin dashboard (driverTopUps completed only).
+   * @param {Object} filters - startDate, endDate (ISO strings or Date), period: daily|weekly|monthly
+   * @returns {Promise<Object>}
+   */
+  async getRevenueTrends(filters = {}) {
+    try {
+      const period = filters.period || 'daily';
+      if (!['daily', 'weekly', 'monthly'].includes(period)) {
+        return {
+          success: false,
+          error: 'Invalid period',
+          details: 'period must be daily, weekly, or monthly'
+        };
+      }
+
+      const parseFilterDate = (value) => {
+        if (value instanceof Date && !Number.isNaN(value.getTime())) {
+          return value;
+        }
+        if (typeof value === 'string' && value.trim()) {
+          const parsed = new Date(value);
+          if (!Number.isNaN(parsed.getTime())) {
+            return parsed;
+          }
+        }
+        return undefined;
+      };
+
+      const endDate = parseFilterDate(filters.endDate) || new Date();
+      let startDate = parseFilterDate(filters.startDate);
+      if (!startDate) {
+        startDate = new Date(endDate);
+        startDate.setDate(startDate.getDate() - 30);
+      }
+
+      const byPeriod = await this.getRevenueByPeriod(startDate, endDate, period);
+      if (!byPeriod || byPeriod.success === false) {
+        return byPeriod;
+      }
+
+      const trends = (byPeriod.periods || []).map((entry) => ({
+        date: entry.period,
+        value: entry.revenue,
+        transactionCount: entry.transactionCount
+      }));
+
+      return {
+        success: true,
+        trends,
+        totalRevenue: byPeriod.totalRevenue,
+        totalTransactions: byPeriod.totalTransactions,
+        revenueSource: 'driverTopUps',
+        period,
+        range: {
+          startDate: startDate.toISOString(),
+          endDate: endDate.toISOString()
+        }
+      };
+    } catch (error) {
+      console.error('Error getting revenue trends:', error);
+      return {
+        success: false,
+        error: 'Failed to get revenue trends',
+        details: error.message
+      };
+    }
+  }
+
+  /**
    * Get revenue by driver
    * @param {string} driverId - Driver ID (optional, if not provided returns all drivers)
    * @returns {Promise<Object>} Revenue by driver result

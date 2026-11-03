@@ -65,6 +65,7 @@ describe('no handover code in API payloads', () => {
             data: () => ({
               displayId: 9,
               orderStatus: 'ready',
+              shopSnapshot: { category: 'Food & Restaurants' },
               items: [{ name: 'Tea', qty: 2, unavailable: false }]
             })
           }))
@@ -82,5 +83,7 @@ describe('no handover code in API payloads', () => {
     expect(ctx.handedOver).toBe(true);
     expect(ctx.shopName).toBe('Shop');
     expect(ctx.items).toEqual([{ name: 'Tea', variantLabel: null, qty: 2 }]);
+    expect(ctx.itemCount).toBe(2);
+    expect(ctx.itemsHidden).toBe(false);
   });
 });

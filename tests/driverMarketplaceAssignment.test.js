@@ -19,6 +19,7 @@ jest.mock('firebase-admin', () => {
 
 const {
   mapDriverMarketplaceItems,
+  sumOrderItemQty,
   loadAssignedMarketplaceContext,
   attachMarketplaceToDriverBooking
 } = require('../src/services/marketplace/driverMarketplaceAssignment');
@@ -38,6 +39,26 @@ function buildDb() {
   };
 }
 
+const orderLines = [
+  { name: 'Tea', variantLabel: null, qty: 1 },
+  { name: 'Rice', variantLabel: '1kg', qty: 2, unavailable: true }
+];
+
+const assignedBooking = {
+  sourceType: 'marketplace',
+  driverId: 'driver-1',
+  marketplaceOrderId: 'order-1',
+  status: 'driver_assigned',
+  pickup: { name: 'Corner Store', phone: '9000000002' }
+};
+
+function mockOrder(data) {
+  mockOrderGet.mockResolvedValue({
+    exists: true,
+    data: () => data
+  });
+}
+
 describe('driverMarketplaceAssignment', () => {
   beforeEach(() => {
     mockOrderGet.mockReset();
@@ -54,6 +75,10 @@ describe('driverMarketplaceAssignment', () => {
     expect(items[0]).not.toHaveProperty('price');
   });
 
+  test('sumOrderItemQty counts all lines including unavailable', () => {
+    expect(sumOrderItemQty(orderLines)).toBe(3);
+  });
+
   test('loadAssignedMarketplaceContext returns null for non-assigned driver', async () => {
     const ctx = await loadAssignedMarketplaceContext(
       buildDb(),
@@ -64,35 +89,68 @@ describe('driverMarketplaceAssignment', () => {
     expect(mockOrderGet).not.toHaveBeenCalled();
   });
 
-  test('loadAssignedMarketplaceContext loads compat handedOver and items', async () => {
-    mockOrderGet.mockResolvedValue({
-      exists: true,
-      data: () => ({
-        displayId: 42,
-        orderStatus: 'ready',
-        items: [{ name: 'Tea', variantLabel: null, qty: 1 }]
-      })
+  test('loadAssignedMarketplaceContext loads food shop items when category matches', async () => {
+    mockOrder({
+      displayId: 42,
+      orderStatus: 'ready',
+      shopSnapshot: { category: 'Food & Restaurants' },
+      items: [{ name: 'Tea', variantLabel: null, qty: 1 }]
     });
 
-    const ctx = await loadAssignedMarketplaceContext(
-      buildDb(),
-      {
-        sourceType: 'marketplace',
-        driverId: 'driver-1',
-        marketplaceOrderId: 'order-1',
-        status: 'driver_assigned',
-        pickup: { name: 'Corner Store', phone: '9000000002' }
-      },
-      'driver-1'
-    );
+    const ctx = await loadAssignedMarketplaceContext(buildDb(), assignedBooking, 'driver-1');
 
     expect(ctx).toEqual({
       displayId: 42,
       handedOver: true,
       shopName: 'Corner Store',
       shopPhone: '9000000002',
+      items: [{ name: 'Tea', variantLabel: null, qty: 1 }],
+      itemCount: 1,
+      itemsHidden: false
+    });
+  });
+
+  test('loadAssignedMarketplaceContext is case-insensitive for food category', async () => {
+    mockOrder({
+      displayId: 42,
+      orderStatus: 'ready',
+      shopSnapshot: { category: 'food & restaurants' },
       items: [{ name: 'Tea', variantLabel: null, qty: 1 }]
     });
+
+    const ctx = await loadAssignedMarketplaceContext(buildDb(), assignedBooking, 'driver-1');
+
+    expect(ctx.itemsHidden).toBe(false);
+    expect(ctx.items).toHaveLength(1);
+  });
+
+  test('loadAssignedMarketplaceContext hides items for grocery category', async () => {
+    mockOrder({
+      displayId: 42,
+      orderStatus: 'ready',
+      shopSnapshot: { category: 'Grocery & Supermarket' },
+      items: orderLines
+    });
+
+    const ctx = await loadAssignedMarketplaceContext(buildDb(), assignedBooking, 'driver-1');
+
+    expect(ctx.items).toEqual([]);
+    expect(ctx.itemsHidden).toBe(true);
+    expect(ctx.itemCount).toBe(3);
+  });
+
+  test('loadAssignedMarketplaceContext hides items when category is missing', async () => {
+    mockOrder({
+      displayId: 42,
+      orderStatus: 'ready',
+      items: [{ name: 'Tea', variantLabel: null, qty: 1 }]
+    });
+
+    const ctx = await loadAssignedMarketplaceContext(buildDb(), assignedBooking, 'driver-1');
+
+    expect(ctx.items).toEqual([]);
+    expect(ctx.itemsHidden).toBe(true);
+    expect(ctx.itemCount).toBe(1);
   });
 
   test('attachMarketplaceToDriverBooking nests marketplace block', () => {
@@ -100,7 +158,9 @@ describe('driverMarketplaceAssignment', () => {
     const withMarketplace = attachMarketplaceToDriverBooking(booking, {
       displayId: 1,
       handedOver: false,
-      items: []
+      items: [],
+      itemCount: 0,
+      itemsHidden: true
     });
     expect(withMarketplace.marketplace.handedOver).toBe(false);
     expect(withMarketplace.id).toBe('b1');

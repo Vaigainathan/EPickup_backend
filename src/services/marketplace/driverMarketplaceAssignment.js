@@ -1,6 +1,15 @@
 const { isHandedOver } = require('./marketplaceHandoverGuard');
 const { bookingStatusAllowsCompatHandedOver } = require('./marketplaceHandoverCompat');
 
+const DRIVER_ITEM_VISIBLE_CATEGORIES = ['Food & Restaurants'];
+
+function isDriverItemListVisible(category) {
+  const normalized = typeof category === 'string' ? category.trim().toLowerCase() : '';
+  return DRIVER_ITEM_VISIBLE_CATEGORIES.some(
+    (allowed) => allowed.trim().toLowerCase() === normalized
+  );
+}
+
 function mapDriverMarketplaceItems(items) {
   if (!Array.isArray(items)) {
     return [];
@@ -12,6 +21,13 @@ function mapDriverMarketplaceItems(items) {
       variantLabel: line.variantLabel ?? null,
       qty: Number(line.qty) || 0
     }));
+}
+
+function sumOrderItemQty(items) {
+  if (!Array.isArray(items)) {
+    return 0;
+  }
+  return items.reduce((sum, item) => sum + (Number(item.qty) || 0), 0);
 }
 
 async function loadAssignedMarketplaceContext(db, booking, driverId) {
@@ -37,13 +53,18 @@ async function loadAssignedMarketplaceContext(db, booking, driverId) {
   const handedOver = isHandedOver(order.orderStatus)
     || bookingStatusAllowsCompatHandedOver(booking.status);
   const pickup = booking.pickup && typeof booking.pickup === 'object' ? booking.pickup : {};
+  const category = order.shopSnapshot && order.shopSnapshot.category;
+  const itemCount = sumOrderItemQty(order.items);
+  const visible = isDriverItemListVisible(category);
 
   return {
     displayId: order.displayId ?? booking.displayId ?? null,
     handedOver,
     shopName: typeof pickup.name === 'string' ? pickup.name : (order.shopSnapshot && order.shopSnapshot.name) || null,
     shopPhone: typeof pickup.phone === 'string' ? pickup.phone : (order.shopSnapshot && order.shopSnapshot.phone) || null,
-    items: mapDriverMarketplaceItems(order.items)
+    items: visible ? mapDriverMarketplaceItems(order.items) : [],
+    itemCount,
+    itemsHidden: !visible
   };
 }
 
@@ -58,7 +79,9 @@ function attachMarketplaceToDriverBooking(booking, marketplaceContext) {
 }
 
 module.exports = {
+  DRIVER_ITEM_VISIBLE_CATEGORIES,
   mapDriverMarketplaceItems,
+  sumOrderItemQty,
   loadAssignedMarketplaceContext,
   attachMarketplaceToDriverBooking
 };

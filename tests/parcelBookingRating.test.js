@@ -128,7 +128,7 @@ jest.mock('firebase-admin/firestore', () => ({
 }));
 
 jest.mock('../src/services/socket', () => ({
-  getIO: () => ({
+  getSocketIO: () => ({
     to: () => ({
       emit: (...args) => mockEmit(...args)
     })

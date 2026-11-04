@@ -162,7 +162,7 @@ describe('firestore.indexes.json', () => {
   ));
 
   test('keeps one bookings status/driverId/createdAt index and adds the new definitions', () => {
-    expect(spec.indexes).toHaveLength(108);
+    expect(spec.indexes).toHaveLength(109);
     expect(spec.fieldOverrides).toHaveLength(18);
     const duplicates = spec.indexes.filter((index) =>
       index.collectionGroup === 'bookings'
@@ -170,7 +170,24 @@ describe('firestore.indexes.json', () => {
         === 'status ASCENDING | driverId ASCENDING | createdAt DESCENDING'
     );
     expect(duplicates).toHaveLength(1);
+    const photoVerificationConfirmIndex = spec.indexes.filter((index) =>
+      index.collectionGroup === 'photoVerifications'
+      && index.queryScope === 'COLLECTION'
+      && index.fields.map((field) => `${field.fieldPath} ${field.order}`).join(' | ')
+        === 'bookingId ASCENDING | photoType ASCENDING | status ASCENDING | uploadedAt DESCENDING'
+    );
+    expect(photoVerificationConfirmIndex).toHaveLength(1);
     expect(spec.indexes).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        collectionGroup: 'photoVerifications',
+        queryScope: 'COLLECTION',
+        fields: [
+          { fieldPath: 'bookingId', order: 'ASCENDING' },
+          { fieldPath: 'photoType', order: 'ASCENDING' },
+          { fieldPath: 'status', order: 'ASCENDING' },
+          { fieldPath: 'uploadedAt', order: 'DESCENDING' }
+        ]
+      }),
       expect.objectContaining({
         collectionGroup: 'driverAssignments',
         queryScope: 'COLLECTION',

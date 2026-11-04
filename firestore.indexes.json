@@ -1285,6 +1285,28 @@
       "queryScope": "COLLECTION",
       "fields": [
         {
+          "fieldPath": "bookingId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "photoType",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "uploadedAt",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "photoVerifications",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
           "fieldPath": "driverId",
           "order": "ASCENDING"
         },

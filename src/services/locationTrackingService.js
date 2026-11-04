@@ -174,28 +174,32 @@ class LocationTrackingService {
       const tracking = this.activeTrackings.get(bookingId);
       if (!tracking) return;
 
-      // Send WebSocket update to customer
-      const io = require('./socket').getIO();
-      if (io) {
-        // ✅ CRITICAL FIX: Use consistent event name and room format
-        const userRoom = `user:${tracking.customerId}`;
-        const bookingRoom = `booking:${bookingId}`;
-        
-        const locationUpdateData = {
-          bookingId,
-          driverId: tracking.driverId,
-          location: {
-            latitude: locationData.latitude,
-            longitude: locationData.longitude,
-            address: locationData.address || 'Current Location',
+      try {
+        const { getSocketIO } = require('./socket');
+        const io = getSocketIO();
+        if (io) {
+          // ✅ CRITICAL FIX: Use consistent event name and room format
+          const userRoom = `user:${tracking.customerId}`;
+          const bookingRoom = `booking:${bookingId}`;
+
+          const locationUpdateData = {
+            bookingId,
+            driverId: tracking.driverId,
+            location: {
+              latitude: locationData.latitude,
+              longitude: locationData.longitude,
+              address: locationData.address || 'Current Location',
+              timestamp: new Date().toISOString()
+            },
             timestamp: new Date().toISOString()
-          },
-          timestamp: new Date().toISOString()
-        };
-        
-        // ✅ CRITICAL FIX: Emit to both user room and booking room with consistent event name
-        io.to(userRoom).emit('driver_location_update', locationUpdateData);
-        io.to(bookingRoom).emit('driver_location_update', locationUpdateData);
+          };
+
+          // ✅ CRITICAL FIX: Emit to both user room and booking room with consistent event name
+          io.to(userRoom).emit('driver_location_update', locationUpdateData);
+          io.to(bookingRoom).emit('driver_location_update', locationUpdateData);
+        }
+      } catch (socketError) {
+        console.warn('⚠️ [LOCATION_TRACKING] Socket emit failed:', socketError);
       }
 
     } catch (error) {

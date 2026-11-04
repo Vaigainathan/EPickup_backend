@@ -47,6 +47,23 @@ class BookingStateMachine {
     };
   }
 
+  toDate(value) {
+    if (!value) {
+      return null;
+    }
+    if (typeof value.toDate === 'function') {
+      return value.toDate();
+    }
+    if (value instanceof Date) {
+      return value;
+    }
+    const parsed = new Date(value);
+    if (Number.isNaN(parsed.getTime())) {
+      return null;
+    }
+    return parsed;
+  }
+
   /**
    * List valid target states from a current booking state.
    */
@@ -145,7 +162,7 @@ class BookingStateMachine {
         updatedBy: context.userId || 'system',
         userType: context.userType || 'system',
         timestamp: new Date(),
-        eventTimestamp: context.eventTimestamp ? new Date(context.eventTimestamp) : new Date(),
+        eventTimestamp: this.toDate(context.eventTimestamp) || new Date(),
         updateData: stateUpdateData,
         context
       };

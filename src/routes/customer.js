@@ -2439,7 +2439,7 @@ router.post('/bookings/:id/rate', authenticateToken, async (req, res) => {
     // ✅ CRITICAL FIX: Emit real-time rating update to admin dashboard (driver isolated)
     try {
       const socketService = require('../services/socket');
-      const io = socketService.getIO();
+      const io = socketService.getSocketIO();
       if (io) {
         io.to('type:admin').emit('driver_rating_updated', {
           driverId: bookingData.driverId,

@@ -7472,7 +7472,8 @@ router.post('/bookings/:id/confirm-payment', [
       // ✅ CRITICAL FIX: Always emit wallet update event (even if commission deduction failed)
       // This ensures wallet screen refreshes and shows the transaction status
       try {
-        const io = require('../services/socket').getIO();
+        const { getSocketIO } = require('../services/socket');
+        const io = getSocketIO();
         if (io) {
           // Get current wallet balance for the event
           const currentWalletResult = await walletServiceInstance.getPointsBalance(uid);
@@ -7513,7 +7514,8 @@ router.post('/bookings/:id/confirm-payment', [
       
       // ✅ CRITICAL FIX: Emit real-time earnings update to admin dashboard
       try {
-        const io = require('../services/socket').getIO();
+        const { getSocketIO } = require('../services/socket');
+        const io = getSocketIO();
         if (io) {
           io.to('type:admin').emit('driver_earnings_updated', {
             driverId: uid,
@@ -8874,11 +8876,12 @@ router.post('/confirm-pickup', [
     }
 
     // ✅ CRITICAL FIX: Notify customer about pickup via WebSocket
-    const liveTrackingService = require('../services/liveTrackingService');
-    const io = require('../services/socket').getIO();
-    
-    if (io && statusResult.booking.customerId) {
-      try {
+    try {
+      const liveTrackingService = require('../services/liveTrackingService');
+      const { getSocketIO } = require('../services/socket');
+      const io = getSocketIO();
+
+      if (io && statusResult.booking.customerId) {
         await liveTrackingService.updateBookingStatus(
           bookingId,
           statusResult.status,
@@ -8894,7 +8897,7 @@ router.post('/confirm-pickup', [
             bookingDataOverride: statusResult.booking
           }
         );
-        
+
         io.to(`user:${statusResult.booking.customerId}`).emit('booking_status_update', {
           bookingId: bookingId,
           status: statusResult.status,
@@ -8902,11 +8905,11 @@ router.post('/confirm-pickup', [
           timestamp: new Date().toISOString(),
           updatedBy: uid
         });
-        
+
         console.log(`📤 [CONFIRM_PICKUP] Notified customer ${statusResult.booking.customerId} about pickup confirmation`);
-      } catch (notifyError) {
-        console.error('❌ [CONFIRM_PICKUP] Error notifying customer:', notifyError);
       }
+    } catch (notifyError) {
+      console.warn('⚠️ [CONFIRM_PICKUP] Failed to notify customer via socket:', notifyError);
     }
 
     // ✅ Send push notification to customer about pickup
@@ -9141,11 +9144,12 @@ router.post('/complete-delivery', [
     }
 
     // ✅ CRITICAL FIX: Notify customer about delivery via WebSocket
-    const liveTrackingService = require('../services/liveTrackingService');
-    const io = require('../services/socket').getIO();
-    
-    if (io && statusResult.booking.customerId) {
-      try {
+    try {
+      const liveTrackingService = require('../services/liveTrackingService');
+      const { getSocketIO } = require('../services/socket');
+      const io = getSocketIO();
+
+      if (io && statusResult.booking.customerId) {
         await liveTrackingService.updateBookingStatus(
           bookingId,
           statusResult.status,
@@ -9163,7 +9167,7 @@ router.post('/complete-delivery', [
             bookingDataOverride: statusResult.booking
           }
         );
-        
+
         io.to(`user:${statusResult.booking.customerId}`).emit('booking_status_update', {
           bookingId: bookingId,
           status: statusResult.status,
@@ -9171,12 +9175,11 @@ router.post('/complete-delivery', [
           timestamp: new Date().toISOString(),
           updatedBy: uid
         });
-        
+
         console.log(`📤 [COMPLETE_DELIVERY] Notified customer ${statusResult.booking.customerId} about delivery completion`);
-      } catch (notifyError) {
-        console.error('❌ [COMPLETE_DELIVERY] Error notifying customer:', notifyError);
-        // Don't fail delivery if notification fails
       }
+    } catch (notifyError) {
+      console.warn('⚠️ [COMPLETE_DELIVERY] Failed to notify customer via socket:', notifyError);
     }
 
     // ✅ Send push notification to customer about delivery completion

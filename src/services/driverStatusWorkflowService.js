@@ -153,7 +153,12 @@ class DriverStatusWorkflowService {
         throw new DriverStatusError(
           400,
           'OUTSIDE_CONFIRMATION_RADIUS',
-          `You must be within ${limitMeters}m of the ${rule.requireLocation} location to confirm this status. You are currently ${distanceMeters}m away.`
+          `You must be within ${limitMeters}m of the ${rule.requireLocation} location to confirm this status. You are currently ${distanceMeters}m away.`,
+          {
+            distanceMeters: Number(distanceMeters),
+            limitMeters: Number(limitMeters),
+            target: rule.requireLocation
+          }
         );
       }
     }

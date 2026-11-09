@@ -4289,6 +4289,10 @@ router.get('/bookings/active', requireDriver, async (req, res) => {
     }
     
     if (snapshot.empty) {
+      console.log(
+        `📋 [DRIVER_ACTIVE_BOOKING] Result for driver ${uid}: none` +
+          (selfHealed ? ' (self-healed before empty)' : '')
+      );
       return res.json({
         success: true,
         data: { booking: null, ...(selfHealed ? { selfHealed: true } : {}) },
@@ -4314,7 +4318,10 @@ router.get('/bookings/active', requireDriver, async (req, res) => {
     );
     booking = attachMarketplaceToDriverBooking(booking, marketplaceContext);
     
-    console.log(`✅ [DRIVER_ACTIVE_BOOKING] Found active booking: ${bookingDoc.id}, status: ${bookingData.status}`);
+    console.log(
+      `📋 [DRIVER_ACTIVE_BOOKING] Result for driver ${uid}: found booking ${bookingDoc.id}, status ${bookingData.status}` +
+        (selfHealed ? ' (self-healed)' : '')
+    );
     
     res.json({
       success: true,
@@ -8692,6 +8699,30 @@ router.put('/bookings/:id/status', [
     // ✅ CRITICAL FIX: Variables are already defined in outer scope (bookingId, driverId, requestedStatus)
 
     if (error instanceof DriverStatusError) {
+      const loc = req.body?.location;
+      const hasLocation =
+        !!loc &&
+        typeof loc.latitude === 'number' &&
+        typeof loc.longitude === 'number';
+      const rejectLog = {
+        bookingId,
+        driverId,
+        requestedStatus,
+        code: error.code,
+        hasLocation
+      };
+      if (error.details && typeof error.details === 'object') {
+        if (error.details.distanceMeters != null) {
+          rejectLog.distanceMeters = error.details.distanceMeters;
+        }
+        if (error.details.limitMeters != null) {
+          rejectLog.limitMeters = error.details.limitMeters;
+        }
+        if (error.details.target != null) {
+          rejectLog.target = error.details.target;
+        }
+      }
+      console.warn('⚠️ [STATUS_UPDATE] Rejected:', rejectLog);
       return res.status(error.statusCode).json({
         success: false,
         error: {

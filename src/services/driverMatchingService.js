@@ -874,13 +874,34 @@ class DriverMatchingService {
 
       // If no alternative drivers found, cancel the booking
       console.log(`❌ No drivers available, cancelling booking ${bookingId}`);
-      
-      await this.db.collection('bookings').doc(bookingId).update({
-        status: 'cancelled',
-        cancellationReason: 'No drivers available within timeout period',
-        cancelledAt: new Date(),
-        updatedAt: new Date()
+
+      const { cancelPendingParcelInTransaction } = require('./parcel/parcelPendingCancelService');
+      const { notifyParcelBookingCancelled } = require('./parcel/parcelBookingCancelledNotify');
+      const cancelReason = 'No drivers available within timeout period';
+      const cancelResult = await cancelPendingParcelInTransaction(this.db, {
+        bookingId,
+        reason: cancelReason,
+        cancelledBy: 'customer:handle-timeout',
+        legacyUnassigned: true
       });
+
+      if (cancelResult.changed) {
+        await notifyParcelBookingCancelled({
+          bookingId,
+          customerId: cancelResult.customerId,
+          reason: cancelReason,
+          cancelledBy: 'customer:handle-timeout',
+          notifyCustomerPush: false
+        });
+      } else if (cancelResult.code === 'ALREADY_CANCELLED') {
+        // idempotent with parcel pending timeout job
+      } else if (
+        cancelResult.code === 'NOT_PENDING'
+        || cancelResult.code === 'HAS_DRIVER'
+        || cancelResult.code === 'MARKETPLACE'
+      ) {
+        return { success: true, message: 'Booking already processed' };
+      }
 
       return {
         success: true,

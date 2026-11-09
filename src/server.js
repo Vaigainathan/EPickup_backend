@@ -876,6 +876,23 @@ async function initializeServices() {
     marketplaceOrderNumberPoolJob.start();
     console.log('✅ Marketplace order-number pool monitor scheduled');
 
+    const { isEnvEnabled } = require('./config/parcelDefaults');
+    if (isEnvEnabled('PARCEL_PENDING_TIMEOUT_ENABLED', true)) {
+      const parcelPendingTimeoutJob = require('./services/parcelPendingTimeoutJob');
+      parcelPendingTimeoutJob.start();
+      console.log('✅ Parcel pending-timeout cron scheduled');
+    } else {
+      console.log('ℹ️ Parcel pending-timeout cron skipped (PARCEL_PENDING_TIMEOUT_ENABLED=false)');
+    }
+
+    if (isEnvEnabled('PARCEL_STUCK_MONITOR_ENABLED', true)) {
+      const parcelStuckMonitorJob = require('./services/parcelStuckMonitorJob');
+      parcelStuckMonitorJob.start();
+      console.log('✅ Parcel stuck-booking monitor scheduled');
+    } else {
+      console.log('ℹ️ Parcel stuck-booking monitor skipped (PARCEL_STUCK_MONITOR_ENABLED=false)');
+    }
+
     // Performance monitoring handled by monitoringService
     console.log('✅ Performance monitoring consolidated into monitoringService');
     

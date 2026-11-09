@@ -1131,6 +1131,14 @@ router.put('/bookings/:bookingId/cancel', authenticateToken, async (req, res) =>
           throw err;
         }
 
+        const assignedDriverId = freshBooking.driverId || driverId;
+        let driverRef = null;
+        let driverSnap = null;
+        if (assignedDriverId) {
+          driverRef = db.collection('users').doc(assignedDriverId);
+          driverSnap = await transaction.get(driverRef);
+        }
+
         const cancelledAt = new Date();
         transaction.update(bookingRef, {
           status: 'cancelled',
@@ -1139,10 +1147,7 @@ router.put('/bookings/:bookingId/cancel', authenticateToken, async (req, res) =>
           updatedAt: cancelledAt
         });
 
-        const assignedDriverId = freshBooking.driverId || driverId;
-        if (assignedDriverId) {
-          const driverRef = db.collection('users').doc(assignedDriverId);
-          const driverSnap = await transaction.get(driverRef);
+        if (driverRef && driverSnap) {
           const { applyDriverReleaseInTransaction } = require('../services/releaseDriverOnBookingCancel');
           driverReleaseResult = applyDriverReleaseInTransaction(
             transaction,

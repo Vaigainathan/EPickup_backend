@@ -279,21 +279,23 @@ class MarketplaceCleanupJob {
           if (!shouldMaskRefundUpi(live, nowMs, retentionMs)) {
             return;
           }
+          let userRef = null;
+          let userSnap = null;
+          if (live.customerId && typeof live.customerUpiId === 'string') {
+            userRef = db.collection('users').doc(live.customerId);
+            userSnap = await tx.get(userRef);
+          }
           tx.update(refundDoc.ref, {
             customerUpiId: nextUpi,
             updatedAt: FieldValue.serverTimestamp()
           });
-          if (live.customerId && typeof live.customerUpiId === 'string') {
-            const userRef = db.collection('users').doc(live.customerId);
-            const userSnap = await tx.get(userRef);
-            if (userSnap.exists) {
-              const profileUpi = userSnap.data()
-                && userSnap.data().customer
-                && userSnap.data().customer.marketplace
-                && userSnap.data().customer.marketplace.refundUpiId;
-              if (profileUpi === live.customerUpiId) {
-                tx.update(userRef, { 'customer.marketplace.refundUpiId': nextUpi });
-              }
+          if (userRef && userSnap && userSnap.exists) {
+            const profileUpi = userSnap.data()
+              && userSnap.data().customer
+              && userSnap.data().customer.marketplace
+              && userSnap.data().customer.marketplace.refundUpiId;
+            if (profileUpi === live.customerUpiId) {
+              tx.update(userRef, { 'customer.marketplace.refundUpiId': nextUpi });
             }
           }
         });

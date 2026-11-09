@@ -20,6 +20,12 @@ const {
   loadAssignedMarketplaceContext,
   attachMarketplaceToDriverBooking
 } = require('../services/marketplace/driverMarketplaceAssignment');
+const { prepareNoStoreResponse } = require('../middleware/noStoreResponse');
+const { resolveGrossOrderAmount } = require('../utils/resolveGrossOrderAmount');
+const {
+  logDeprecatedDriverRouteHit,
+  respondDeprecatedDriverRoute
+} = require('../utils/deprecatedDriverRoute');
 
 const router = express.Router();
 
@@ -363,29 +369,6 @@ function roundCurrency(value) {
 function roundDistance(value) {
   const numeric = toNumber(value, 0);
   return Math.round((numeric + Number.EPSILON) * 100) / 100;
-}
-
-function resolveGrossOrderAmount(bookingData = {}) {
-  return toNumber(
-    bookingData.pricing?.totalAmount ??
-      bookingData.pricing?.total ??
-      bookingData.pricing?.fare ??
-      bookingData.pricing?.grandTotal ??
-      bookingData.pricing?.totalFare ??
-      bookingData.payment?.amount ??
-      bookingData.payment?.total ??
-      bookingData.fare?.total ??
-      bookingData.fare?.grossFare ??
-      bookingData.fare?.amount ??
-      bookingData.driverEarnings ??
-      bookingData.earnings?.grossFare ??
-      bookingData.earnings?.totalCollected ??
-      bookingData.totalAmount ??
-      bookingData.amount ??
-      bookingData.price ??
-      0,
-    0
-  );
 }
 
 function getISTDayBounds() {
@@ -2595,6 +2578,7 @@ router.get('/trips/:id/summary', requireDriver, async (req, res) => {
       });
     }
     
+    prepareNoStoreResponse(req, res);
     res.status(200).json({
       success: true,
       message: 'Trip summary retrieved successfully',
@@ -4293,6 +4277,7 @@ router.get('/bookings/active', requireDriver, async (req, res) => {
         `📋 [DRIVER_ACTIVE_BOOKING] Result for driver ${uid}: none` +
           (selfHealed ? ' (self-healed before empty)' : '')
       );
+      prepareNoStoreResponse(req, res);
       return res.json({
         success: true,
         data: { booking: null, ...(selfHealed ? { selfHealed: true } : {}) },
@@ -4323,6 +4308,7 @@ router.get('/bookings/active', requireDriver, async (req, res) => {
         (selfHealed ? ' (self-healed)' : '')
     );
     
+    prepareNoStoreResponse(req, res);
     res.json({
       success: true,
       data: {
@@ -6838,7 +6824,7 @@ router.post('/bookings/:id/confirm-payment', [
     
     const bookingData = bookingDoc.data();
     const bookingStateMachine = require('../services/bookingStateMachine');
-    let paymentAmount = Number(amount);
+    const clientReportedAmount = Number(amount);
     const statusBeforePayment = bookingData.status || 'unknown';
     const paymentStateBefore = bookingData.paymentStatus || 'unknown';
     const fallbackStatuses = new Set(['payment_pending', 'payment_collection', 'collecting_payment', 'payment_in_progress']);
@@ -6913,7 +6899,7 @@ router.post('/bookings/:id/confirm-payment', [
               status: 'collecting',
               initiatedBy: uid,
               initiatedAt: new Date(),
-              amount: paymentAmount
+              amount: resolveGrossOrderAmount(bookingData) || clientReportedAmount
             }
           },
           {
@@ -6936,7 +6922,7 @@ router.post('/bookings/:id/confirm-payment', [
               status: 'collecting',
               initiatedBy: uid,
               initiatedAt: new Date(),
-              amount: paymentAmount
+              amount: resolveGrossOrderAmount(bookingData) || clientReportedAmount
             },
             'timing.moneyCollectionAt': bookingData.timing?.moneyCollectionAt || new Date(),
             updatedAt: new Date()
@@ -6973,31 +6959,66 @@ router.post('/bookings/:id/confirm-payment', [
       });
     }
     
-    const resolvedBookingFare = resolveGrossOrderAmount(bookingData);
-    if (!Number.isFinite(paymentAmount) || paymentAmount <= 0) {
-      paymentAmount = resolvedBookingFare;
+    const resolvedServerFare = resolveGrossOrderAmount(bookingData);
+    let serverFare = resolvedServerFare;
+    let fareSource = 'server';
+    let fareMismatch = false;
+    if (
+      (!Number.isFinite(serverFare) || serverFare <= 0) &&
+      Number.isFinite(clientReportedAmount) &&
+      clientReportedAmount > 0
+    ) {
+      serverFare = clientReportedAmount;
+      fareSource = 'client_fallback';
+      fareMismatch = true;
+      console.error(
+        JSON.stringify({
+          event: 'PAYMENT_FARE_CLIENT_FALLBACK',
+          bookingId: id,
+          driverId: uid,
+          clientReportedAmount,
+          serverFareResolved: resolvedServerFare
+        })
+      );
+    } else if (
+      Number.isFinite(clientReportedAmount) &&
+      serverFare > 0 &&
+      Math.abs(serverFare - clientReportedAmount) > 1
+    ) {
+      fareMismatch = true;
+      console.warn(
+        JSON.stringify({
+          event: 'PAYMENT_FARE_MISMATCH',
+          bookingId: id,
+          driverId: uid,
+          clientReportedAmount,
+          serverFare,
+          delta: clientReportedAmount - serverFare
+        })
+      );
     }
-    if (!Number.isFinite(paymentAmount) || paymentAmount <= 0) {
+    if (!Number.isFinite(serverFare) || serverFare <= 0) {
       return res.status(400).json({
         success: false,
         error: {
           code: 'INVALID_FARE_AMOUNT',
           message: 'Unable to resolve a valid fare for payment confirmation',
-          details: 'The request amount was missing or zero and no fare could be resolved from the booking document'
+          details: 'No authoritative fare could be resolved from the booking document'
         },
         timestamp: new Date().toISOString()
       });
     }
-    if (resolvedBookingFare > 0 && Math.abs(resolvedBookingFare - paymentAmount) > 1) {
-      console.warn(`⚠️ [PAYMENT_CONFIRM] Payment amount mismatch: received ₹${paymentAmount}, expected ₹${resolvedBookingFare}`);
-    }
-    
+    const paymentAmount = serverFare;
+
     // Create payment record
     const paymentRecord = {
       bookingId: id,
       driverId: uid,
       customerId: bookingData.customerId,
       amount: paymentAmount,
+      clientReportedAmount: Number.isFinite(clientReportedAmount) ? clientReportedAmount : null,
+      fareSource,
+      fareMismatch,
       paymentMethod: paymentMethod || 'cash',
       transactionId: transactionId,
       status: 'completed',
@@ -7277,17 +7298,14 @@ router.post('/bookings/:id/confirm-payment', [
         const driverData = driverSnap.data();
         currentEarnings = resolveDriverTotalEarnings(driverData);
 
-        const requestedFare = Number(amount);
-        const bookingFareFallback = resolveGrossOrderAmount(bookingDataTx);
-        const calculatedFare = Number.isFinite(requestedFare) && requestedFare > 0
-          ? requestedFare
-          : bookingFareFallback;
+        let calculatedFare = resolveGrossOrderAmount(bookingDataTx);
+        if ((!Number.isFinite(calculatedFare) || calculatedFare <= 0) && Number.isFinite(paymentAmount) && paymentAmount > 0) {
+          calculatedFare = paymentAmount;
+        }
 
         if (!Number.isFinite(calculatedFare) || calculatedFare <= 0) {
           throw new Error('INVALID_FARE_AMOUNT');
         }
-
-        paymentAmount = calculatedFare;
         const existingDriverEarnings = resolveGrossOrderAmount({
           ...bookingDataTx,
           driverEarnings: bookingDataTx.driverEarnings,
@@ -8045,6 +8063,7 @@ router.get('/bookings/:id/status', requireDriver, async (req, res) => {
       });
     }
     
+    prepareNoStoreResponse(req, res);
     res.status(200).json({
       success: true,
       data: {
@@ -8072,125 +8091,18 @@ router.get('/bookings/:id/status', requireDriver, async (req, res) => {
 
 /**
  * @route   POST /api/driver/bookings/:id/complete-delivery
- * @desc    Complete delivery and process commission
+ * @desc    DEPRECATED — use POST /api/driver/complete-delivery
  * @access  Private (Driver only)
  */
-router.post('/bookings/:id/complete-delivery', [
-  requireDriver,
-  body('driverEarnings').isFloat({ min: 0 }).withMessage('Driver earnings must be a positive number'),
-  body('commission').isFloat({ min: 0 }).withMessage('Commission must be a positive number')
-], async (req, res) => {
-  try {
-    const { id } = req.params;
-    const { uid } = req.user;
-    const { driverEarnings, commission } = req.body;
-    
-    const db = getFirestore();
-    const bookingRef = db.collection('bookings').doc(id);
-    const bookingDoc = await bookingRef.get();
-    
-    if (!bookingDoc.exists) {
-      return res.status(404).json({
-        success: false,
-        error: 'Booking not found'
-      });
-    }
-    
-    // ✅ CRITICAL FIX: Check if earnings record already exists (from payment confirmation)
-    const existingEarningsSnapshot = await db.collection('driver_earnings')
-      .where('driverId', '==', uid)
-      .where('bookingId', '==', id)
-      .where('status', '==', 'completed')
-      .get();
-
-    const bookingData = bookingDoc.data();
-    const grossOrderAmount = Number(
-      bookingData.pricing?.totalAmount ??
-      bookingData.pricing?.total ??
-      bookingData.payment?.amount ??
-      bookingData.fare?.total ??
-      driverEarnings
-    );
-    
-    if (existingEarningsSnapshot.size > 0) {
-      console.log(`⚠️ [COMPLETE_DELIVERY] Earnings record already exists for booking ${id}. Skipping duplicate creation.`);
-      // Booking is already completed with earnings - just return success
-      return res.status(200).json({
-        success: true,
-        data: {
-          message: 'Delivery already completed with earnings recorded',
-          driverEarnings: existingEarningsSnapshot.docs[0].data().amount || driverEarnings,
-          commission: existingEarningsSnapshot.docs[0].data().commission || commission
-        }
-      });
-    }
-    
-    // Update booking status to completed
-    await bookingRef.update({
-      status: 'completed',
-      completedAt: new Date(),
-      completedBy: uid,
-      driverEarnings: grossOrderAmount,
-      earnings: {
-        driverEarnings: grossOrderAmount,
-        commission,
-        totalAmount: grossOrderAmount
-      },
-      updatedAt: new Date()
-    });
-    
-    // Update driver earnings
-    const driverRef = db.collection('users').doc(uid);
-    const driverDoc = await driverRef.get();
-    
-    if (driverDoc.exists) {
-      const driverData = driverDoc.data();
-      const currentEarnings = driverData.totalEarnings || 0;
-      const currentBalance = driverData.wallet?.balance || 0;
-      
-      await driverRef.update({
-        totalEarnings: currentEarnings + grossOrderAmount,
-        'wallet.balance': currentBalance + grossOrderAmount,
-        'wallet.lastUpdated': new Date(),
-        updatedAt: new Date()
-      });
-    }
-    
-    // ✅ CRITICAL FIX: Create earnings record only if it doesn't exist
-    await db.collection('driver_earnings').add({
-      bookingId: id,
-      driverId: uid,
-      amount: grossOrderAmount,
-      commission,
-      totalFare: grossOrderAmount,
-      earnedAt: new Date(),
-      status: 'completed'
-    });
-    
-    res.status(200).json({
-      success: true,
-      data: {
-        message: 'Delivery completed successfully',
-        driverEarnings: grossOrderAmount,
-        commission,
-        totalFare: grossOrderAmount
-      }
-    });
-    
-  } catch (error) {
-    console.error('Error completing delivery:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Failed to complete delivery'
-    });
-  }
+router.post('/bookings/:id/complete-delivery', requireDriver, async (req, res) => {
+  logDeprecatedDriverRouteHit('POST /api/driver/bookings/:id/complete-delivery', req);
+  return respondDeprecatedDriverRoute(res, {
+    message: 'Legacy complete-delivery endpoint removed',
+    details: 'This endpoint duplicated earnings writes. Use the workflow complete-delivery API instead.',
+    replacement: 'POST /api/driver/complete-delivery'
+  });
 });
 
-/**
- * @route   POST /api/driver/bookings/:id/reject
- * @desc    Reject a booking
- * @access  Private (Driver only)
- */
 router.post('/bookings/:id/reject', [
   requireDriver,
   body('reason')
@@ -8358,109 +8270,19 @@ router.post('/bookings/:id/reject', [
 });
 
 /**
- * @route   PUT /api/driver/bookings/:id/status
- * @desc    Update booking status (start trip, pickup, delivery, etc.)
+ * @route   PUT /api/driver/:id/status
+ * @desc    DEPRECATED legacy path — use PUT /api/driver/bookings/:id/status
  * @access  Private (Driver only)
  */
-router.put('/:id/status', [
-  requireDriver,
-  body('status')
-    .isIn(['driver_enroute', 'driver_arrived', 'picked_up', 'in_transit', 'at_dropoff', 'delivered'])
-    .withMessage('Invalid status'),
-  body('location')
-    .optional()
-    .isObject()
-    .withMessage('Location must be an object'),
-  body('eta')
-    .optional()
-    .isNumeric()
-    .withMessage('ETA must be a number')
-], async (req, res) => {
-  try {
-    const errors = validationResult(req);
-    if (!errors.isEmpty()) {
-      return res.status(400).json({
-        success: false,
-        error: {
-          code: 'VALIDATION_ERROR',
-          message: 'Validation failed',
-          details: errors.array()
-        },
-        timestamp: new Date().toISOString()
-      });
-    }
-
-    const { id } = req.params;
-    const { uid } = req.user;
-    const { status, location, eta } = req.body;
-    const db = getFirestore();
-
-    // Verify booking exists and driver is assigned
-    const bookingRef = db.collection('bookings').doc(id);
-    const bookingDoc = await bookingRef.get();
-    
-    if (!bookingDoc.exists) {
-      return res.status(404).json({
-        success: false,
-        error: {
-          code: 'BOOKING_NOT_FOUND',
-          message: 'Booking not found'
-        },
-        timestamp: new Date().toISOString()
-      });
-    }
-
-    const bookingData = bookingDoc.data();
-    
-    if (bookingData.driverId !== uid) {
-      return res.status(403).json({
-        success: false,
-        error: {
-          code: 'ACCESS_DENIED',
-          message: 'You can only update bookings assigned to you'
-        },
-        timestamp: new Date().toISOString()
-      });
-    }
-
-    // ✅ FIXED: Use LiveTrackingService for status updates
-    const liveTrackingService = require('../services/liveTrackingService');
-    
-    // Update driver location if provided
-    if (location) {
-      await liveTrackingService.updateDriverLocation(uid, location, id);
-    }
-
-    // Update booking status with live tracking
-    await liveTrackingService.updateBookingStatus(id, status, uid, {
-      eta: eta || null,
-      updatedAt: new Date()
-    });
-
-    res.status(200).json({
-      success: true,
-      message: 'Booking status updated successfully',
-      data: {
-        bookingId: id,
-        status,
-        timestamp: new Date().toISOString()
-      },
-      timestamp: new Date().toISOString()
-    });
-
-  } catch (error) {
-    console.error('Error updating booking status:', error);
-    res.status(500).json({
-      success: false,
-      error: {
-        code: 'BOOKING_STATUS_UPDATE_ERROR',
-        message: 'Failed to update booking status',
-        details: error.message
-      },
-      timestamp: new Date().toISOString()
-    });
-  }
+router.put('/:id/status', requireDriver, async (req, res) => {
+  logDeprecatedDriverRouteHit('PUT /api/driver/:id/status', req);
+  return respondDeprecatedDriverRoute(res, {
+    message: 'Legacy booking status path removed',
+    details: 'Use the bookings-scoped status endpoint with driverStatusWorkflowService.',
+    replacement: 'PUT /api/driver/bookings/:id/status'
+  });
 });
+
 router.put('/bookings/:id/status', [
   requireDriver,
   bookingStatusLimiter, // ✅ CRITICAL FIX: Use lenient rate limiter for booking status updates
@@ -10382,6 +10204,7 @@ router.get('/bookings/:id/photo-verifications', requireDriver, async (req, res) 
       });
     });
 
+    prepareNoStoreResponse(req, res);
     res.status(200).json({
       success: true,
       message: 'Photo verifications retrieved successfully',
@@ -12011,257 +11834,16 @@ router.post('/tracking/stop', [
 
 /**
  * @route   POST /api/driver/bookings/:id/payment
- * @desc    Collect payment from customer
+ * @desc    DEPRECATED — use POST /api/driver/bookings/:id/confirm-payment
  * @access  Private (Driver only)
  */
-router.post('/bookings/:id/payment', [
-  requireDriver,
-  body('amount')
-    .isNumeric()
-    .withMessage('Amount must be a number'),
-  body('paymentMethod')
-    .isIn(['cash', 'upi'])
-    .withMessage('Payment method must be cash or upi'),
-  body('collectedAt')
-    .isISO8601()
-    .withMessage('Collected at must be a valid date')
-], async (req, res) => {
-  try {
-    const errors = validationResult(req);
-    if (!errors.isEmpty()) {
-      return res.status(400).json({
-        success: false,
-        error: {
-          code: 'VALIDATION_ERROR',
-          message: 'Validation failed',
-          details: errors.array()
-        },
-        timestamp: new Date().toISOString()
-      });
-    }
-
-    const { uid } = req.user;
-    const { id } = req.params;
-    const { amount, paymentMethod, collectedAt } = req.body;
-    const db = getFirestore();
-
-    // Get booking details
-    const bookingRef = db.collection('bookings').doc(id);
-    const bookingDoc = await bookingRef.get();
-
-    if (!bookingDoc.exists) {
-      return res.status(404).json({
-        success: false,
-        error: {
-          code: 'BOOKING_NOT_FOUND',
-          message: 'Booking not found',
-          details: 'The specified booking does not exist'
-        },
-        timestamp: new Date().toISOString()
-      });
-    }
-
-    const bookingData = bookingDoc.data();
-
-    // Verify driver is assigned to this booking
-    if (bookingData.driverId !== uid) {
-      return res.status(403).json({
-        success: false,
-        error: {
-          code: 'ACCESS_DENIED',
-          message: 'Access denied',
-          details: 'You can only collect payment for your assigned bookings'
-        },
-        timestamp: new Date().toISOString()
-      });
-    }
-
-    // Verify booking is in correct status for payment collection
-    if (!['delivered', 'payment_pending'].includes(bookingData.status)) {
-      return res.status(400).json({
-        success: false,
-        error: {
-          code: 'INVALID_STATUS',
-          message: 'Invalid booking status',
-          details: 'Payment can only be collected for delivered bookings'
-        },
-        timestamp: new Date().toISOString()
-      });
-    }
-
-    const currentTime = new Date();
-
-    // Update booking with payment information
-    const updateData = {
-      status: 'completed',
-      payment: {
-        amount: parseFloat(amount),
-        method: paymentMethod,
-        collectedAt: new Date(collectedAt),
-        collectedBy: uid,
-        status: 'collected'
-      },
-      'timing.completedAt': currentTime,
-      updatedAt: currentTime
-    };
-
-    await bookingRef.update(updateData);
-
-        // Deduct commission from driver points wallet
-        try {
-          const pointsService = require('../services/walletService');
-          const fareCalculationService = require('../services/fareCalculationService');
-          
-          const exactDistanceKm = bookingData.distance?.total || 0;
-          const tripFare = parseFloat(amount);
-          
-          if (tripFare > 0 && exactDistanceKm > 0) {
-            console.log(`💰 Deducting commission from points for payment collection: Fare ₹${tripFare}`);
-            
-            // Calculate commission based on fare amount (not raw distance)
-            // Use the same fare calculation logic to ensure consistency
-            const fareBreakdown = fareCalculationService.calculateFare(exactDistanceKm);
-            const commissionAmount = fareBreakdown.commission; // This is now in points
-            const roundedDistanceKm = fareBreakdown.roundedDistanceKm;
-            
-            console.log(`📊 Fare breakdown: ${exactDistanceKm}km → ${roundedDistanceKm}km → ₹${tripFare} → Commission ${commissionAmount} points`);
-            
-            // Prepare trip details for commission transaction
-            const tripDetails = {
-              pickupLocation: bookingData.pickup || {},
-              dropoffLocation: bookingData.dropoff || {},
-              tripFare: tripFare,
-              exactDistanceKm: exactDistanceKm,
-              roundedDistanceKm: roundedDistanceKm
-            };
-            
-            // Deduct commission from driver points wallet
-            const commissionResult = await pointsService.deductPoints(
-              uid,
-              id,
-              roundedDistanceKm, // Use rounded distance for commission calculation
-              commissionAmount, // Points to deduct
-              tripDetails
-            );
-            
-            if (commissionResult.success) {
-              console.log(`✅ Commission deducted from points: ${commissionAmount} points for ${roundedDistanceKm}km (fare: ₹${tripFare})`);
-            } else {
-              console.error('❌ Commission deduction from points failed:', commissionResult.error);
-            }
-          }
-        } catch (commissionError) {
-          console.error('❌ Error processing commission from points:', commissionError);
-        }
-
-    // Update driver earnings
-    const driverRef = db.collection('users').doc(uid);
-    const driverDoc = await driverRef.get();
-    
-    if (driverDoc.exists) {
-      const driverData = driverDoc.data();
-      const currentEarnings = resolveDriverTotalEarnings(driverData.driver || {});
-      // CORRECT: Driver gets full fare, commission deducted from points wallet
-      const tripEarnings = parseFloat(amount); // Full fare amount
-
-      await driverRef.update({
-        'driver.totalEarnings': currentEarnings + tripEarnings,
-        'driver.totalTrips': (driverData.driver?.totalTrips || 0) + 1,
-        updatedAt: currentTime
-      });
-    }
-
-    // Create payment record
-    const paymentRecord = {
-      bookingId: id,
-      driverId: uid,
-      customerId: bookingData.customerId,
-      amount: parseFloat(amount),
-      method: paymentMethod,
-      collectedAt: new Date(collectedAt),
-      status: 'collected',
-      createdAt: currentTime,
-      updatedAt: currentTime
-    };
-
-    await db.collection('payments').add(paymentRecord);
-
-    res.status(200).json({
-      success: true,
-      message: 'Payment collected successfully',
-      data: {
-        bookingId: id,
-        amount: parseFloat(amount),
-        method: paymentMethod,
-        collectedAt: new Date(collectedAt),
-        status: 'collected'
-      },
-      timestamp: new Date().toISOString()
-    });
-
-  } catch (error) {
-    console.error('Error collecting payment:', error);
-    res.status(500).json({
-      success: false,
-      error: {
-        code: 'PAYMENT_COLLECTION_ERROR',
-        message: 'Failed to collect payment',
-        details: 'An error occurred while collecting payment'
-      },
-      timestamp: new Date().toISOString()
-    });
-  }
-});
-
-/**
- * @route   GET /api/driver/availability
- * @desc    Get current driver availability status
- * @access  Private (Driver only)
- */
-router.get('/availability', requireDriver, async (req, res) => {
-  try {
-    const { uid } = req.user;
-    const db = getFirestore();
-    
-    const userDoc = await db.collection('users').doc(uid).get();
-    
-    if (!userDoc.exists) {
-      return res.status(404).json({
-        success: false,
-        error: {
-          code: 'DRIVER_NOT_FOUND',
-          message: 'Driver not found'
-        },
-        timestamp: new Date().toISOString()
-      });
-    }
-
-    const userData = userDoc.data();
-    
-    res.status(200).json({
-      success: true,
-      data: {
-        isOnline: userData.isOnline || false,
-        isAvailable: userData.isAvailable || false,
-        status: userData.status || 'offline',
-        lastSeen: userData.lastSeen || null,
-        currentLocation: userData.currentLocation || null
-      },
-      timestamp: new Date().toISOString()
-    });
-
-  } catch (error) {
-    console.error('Error getting driver availability:', error);
-    res.status(500).json({
-      success: false,
-      error: {
-        code: 'GET_AVAILABILITY_ERROR',
-        message: 'Failed to get driver availability',
-        details: error.message
-      },
-      timestamp: new Date().toISOString()
-    });
-  }
+router.post('/bookings/:id/payment', requireDriver, async (req, res) => {
+  logDeprecatedDriverRouteHit('POST /api/driver/bookings/:id/payment', req);
+  return respondDeprecatedDriverRoute(res, {
+    message: 'Legacy payment collection endpoint removed',
+    details: 'Use confirm-payment for money collection and completion state transitions.',
+    replacement: 'POST /api/driver/bookings/:id/confirm-payment'
+  });
 });
 
 // ❌ REMOVED: Duplicate accept booking route (replaced by comprehensive version at line 2600)

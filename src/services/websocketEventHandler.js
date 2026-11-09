@@ -1419,349 +1419,17 @@ class WebSocketEventHandler {
    * @param {Object} data - Booking acceptance data
    */
   async handleBookingAcceptance(socket, data) {
-    try {
-      const { bookingId } = data;
-      const { userId, userType } = socket;
-
-      if (userType !== 'driver') {
-        socket.emit('error', {
-          code: 'ACCESS_DENIED',
-          message: 'Only drivers can accept bookings'
-        });
-        return;
-      }
-
-      if (!bookingId) {
-        socket.emit('error', {
-          code: 'INVALID_BOOKING_ID',
-          message: 'Booking ID is required'
-        });
-        return;
-      }
-
-      console.log(`✅ Driver ${userId} accepting booking ${bookingId} via WebSocket`);
-
-      // ✅ CRITICAL FIX: Use BookingLockService for atomic locking
-      const BookingLockService = require('./bookingLockService');
-      const bookingLockService = new BookingLockService();
-
-      // Acquire exclusive lock for booking acceptance
-      try {
-        await bookingLockService.acquireBookingLock(bookingId, userId);
-      } catch (error) {
-        if (error.message === 'BOOKING_LOCKED') {
-          // ✅ CRITICAL FIX: Before returning error, verify booking state one more time
-          // This handles edge cases where lock exists but booking wasn't actually accepted
-          const bookingRef = this.db.collection('bookings').doc(bookingId);
-          const freshBookingCheck = await bookingRef.get();
-          
-          if (freshBookingCheck.exists) {
-            const freshBooking = freshBookingCheck.data();
-            // ✅ USE VALIDATION UTILITY: Comprehensive check for all driverId edge cases
-            const bookingValidation = require('../utils/bookingValidation');
-            if (freshBooking.status === 'pending' && bookingValidation.isDriverIdEmpty(freshBooking.driverId)) {
-              // Booking is still available - lock is likely stale, log and continue anyway
-              console.warn(`⚠️ [WEBSOCKET_ACCEPT] Lock exists but booking ${bookingId} is still pending. Possible stale lock. Attempting to continue...`);
-              // Don't return - let the transaction handle the race condition
-            } else {
-              // Booking is actually assigned
-              socket.emit('error', {
-                code: 'BOOKING_ALREADY_ASSIGNED',
-                message: 'Booking already assigned',
-                details: 'This booking has already been assigned to another driver'
-              });
-              return;
-            }
-          } else {
-            socket.emit('error', {
-              code: 'BOOKING_NOT_FOUND',
-              message: 'Booking not found'
-            });
-            return;
-          }
-        } else if (error.message === 'BOOKING_ALREADY_ASSIGNED') {
-          // Booking was already assigned (checked during lock acquisition)
-          socket.emit('error', {
-            code: 'BOOKING_ALREADY_ASSIGNED',
-            message: 'Booking already assigned',
-            details: 'This booking has already been assigned to another driver'
-          });
-          return;
-        } else if (error.message === 'BOOKING_NOT_FOUND') {
-          socket.emit('error', {
-            code: 'BOOKING_NOT_FOUND',
-            message: 'Booking not found'
-          });
-          return;
-        }
-        throw error;
-      }
-
-      try {
-        // ✅ CRITICAL FIX: Use atomic Firestore transaction for booking acceptance
-        const bookingRef = this.db.collection('bookings').doc(bookingId);
-        const driverRef = this.db.collection('users').doc(userId);
-
-        await this.db.runTransaction(async (transaction) => {
-          // Get current booking and driver data within transaction
-          const [bookingDoc, driverDoc] = await Promise.all([
-            transaction.get(bookingRef),
-            transaction.get(driverRef)
-          ]);
-
-          if (!bookingDoc.exists) {
-            throw new Error('BOOKING_NOT_FOUND');
-          }
-
-          if (!driverDoc.exists) {
-            throw new Error('DRIVER_NOT_FOUND');
-          }
-
-          const bookingData = bookingDoc.data();
-          const driverData = driverDoc.data();
-
-          // ✅ CRITICAL: Check if booking is still available (atomic check)
-          if (bookingData.status !== 'pending') {
-            // If already assigned to this driver, allow it (idempotent)
-            if (bookingData.driverId === userId && bookingData.status === 'driver_assigned') {
-              console.log(`ℹ️ [WEBSOCKET_ACCEPT] Booking already assigned to driver ${userId}`);
-              return { success: true, alreadyAssigned: true };
-            }
-            throw new Error('BOOKING_ALREADY_ASSIGNED');
-          }
-
-          // Check if booking already has a driverId set
-          // ✅ USE VALIDATION UTILITY: Comprehensive check for all driverId edge cases
-          const bookingValidation = require('../utils/bookingValidation');
-          if (!bookingValidation.isDriverIdEmpty(bookingData.driverId)) {
-            const normalizedDriverId = bookingValidation.normalizeDriverId(bookingData.driverId);
-            if (normalizedDriverId !== userId) {
-              throw new Error('BOOKING_ALREADY_ASSIGNED');
-            }
-            // Same driver - allow idempotent accept
-          }
-
-          // Check if driver is still available
-          if (!driverData.driver?.isAvailable || !driverData.driver?.isOnline) {
-            throw new Error('DRIVER_NOT_AVAILABLE');
-          }
-
-          // ✅ CRITICAL FIX: Update booking atomically within transaction
-          transaction.update(bookingRef, {
-            status: 'driver_assigned',
-            driverId: userId,
-            acceptedAt: new Date(),
-            assignedAt: new Date(),
-            updatedAt: new Date(),
-            // Populate driverInfo for admin panel
-            driverInfo: {
-              name: driverData.name || 'Driver',
-              phone: driverData.phone || '',
-              rating: driverData.driver?.rating || 0,
-              vehicleNumber: driverData.driver?.vehicleDetails?.vehicleNumber || '',
-              vehicleModel: driverData.driver?.vehicleDetails?.vehicleModel || ''
-            }
-          });
-
-          // Update driver availability
-          transaction.update(driverRef, {
-            'driver.isAvailable': false,
-            'driver.currentBookingId': bookingId,
-            updatedAt: new Date()
-          });
-
-          return { success: true };
-        });
-
-        console.log(`✅ [WEBSOCKET_ACCEPT] Booking ${bookingId} accepted atomically by driver ${userId}`);
-
-        // Get updated booking data for notifications
-        const updatedBookingDoc = await bookingRef.get();
-        const updatedBookingData = updatedBookingDoc.data();
-
-        // ✅ FIXED: Create booking status update with correct status
-        const statusUpdate = {
-          bookingId,
-          status: 'driver_assigned',
-          driverId: userId,
-          timestamp: new Date().toISOString(),
-          updatedBy: userId
-        };
-
-        // Store status update
-        await this.db.collection('booking_status_updates').add(statusUpdate);
-
-        // Get driver data for notifications
-        const driverDoc = await this.db.collection('users').doc(userId).get();
-        const driverData = driverDoc.data();
-
-        // ✅ CRITICAL FIX: Get full updated booking data for customer notification
-        const fullBookingDoc = await this.db.collection('bookings').doc(bookingId).get();
-        const fullBookingData = fullBookingDoc.data();
-        
-        // ✅ CRITICAL FIX: Enhanced logging for customer notification
-        const customerRoom = `user:${updatedBookingData.customerId}`;
-        const vehicleDetails = driverData?.driver?.vehicleDetails || {};
-        const vehicleModel =
-          driverData?.driver?.vehicleModel ||
-          vehicleDetails.vehicleModel ||
-          updatedBookingData.driverInfo?.vehicleModel ||
-          '';
-        const vehicleNumber =
-          driverData?.driver?.vehicleNumber ||
-          vehicleDetails.vehicleNumber ||
-          updatedBookingData.driverInfo?.vehicleNumber ||
-          '';
-        const vehicleColor =
-          driverData?.driver?.vehicleColor ||
-          vehicleDetails.vehicleColor ||
-          updatedBookingData.driverInfo?.vehicleColor ||
-          '';
-        const vehicleType =
-          driverData?.driver?.vehicleType ||
-          vehicleDetails.vehicleType ||
-          updatedBookingData.driverInfo?.vehicleType ||
-          '';
-
-        const driverAssignedEvent = {
-          bookingId,
-          driverId: userId,
-          driver: {
-            id: userId,
-            name: driverData?.name || 'Driver',
-            phone: driverData?.phone || '',
-            vehicleNumber,
-            vehicleModel,
-            vehicleColor,
-            vehicleType,
-            rating: driverData?.driver?.rating || 4.5
-          },
-          booking: fullBookingData, // ✅ CRITICAL: Include full booking data
-          driverInfo: {
-            id: userId,
-            name: driverData?.name || 'Driver',
-            phone: driverData?.phone || '',
-            vehicleNumber,
-            vehicleModel,
-            vehicleColor,
-            vehicleType,
-            vehicleDetails
-          },
-          timestamp: new Date().toISOString()
-        };
-        
-        console.log(`📤 [WEBSOCKET_ACCEPT] Emitting driver_assigned to room: ${customerRoom}`, {
-          bookingId,
-          driverId: userId,
-          driverName: driverData?.name,
-          customerId: updatedBookingData.customerId,
-          hasBooking: !!fullBookingData,
-          hasDriverInfo: !!driverAssignedEvent.driverInfo
-        });
-        
-        // Check if room has listeners
-        const room = this.io.sockets.adapter.rooms.get(customerRoom);
-        const roomSize = room ? room.size : 0;
-        console.log(`📊 [WEBSOCKET_ACCEPT] Room ${customerRoom} has ${roomSize} connected socket(s)`);
-        
-        // ✅ CRITICAL FIX: Send to multiple rooms to ensure customer receives the event
-        // 1. User-specific room: user:${customerId}
-        // 2. Booking room: booking:${bookingId}
-        // 3. Customer type room: type:customer (for admin monitoring)
-        const userRoom = `user:${updatedBookingData.customerId}`;
-        const bookingRoom = `booking:${bookingId}`;
-        
-        console.log(`📤 [WEBSOCKET_ACCEPT] Emitting driver_assigned to multiple rooms:`, {
-          userRoom,
-          bookingRoom,
-          customerRoom,
-          bookingId,
-          driverId: userId
-        });
-        
-        // ✅ FIXED: Notify customer with correct event name and data structure, including full booking
-        this.io.to(userRoom).emit('driver_assigned', driverAssignedEvent);
-        this.io.to(bookingRoom).emit('driver_assigned', driverAssignedEvent);
-        this.io.to(customerRoom).emit('driver_assigned', driverAssignedEvent); // Keep for backward compatibility
-
-        // ✅ FIXED: Also send booking status update with full booking data
-        const statusUpdateEvent = {
-          bookingId,
-          status: 'driver_assigned',
-          booking: fullBookingData, // ✅ CRITICAL: Include full booking data
-          driverInfo: {
-            id: userId,
-            name: driverData?.name || 'Driver',
-            phone: driverData?.phone || '',
-            vehicleNumber,
-            vehicleModel,
-            vehicleColor,
-            vehicleType,
-            vehicleDetails
-          },
-          timestamp: new Date().toISOString(),
-          updatedBy: userId
-        };
-        
-        console.log(`📤 [WEBSOCKET_ACCEPT] Emitting booking_status_update to multiple rooms`);
-        this.io.to(userRoom).emit('booking_status_update', statusUpdateEvent);
-        this.io.to(bookingRoom).emit('booking_status_update', statusUpdateEvent);
-        this.io.to(customerRoom).emit('booking_status_update', statusUpdateEvent); // Keep for backward compatibility
-
-        // Notify admin
-        this.io.to(`type:admin`).emit('booking_status_update', statusUpdate);
-
-        // Confirm acceptance
-        socket.emit('booking_accepted_confirmed', {
-          success: true,
-          message: 'Booking accepted successfully',
-          data: { bookingId, driverId: userId }
-        });
-
-      } catch (transactionError) {
-        // Handle transaction errors
-        if (transactionError.message === 'BOOKING_ALREADY_ASSIGNED') {
-          socket.emit('error', {
-            code: 'BOOKING_ALREADY_ASSIGNED',
-            message: 'Booking already assigned',
-            details: 'This booking has already been assigned to another driver'
-          });
-        } else if (transactionError.message === 'DRIVER_NOT_AVAILABLE') {
-          socket.emit('error', {
-            code: 'DRIVER_NOT_AVAILABLE',
-            message: 'Driver not available',
-            details: 'Driver must be online and available to accept bookings'
-          });
-        } else if (transactionError.message === 'BOOKING_NOT_FOUND') {
-          socket.emit('error', {
-            code: 'BOOKING_NOT_FOUND',
-            message: 'Booking not found'
-          });
-        } else if (transactionError.message === 'DRIVER_NOT_FOUND') {
-          socket.emit('error', {
-            code: 'DRIVER_NOT_FOUND',
-            message: 'Driver not found'
-          });
-        } else {
-          throw transactionError;
-        }
-      } finally {
-        // ✅ CRITICAL: Always release lock
-        try {
-          await bookingLockService.releaseBookingLock(bookingId, userId);
-        } catch (lockError) {
-          console.error(`❌ [WEBSOCKET_ACCEPT] Error releasing lock for booking ${bookingId}:`, lockError);
-        }
-      }
-
-    } catch (error) {
-      console.error('❌ [WEBSOCKET_ACCEPT] Error handling booking acceptance:', error);
-      socket.emit('error', {
-        code: 'BOOKING_ACCEPTANCE_ERROR',
-        message: 'Failed to accept booking',
-        details: error.message
-      });
-    }
+    const { blockDeprecatedSocketEvent } = require('../utils/socketDeprecatedEventLog');
+    blockDeprecatedSocketEvent(
+      socket,
+      'accept_booking',
+      {
+        code: 'USE_REST_ACCEPT',
+        message: 'Use REST API to accept bookings',
+        details: 'POST /api/driver/bookings/:id/accept'
+      },
+      data
+    );
   }
 
   /**
@@ -1996,83 +1664,20 @@ class WebSocketEventHandler {
    * @param {Object} data - Booking status data
    */
   async handleBookingStatusUpdate(socket, data) {
-    try {
-      const { bookingId, status, message } = data;
-      const { userId, userType } = socket;
-
-      if (!bookingId || !status) {
-        socket.emit('error', {
-          code: 'INVALID_BOOKING_DATA',
-          message: 'Booking ID and status are required'
-        });
-        return;
-      }
-
-      // Verify user has access to this booking
-      const hasAccess = await this.verifyBookingAccess(userId, bookingId);
-      if (!hasAccess) {
-        socket.emit('error', {
-          code: 'ACCESS_DENIED',
-          message: 'You do not have access to this booking'
-        });
-        return;
-      }
-
-      console.log(`📊 Booking status update from ${userType} ${userId} for booking ${bookingId}: ${status}`);
-
-      // Update booking status in Firestore
-      const bookingRef = this.db.collection('bookings').doc(bookingId);
-      await bookingRef.update({
-        status,
-        updatedAt: new Date(),
-        lastUpdatedBy: userId
-      });
-
-      // Create status update record
-      const statusUpdate = {
-        bookingId,
-        status,
-        message: message || null,
-        updatedBy: userId,
-        userType,
-        timestamp: new Date().toISOString()
-      };
-
-      await this.db.collection('booking_status_updates').add(statusUpdate);
-
-      // Get booking data for notifications
-      const bookingDoc = await bookingRef.get();
-      const bookingData = bookingDoc.data();
-
-      // Notify relevant parties
-      if (bookingData.customerId) {
-        this.io.to(`user:${bookingData.customerId}`).emit('booking_status_update', statusUpdate);
-      }
-
-      if (bookingData.driverId) {
-        this.io.to(`user:${bookingData.driverId}`).emit('booking_status_update', statusUpdate);
-      }
-
-      // Notify admin
-      this.io.to(`type:admin`).emit('booking_status_update', statusUpdate);
-
-      // Confirm status update
-      socket.emit('booking_status_confirmed', {
-        success: true,
-        message: 'Booking status updated successfully',
-        data: statusUpdate
-      });
-
-    } catch (error) {
-      console.error('Error handling booking status update:', error);
-      socket.emit('error', {
-        code: 'BOOKING_STATUS_ERROR',
-        message: 'Failed to update booking status'
-      });
-    }
+    const { blockDeprecatedSocketEvent } = require('../utils/socketDeprecatedEventLog');
+    blockDeprecatedSocketEvent(
+      socket,
+      'update_booking_status',
+      {
+        code: 'USE_REST_STATUS_API',
+        message: 'Use REST API to update booking status',
+        details: 'PUT /api/driver/bookings/:id/status'
+      },
+      data
+    );
   }
 
-  /**
+    /**
    * Handle ETA update
    * @param {Socket} socket - Socket instance
    * @param {Object} data - ETA data
@@ -2867,59 +2472,20 @@ class WebSocketEventHandler {
    * @param {Object} data - Payment data
    */
   async handlePaymentEvent(socket, data) {
-    try {
-      const { eventType, transactionId, bookingId, amount, status } = data;
-      const { userId, userType } = socket;
-
-      console.log(`💳 Payment event: ${eventType} for transaction ${transactionId}`);
-
-      // Update payment status in Firestore
-      await this.updatePaymentStatus(transactionId, {
-        status,
-        updatedAt: new Date(),
-        updatedBy: userId
-      });
-
-      // Notify relevant users based on event type
-      switch (eventType) {
-        case 'payment_created':
-          await this.notifyPaymentCreated(socket, data);
-          break;
-        case 'payment_completed':
-          await this.notifyPaymentCompleted(socket, data);
-          break;
-        case 'payment_failed':
-          await this.notifyPaymentFailed(socket, data);
-          break;
-        case 'payment_refunded':
-          await this.notifyPaymentRefunded(socket, data);
-          break;
-        default:
-          console.log(`Unknown payment event type: ${eventType}`);
-      }
-
-      // Notify admin dashboard
-      this.io.to('role:admin').emit('payment_update', {
-        eventType,
-        transactionId,
-        bookingId,
-        amount,
-        status,
-        userId,
-        userType,
-        timestamp: new Date().toISOString()
-      });
-
-    } catch (error) {
-      console.error('Error handling payment event:', error);
-      socket.emit('error', {
-        code: 'PAYMENT_EVENT_ERROR',
-        message: 'Failed to process payment event'
-      });
-    }
+    const { blockDeprecatedSocketEvent } = require('../utils/socketDeprecatedEventLog');
+    blockDeprecatedSocketEvent(
+      socket,
+      'payment_event',
+      {
+        code: 'USE_REST_PAYMENT',
+        message: 'Use REST API for payment flows',
+        details: 'POST /api/driver/bookings/:id/confirm-payment'
+      },
+      data
+    );
   }
 
-  /**
+    /**
    * Notify payment created
    */
   async notifyPaymentCreated(socket, data) {

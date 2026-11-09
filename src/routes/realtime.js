@@ -487,6 +487,20 @@ router.post('/test/simulate', [
   body('payload').optional().isObject()
 ], async (req, res) => {
   try {
+    if (
+      process.env.NODE_ENV === 'production' &&
+      process.env.ENABLE_REALTIME_TEST_SIMULATE !== 'true'
+    ) {
+      return res.status(404).json({
+        success: false,
+        error: {
+          code: 'SIMULATE_DISABLED',
+          message: 'Realtime test simulate is disabled in this environment',
+          details: 'Set ENABLE_REALTIME_TEST_SIMULATE=true in non-production or staging only.'
+        }
+      });
+    }
+
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
       return res.status(400).json({

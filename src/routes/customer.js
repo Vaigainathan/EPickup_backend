@@ -1110,14 +1110,82 @@ router.put('/bookings/:bookingId/cancel', authenticateToken, async (req, res) =>
       return res.status(refusal.status).json(refusal.body);
     }
 
-    // Update booking status
-    await db.collection('bookings').doc(bookingId).update({
-      status: 'cancelled',
-      cancellationReason: reason,
-      cancelledAt: new Date(),
-      updatedAt: new Date()
-    });
-    
+    const bookingRef = db.collection('bookings').doc(bookingId);
+    const driverId = bookingData.driverId || null;
+    let driverReleaseResult = { released: false, reason: 'no_driver' };
+
+    try {
+      await db.runTransaction(async (transaction) => {
+        const freshBookingSnap = await transaction.get(bookingRef);
+        if (!freshBookingSnap.exists) {
+          throw new Error('BOOKING_NOT_FOUND');
+        }
+        const freshBooking = freshBookingSnap.data();
+        if (freshBooking.customerId !== userId) {
+          throw new Error('UNAUTHORIZED_CANCEL');
+        }
+        const freshRefusal = customerCancelRefusal(freshBooking.status);
+        if (freshRefusal) {
+          const err = new Error('CANCELLATION_NOT_ALLOWED');
+          err.refusal = freshRefusal;
+          throw err;
+        }
+
+        const cancelledAt = new Date();
+        transaction.update(bookingRef, {
+          status: 'cancelled',
+          cancellationReason: reason,
+          cancelledAt,
+          updatedAt: cancelledAt
+        });
+
+        const assignedDriverId = freshBooking.driverId || driverId;
+        if (assignedDriverId) {
+          const driverRef = db.collection('users').doc(assignedDriverId);
+          const driverSnap = await transaction.get(driverRef);
+          const { applyDriverReleaseInTransaction } = require('../services/releaseDriverOnBookingCancel');
+          driverReleaseResult = applyDriverReleaseInTransaction(
+            transaction,
+            driverRef,
+            driverSnap,
+            bookingId
+          );
+        }
+      });
+    } catch (txError) {
+      if (txError.message === 'BOOKING_NOT_FOUND') {
+        return res.status(404).json({ success: false, error: 'Booking not found' });
+      }
+      if (txError.message === 'UNAUTHORIZED_CANCEL') {
+        return res.status(403).json({ success: false, error: 'Unauthorized to cancel this booking' });
+      }
+      if (txError.message === 'CANCELLATION_NOT_ALLOWED' && txError.refusal) {
+        return res.status(txError.refusal.status).json(txError.refusal.body);
+      }
+      throw txError;
+    }
+
+    if (driverId) {
+      if (driverReleaseResult.released) {
+        console.log(`✅ [CANCEL] Driver ${driverId} released for cancelled booking ${bookingId}`);
+      } else {
+        console.log(
+          `ℹ️ [CANCEL] Driver release skipped for ${driverId} booking ${bookingId}: ${driverReleaseResult.reason || 'unknown'}`
+        );
+      }
+      try {
+        const { notifyAssignedDriverBookingCancelled } = require('../services/marketplace/marketplaceLinkedBookingCancel');
+        await notifyAssignedDriverBookingCancelled({
+          driverId,
+          bookingId,
+          reason: reason || 'Cancelled by customer',
+          cancelledBy: userId
+        });
+      } catch (pushError) {
+        console.error('❌ [CANCEL] Driver cancel push failed:', pushError.message);
+      }
+    }
+
     // ✅ CRITICAL FIX: Emit booking cancelled event via WebSocket
     try {
       const socketService = require('../services/socket');

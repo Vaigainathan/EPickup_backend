@@ -524,8 +524,11 @@ router.post('/bookings/:bookingId/reassign-driver', [
       const oldDriverRef = db.collection('users').doc(oldDriverId);
       const oldDriverDoc = await oldDriverRef.get();
       const oldDriverData = oldDriverDoc.data();
-      
+      const { buildDriverReleaseUpdate } = require('../services/releaseDriverOnBookingCancel');
+      const releasePatch = buildDriverReleaseUpdate(oldDriverData, bookingId) || {};
+
       batch.update(oldDriverRef, {
+        ...releasePatch,
         'driver.activeBookings': Math.max((oldDriverData.driver?.activeBookings || 1) - 1, 0),
         updatedAt: new Date()
       });

@@ -385,9 +385,10 @@ async function adminInterveneReassign({ bookingId, adminId, reason }) {
       if (driverSnap.exists) {
         const driverData = driverSnap.data() || {};
         const active = driverData.driver && driverData.driver.activeBookings;
+        const { buildDriverReleaseUpdate } = require('../releaseDriverOnBookingCancel');
+        const releasePatch = buildDriverReleaseUpdate(driverData, bookingId) || {};
         tx.update(driverRef, {
-          ...buildSystemAvailabilityUpdate(true),
-          'driver.currentBookingId': null,
+          ...releasePatch,
           'driver.activeBookings': Math.max((active || 1) - 1, 0),
           updatedAt: now
         });

@@ -1473,76 +1473,117 @@ class WebSocketEventHandler {
       }
 
       const bookingData = bookingDoc.data();
-      
-      // ✅ CRITICAL FIX: Make booking available again (same as HTTP API)
-      await bookingRef.update({
-        status: 'pending',
-        driverId: null,
-        'timing.assignedAt': null,
-        'cancellation.cancelledBy': 'driver',
-        'cancellation.reason': reason || 'Rejected by driver',
-        'cancellation.cancelledAt': new Date(),
-        updatedAt: new Date()
-      });
+      const bookingValidation = require('../utils/bookingValidation');
 
-      // ✅ CRITICAL FIX: Track rejection to prevent driver from seeing same booking again
-      try {
-        await this.db.collection('booking_rejections').add({
-          bookingId: bookingId,
-          driverId: userId,
-          reason: reason || 'Rejected by driver',
-          rejectedAt: new Date(),
-          createdAt: new Date()
+      if (bookingData.status !== 'pending' && bookingData.status !== 'driver_assigned') {
+        socket.emit('error', {
+          code: 'INVALID_BOOKING_STATUS',
+          message: 'Cannot reject booking',
+          details: 'Booking is not in a rejectable state. It may have already been accepted, completed, or cancelled.'
         });
-        console.log(`✅ [WEBSOCKET_REJECTION] Tracked rejection for driver ${userId} and booking ${bookingId}`);
-      } catch (rejectionError) {
-        console.error('❌ [WEBSOCKET_REJECTION] Failed to track rejection:', rejectionError);
-        // Don't fail the rejection if tracking fails
+        return;
       }
 
-      // Create booking status update
-      const statusUpdate = {
-        bookingId,
-        status: 'pending', // ✅ FIXED: Status is now pending (available again)
-        driverId: null, // ✅ FIXED: No driver assigned
-        reason: reason || 'No reason provided',
-        timestamp: new Date().toISOString(),
-        updatedBy: userId
+      const normalizedDriverId = bookingValidation.normalizeDriverId(bookingData.driverId);
+      const isAssignedToDriver = normalizedDriverId === userId;
+      const isAvailableForRejection =
+        bookingData.status === 'pending' && bookingValidation.isDriverIdEmpty(bookingData.driverId);
+
+      if (
+        !bookingValidation.isDriverIdEmpty(bookingData.driverId) &&
+        normalizedDriverId !== userId
+      ) {
+        socket.emit('error', {
+          code: 'ACCESS_DENIED',
+          message: 'Access denied',
+          details: 'You can only reject bookings assigned to you or available bookings. This booking may have been accepted by another driver.'
+        });
+        return;
+      }
+
+      if (!isAssignedToDriver && !isAvailableForRejection) {
+        socket.emit('error', {
+          code: 'ACCESS_DENIED',
+          message: 'Access denied',
+          details: 'You can only reject bookings assigned to you or available bookings. This booking may have been accepted by another driver.'
+        });
+        return;
+      }
+
+      const trackRejection = async () => {
+        try {
+          await this.db.collection('booking_rejections').add({
+            bookingId,
+            driverId: userId,
+            reason: reason || 'Rejected by driver',
+            rejectedAt: new Date(),
+            createdAt: new Date()
+          });
+          console.log(`✅ [WEBSOCKET_REJECTION] Tracked rejection for driver ${userId} and booking ${bookingId}`);
+        } catch (rejectionError) {
+          console.error('❌ [WEBSOCKET_REJECTION] Failed to track rejection:', rejectionError);
+        }
       };
 
-      // Store status update
-      await this.db.collection('booking_status_updates').add(statusUpdate);
-
-      // Notify customer
-      this.io.to(`user:${bookingData.customerId}`).emit('booking_rejected', {
-        bookingId,
-        driverId: userId,
-        reason: reason || 'No reason provided',
-        timestamp: new Date().toISOString()
-      });
-
-      // Notify admin
-      this.io.to(`type:admin`).emit('booking_status_update', statusUpdate);
-
-      // ✅ CRITICAL FIX: Notify other drivers that booking is available again
-      try {
-        console.log(`🔔 [WEBSOCKET_REJECTION] Notifying other drivers that booking ${bookingId} is available again`);
-        await this.notifyDriversOfNewBooking({
-          id: bookingId,
-          ...bookingData,
-          status: 'pending',
-          driverId: null
+      if (isAvailableForRejection) {
+        await trackRejection();
+        socket.emit('booking_rejected_confirmed', {
+          success: true,
+          message: 'Booking rejection tracked successfully',
+          data: {
+            bookingId,
+            driverId: userId,
+            rejectionType: 'available_booking'
+          }
         });
-      } catch (notificationError) {
-        console.error('❌ [WEBSOCKET_REJECTION] Failed to notify other drivers:', notificationError);
-        // Don't fail the rejection if notification fails
+        return;
       }
 
-      // Confirm rejection
+      const { applyDriverReleaseInTransaction } = require('./releaseDriverOnBookingCancel');
+      await this.db.runTransaction(async (transaction) => {
+        const driverRef = this.db.collection('users').doc(userId);
+        const driverSnap = await transaction.get(driverRef);
+        transaction.update(bookingRef, {
+          status: 'pending',
+          driverId: null,
+          'timing.assignedAt': null,
+          'cancellation.cancelledBy': 'driver',
+          'cancellation.reason': reason || 'Rejected by driver',
+          'cancellation.cancelledAt': new Date(),
+          updatedAt: new Date()
+        });
+        applyDriverReleaseInTransaction(transaction, driverRef, driverSnap, bookingId);
+      });
+
+      await this.db.collection('driverLocations').doc(userId).set({
+        currentTripId: null,
+        lastUpdated: new Date()
+      }, { merge: true });
+
+      await trackRejection();
+
+      try {
+        const updatedBookingDoc = await bookingRef.get();
+        const updatedBookingData = updatedBookingDoc.data();
+        if (updatedBookingData) {
+          console.log(`🔔 [WEBSOCKET_REJECTION] Notifying other drivers that booking ${bookingId} is available again`);
+          await this.notifyDriversOfNewBooking({
+            id: bookingId,
+            ...updatedBookingData
+          });
+        }
+      } catch (notificationError) {
+        console.error('❌ [WEBSOCKET_REJECTION] Failed to notify other drivers:', notificationError);
+      }
+
       socket.emit('booking_rejected_confirmed', {
         success: true,
-        message: 'Booking rejected successfully',
-        data: { bookingId, driverId: userId }
+        message: 'Booking rejected and made available for other drivers',
+        data: {
+          bookingId,
+          driverId: userId,
+          rejectionType: 'assigned_booking'
+        }
       });
 
     } catch (error) {
@@ -1572,40 +1613,77 @@ class WebSocketEventHandler {
         return;
       }
 
-      // ✅ CRITICAL FIX: Check for active booking before allowing offline via WebSocket
-      // This prevents WebSocket from bypassing active booking protection
-      if (isOnline === false) {
-        const { DRIVER_GET_ACTIVE_BOOKING_STATUSES } = require('../constants/bookingStatuses');
-        const activeBookingStatuses = DRIVER_GET_ACTIVE_BOOKING_STATUSES;
+      if (isOnline === true) {
+        socket.emit('error', {
+          code: 'USE_REST_DRIVER_STATUS',
+          message: 'Use REST API to update online status',
+          details: 'PUT /api/driver/status'
+        });
+        return;
+      }
+
+      const { DRIVER_GET_ACTIVE_BOOKING_STATUSES } = require('../constants/bookingStatuses');
+      const activeBookingStatuses = DRIVER_GET_ACTIVE_BOOKING_STATUSES;
+
+      const findActiveBooking = async () => {
         const activeBookingQuery = this.db.collection('bookings')
           .where('driverId', '==', userId)
           .where('status', 'in', activeBookingStatuses)
           .limit(1);
-        
         const activeBookingSnapshot = await activeBookingQuery.get();
-        
-        if (!activeBookingSnapshot.empty) {
-          const activeBooking = activeBookingSnapshot.docs[0].data();
-          console.warn(`⚠️ [WEBSOCKET_STATUS] Driver ${userId} trying to go offline via WebSocket but has active booking:`, {
-            bookingId: activeBookingSnapshot.docs[0].id,
-            status: activeBooking.status
-          });
-          
+        if (activeBookingSnapshot.empty) {
+          return null;
+        }
+        return {
+          bookingId: activeBookingSnapshot.docs[0].id,
+          status: activeBookingSnapshot.docs[0].data().status
+        };
+      };
+
+      if (isOnline === false) {
+        const active = await findActiveBooking();
+        if (active) {
+          console.warn(`⚠️ [WEBSOCKET_STATUS] Driver ${userId} trying to go offline via WebSocket but has active booking:`, active);
           socket.emit('error', {
             code: 'ACTIVE_BOOKING',
             message: 'Cannot go offline',
             details: 'You have an active booking. Please complete it before going offline.',
-            bookingId: activeBookingSnapshot.docs[0].id,
-            bookingStatus: activeBooking.status
+            bookingId: active.bookingId,
+            bookingStatus: active.status
           });
-          return; // Block the status update
+          return;
+        }
+      }
+
+      if (isAvailable === true) {
+        const userDoc = await this.db.collection('users').doc(userId).get();
+        const currentBookingId = userDoc.exists ? userDoc.data()?.driver?.currentBookingId : null;
+        if (typeof currentBookingId === 'string' && currentBookingId.trim() !== '') {
+          socket.emit('error', {
+            code: 'ACTIVE_BOOKING',
+            message: 'Cannot set available',
+            details: 'You have a current booking assigned. Complete or release it before marking available.',
+            bookingId: currentBookingId
+          });
+          return;
+        }
+        const active = await findActiveBooking();
+        if (active) {
+          socket.emit('error', {
+            code: 'ACTIVE_BOOKING',
+            message: 'Cannot set available',
+            details: 'You have an active booking. Please complete it before marking available.',
+            bookingId: active.bookingId,
+            bookingStatus: active.status
+          });
+          return;
         }
       }
 
       const statusData = {
         driverId: userId,
-        isOnline: Boolean(isOnline),
-        isAvailable: Boolean(isAvailable),
+        isOnline: isOnline === false ? false : undefined,
+        isAvailable: isAvailable !== undefined ? Boolean(isAvailable) : undefined,
         currentLocation: currentLocation || null,
         lastSeen: new Date(),
         timestamp: new Date().toISOString()
@@ -1613,14 +1691,14 @@ class WebSocketEventHandler {
 
       console.log(`👤 Driver status update from ${userId}:`, statusData);
 
-      // ✅ CRITICAL FIX: Update main users collection, not just driver_status collection
-      // This ensures consistency with REST API endpoint
       const { driverAvailabilityMetadataFields } = require('../utils/driverAvailabilityMetadata');
       const userUpdate = {
-        'driver.isOnline': Boolean(isOnline),
         'driver.lastSeen': new Date(),
         updatedAt: new Date()
       };
+      if (isOnline === false) {
+        userUpdate['driver.isOnline'] = false;
+      }
       if (isAvailable !== undefined) {
         userUpdate['driver.isAvailable'] = Boolean(isAvailable);
         Object.assign(userUpdate, driverAvailabilityMetadataFields('driver'));
@@ -1677,7 +1755,7 @@ class WebSocketEventHandler {
     );
   }
 
-    /**
+  /**
    * Handle ETA update
    * @param {Socket} socket - Socket instance
    * @param {Object} data - ETA data

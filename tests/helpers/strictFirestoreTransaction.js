@@ -44,6 +44,29 @@ function wrapStrictTransaction(tx) {
   };
 }
 
+/**
+ * Standalone strict transaction double (no inner mock required).
+ */
+function createStrictFirestoreTransaction({ getImpl } = {}) {
+  const inner = {
+    get: jest.fn(async (ref) => {
+      if (getImpl) {
+        return getImpl(ref);
+      }
+      return {
+        exists: true,
+        data: () => ({ driver: { currentBookingId: 'booking-1', isOnline: true } })
+      };
+    }),
+    update: jest.fn((ref, data) => ({ ref, data })),
+    set: jest.fn((ref, data) => ({ ref, data }))
+  };
+  const tx = wrapStrictTransaction(inner);
+  tx.__inner = inner;
+  return tx;
+}
+
 module.exports = {
-  wrapStrictTransaction
+  wrapStrictTransaction,
+  createStrictFirestoreTransaction
 };

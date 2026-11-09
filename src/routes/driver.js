@@ -5649,6 +5649,18 @@ router.post('/bookings/:id/validate-location', [
     }
     
     const bookingData = bookingDoc.data();
+
+    if (bookingData.driverId !== uid) {
+      return res.status(403).json({
+        success: false,
+        error: {
+          code: 'ACCESS_DENIED',
+          message: 'Access denied',
+          details: 'You can only validate location for bookings assigned to you'
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
     
     // Get target coordinates based on location type
     let targetLat, targetLng;
@@ -6093,6 +6105,124 @@ router.post('/bookings/:id/photo-verification/upload', [
 });
 
 /**
+ * @route   GET /api/driver/bookings/:id/photo-status
+ * @desc    Latest photo verification for a booking (driver-owned)
+ * @access  Private (Driver only)
+ */
+router.get('/bookings/:id/photo-status', requireDriver, async (req, res) => {
+  prepareNoStoreResponse(req, res);
+  try {
+    const { id } = req.params;
+    const { uid } = req.user;
+    const photoTypeRaw = req.query.photoType;
+    const photoType = typeof photoTypeRaw === 'string' && photoTypeRaw.trim() !== ''
+      ? photoTypeRaw.trim()
+      : 'delivery';
+
+    if (!['pickup', 'delivery'].includes(photoType)) {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'VALIDATION_ERROR',
+          message: 'Invalid photoType',
+          details: 'photoType must be pickup or delivery'
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    const db = getFirestore();
+    const bookingRef = db.collection('bookings').doc(id);
+    const bookingDoc = await bookingRef.get();
+
+    if (!bookingDoc.exists) {
+      return res.status(404).json({
+        success: false,
+        error: {
+          code: 'BOOKING_NOT_FOUND',
+          message: 'Booking not found'
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    const bookingData = bookingDoc.data();
+    if (bookingData.driverId !== uid) {
+      return res.status(403).json({
+        success: false,
+        error: {
+          code: 'ACCESS_DENIED',
+          message: 'Access denied',
+          details: 'You can only read photo status for bookings assigned to you'
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    const emptyPayload = {
+      photoUploaded: false,
+      photoUrl: null,
+      photoId: null,
+      status: null
+    };
+
+    let snapshot;
+    try {
+      snapshot = await db.collection('photoVerifications')
+        .where('bookingId', '==', id)
+        .where('photoType', '==', photoType)
+        .orderBy('uploadedAt', 'desc')
+        .limit(1)
+        .get();
+    } catch (queryError) {
+      const fallback = await db.collection('photoVerifications')
+        .where('bookingId', '==', id)
+        .where('photoType', '==', photoType)
+        .limit(25)
+        .get();
+      const docs = fallback.docs.sort((a, b) => {
+        const at = a.data().uploadedAt?.toMillis?.() || 0;
+        const bt = b.data().uploadedAt?.toMillis?.() || 0;
+        return bt - at;
+      });
+      snapshot = { empty: docs.length === 0, docs };
+    }
+
+    if (snapshot.empty) {
+      return res.status(200).json({
+        success: true,
+        data: emptyPayload,
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    const photoDoc = snapshot.docs[0];
+    const photoData = photoDoc.data();
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        photoUploaded: true,
+        photoUrl: photoData.photoUrl || photoData.downloadURL || null,
+        photoId: photoDoc.id,
+        status: photoData.status || null
+      },
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('Error getting photo status:', error);
+    return res.status(500).json({
+      success: false,
+      error: {
+        code: 'PHOTO_STATUS_ERROR',
+        message: 'Failed to get photo status'
+      },
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+/**
  * @route   PUT /api/driver/bookings/:id/photo-verification/:photoId/status
  * @desc    Update photo verification status
  * @access  Private (Driver only)
@@ -6381,24 +6511,19 @@ router.post('/bookings/:id/cancel-at-pickup', [
 
     // Atomic transaction to update booking and create cancellation record
     await db.runTransaction(async (transaction) => {
-      // Update booking status to cancelled
+      const driverRef = db.collection('users').doc(uid);
+      const driverSnap = await transaction.get(driverRef);
+
       transaction.update(bookingRef, {
         status: 'cancelled',
         cancellation: cancellation,
         updatedAt: new Date()
       });
 
-      // Create cancellation record
       transaction.set(cancellationRef, cancellationRecord);
 
-      // Free driver (set isAvailable=true, currentBookingId=null)
-      const driverRef = db.collection('users').doc(uid);
-      const { buildSystemAvailabilityUpdate } = require('../utils/driverAvailabilityMetadata');
-      transaction.update(driverRef, {
-        ...buildSystemAvailabilityUpdate(true),
-        'driver.currentBookingId': null,
-        updatedAt: new Date()
-      });
+      const { applyDriverReleaseInTransaction } = require('../services/releaseDriverOnBookingCancel');
+      applyDriverReleaseInTransaction(transaction, driverRef, driverSnap, id);
     });
 
     // Emit WebSocket events to customer
@@ -8180,23 +8305,27 @@ router.post('/bookings/:id/reject', [
 
     // ✅ CRITICAL FIX: Handle rejection based on booking state
     if (isAssignedToDriver) {
-      // Driver is rejecting an assigned booking - make it available again
-      await bookingRef.update({
-        status: 'pending',
-        driverId: null,
-        'timing.assignedAt': null,
-        'cancellation.cancelledBy': 'driver',
-        'cancellation.reason': reason || 'Rejected by driver',
-        'cancellation.cancelledAt': new Date(),
-        updatedAt: new Date()
+      const { applyDriverReleaseInTransaction } = require('../services/releaseDriverOnBookingCancel');
+      await db.runTransaction(async (transaction) => {
+        const driverRef = db.collection('users').doc(uid);
+        const driverSnap = await transaction.get(driverRef);
+        transaction.update(bookingRef, {
+          status: 'pending',
+          driverId: null,
+          'timing.assignedAt': null,
+          'cancellation.cancelledBy': 'driver',
+          'cancellation.reason': reason || 'Rejected by driver',
+          'cancellation.cancelledAt': new Date(),
+          updatedAt: new Date()
+        });
+        applyDriverReleaseInTransaction(transaction, driverRef, driverSnap, id);
       });
-      
-      // Remove current trip from driver location (merge: true — doc may not exist for new drivers)
+
       await db.collection('driverLocations').doc(uid).set({
         currentTripId: null,
         lastUpdated: new Date()
       }, { merge: true });
-      
+
       console.log(`✅ [BOOKING_REJECTION] Driver ${uid} rejected assigned booking ${id}, made available again`);
     } else {
       // Driver is rejecting an available booking - just track the rejection

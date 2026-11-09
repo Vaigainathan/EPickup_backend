@@ -155,6 +155,13 @@ class ActiveBookingService {
           return { success: false, outcome: 'refuse', refusal: plan.refusal };
         }
 
+        let driverSnap = null;
+        let driverRef = null;
+        if (bookingData.driverId) {
+          driverRef = this.db.collection('users').doc(bookingData.driverId);
+          driverSnap = await transaction.get(driverRef);
+        }
+
         transaction.update(bookingDoc.ref, {
           status: 'cancelled',
           cancelledAt: new Date(),
@@ -162,14 +169,14 @@ class ActiveBookingService {
           updatedAt: new Date()
         });
 
-        // If driver was assigned, update driver status
-        if (bookingData.driverId) {
-          const driverRef = this.db.collection('users').doc(bookingData.driverId);
-          transaction.update(driverRef, {
-            'driver.isAvailable': true,
-            'driver.currentBookingId': null,
-            updatedAt: new Date()
-          });
+        if (driverRef && driverSnap) {
+          const { applyDriverReleaseInTransaction } = require('./releaseDriverOnBookingCancel');
+          applyDriverReleaseInTransaction(
+            transaction,
+            driverRef,
+            driverSnap,
+            bookingDoc.id
+          );
         }
 
         return {

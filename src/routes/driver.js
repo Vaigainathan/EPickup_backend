@@ -9231,7 +9231,6 @@ router.post('/complete-delivery', [
 
       if (grossOrderAmount > 0) {
         await db.collection('bookings').doc(bookingId).update({
-          status: 'completed',
           driverEarnings: grossOrderAmount,
           totalEarnings: grossOrderAmount,
           earnings: {
@@ -9240,10 +9239,6 @@ router.post('/complete-delivery', [
             totalCollected: grossOrderAmount,
             calculatedAt: earningsTimestamp,
           },
-          completedAt: earningsTimestamp,
-          paymentStatus: 'paid',
-          paymentConfirmed: true,
-          paymentConfirmedAt: earningsTimestamp,
           updatedAt: new Date(),
         });
 

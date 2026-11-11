@@ -2901,6 +2901,9 @@ router.put('/status', [
       hasDriverObject: !!existingData.driver
     });
 
+    // Set in the restore branch when the driver has an active booking (handler scope, read later by the update block)
+    let restoreHasActiveBooking = false;
+
     // ✅ CRITICAL FIX: Validate work slots when driver tries to go online
     // ✅ INDUSTRY STANDARD: Active booking exemption - allow staying online if driver has active order
     // ✅ APP RESTART FIX: Bypass slot validation if restoring from app restart (driver was online before app was killed)
@@ -3137,6 +3140,26 @@ router.put('/status', [
       const userDoc = await userRef.get();
       const existingData = userDoc.data();
 
+      try {
+        const { DRIVER_GET_ACTIVE_BOOKING_STATUSES } = require('../constants/bookingStatuses');
+        const restoreActiveSnapshot = await db.collection('bookings')
+          .where('driverId', '==', uid)
+          .where('status', 'in', DRIVER_GET_ACTIVE_BOOKING_STATUSES)
+          .limit(1)
+          .get();
+        restoreHasActiveBooking = !restoreActiveSnapshot.empty;
+        if (restoreHasActiveBooking) {
+          console.log('✅ [STATUS_UPDATE] Restore with active booking - skipping restore window and availability', {
+            driverId: uid,
+            bookingId: restoreActiveSnapshot.docs[0].id,
+            status: restoreActiveSnapshot.docs[0].data().status
+          });
+        }
+      } catch (activeCheckError) {
+        // Fail open to today's behaviour (no active booking assumed)
+        console.warn('⚠️ [STATUS_UPDATE] Restore active-booking check failed:', activeCheckError);
+      }
+
       // Prefer client-provided lastStatusUpdate when available (preserve grace period on app restore)
       const clientLastStatusUpdateRaw = req.body.lastStatusUpdate;
       let lastStatusUpdateToCheck = null;
@@ -3158,7 +3181,7 @@ router.put('/status', [
       }
 
       // ✅ CRITICAL: Check if driver was online recently (within last 2 hours)
-      if (lastStatusUpdateToCheck) {
+      if (!restoreHasActiveBooking && lastStatusUpdateToCheck) {
         const lastUpdateTime = lastStatusUpdateToCheck;
         const timeSinceLastUpdate = Date.now() - lastUpdateTime.getTime();
         const maxRestoreWindow = 2 * 60 * 60 * 1000; // 2 hours
@@ -3188,6 +3211,7 @@ router.put('/status', [
       // ✅ APP RESTART FIX: Schedule an async restore validation
       // If slot checks fail temporarily (network/slowness) we accept the restore
       // and validate shortly after. This prevents timing desync between frontend and backend.
+      if (!restoreHasActiveBooking) {
       try {
         // Feature flag guard - set to 'false' to disable restore bypass behavior
         const featureEnabled = process.env.FEATURE_ENABLE_RESTORE_BYPASS !== 'false';
@@ -3220,6 +3244,7 @@ router.put('/status', [
           timestamp: new Date().toISOString()
         });
       }
+      }
     }
 
     const updateData = {
@@ -3227,7 +3252,12 @@ router.put('/status', [
       updatedAt: new Date()
     };
 
-    if (isAvailable !== undefined) {
+    // Active booking during restore: never make the driver available
+    const effectiveIsAvailable = restoreHasActiveBooking ? false : isAvailable;
+
+    if (restoreHasActiveBooking) {
+      updateData['driver.isAvailable'] = false;
+    } else if (isAvailable !== undefined) {
       const { isManualAvailabilityOverrideActive, driverAvailabilityMetadataFields } = require('../utils/driverAvailabilityMetadata');
 
       if (
@@ -3389,7 +3419,7 @@ router.put('/status', [
     const locationData = {
       driverId: uid,
       isOnline,
-        isAvailable: isAvailable !== undefined ? isAvailable : updatedData.driver?.isAvailable || false,
+        isAvailable: effectiveIsAvailable !== undefined ? effectiveIsAvailable : updatedData.driver?.isAvailable || false,
       lastUpdated: new Date()
     };
 
@@ -3415,7 +3445,7 @@ router.put('/status', [
       message: 'Driver status updated successfully',
       data: {
         isOnline,
-        isAvailable: isAvailable !== undefined ? isAvailable : userDoc.data().driver?.isAvailable || false,
+        isAvailable: effectiveIsAvailable !== undefined ? effectiveIsAvailable : userDoc.data().driver?.isAvailable || false,
         workingHours,
         workingDays
       },

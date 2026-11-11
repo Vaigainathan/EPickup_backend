@@ -4854,6 +4854,23 @@ router.post('/bookings/:id/accept', idempotencyKeyMiddleware, requireDriver, asy
     }
 
     const bookingData = bookingDoc.data();
+
+    // Idempotent re-accept: same driver, booking already in an active accepted status
+    const { normalizeDriverId: normalizeAcceptDriverId } = require('../utils/bookingValidation');
+    const { DRIVER_GET_ACTIVE_BOOKING_STATUSES: ACCEPT_ACTIVE_STATUSES } = require('../constants/bookingStatuses');
+    if (
+      bookingData.status !== 'pending' &&
+      normalizeAcceptDriverId(bookingData.driverId) === uid &&
+      ACCEPT_ACTIVE_STATUSES.includes(bookingData.status)
+    ) {
+      console.log('ℹ️ [ACCEPT_BOOKING] Idempotent re-accept', { bookingId: id, driverId: uid, status: bookingData.status });
+      return res.status(200).json({
+        success: true,
+        message: 'Booking already accepted',
+        data: { bookingId: id, status: bookingData.status },
+        timestamp: new Date().toISOString()
+      });
+    }
     
     // Check if booking is still available
     if (bookingData.status !== 'pending') {

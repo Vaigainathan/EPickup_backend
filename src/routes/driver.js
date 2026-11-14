@@ -10362,8 +10362,7 @@ router.get('/bookings/:id/photo-verifications', requireDriver, async (req, res) 
 
     // Get photo verifications for this booking
     const photoVerificationsQuery = db.collection('photoVerifications')
-      .where('bookingId', '==', id)
-      .orderBy('uploadedAt', 'desc');
+      .where('bookingId', '==', id);
 
     const photoVerificationsSnapshot = await photoVerificationsQuery.get();
     const photoVerifications = [];
@@ -10373,6 +10372,39 @@ router.get('/bookings/:id/photo-verifications', requireDriver, async (req, res) 
         id: doc.id,
         ...doc.data()
       });
+    });
+
+    const timestampToMillis = value => {
+      if (value instanceof Date) {
+        return Number.isFinite(value.getTime()) ? value.getTime() : null;
+      }
+      if (typeof value === 'number') {
+        return Number.isFinite(value) ? value : null;
+      }
+      if (typeof value === 'string') {
+        const millis = Date.parse(value);
+        return Number.isFinite(millis) ? millis : null;
+      }
+      if (value && typeof value.toMillis === 'function') {
+        const millis = value.toMillis();
+        return Number.isFinite(millis) ? millis : null;
+      }
+      if (value && typeof value._seconds === 'number') {
+        const nanoseconds = typeof value._nanoseconds === 'number' ? value._nanoseconds : 0;
+        const millis = value._seconds * 1000 + nanoseconds / 1000000;
+        return Number.isFinite(millis) ? millis : null;
+      }
+      return null;
+    };
+    const photoTimestamp = photo =>
+      timestampToMillis(photo.uploadedAt) ?? timestampToMillis(photo.createdAt);
+
+    photoVerifications.sort((a, b) => {
+      const aTimestamp = photoTimestamp(a);
+      const bTimestamp = photoTimestamp(b);
+      if (aTimestamp === null) return bTimestamp === null ? 0 : 1;
+      if (bTimestamp === null) return -1;
+      return bTimestamp - aTimestamp;
     });
 
     prepareNoStoreResponse(req, res);

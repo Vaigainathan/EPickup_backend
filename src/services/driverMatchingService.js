@@ -886,6 +886,12 @@ class DriverMatchingService {
       });
 
       if (cancelResult.changed) {
+        const { releaseBookingTrackingResources } = require('./releaseBookingTrackingResources');
+        await releaseBookingTrackingResources({
+          bookingId,
+          driverId: bookingData.driverId || null,
+          db: this.db
+        });
         await notifyParcelBookingCancelled({
           bookingId,
           customerId: cancelResult.customerId,

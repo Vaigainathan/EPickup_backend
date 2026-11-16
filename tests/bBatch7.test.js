@@ -181,7 +181,11 @@ describe('B-BATCH-7 POST /api/driver/tracking/update', () => {
   const mockTripSet = jest.fn().mockResolvedValue(undefined);
   const mockTripUpdate = jest.fn().mockResolvedValue(undefined);
   const mockDriverLocSet = jest.fn().mockResolvedValue(undefined);
+  const mockDriverLocUpdate = jest.fn().mockResolvedValue(undefined);
   const mockBookingUpdate = jest.fn().mockResolvedValue(undefined);
+  const mockSocketEmit = jest.fn();
+  const mockSocketTo = jest.fn(() => ({ emit: mockSocketEmit }));
+  const mockGetSocketIO = jest.fn(() => ({ to: mockSocketTo }));
 
   const bookingRef = {
     get: mockBookingGet,
@@ -205,7 +209,8 @@ describe('B-BATCH-7 POST /api/driver/tracking/update', () => {
       if (name === 'driverLocations') {
         return {
           doc: jest.fn(() => ({
-            set: mockDriverLocSet
+            set: mockDriverLocSet,
+            update: mockDriverLocUpdate
           }))
         };
       }
@@ -223,7 +228,7 @@ describe('B-BATCH-7 POST /api/driver/tracking/update', () => {
       getStorage: jest.fn()
     }));
     jest.doMock('../src/services/socket', () => ({
-      getSocketIO: jest.fn(() => null)
+      getSocketIO: mockGetSocketIO
     }));
     jest.doMock('../src/services/bookingStateMachine', () => ({
       transitionBooking: jest.fn()
@@ -276,7 +281,11 @@ describe('B-BATCH-7 POST /api/driver/tracking/update', () => {
     mockTripSet.mockReset();
     mockTripUpdate.mockReset();
     mockDriverLocSet.mockReset();
+    mockDriverLocUpdate.mockReset();
     mockBookingUpdate.mockReset();
+    mockSocketEmit.mockReset();
+    mockSocketTo.mockClear();
+    mockGetSocketIO.mockClear();
     mockDb.collection.mockClear();
   });
 
@@ -323,6 +332,226 @@ describe('B-BATCH-7 POST /api/driver/tracking/update', () => {
     expect(mockTripSet).toHaveBeenCalled();
     expect(mockBookingUpdate).toHaveBeenCalled();
   });
+
+  it('reactivates an existing tracking document without resetting trip history or timestamps', async () => {
+    const startedAt = new Date('2026-01-01T10:00:00.000Z');
+    const createdAt = new Date('2026-01-01T09:00:00.000Z');
+    const trackingHistory = [{ location: { latitude: 1, longitude: 2 } }];
+    const existingTripTracking = {
+      tripId: 'booking-1',
+      bookingId: 'booking-1',
+      driverId: 'driver-1',
+      customerId: 'cust-1',
+      currentStatus: 'driver_enroute',
+      currentLocation: { latitude: 12, longitude: 34 },
+      route: { pickup: {}, dropoff: {}, currentRoute: null, distance: null, duration: null },
+      trackingHistory,
+      startedAt,
+      createdAt,
+      lastUpdated: startedAt,
+      updatedAt: startedAt,
+      isActive: false
+    };
+    mockBookingGet.mockResolvedValue({
+      exists: true,
+      data: () => ({
+        driverId: 'driver-1',
+        customerId: 'cust-1',
+        status: 'driver_enroute',
+        tracking: { startedAt }
+      })
+    });
+    mockTripGet.mockResolvedValue({
+      exists: true,
+      data: () => existingTripTracking
+    });
+
+    const res = await request(trackingApp('driver-1'))
+      .post('/api/driver/tracking/start')
+      .send({
+        bookingId: 'booking-1',
+        initialLocation: { latitude: 12.97, longitude: 77.59, accuracy: 5 }
+      });
+
+    expect(res.status).toBe(200);
+    expect(mockTripSet).toHaveBeenCalledWith({ isActive: true }, { merge: true });
+    expect(mockBookingUpdate.mock.calls[0][0]['tracking.startedAt']).toBeUndefined();
+    expect(mockDriverLocUpdate).toHaveBeenCalled();
+    expect(res.body.data.trackingData.startedAt).toBe(startedAt.toISOString());
+    expect(res.body.data.trackingData.createdAt).toBe(createdAt.toISOString());
+    expect(res.body.data.trackingData.trackingHistory).toEqual(trackingHistory);
+  });
+
+  it('skips an identical fix within ten seconds without writing location or tracking', async () => {
+    mockBookingGet.mockResolvedValue({
+      exists: true,
+      data: () => ({
+        driverId: 'driver-1',
+        status: 'driver_assigned',
+        customerId: 'cust-1'
+      })
+    });
+    mockTripGet.mockResolvedValue({
+      exists: true,
+      data: () => ({
+        driverId: 'driver-1',
+        isActive: true,
+        currentLocation: {
+          latitude: 12.97,
+          longitude: 77.59,
+          timestamp: new Date(Date.now() - 1000)
+        }
+      })
+    });
+
+    const res = await request(trackingApp('driver-1'))
+      .post('/api/driver/tracking/update')
+      .send(locationBody);
+
+    expect(res.status).toBe(200);
+    expect(res.body.data).toEqual(
+      expect.objectContaining({ bookingId: 'booking-1', skipped: true })
+    );
+    expect(mockDriverLocSet).not.toHaveBeenCalled();
+    expect(mockTripUpdate).not.toHaveBeenCalled();
+    expect(mockBookingUpdate).not.toHaveBeenCalled();
+    expect(mockGetSocketIO).not.toHaveBeenCalled();
+  });
+
+  it('persists a status change even when the location fix is a duplicate', async () => {
+    mockBookingGet.mockResolvedValue({
+      exists: true,
+      data: () => ({
+        driverId: 'driver-1',
+        status: 'driver_assigned',
+        customerId: 'cust-1'
+      })
+    });
+    mockTripGet.mockResolvedValue({
+      exists: true,
+      data: () => ({
+        driverId: 'driver-1',
+        isActive: true,
+        currentStatus: 'driver_assigned',
+        currentLocation: {
+          latitude: 12.97,
+          longitude: 77.59,
+          timestamp: new Date()
+        },
+        trackingHistory: []
+      })
+    });
+
+    const res = await request(trackingApp('driver-1'))
+      .post('/api/driver/tracking/update')
+      .send({ ...locationBody, status: 'driver_enroute' });
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.skipped).toBeUndefined();
+    expect(mockTripUpdate.mock.calls[0][0].currentStatus).toBe('driver_enroute');
+    expect(mockGetSocketIO).toHaveBeenCalled();
+  });
+
+  it('skips a fix moved less than five meters within three seconds', async () => {
+    mockBookingGet.mockResolvedValue({
+      exists: true,
+      data: () => ({
+        driverId: 'driver-1',
+        status: 'driver_assigned',
+        customerId: 'cust-1'
+      })
+    });
+    mockTripGet.mockResolvedValue({
+      exists: true,
+      data: () => ({
+        driverId: 'driver-1',
+        isActive: true,
+        currentLocation: {
+          latitude: 12.97,
+          longitude: 77.59,
+          timestamp: new Date(Date.now() - 1500)
+        }
+      })
+    });
+
+    const res = await request(trackingApp('driver-1'))
+      .post('/api/driver/tracking/update')
+      .send({
+        bookingId: 'booking-1',
+        location: { latitude: 12.97001, longitude: 77.59, accuracy: 5 }
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.skipped).toBe(true);
+    expect(mockTripUpdate).not.toHaveBeenCalled();
+  });
+
+  it('trims tracking history to the latest 100 points in the location write', async () => {
+    mockBookingGet.mockResolvedValue({
+      exists: true,
+      data: () => ({
+        driverId: 'driver-1',
+        status: 'driver_assigned',
+        customerId: 'cust-1'
+      })
+    });
+    mockTripGet.mockResolvedValue({
+      exists: true,
+      data: () => ({
+        driverId: 'driver-1',
+        isActive: true,
+        currentLocation: {
+          latitude: 12.97,
+          longitude: 77.59,
+          timestamp: new Date(Date.now() - 20000)
+        },
+        trackingHistory: Array.from({ length: 100 }, (_, index) => ({ index }))
+      })
+    });
+
+    const res = await request(trackingApp('driver-1'))
+      .post('/api/driver/tracking/update')
+      .send({
+        bookingId: 'booking-1',
+        location: { latitude: 12.971, longitude: 77.59, accuracy: 5 }
+      });
+
+    expect(res.status).toBe(200);
+    const update = mockTripUpdate.mock.calls[0][0];
+    expect(update.trackingHistory).toHaveLength(100);
+    expect(update.trackingHistory[0]).toEqual({ index: 1 });
+    expect(update.trackingHistory[99].location.latitude).toBe(12.971);
+  });
+
+  it.each(['cancelled', 'completed', 'delivered'])(
+    'does not start tracking for terminal booking status %s',
+    async (status) => {
+      mockBookingGet.mockResolvedValue({
+        exists: true,
+        data: () => ({
+          driverId: 'driver-1',
+          customerId: 'cust-1',
+          status
+        })
+      });
+
+      const res = await request(trackingApp('driver-1'))
+        .post('/api/driver/tracking/start')
+        .send({
+          bookingId: 'booking-1',
+          initialLocation: { latitude: 12.97, longitude: 77.59, accuracy: 5 }
+        });
+
+      expect(res.status).toBe(200);
+      expect(res.body.success).toBe(true);
+      expect(res.body.data.skipped).toBe(true);
+      expect(res.body.data.isActive).toBe(false);
+      expect(mockTripGet).not.toHaveBeenCalled();
+      expect(mockTripSet).not.toHaveBeenCalled();
+      expect(mockDriverLocUpdate).not.toHaveBeenCalled();
+      expect(mockBookingUpdate).not.toHaveBeenCalled();
+    }
+  );
 
   it('returns 200 location-only for terminal booking without tripTracking patch', async () => {
     mockBookingGet.mockResolvedValue({

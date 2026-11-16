@@ -127,7 +127,7 @@ class BookingStateMachine {
    * @returns {Promise<Object>} Transition result
    */
   async transitionBooking(bookingId, newState, updateData = {}, context = {}) {
-    return errorHandlingService.executeTransactionWithRetry(async (transaction) => {
+    const result = await errorHandlingService.executeTransactionWithRetry(async (transaction) => {
       // Get current booking state
       const bookingRef = this.db.collection('bookings').doc(bookingId);
       const bookingDoc = await transaction.get(bookingRef);
@@ -196,6 +196,17 @@ class BookingStateMachine {
     }, {
       context: `Booking state transition: ${bookingId} -> ${newState}`
     });
+
+    if (newState === 'cancelled') {
+      const { releaseBookingTrackingResources } = require('./releaseBookingTrackingResources');
+      await releaseBookingTrackingResources({
+        bookingId,
+        driverId: context.driverId || null,
+        db: this.db
+      });
+    }
+
+    return result;
   }
 
   /**

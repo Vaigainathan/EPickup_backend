@@ -39,6 +39,62 @@ const upload = multer({
 
 const fareCalculationService = require('../services/fareCalculationService');
 
+function timestampMillis(value) {
+  if (value == null) {
+    return null;
+  }
+  if (value instanceof Date) {
+    return value.getTime();
+  }
+  if (typeof value.toMillis === 'function') {
+    return value.toMillis();
+  }
+  if (typeof value.toDate === 'function') {
+    return value.toDate().getTime();
+  }
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value === 'string') {
+    const parsed = Date.parse(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
+}
+
+function distanceMeters(first, second) {
+  const radians = (degrees) => degrees * Math.PI / 180;
+  const latitudeDelta = radians(second.latitude - first.latitude);
+  const longitudeDelta = radians(second.longitude - first.longitude);
+  const firstLatitude = radians(first.latitude);
+  const secondLatitude = radians(second.latitude);
+  const haversine =
+    Math.sin(latitudeDelta / 2) ** 2 +
+    Math.cos(firstLatitude) * Math.cos(secondLatitude) *
+    Math.sin(longitudeDelta / 2) ** 2;
+  return 6371000 * 2 * Math.atan2(Math.sqrt(haversine), Math.sqrt(1 - haversine));
+}
+
+function shouldSkipTrackingFix(lastLocation, nextLocation, nowMs) {
+  if (!lastLocation) {
+    return false;
+  }
+  const lastTimestamp = timestampMillis(lastLocation.timestamp);
+  const elapsedMs = lastTimestamp == null ? null : nowMs - lastTimestamp;
+  if (elapsedMs == null || elapsedMs < 0) {
+    return false;
+  }
+
+  const sameCoordinates =
+    Number(lastLocation.latitude).toFixed(6) === Number(nextLocation.latitude).toFixed(6) &&
+    Number(lastLocation.longitude).toFixed(6) === Number(nextLocation.longitude).toFixed(6);
+  if (sameCoordinates && elapsedMs <= 10000) {
+    return true;
+  }
+
+  return elapsedMs <= 3000 && distanceMeters(lastLocation, nextLocation) < 5;
+}
+
 async function getDriverVerificationState(db, uid) {
   const userDoc = await db.collection('users').doc(uid).get();
 
@@ -172,17 +228,43 @@ router.post('/tracking/update', [
       });
     }
 
+    const customerId = bookingData.customerId;
+    const tripTrackingRef = db.collection('tripTracking').doc(bookingId);
+    const tripTrackingDoc = await tripTrackingRef.get();
+    let tripTrackingData = tripTrackingDoc.exists ? tripTrackingDoc.data() : null;
+
+    if (tripTrackingDoc.exists) {
+      if (tripTrackingData.driverId !== driverId) {
+        console.warn('⚠️ [DRIVER_TRACKING] tripTracking driver mismatch', { bookingId, driverId });
+        return res.status(403).json({
+          success: false,
+          error: { code: 'ACCESS_DENIED', message: 'Access denied', details: 'You can only update tracking for your own trips' }
+        });
+      }
+      if (!tripTrackingData.isActive) {
+        return res.status(400).json({
+          success: false,
+          error: { code: 'TRIP_NOT_ACTIVE', message: 'Trip not active', details: 'Trip tracking is not active for this booking' }
+        });
+      }
+      if (
+        (!status || status === tripTrackingData.currentStatus) &&
+        shouldSkipTrackingFix(tripTrackingData.currentLocation, locationUpdate, currentTime.getTime())
+      ) {
+        return res.status(200).json({
+          success: true,
+          message: 'Location updated',
+          data: { bookingId, timestamp: currentTime.toISOString(), skipped: true }
+        });
+      }
+    }
+
     await db.collection('driverLocations').doc(driverId).set({
       currentLocation: locationUpdate,
       lastUpdated: currentTime,
       bookingId,
       currentTripId: bookingId
     }, { merge: true });
-
-    const customerId = bookingData.customerId;
-    const tripTrackingRef = db.collection('tripTracking').doc(bookingId);
-    const tripTrackingDoc = await tripTrackingRef.get();
-    let tripTrackingData = tripTrackingDoc.exists ? tripTrackingDoc.data() : null;
 
     if (!tripTrackingDoc.exists) {
       tripTrackingData = {
@@ -208,35 +290,21 @@ router.post('/tracking/update', [
       };
       await tripTrackingRef.set(tripTrackingData);
     } else {
-      if (tripTrackingData.driverId !== driverId) {
-        console.warn('⚠️ [DRIVER_TRACKING] tripTracking driver mismatch', { bookingId, driverId });
-        return res.status(403).json({
-          success: false,
-          error: { code: 'ACCESS_DENIED', message: 'Access denied', details: 'You can only update tracking for your own trips' }
-        });
-      }
-      if (!tripTrackingData.isActive) {
-        return res.status(400).json({
-          success: false,
-          error: { code: 'TRIP_NOT_ACTIVE', message: 'Trip not active', details: 'Trip tracking is not active for this booking' }
-        });
-      }
-
-      const trackingHistory = tripTrackingData.trackingHistory || [];
+      const trackingHistory = Array.isArray(tripTrackingData.trackingHistory)
+        ? tripTrackingData.trackingHistory.slice()
+        : [];
       trackingHistory.push({
         location: locationUpdate,
         status: status || tripTrackingData.currentStatus,
         timestamp: currentTime
       });
-      if (trackingHistory.length > 100) {
-        trackingHistory.splice(0, trackingHistory.length - 100);
-      }
+      const cappedTrackingHistory = trackingHistory.slice(-100);
 
       const tripUpdateData = {
         currentLocation: locationUpdate,
         lastUpdated: currentTime,
         updatedAt: currentTime,
-        trackingHistory
+        trackingHistory: cappedTrackingHistory
       };
       if (status) {
         tripUpdateData.currentStatus = status;
@@ -6573,6 +6641,9 @@ router.post('/bookings/:id/cancel-at-pickup', [
       applyDriverReleaseInTransaction(transaction, driverRef, driverSnap, id);
     });
 
+    const { releaseBookingTrackingResources } = require('../services/releaseBookingTrackingResources');
+    await releaseBookingTrackingResources({ bookingId: id, driverId: uid, db });
+
     // Emit WebSocket events to customer
     try {
       const socketService = require('../services/socket');
@@ -11831,9 +11902,27 @@ router.post('/tracking/start', [
       });
     }
 
-    // Create or update trip tracking record
+    if (['cancelled', 'completed', 'delivered'].includes(bookingData.status)) {
+      return res.status(200).json({
+        success: true,
+        message: 'Trip tracking not started for terminal booking',
+        data: {
+          tripId: bookingId,
+          trackingData: null,
+          isActive: false,
+          skipped: true
+        }
+      });
+    }
+
+    // Create or reactivate trip tracking without replacing an existing trip history.
     const tripTrackingRef = db.collection('tripTracking').doc(bookingId);
-    const tripTrackingData = {
+    const existingTripTrackingDoc = await tripTrackingRef.get();
+    const existingTripTrackingData = existingTripTrackingDoc.exists
+      ? existingTripTrackingDoc.data() || {}
+      : null;
+    const now = new Date();
+    const tripTrackingDefaults = {
       tripId: bookingId,
       bookingId: bookingId,
       driverId: uid,
@@ -11841,7 +11930,7 @@ router.post('/tracking/start', [
       currentStatus: bookingData.status,
       currentLocation: {
         ...initialLocation,
-        timestamp: new Date()
+        timestamp: now
       },
       route: {
         pickup: bookingData.pickup?.coordinates,
@@ -11853,34 +11942,49 @@ router.post('/tracking/start', [
       trackingHistory: [{
         location: initialLocation,
         status: bookingData.status,
-        timestamp: new Date()
+        timestamp: now
       }],
-      isActive: true,
-      startedAt: new Date(),
-      lastUpdated: new Date(),
-      createdAt: new Date(),
-      updatedAt: new Date()
+      startedAt: bookingData.tracking?.startedAt || now,
+      lastUpdated: now,
+      createdAt: now,
+      updatedAt: now
     };
 
-    await tripTrackingRef.set(tripTrackingData);
+    const tripTrackingPatch = { isActive: true };
+    const tripTrackingData = { ...(existingTripTrackingData || {}), isActive: true };
+    Object.keys(tripTrackingDefaults).forEach((field) => {
+      if (!existingTripTrackingData || existingTripTrackingData[field] === undefined) {
+        tripTrackingPatch[field] = tripTrackingDefaults[field];
+        tripTrackingData[field] = tripTrackingDefaults[field];
+      }
+    });
+
+    if (existingTripTrackingDoc.exists) {
+      await tripTrackingRef.set(tripTrackingPatch, { merge: true });
+    } else {
+      await tripTrackingRef.set(tripTrackingData);
+    }
 
     // Update driver location
     await db.collection('driverLocations').doc(uid).update({
       currentTripId: bookingId,
       currentLocation: {
         ...initialLocation,
-        timestamp: new Date()
+        timestamp: now
       },
-      lastUpdated: new Date()
+      lastUpdated: now
     });
 
     // Update booking with tracking info
-    await bookingRef.update({
+    const bookingTrackingUpdate = {
       'tracking.isActive': true,
-      'tracking.startedAt': new Date(),
       'tracking.currentLocation': initialLocation,
-      updatedAt: new Date()
-    });
+      updatedAt: now
+    };
+    if (!bookingData.tracking?.startedAt) {
+      bookingTrackingUpdate['tracking.startedAt'] = tripTrackingData.startedAt;
+    }
+    await bookingRef.update(bookingTrackingUpdate);
 
     res.status(200).json({
       success: true,

@@ -117,6 +117,14 @@ class TransactionService {
         };
       });
 
+      if (newStatus === 'cancelled') {
+        const { releaseBookingTrackingResources } = require('./releaseBookingTrackingResources');
+        await releaseBookingTrackingResources({
+          bookingId,
+          db: this.db
+        });
+      }
+
       return result;
     } catch (error) {
       console.error('Error in updateBookingStatusAtomically:', error);

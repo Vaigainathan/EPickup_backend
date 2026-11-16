@@ -2,6 +2,7 @@ const express = require('express');
 const admin = require('firebase-admin');
 const { getFirestore } = require('firebase-admin/firestore');
 const { getStorage } = require('../services/firebase');
+const { releaseBookingTrackingResources } = require('../services/releaseBookingTrackingResources');
 const verificationService = require('../services/verificationService');
 const {
   listLatestDriverKycDocumentsFromStorage,
@@ -1565,6 +1566,10 @@ router.delete('/drivers/:id', async (req, res) => {
     const bookingsSnapshot = await db.collection('bookings')
       .where('driverId', '==', id)
       .get();
+    const cleanupBookings = bookingsSnapshot.docs.map((doc) => ({
+      bookingId: doc.id,
+      driverId: id
+    }));
     
     bookingsSnapshot.forEach(doc => {
       batch.update(doc.ref, {
@@ -1592,6 +1597,9 @@ router.delete('/drivers/:id', async (req, res) => {
     });
 
     await batch.commit();
+    await Promise.all(cleanupBookings.map((booking) =>
+      releaseBookingTrackingResources({ ...booking, clearDriverLocation: false, db })
+    ));
 
     res.json({
       success: true,
@@ -1677,6 +1685,10 @@ router.put('/drivers/:id/ban', async (req, res) => {
       .where('driverId', '==', id)
       .where('status', 'in', ['pending', 'accepted', 'in_progress'])
       .get();
+    const cleanupBookings = activeBookingsSnapshot.docs.map((doc) => ({
+      bookingId: doc.id,
+      driverId: id
+    }));
     
     activeBookingsSnapshot.forEach(doc => {
       batch.update(doc.ref, {
@@ -1704,6 +1716,9 @@ router.put('/drivers/:id/ban', async (req, res) => {
     });
 
     await batch.commit();
+    await Promise.all(cleanupBookings.map((booking) =>
+      releaseBookingTrackingResources({ ...booking, clearDriverLocation: false, db })
+    ));
 
     res.json({
       success: true,
@@ -5843,6 +5858,10 @@ router.put('/customers/:id/ban', async (req, res) => {
       .where('customerId', '==', id)
       .where('status', 'in', ['pending', 'accepted', 'in_progress'])
       .get();
+    const cleanupBookings = activeBookingsSnapshot.docs.map((doc) => ({
+      bookingId: doc.id,
+      driverId: doc.data().driverId || null
+    }));
     
     activeBookingsSnapshot.forEach(doc => {
       batch.update(doc.ref, {
@@ -5870,6 +5889,9 @@ router.put('/customers/:id/ban', async (req, res) => {
     });
 
     await batch.commit();
+    await Promise.all(cleanupBookings.map((booking) =>
+      releaseBookingTrackingResources({ ...booking, db })
+    ));
 
     res.json({
       success: true,
@@ -5940,6 +5962,10 @@ router.delete('/customers/:id', async (req, res) => {
     const bookingsSnapshot = await db.collection('bookings')
       .where('customerId', '==', id)
       .get();
+    const cleanupBookings = bookingsSnapshot.docs.map((doc) => ({
+      bookingId: doc.id,
+      driverId: doc.data().driverId || null
+    }));
     
     bookingsSnapshot.forEach(doc => {
       batch.update(doc.ref, {
@@ -5967,6 +5993,9 @@ router.delete('/customers/:id', async (req, res) => {
     });
 
     await batch.commit();
+    await Promise.all(cleanupBookings.map((booking) =>
+      releaseBookingTrackingResources({ ...booking, db })
+    ));
 
     res.json({
       success: true,

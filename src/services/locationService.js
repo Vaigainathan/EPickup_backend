@@ -1,6 +1,18 @@
 const { getFirestore } = require('./firebase');
 const monitoringService = require('./monitoringService');
 
+const locationUpdateThrottleCache = new Map();
+const LOCATION_UPDATE_THROTTLE_TTL_MS = 60 * 1000;
+const LOCATION_UPDATE_THROTTLE_MAX_ENTRIES = 10000;
+
+function pruneLocationUpdateThrottleCache(now) {
+  for (const [driverId, timestamp] of locationUpdateThrottleCache.entries()) {
+    if (now - timestamp >= LOCATION_UPDATE_THROTTLE_TTL_MS) {
+      locationUpdateThrottleCache.delete(driverId);
+    }
+  }
+}
+
 /**
  * Enhanced Location and Distance Service
  * Handles location validation, distance calculations, and Google Maps API fallbacks
@@ -291,8 +303,9 @@ class LocationService {
    * - No active trip: 30-60 seconds
    */
   async shouldUpdateLocation(driverId, location, throttleMs = 30000) {
-    const lastUpdateKey = `location_update_${driverId}`;
-    const lastUpdate = this.cache.get(lastUpdateKey);
+    const now = Date.now();
+    pruneLocationUpdateThrottleCache(now);
+    const lastUpdate = locationUpdateThrottleCache.get(driverId);
 
     // ✅ CRITICAL FIX: Check if driver has active booking for adaptive throttling
     let adaptiveThrottleMs = throttleMs;
@@ -330,11 +343,18 @@ class LocationService {
       // Use provided throttle as fallback
     }
 
-    if (lastUpdate && (Date.now() - lastUpdate) < adaptiveThrottleMs) {
+    if (lastUpdate && (now - lastUpdate) < adaptiveThrottleMs) {
       return false;
     }
 
-    this.cache.set(lastUpdateKey, Date.now());
+    locationUpdateThrottleCache.delete(driverId);
+    if (locationUpdateThrottleCache.size >= LOCATION_UPDATE_THROTTLE_MAX_ENTRIES) {
+      const oldestDriverId = locationUpdateThrottleCache.keys().next().value;
+      if (oldestDriverId !== undefined) {
+        locationUpdateThrottleCache.delete(oldestDriverId);
+      }
+    }
+    locationUpdateThrottleCache.set(driverId, now);
     return true;
   }
 

@@ -128,7 +128,7 @@ describe('activeBookingService.cancelActiveBooking transaction (strict)', () => 
       if (ref && ref.path && ref.path.startsWith('users/')) {
         return {
           exists: true,
-          data: () => ({ driver: { currentBookingId: 'b1', isOnline: true } })
+          data: () => ({ driver: { currentBookingId: 'b1', activeBookings: 2, isOnline: true } })
         };
       }
       return querySnap;
@@ -138,7 +138,7 @@ describe('activeBookingService.cancelActiveBooking transaction (strict)', () => 
       return { ref, data };
     });
     const { wrapStrictTransaction } = require('./helpers/strictFirestoreTransaction');
-    const tx = wrapStrictTransaction({
+    const createTransaction = () => wrapStrictTransaction({
       get: innerGet,
       update: innerUpdate,
       set: jest.fn()
@@ -158,7 +158,7 @@ describe('activeBookingService.cancelActiveBooking transaction (strict)', () => 
         }
         return { doc: jest.fn() };
       }),
-      runTransaction: jest.fn(async (fn) => fn(tx))
+      runTransaction: jest.fn(async (fn) => fn(createTransaction()))
     };
 
     const service = new ActiveBookingService();
@@ -174,5 +174,7 @@ describe('activeBookingService.cancelActiveBooking transaction (strict)', () => 
     );
     expect(driverGetIdx).toBeGreaterThanOrEqual(0);
     expect(driverGetIdx).toBeLessThan(firstUpdateIdx);
+    const driverUpdate = innerUpdate.mock.calls.find(([ref]) => ref === driverRef);
+    expect(driverUpdate[1]).not.toHaveProperty('driver.activeBookings');
   });
 });

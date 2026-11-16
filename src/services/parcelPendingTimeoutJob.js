@@ -132,6 +132,12 @@ class ParcelPendingTimeoutJob {
       }
 
       summary.cancelled += 1;
+      const { releaseBookingTrackingResources } = require('./releaseBookingTrackingResources');
+      await releaseBookingTrackingResources({
+        bookingId: doc.id,
+        driverId: data.driverId || null,
+        db
+      });
 
       const notify = bookingYoungEnoughToNotify(data, nowMs, notifyMaxAgeMs);
       if (notify) {

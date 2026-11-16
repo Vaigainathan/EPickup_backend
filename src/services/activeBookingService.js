@@ -155,8 +155,8 @@ class ActiveBookingService {
           return { success: false, outcome: 'refuse', refusal: plan.refusal };
         }
 
-        let driverSnap = null;
         let driverRef = null;
+        let driverSnap = null;
         if (bookingData.driverId) {
           driverRef = this.db.collection('users').doc(bookingData.driverId);
           driverSnap = await transaction.get(driverRef);
@@ -187,6 +187,11 @@ class ActiveBookingService {
       });
 
       if (result.success) {
+        const { releaseBookingTrackingResources } = require('./releaseBookingTrackingResources');
+        await releaseBookingTrackingResources({
+          bookingId: result.bookingId,
+          db
+        });
         console.log(`✅ [ActiveBookingService] Cancelled active booking for customer ${customerId}`);
       }
       return result;

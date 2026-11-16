@@ -136,7 +136,16 @@ async function notifyLinkedDriverAfterCustomerCancel(outcome) {
     return;
   }
   const linked = outcome.linkedCancel;
-  if (!linked.cancelledBooking || !linked.driverId || !linked.bookingId) {
+  if (!linked.cancelledBooking || !linked.bookingId) {
+    return;
+  }
+  const { releaseBookingTrackingResources } = require('../releaseBookingTrackingResources');
+  await releaseBookingTrackingResources({
+    bookingId: linked.bookingId,
+    driverId: linked.driverId,
+    db: getFirestore()
+  });
+  if (!linked.driverId) {
     return;
   }
   await notifyAssignedDriverBookingCancelled({

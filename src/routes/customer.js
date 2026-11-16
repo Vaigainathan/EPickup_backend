@@ -1112,7 +1112,6 @@ router.put('/bookings/:bookingId/cancel', authenticateToken, async (req, res) =>
 
     const bookingRef = db.collection('bookings').doc(bookingId);
     const driverId = bookingData.driverId || null;
-    let driverReleaseResult = { released: false, reason: 'no_driver' };
 
     try {
       await db.runTransaction(async (transaction) => {
@@ -1149,7 +1148,7 @@ router.put('/bookings/:bookingId/cancel', authenticateToken, async (req, res) =>
 
         if (driverRef && driverSnap) {
           const { applyDriverReleaseInTransaction } = require('../services/releaseDriverOnBookingCancel');
-          driverReleaseResult = applyDriverReleaseInTransaction(
+          applyDriverReleaseInTransaction(
             transaction,
             driverRef,
             driverSnap,
@@ -1170,14 +1169,10 @@ router.put('/bookings/:bookingId/cancel', authenticateToken, async (req, res) =>
       throw txError;
     }
 
+    const { releaseBookingTrackingResources } = require('../services/releaseBookingTrackingResources');
+    await releaseBookingTrackingResources({ bookingId, driverId, db });
+
     if (driverId) {
-      if (driverReleaseResult.released) {
-        console.log(`✅ [CANCEL] Driver ${driverId} released for cancelled booking ${bookingId}`);
-      } else {
-        console.log(
-          `ℹ️ [CANCEL] Driver release skipped for ${driverId} booking ${bookingId}: ${driverReleaseResult.reason || 'unknown'}`
-        );
-      }
       try {
         const { notifyAssignedDriverBookingCancelled } = require('../services/marketplace/marketplaceLinkedBookingCancel');
         await notifyAssignedDriverBookingCancelled({

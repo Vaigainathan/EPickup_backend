@@ -1129,6 +1129,15 @@ class BookingService {
 
     await bookingRef.update(updateData);
 
+      if (status === 'cancelled') {
+        const { releaseBookingTrackingResources } = require('./releaseBookingTrackingResources');
+        await releaseBookingTrackingResources({
+          bookingId,
+          driverId: bookingDoc.data().driverId || null,
+          db: this.db
+        });
+      }
+
       // Update trip tracking
       await this.db.collection('tripTracking').doc(bookingId).update({
         currentStatus: status,

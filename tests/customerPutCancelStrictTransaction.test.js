@@ -137,7 +137,7 @@ describe('PUT /api/customer/bookings/:bookingId/cancel strict transaction', () =
       sourceType: 'parcel'
     };
     driverStore = {
-      driver: { currentBookingId: bookingId, isOnline: true, isAvailable: false }
+      driver: { currentBookingId: bookingId, activeBookings: 2, isOnline: true, isAvailable: false }
     };
     const db = buildDb();
     runTransactionImpl = db.runTransaction;
@@ -157,6 +157,9 @@ describe('PUT /api/customer/bookings/:bookingId/cancel strict transaction', () =
     expect(res.body.success).toBe(true);
     expect(runTransactionImpl).toHaveBeenCalled();
     expect(bookingStore.status).toBe('cancelled');
+    expect(driverStore.driver.currentBookingId).toBeNull();
+    expect(driverStore.driver.isAvailable).toBe(true);
+    expect(driverStore.driver.activeBookings).toBe(2);
   });
 
   test('without driver: only booking get then update', async () => {

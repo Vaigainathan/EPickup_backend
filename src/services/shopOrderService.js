@@ -942,15 +942,16 @@ class ShopOrderService {
     if (!linkedBookingId) {
       return;
     }
-    const ref = this.getDb().collection('bookings').doc(linkedBookingId);
-    await this.getDb().runTransaction(async (tx) => {
+    const db = this.getDb();
+    const ref = db.collection('bookings').doc(linkedBookingId);
+    const cancelled = await db.runTransaction(async (tx) => {
       const snap = await tx.get(ref);
       if (!snap.exists) {
-        return;
+        return false;
       }
       const data = snap.data() || {};
       if (data.status !== 'pending' || data.driverId) {
-        return;
+        return false;
       }
       tx.update(ref, {
         status: 'cancelled',
@@ -958,7 +959,12 @@ class ShopOrderService {
         cancelledAt: new Date(),
         updatedAt: new Date()
       });
+      return true;
     });
+    if (cancelled) {
+      const { releaseBookingTrackingResources } = require('./releaseBookingTrackingResources');
+      await releaseBookingTrackingResources({ bookingId: linkedBookingId, db });
+    }
   }
 
   async markUnavailable(shopId, orderId, payload = {}) {
@@ -1202,6 +1208,15 @@ class ShopOrderService {
       };
     });
 
+    if (!result.alreadyProcessed && result.linkedCancel?.cancelledBooking) {
+      const { releaseBookingTrackingResources } = require('./releaseBookingTrackingResources');
+      await releaseBookingTrackingResources({
+        bookingId: result.linkedCancel.bookingId,
+        driverId: result.linkedCancel.driverId,
+        db: this.getDb()
+      });
+    }
+
     if (!result.alreadyProcessed && result.notify) {
       const shopReason = result.notify.shopReason || '';
       const vars = {
@@ -1349,6 +1364,15 @@ class ShopOrderService {
 
     if (outcome.alreadyProcessed) {
       return { alreadyProcessed: true, wrote: false };
+    }
+
+    if (outcome.linkedCancelledBooking && outcome.bookingId) {
+      const { releaseBookingTrackingResources } = require('./releaseBookingTrackingResources');
+      await releaseBookingTrackingResources({
+        bookingId: outcome.bookingId,
+        driverId: outcome.driverId,
+        db
+      });
     }
 
     const variables = {

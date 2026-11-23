@@ -94,10 +94,8 @@ const initializeSocketIO = async (server) => {
 
     // Initialize event handler
     eventHandler = new WebSocketEventHandler();
-    await eventHandler.initialize();
-    
-    // Set the io instance in the event handler
     eventHandler.setIO(io);
+    await eventHandler.initialize();
 
     // Rate limiting for WebSocket connections
     const connectionCounts = new Map();

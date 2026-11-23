@@ -95,6 +95,27 @@ function shouldSkipTrackingFix(lastLocation, nextLocation, nowMs) {
   return elapsedMs <= 3000 && distanceMeters(lastLocation, nextLocation) < 5;
 }
 
+function logDriverRequestReceipt(req, res, route) {
+  const startedAt = Date.now();
+  const contentLength = Number(req.get('content-length'));
+  const details = {
+    route,
+    bookingId: req.params.id || req.body?.bookingId || null,
+    userId: req.user?.uid || null,
+    bytes: Number.isFinite(req.file?.size)
+      ? req.file.size
+      : Number.isFinite(contentLength) ? contentLength : 0
+  };
+
+  console.info('[DRIVER_REQUEST_RECEIVED]', JSON.stringify(details));
+  res.once('finish', () => {
+    console.info('[DRIVER_REQUEST_FINISHED]', JSON.stringify({
+      ...details,
+      durationMs: Date.now() - startedAt
+    }));
+  });
+}
+
 async function getDriverVerificationState(db, uid) {
   const userDoc = await db.collection('users').doc(uid).get();
 
@@ -5835,6 +5856,10 @@ router.post('/bookings/:id/validate-location', [
  */
 router.post('/bookings/:id/photo-verification/upload', [
   requireDriver,
+  (req, res, next) => {
+    logDriverRequestReceipt(req, res, 'POST /api/driver/bookings/:id/photo-verification/upload');
+    next();
+  },
   // ✅ CRITICAL FIX: No rate limiting on photo upload endpoint - it's a critical workflow step
   // Rate limiting is handled at the global level, but we don't want strict limits here
   upload.single('photo'),
@@ -6757,6 +6782,7 @@ router.post('/bookings/:id/photo-verification', [
   body('location').optional().isObject().withMessage('Location must be an object'),
   body('notes').optional().isLength({ min: 0, max: 200 }).withMessage('Notes must be between 0 and 200 characters')
 ], async (req, res) => {
+  logDriverRequestReceipt(req, res, 'POST /api/driver/bookings/:id/photo-verification');
   try {
     const { id } = req.params;
     const { uid } = req.user;
@@ -8858,6 +8884,7 @@ router.post('/confirm-pickup', [
     .isLength({ min: 5, max: 200 })
     .withMessage('Notes must be between 5 and 200 characters')
 ], async (req, res) => {
+  logDriverRequestReceipt(req, res, 'POST /api/driver/confirm-pickup');
   try {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {

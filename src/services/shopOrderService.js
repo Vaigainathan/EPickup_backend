@@ -806,13 +806,22 @@ class ShopOrderService {
     }
 
     if (notifyDrivers) {
+      let handler;
       try {
-        const WebSocketEventHandler = require('./websocketEventHandler');
-        const handler = new WebSocketEventHandler();
-        await handler.initialize();
-        await handler.notifyDriversOfNewBooking(result.booking);
+        const { getEventHandler } = require('./socket');
+        handler = getEventHandler();
       } catch (error) {
-        console.error('❌ [SHOP_ORDERS] Driver notify failed:', error.message);
+        console.error(
+          `[DRIVER_NOTIFY_SKIPPED] bookingId=${result.booking.id} reason=shared_handler_unavailable error=${error.message}`
+        );
+      }
+
+      if (handler) {
+        try {
+          await handler.notifyDriversOfNewBooking(result.booking);
+        } catch (error) {
+          console.error('❌ [SHOP_ORDERS] Driver notify failed:', error.message);
+        }
       }
     }
 

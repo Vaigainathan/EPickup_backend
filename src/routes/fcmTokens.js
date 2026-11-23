@@ -5,6 +5,24 @@ const { body, validationResult } = require('express-validator');
 const { getFirestore } = require('../services/firebase');
 
 const db = getFirestore();
+const TOKEN_REGISTRATION_FRESHNESS_MS = 10 * 60 * 1000;
+
+function timestampMillis(value) {
+  if (value == null) {
+    return null;
+  }
+  if (value instanceof Date) {
+    return value.getTime();
+  }
+  if (typeof value.toMillis === 'function') {
+    return value.toMillis();
+  }
+  if (typeof value.toDate === 'function') {
+    return value.toDate().getTime();
+  }
+  const parsed = new Date(value).getTime();
+  return Number.isFinite(parsed) ? parsed : null;
+}
 
 /**
  * @route   POST /api/fcm-tokens/register
@@ -32,6 +50,7 @@ router.post('/register', [
 
     const { token: fcmToken, deviceId, platform, userType } = req.body;
     const userId = req.user.uid; // This is the role-based UID from JWT
+    const userRef = db.collection('users').doc(userId);
 
     // ✅ FIX: Detect token type and store in correct field
     // Expo tokens start with "ExponentPushToken[" and FCM tokens are long strings without brackets
@@ -41,7 +60,7 @@ router.post('/register', [
     console.log(`🔔 [PUSH_TOKEN] Registering push token for user: ${userId} (role-based UID)`);
     console.log(`🔔 [PUSH_TOKEN] Token type: ${isExpoToken ? 'Expo' : isFCMToken ? 'FCM' : 'Unknown'}`);
     console.log(`🔔 [PUSH_TOKEN] Token data:`, { hasToken: !!fcmToken, deviceId, platform, userType });
-    
+
     // Build update data (Firestore rejects undefined — use null for omitted optional fields)
     const updateData = {
       deviceId: deviceId ?? null,
@@ -65,11 +84,38 @@ router.post('/register', [
       console.warn(`⚠️ [PUSH_TOKEN] Unknown token type, stored in both fields for user: ${userId}`);
     }
 
-    // Update user's push token (use set with merge to create document if it doesn't exist)
-    await db.collection('users').doc(userId).set(updateData, { merge: true });
+    const skipWrite = await db.runTransaction(async (transaction) => {
+      const userSnapshot = await transaction.get(userRef);
+      const currentUser = userSnapshot.exists ? (userSnapshot.data() || {}) : {};
+      const tokenUnchanged = isExpoToken
+        ? currentUser.expoPushToken === fcmToken
+        : isFCMToken
+          ? currentUser.fcmToken === fcmToken
+          : currentUser.expoPushToken === fcmToken && currentUser.fcmToken === fcmToken;
+      const activityTimes = [
+        timestampMillis(currentUser.lastSeen),
+        timestampMillis(currentUser.tokenUpdatedAt)
+      ].filter(Number.isFinite);
+      const latestActivityAt = activityTimes.length > 0 ? Math.max(...activityTimes) : null;
+      const registrationIsFresh = latestActivityAt !== null
+        && Date.now() - latestActivityAt < TOKEN_REGISTRATION_FRESHNESS_MS;
+
+      if (tokenUnchanged && registrationIsFresh) {
+        return true;
+      }
+
+      transaction.set(userRef, updateData, { merge: true });
+      return false;
+    });
+
+    if (skipWrite) {
+      console.log(`✅ [PUSH_TOKEN] Token unchanged and recent; skipped write for user: ${userId}`);
+    }
 
     const tokenKind = isExpoToken ? 'Expo' : isFCMToken ? 'FCM' : 'Unknown';
-    console.log(`✅ [PUSH_TOKEN] ${tokenKind} push token stored for user: ${userId}`);
+    if (!skipWrite) {
+      console.log(`✅ [PUSH_TOKEN] ${tokenKind} push token stored for user: ${userId}`);
+    }
     console.log(`✅ [PUSH_TOKEN] Push token registered successfully for user: ${userId}`);
 
     res.status(200).json({

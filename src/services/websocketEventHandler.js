@@ -1849,7 +1849,14 @@ class WebSocketEventHandler {
    */
   async notifyDriversOfNewBooking(bookingData) {
     try {
-      if (!this.io || !this.db) return;
+      if (!this.io) {
+        console.error(`[DRIVER_NOTIFY_SKIPPED] bookingId=${bookingData?.id || 'unknown'} reason=socket_io_unavailable`);
+        return;
+      }
+      if (!this.db) {
+        console.error(`[DRIVER_NOTIFY_SKIPPED] bookingId=${bookingData?.id || 'unknown'} reason=firestore_unavailable`);
+        return;
+      }
 
       console.log(`🔔 Notifying drivers of new booking: ${bookingData.id}`);
 

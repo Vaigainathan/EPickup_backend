@@ -1,6 +1,12 @@
 const mockDocs = new Map();
 const mockSets = [];
 let mockEventSeq = 0;
+const mockNotifyDriversOfNewBooking = jest.fn(async () => {});
+const mockSharedEventHandler = {
+  io: {},
+  notifyDriversOfNewBooking: (...args) => mockNotifyDriversOfNewBooking(...args)
+};
+const mockGetEventHandler = jest.fn(() => mockSharedEventHandler);
 
 function mockClone(value) {
   if (value == null || typeof value !== 'object') {
@@ -156,17 +162,11 @@ jest.mock('../src/services/fareCalculationService', () => {
   };
 });
 
-jest.mock('../src/services/websocketEventHandler', () => {
-  const notifyDriversOfNewBooking = jest.fn(async () => {});
-  function WebSocketEventHandler() {}
-  WebSocketEventHandler.prototype.initialize = jest.fn(async () => {});
-  WebSocketEventHandler.prototype.notifyDriversOfNewBooking = (...args) => notifyDriversOfNewBooking(...args);
-  WebSocketEventHandler.notifyDriversOfNewBooking = notifyDriversOfNewBooking;
-  return WebSocketEventHandler;
-});
+jest.mock('../src/services/socket', () => ({
+  getEventHandler: (...args) => mockGetEventHandler(...args)
+}));
 
 const fareCalculationService = require('../src/services/fareCalculationService');
-const WebSocketEventHandler = require('../src/services/websocketEventHandler');
 const notificationService = require('../src/services/notificationService');
 const shopOrderService = require('../src/services/shopOrderService');
 const marketplaceSyncService = require('../src/services/marketplaceSyncService');
@@ -247,7 +247,8 @@ beforeEach(() => {
   mockEventSeq = 0;
   fareCalculationService.calculateDistanceAndFare.mockReset();
   fareCalculationService.calculateDistanceAndFare.mockResolvedValue(FARE);
-  WebSocketEventHandler.notifyDriversOfNewBooking.mockClear();
+  mockNotifyDriversOfNewBooking.mockClear();
+  mockGetEventHandler.mockClear();
   notificationService.sendTemplateNotification.mockClear();
 });
 
@@ -262,7 +263,7 @@ describe('markReady', () => {
     });
     expect(bookings()).toHaveLength(0);
     expect(order('order-1').orderStatus).toBe('preparing');
-    expect(WebSocketEventHandler.notifyDriversOfNewBooking).not.toHaveBeenCalled();
+    expect(mockNotifyDriversOfNewBooking).not.toHaveBeenCalled();
   });
 
   test('full stock writes one booking and a second call writes nothing', async () => {
@@ -296,7 +297,11 @@ describe('markReady', () => {
     expect(readySignal).toMatchObject({ customerId: 'cust-1', type: 'marked_ready' });
     expect(mockSets.filter((entry) => entry.path === 'marketplaceOrders/order-1/signal/latest')).toHaveLength(1);
     expect(events('order-1')[0].data).toEqual({ bookingId: booking.id, stage: 'searching' });
-    expect(WebSocketEventHandler.notifyDriversOfNewBooking).toHaveBeenCalledTimes(1);
+    expect(mockGetEventHandler).toHaveBeenCalledTimes(1);
+    expect(mockNotifyDriversOfNewBooking).toHaveBeenCalledTimes(1);
+    expect(mockNotifyDriversOfNewBooking).toHaveBeenCalledWith(
+      expect.objectContaining({ id: booking.id })
+    );
     expect(notificationService.sendTemplateNotification).toHaveBeenCalledWith(
       'cust-1',
       'MARKETPLACE',
@@ -308,7 +313,7 @@ describe('markReady', () => {
     expect(second.alreadyProcessed).toBe(true);
     expect(bookings()).toHaveLength(1);
     expect(events('order-1')).toHaveLength(1);
-    expect(WebSocketEventHandler.notifyDriversOfNewBooking).toHaveBeenCalledTimes(1);
+    expect(mockNotifyDriversOfNewBooking).toHaveBeenCalledTimes(1);
     expect(fareCalculationService.calculateDistanceAndFare).toHaveBeenCalledTimes(1);
   });
 
@@ -329,12 +334,12 @@ describe('markReady', () => {
     seedOrder('order-1');
     await shopOrderService.markReady('shop-1', 'order-1', { notifyDrivers: false });
     expect(bookings()).toHaveLength(1);
-    expect(WebSocketEventHandler.notifyDriversOfNewBooking).not.toHaveBeenCalled();
+    expect(mockNotifyDriversOfNewBooking).not.toHaveBeenCalled();
   });
 
   test('a driver notify failure leaves the ready order in place', async () => {
     seedOrder('order-1');
-    WebSocketEventHandler.notifyDriversOfNewBooking.mockRejectedValueOnce(new Error('push down'));
+    mockNotifyDriversOfNewBooking.mockRejectedValueOnce(new Error('push down'));
     const result = await shopOrderService.markReady('shop-1', 'order-1');
     expect(result.order.orderStatus).toBe('ready');
     expect(bookings()).toHaveLength(1);

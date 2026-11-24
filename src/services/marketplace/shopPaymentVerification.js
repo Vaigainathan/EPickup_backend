@@ -5,7 +5,7 @@ const marketplaceMoney = require('../../validators/marketplace');
 const { isValidUtr } = marketplaceMoney;
 const { appendEvent } = require('./orderEvents');
 const { deductStock } = require('./stock');
-const { createRefund, refundRemainder, readRefundDocs } = require('./refunds');
+const { createRefund, refundRemainder, readRefundDocs, refundNotifyVariables } = require('./refunds');
 const { getMarketplaceEnforcement } = require('./orderStateMachine');
 const POST_CONFIRM_ORDER = new Set(['preparing', 'ready', 'handed_over', 'completed']);
 const BLOCKED_CANCEL = new Set(['handed_over', 'completed', 'delivery_failed']);
@@ -344,7 +344,7 @@ async function confirmLateUnfulfilled(tx, {
     });
     notifies.push({
       type: 'REFUND_INITIATED',
-      variables: { ...variables, amount }
+      variables: refundNotifyVariables(data, orderId, { amount })
     });
   } else {
     notifies.push({ type: 'ORDER_CANCELLED', variables });
@@ -414,7 +414,7 @@ async function confirmPaidOnCancelled(tx, {
     });
     notifies.push({
       type: 'REFUND_INITIATED',
-      variables: { ...displayVariables(data, orderId), amount }
+      variables: refundNotifyVariables(data, orderId, { amount })
     });
   }
   return {
@@ -637,7 +637,7 @@ async function confirmOpenReview(tx, context) {
     return {
       alreadyProcessed: false,
       customerId: data.customerId || null,
-      notifies: [{ type: 'REFUND_INITIATED', variables: { ...variables, amount } }],
+      notifies: [{ type: 'REFUND_INITIATED', variables: refundNotifyVariables(data, orderId, { amount }) }],
       shopNotifies
     };
   }
@@ -1055,10 +1055,7 @@ async function answerPaidCheck({ shopId, orderId, body, nowMs }) {
       customerId: data.customerId || null,
       notifies: [{
         type: 'REFUND_INITIATED',
-        variables: {
-          ...displayVariables(data, orderId),
-          amount
-        }
+        variables: refundNotifyVariables(data, orderId, { amount })
       }]
     };
   });
@@ -1160,10 +1157,7 @@ async function resolvePaidCheckSupport({ orderId, received, operator, body, nowM
       customerId: data.customerId || null,
       notifies: [{
         type: 'REFUND_INITIATED',
-        variables: {
-          ...displayVariables(data, orderId),
-          amount
-        }
+        variables: refundNotifyVariables(data, orderId, { amount })
       }]
     };
   });
@@ -1318,7 +1312,10 @@ async function differOnOpenReview(tx, context) {
   let overpaidAmount = null;
   if (receivedPaise > expectedPaise) {
     overpaidAmount = marketplaceMoney.fromPaise(receivedPaise - expectedPaise);
-    notifies.push({ type: 'REFUND_INITIATED', variables: { ...variables, amount: overpaidAmount } });
+    notifies.push({
+      type: 'REFUND_INITIATED',
+      variables: refundNotifyVariables(data, orderId, { amount: overpaidAmount })
+    });
   } else if (matched.corrected) {
     notifies.push({ type: 'UTR_CORRECTED', variables: { ...variables, utr: matched.officialUtr } });
   } else {
@@ -1523,7 +1520,7 @@ async function reportAmountDiffers({ shopId, orderId, body, nowMs }) {
       overpaidAmount = marketplaceMoney.fromPaise(receivedPaise - expectedPaise);
       notifies.push({
         type: 'REFUND_INITIATED',
-        variables: { ...variables, amount: overpaidAmount }
+        variables: refundNotifyVariables(data, orderId, { amount: overpaidAmount })
       });
     } else if (matched.corrected) {
       notifies.push({
@@ -1759,7 +1756,7 @@ async function resolvePaymentReview({ orderId, outcome, reason, operator }) {
       wrote: true,
       customerId: data.customerId || null,
       shopId: data.shopId || null,
-      notifies: [{ type: 'REFUND_INITIATED', variables: { ...variables, amount } }],
+      notifies: [{ type: 'REFUND_INITIATED', variables: refundNotifyVariables(data, orderId, { amount }) }],
       shopNotifies: [{ type: 'REVIEW_RESOLVED', variables }]
     };
   });

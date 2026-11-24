@@ -7,7 +7,8 @@ const { appendEvent, bumpOrderSignal } = require('./marketplace/orderEvents');
 const {
   alertRefund,
   millisOf,
-  orderRefundDenormPatch
+  orderRefundDenormPatch,
+  refundNotifyVariables
 } = require('./marketplace/refunds');
 const { marketplacePushVariables } = require('./marketplace/marketplacePush');
 const notificationService = require('./notificationService');
@@ -178,7 +179,12 @@ class MarketplaceRefundJob {
           } else if (which === 'due24') {
             notifies.push({ template: 'REFUND_OVERDUE', customerId: null, shopId: data.shopId });
           } else if (which === 'ack24') {
-            notifies.push({ template: 'REFUND_ACK_REMINDER', customerId: data.customerId, shopId: null });
+            notifies.push({
+              template: 'REFUND_ACK_REMINDER',
+              customerId: data.customerId,
+              shopId: null,
+              variables: refundNotifyVariables(data, orderRef.id, refund.data)
+            });
           }
         }
         actions.push(row);
@@ -201,8 +207,9 @@ class MarketplaceRefundJob {
     const variables = outcome.variables;
     for (let index = 0; index < outcome.notifies.length; index += 1) {
       const note = outcome.notifies[index];
-      await notifyUser(note.customerId, note.template, variables);
-      await notifyUser(note.shopId, note.template, variables);
+      const notifyVariables = note.variables || variables;
+      await notifyUser(note.customerId, note.template, notifyVariables);
+      await notifyUser(note.shopId, note.template, notifyVariables);
     }
     outcome.actions.filter((action) => action.alert).forEach((action) => {
       alertRefund('Marketplace refund UPI still missing', action.id, action.refundId);

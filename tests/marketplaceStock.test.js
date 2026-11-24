@@ -390,13 +390,16 @@ describe('markUnavailable', () => {
     expect(refunds('order-1')[0].amount).toBe(10);
     expect(templateCalls('ITEMS_UNAVAILABLE')).toHaveLength(1);
     expect(templateCalls('REFUND_INITIATED')).toHaveLength(1);
-    const pushIds = {
+    const notifyVars = {
       displayId: '00012',
       orderId: 'order-1',
-      shopName: 'Shop'
+      shopName: 'Shop',
+      customerName: 'Customer',
+      amount: 10,
+      dueBy: ''
     };
-    expect(templateCalls('ITEMS_UNAVAILABLE')[0][3]).toEqual(pushIds);
-    expect(templateCalls('REFUND_INITIATED')[0][3]).toEqual(pushIds);
+    expect(templateCalls('ITEMS_UNAVAILABLE')[0][3]).toEqual(notifyVars);
+    expect(templateCalls('REFUND_INITIATED')[0][3]).toEqual(notifyVars);
     const mpCtx = (key, vars) => NotificationTemplateProcessor.process(
       NotificationTemplateProcessor.getTemplate('MARKETPLACE', key),
       vars,

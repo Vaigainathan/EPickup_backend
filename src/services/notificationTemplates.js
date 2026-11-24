@@ -505,7 +505,10 @@ class NotificationTemplateProcessor {
     return text.replace(/\{\{(\w+)\}\}/g, (match, variableName) => {
       const rawValue = variables[variableName];
       const formattedValue = formatNotificationVariableValue(variableName, rawValue);
-      return formattedValue || match;
+      if (formattedValue === undefined || formattedValue === null || formattedValue === '') {
+        return match;
+      }
+      return formattedValue;
     });
   }
 

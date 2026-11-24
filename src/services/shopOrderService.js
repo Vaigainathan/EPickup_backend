@@ -26,7 +26,8 @@ const {
   listShopRefunds,
   loadRefundDocs,
   presentShopRefund,
-  refundRemainder
+  refundRemainder,
+  refundNotifyVariables
 } = require('./marketplace/refunds');
 const { presentDeliveryAddress } = require('./marketplace/presentDeliveryAddress');
 const {
@@ -1070,7 +1071,7 @@ class ShopOrderService {
       return {
         alreadyProcessed: false,
         customerId: data.customerId || null,
-        variables: pushVariables(data, orderId)
+        variables: refundNotifyVariables(data, orderId, { amount: fromPaise(amountPaise) })
       };
     });
 
@@ -1392,10 +1393,11 @@ class ShopOrderService {
     };
     try {
       if (outcome.refundCreated) {
-        await this.notifyCustomer(outcome.customerId, 'REFUND_INITIATED', {
-          ...variables,
-          amount: outcome.refundAmount
-        });
+        await this.notifyCustomer(
+          outcome.customerId,
+          'REFUND_INITIATED',
+          refundNotifyVariables(outcome.data, orderId, { amount: outcome.refundAmount })
+        );
       } else {
         await this.notifyCustomer(outcome.customerId, 'ORDER_CANCELLED', variables);
       }

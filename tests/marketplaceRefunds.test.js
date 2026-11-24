@@ -177,8 +177,10 @@ const {
   resolveRefundDispute,
   recordFoundRefund,
   listShopRefunds,
-  presentShopRefund
+  presentShopRefund,
+  refundNotifyVariables
 } = require('../src/services/marketplace/refunds');
+const { marketplacePushVariables } = require('../src/services/marketplace/marketplacePush');
 const job = require('../src/services/marketplaceRefundJob');
 const shopOrderService = require('../src/services/shopOrderService');
 const { NotificationTemplateProcessor } = require('../src/services/notificationTemplates');
@@ -938,5 +940,84 @@ describe('refund views and the legacy sent route', () => {
       action: 'refund'
     });
     expect(JSON.stringify(initiated.data)).not.toContain('40');
+  });
+});
+
+describe('marketplace REFUND_* notification copy', () => {
+  const sampleOrder = {
+    displayId: 42,
+    shopSnapshot: { name: 'Kumar Store' },
+    customerSnapshot: { name: 'Priya' }
+  };
+  const orderId = 'order-1';
+  const refund = {
+    amount: 1475,
+    sentAmount: 1475,
+    dueBy: { toMillis: () => Date.UTC(2026, 10, 25, 10, 35) }
+  };
+  const utr = '123456789012';
+
+  const render = (templateKey, variables) => {
+    const processed = NotificationTemplateProcessor.process(
+      NotificationTemplateProcessor.getTemplate('MARKETPLACE', templateKey),
+      variables,
+      { category: 'MARKETPLACE', templateKey }
+    );
+    return `${processed.title} ${processed.body}`;
+  };
+
+  const assertCleanCopy = (text) => {
+    expect(text).not.toMatch(/\{\{/);
+    expect(text).not.toMatch(/₹\s+(?=[^0-9]|$)/);
+  };
+
+  test('substitutes amount 0 without leaving the placeholder', () => {
+    const body = NotificationTemplateProcessor.substituteVariables(
+      'Refund ₹{{amount}} due',
+      { amount: 0 }
+    );
+    expect(body).toBe('Refund ₹0 due');
+    expect(body).not.toContain('{{');
+  });
+
+  test('every REFUND_* template renders with production-like variables', () => {
+    const base = marketplacePushVariables(sampleOrder, orderId);
+    const cases = [
+      {
+        template: 'REFUND_INITIATED',
+        variables: refundNotifyVariables(sampleOrder, orderId, { amount: refund.amount })
+      },
+      {
+        template: 'REFUND_UPI_REMINDER',
+        variables: base
+      },
+      {
+        template: 'REFUND_DUE',
+        variables: refundNotifyVariables(sampleOrder, orderId, refund)
+      },
+      {
+        template: 'REFUND_OVERDUE',
+        variables: base
+      },
+      {
+        template: 'REFUND_SENT',
+        variables: refundNotifyVariables(sampleOrder, orderId, refund, { refundUtr: utr })
+      },
+      {
+        template: 'REFUND_ACK_REMINDER',
+        variables: refundNotifyVariables(sampleOrder, orderId, refund)
+      },
+      {
+        template: 'REFUND_CLOSED',
+        variables: base
+      },
+      {
+        template: 'REFUND_DISPUTED',
+        variables: base
+      }
+    ];
+    cases.forEach(({ template, variables }) => {
+      assertCleanCopy(render(template, variables));
+    });
   });
 });

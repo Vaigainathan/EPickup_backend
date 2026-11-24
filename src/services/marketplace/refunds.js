@@ -63,10 +63,74 @@ function isCancelled(orderStatus) {
   return orderStatus === 'cancelled';
 }
 
-const { marketplacePushVariables } = require('./marketplacePush');
+const {
+  marketplacePushVariables,
+  marketplaceShopDisplayName,
+  marketplaceCustomerDisplayName
+} = require('./marketplacePush');
 
 function displayVariables(data, orderId) {
   return marketplacePushVariables(data, orderId);
+}
+
+function formatRefundDueByString(value) {
+  const ms = millisOf(value);
+  if (!Number.isFinite(ms)) {
+    return '';
+  }
+  const parts = new Intl.DateTimeFormat('en-IN', {
+    timeZone: 'Asia/Kolkata',
+    day: 'numeric',
+    month: 'short',
+    hour: 'numeric',
+    minute: '2-digit',
+    hour12: true
+  }).formatToParts(new Date(ms));
+  const day = parts.find((part) => part.type === 'day');
+  const month = parts.find((part) => part.type === 'month');
+  const hour = parts.find((part) => part.type === 'hour');
+  const minute = parts.find((part) => part.type === 'minute');
+  const dayPeriod = parts.find((part) => part.type === 'dayPeriod');
+  if (!day || !month || !hour) {
+    return '';
+  }
+  const time = minute && minute.value !== '00'
+    ? `${hour.value}:${minute.value} ${dayPeriod ? dayPeriod.value : ''}`.trim()
+    : `${hour.value} ${dayPeriod ? dayPeriod.value : ''}`.trim();
+  return `${day.value} ${month.value}, ${time}`;
+}
+
+function refundAmountOf(refund) {
+  const source = refund && typeof refund === 'object' ? refund : {};
+  if (typeof source.sentAmount === 'number' && Number.isFinite(source.sentAmount)) {
+    return source.sentAmount;
+  }
+  if (typeof source.amount === 'number' && Number.isFinite(source.amount)) {
+    return source.amount;
+  }
+  return '';
+}
+
+function refundNotifyVariables(data, orderId, refund, extra) {
+  const extras = extra && typeof extra === 'object' ? { ...extra } : {};
+  const refundData = refund && typeof refund === 'object' ? refund : {};
+  const amount = extras.amount !== undefined ? extras.amount : refundAmountOf(refundData);
+  let dueBy = extras.dueBy;
+  if (dueBy === undefined) {
+    dueBy = formatRefundDueByString(refundData.dueBy);
+  } else if (dueBy !== null && dueBy !== '' && typeof dueBy !== 'string') {
+    dueBy = formatRefundDueByString(dueBy);
+  }
+  delete extras.amount;
+  delete extras.dueBy;
+  return {
+    ...displayVariables(data, orderId),
+    shopName: marketplaceShopDisplayName(data),
+    customerName: marketplaceCustomerDisplayName(data),
+    amount,
+    dueBy: dueBy == null ? '' : String(dueBy),
+    ...extras
+  };
 }
 
 function sameMoney(left, right) {
@@ -384,7 +448,7 @@ async function submitCustomerUpi({
   });
 
   if (!outcome.replay) {
-    await notifyUser(outcome.shopId, 'REFUND_DUE', displayVariables(outcome.data, orderId));
+    await notifyUser(outcome.shopId, 'REFUND_DUE', refundNotifyVariables(outcome.data, orderId, outcome.refund));
   }
   return {
     status: 200,
@@ -569,10 +633,11 @@ async function markRefundSent({
   });
 
   if (!outcome.alreadyProcessed) {
-    await notifyUser(outcome.data.customerId, 'REFUND_SENT', {
-      ...displayVariables(outcome.data, orderId),
-      refundUtr
-    });
+    await notifyUser(
+      outcome.data.customerId,
+      'REFUND_SENT',
+      refundNotifyVariables(outcome.data, orderId, outcome.refund, { refundUtr })
+    );
   }
   return {
     alreadyProcessed: outcome.alreadyProcessed,
@@ -728,7 +793,11 @@ async function recordFoundRefund({ orderId, amount, operator, reason }) {
     bumpOrderSignal(tx, orderRef, data.customerId, 'refund_created');
     return { data, refundId: created.refundId };
   });
-  await notifyUser(outcome.data.customerId, 'REFUND_INITIATED', displayVariables(outcome.data, orderId));
+  await notifyUser(
+    outcome.data.customerId,
+    'REFUND_INITIATED',
+    refundNotifyVariables(outcome.data, orderId, { amount })
+  );
   return { wrote: true, refundId: outcome.refundId, orderStatus: 'cancelled' };
 }
 
@@ -802,6 +871,8 @@ module.exports = {
   recordFoundRefund,
   listShopRefunds,
   alertRefund,
+  refundNotifyVariables,
+  formatRefundDueByString,
   millisOf,
   mirrorPatch,
   computeCustomerRefundAction,

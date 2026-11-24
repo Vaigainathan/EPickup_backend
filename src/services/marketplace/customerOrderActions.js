@@ -4,9 +4,13 @@ const { MARKETPLACE_DEFAULTS } = require('../../config/marketplaceDefaults');
 const { isValidUtr, toPaise, fromPaise } = require('../../validators/marketplace');
 const { presentCustomerOrder } = require('./customerOrderView');
 const { appendEvent } = require('./orderEvents');
-const { createRefund, refundRemainder, readRefundDocs } = require('./refunds');
+const { createRefund, refundRemainder, readRefundDocs, refundNotifyVariables } = require('./refunds');
 const { restoreLines } = require('./stock');
-const { marketplaceUtrNotifyVariables, digitsDisplayId } = require('./marketplacePush');
+const {
+  marketplaceUtrNotifyVariables,
+  marketplaceShopDisplayName,
+  digitsDisplayId
+} = require('./marketplacePush');
 const {
   readLinkedBookingForCancel,
   applyLinkedBookingCancel,
@@ -654,17 +658,13 @@ async function cancelCustomerOrder({ customerId, orderId, idempotencyKey, nowMs 
   await notifyLinkedDriverAfterCustomerCancel(outcome);
 
   if (!outcome.replay && outcome.groupB) {
-    const snapshot = outcome.data && outcome.data.shopSnapshot && typeof outcome.data.shopSnapshot === 'object'
-      ? outcome.data.shopSnapshot
-      : {};
-    const shopName = typeof snapshot.name === 'string' ? snapshot.name : '';
+    const shopName = marketplaceShopDisplayName(outcome.data);
     if (outcome.refund) {
-      await notifyCustomer(customerId, 'REFUND_INITIATED', {
-        displayId: outcome.displayId,
-        orderId,
-        shopName,
-        amount: outcome.refundAmount
-      });
+      await notifyCustomer(
+        customerId,
+        'REFUND_INITIATED',
+        refundNotifyVariables(outcome.data, orderId, { amount: outcome.refundAmount })
+      );
     } else {
       await notifyCustomer(customerId, 'ORDER_CANCELLED', {
         displayId: outcome.displayId,
@@ -682,15 +682,11 @@ async function cancelCustomerOrder({ customerId, orderId, idempotencyKey, nowMs 
     return orderResponse(200, outcome.data, orderId, outcome.refund ? { refund: outcome.refund } : null);
   }
   if (!outcome.replay && outcome.shortRefund) {
-    const snapshot = outcome.data && outcome.data.shopSnapshot && typeof outcome.data.shopSnapshot === 'object'
-      ? outcome.data.shopSnapshot
-      : {};
-    await notifyCustomer(customerId, 'REFUND_INITIATED', {
-      displayId: outcome.displayId,
-      orderId,
-      shopName: typeof snapshot.name === 'string' ? snapshot.name : '',
-      amount: outcome.refundAmount
-    });
+    await notifyCustomer(
+      customerId,
+      'REFUND_INITIATED',
+      refundNotifyVariables(outcome.data, orderId, { amount: outcome.refundAmount })
+    );
     return orderResponse(200, outcome.data, orderId, { refund: outcome.refund });
   }
   if (!outcome.replay) {

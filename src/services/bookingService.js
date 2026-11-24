@@ -19,6 +19,7 @@ const walletService = require('./walletService');
 const displayIdService = require('./displayIdService');
 const { isPoolEnabled, allocateInTransaction } = require('./orderNumberPool');
 const { withParcelSource } = require('./parcelSourceFilter');
+const { roundMoney } = require('../utils/money');
 
 /**
  * Booking Service for EPickup delivery platform
@@ -287,18 +288,18 @@ class BookingService {
         const walletDoc = await transaction.get(this.db.collection('driverPointsWallets').doc(driverId));
         let walletBalance = 0;
         if (walletDoc.exists) {
-          walletBalance = walletDoc.data().pointsBalance || 0;
+          walletBalance = roundMoney(walletDoc.data().pointsBalance || 0);
         }
 
         // ✅ DYNAMIC COMMISSION CHECK: Calculate commission for THIS SPECIFIC TRIP
         const tripDistance = booking.distance?.value || booking.distance?.total || 0;
         const fareCalculationService = require('../services/fareCalculationService');
         const fareBreakdown = fareCalculationService.calculateFareWithTieredPricing(tripDistance);
-        const estimatedCommission = fareBreakdown.commission;
+        const estimatedCommission = roundMoney(fareBreakdown.commission);
 
         // Check if driver has enough wallet balance for this trip's commission
         if (walletBalance < estimatedCommission) {
-          const shortfall = estimatedCommission - walletBalance;
+          const shortfall = roundMoney(estimatedCommission - walletBalance);
           throw new Error(JSON.stringify({
             code: 'INSUFFICIENT_WALLET',
             message: 'Insufficient wallet for this trip',
@@ -943,12 +944,12 @@ class BookingService {
             if (exactDistanceKm > 0) {
               fareBreakdown = fareCalculationService.calculateFare(exactDistanceKm);
               roundedDistanceKm = fareBreakdown.roundedDistanceKm; // Rounded distance (e.g., 8.4km → 9km)
-              commissionAmount = fareBreakdown.commission; // Commission based on rounded distance (e.g., 9km × ₹2 = ₹18)
+              commissionAmount = roundMoney(fareBreakdown.commission); // Commission based on rounded distance (e.g., 9km × ₹2 = ₹18)
             } else {
               // ✅ CRITICAL FIX: Even if distance is 0, use fareCalculationService for minimum commission
               fareBreakdown = fareCalculationService.calculateFare(0.5); // 0.5km rounds to 1km
               roundedDistanceKm = fareBreakdown.roundedDistanceKm; // Will be 1km
-              commissionAmount = fareBreakdown.commission; // Will be ₹1.15 (1km × ₹1.15/km)
+              commissionAmount = roundMoney(fareBreakdown.commission); // Will be ₹1.15 (1km × ₹1.15/km)
             }
             
             console.log(`💰 [BOOKING_SERVICE] Deducting commission for trip ${bookingId}:`, {
@@ -1042,11 +1043,11 @@ class BookingService {
             if (exactDistanceKm > 0) {
               fareBreakdown = fareCalculationService.calculateFare(exactDistanceKm);
               roundedDistanceKm = fareBreakdown.roundedDistanceKm;
-              commissionAmount = fareBreakdown.commission;
+              commissionAmount = roundMoney(fareBreakdown.commission);
             } else {
               fareBreakdown = fareCalculationService.calculateFare(0.5);
               roundedDistanceKm = fareBreakdown.roundedDistanceKm;
-              commissionAmount = fareBreakdown.commission;
+              commissionAmount = roundMoney(fareBreakdown.commission);
             }
 
             console.log(`💰 [BOOKING_SERVICE] Deducting commission for trip ${bookingId}:`, {

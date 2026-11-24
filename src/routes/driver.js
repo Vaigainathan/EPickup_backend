@@ -22,6 +22,7 @@ const {
 } = require('../services/marketplace/driverMarketplaceAssignment');
 const { prepareNoStoreResponse } = require('../middleware/noStoreResponse');
 const { resolveGrossOrderAmount } = require('../utils/resolveGrossOrderAmount');
+const { roundMoney } = require('../utils/money');
 const {
   logDeprecatedDriverRouteHit,
   respondDeprecatedDriverRoute
@@ -5300,14 +5301,15 @@ router.post('/bookings/:id/accept', idempotencyKeyMiddleware, requireDriver, asy
         }
         
         const walletData = walletDoc.data();
-        const currentBalance = walletData.pointsBalance || 0;
+        const currentBalance = roundMoney(walletData.pointsBalance || 0);
+        const requiredCommission = roundMoney(estimatedCommission);
         
-        if (currentBalance < estimatedCommission) {
+        if (currentBalance < requiredCommission) {
           console.warn(`⚠️ [ACCEPT_BOOKING] Insufficient wallet balance:`, {
             driverId: uid,
             currentBalance,
-            requiredCommission: estimatedCommission,
-            shortfall: estimatedCommission - currentBalance
+            requiredCommission,
+            shortfall: roundMoney(requiredCommission - currentBalance)
           });
           throw new Error('INSUFFICIENT_WALLET_BALANCE');
         }
@@ -5315,8 +5317,8 @@ router.post('/bookings/:id/accept', idempotencyKeyMiddleware, requireDriver, asy
         console.log(`✅ [ACCEPT_BOOKING] Wallet balance sufficient:`, {
           driverId: uid,
           currentBalance,
-          requiredCommission: estimatedCommission,
-          remainingBalance: currentBalance - estimatedCommission
+          requiredCommission,
+          remainingBalance: roundMoney(currentBalance - requiredCommission)
         });
       } catch (walletError) {
         if (walletError.message === 'INSUFFICIENT_WALLET_BALANCE') {
@@ -7583,11 +7585,11 @@ router.post('/bookings/:id/confirm-payment', [
 
         const existingCommission = bookingDataTx.commissionDeducted?.amount ?? bookingDataTx.commissionDeducted ?? null;
         if (existingCommission) {
-          commissionAmount = Number(bookingDataTx.commissionDeducted?.amount ?? bookingDataTx.commissionDeducted ?? 0);
+          commissionAmount = roundMoney(bookingDataTx.commissionDeducted?.amount ?? bookingDataTx.commissionDeducted ?? 0);
           commissionDeducted = true;
           commissionTransactionId = bookingDataTx.commissionDeducted?.transactionId || null;
           const walletSnap = await transaction.get(walletRef);
-          newPointsBalance = walletSnap.exists ? Number(walletSnap.data().pointsBalance || 0) : 0;
+          newPointsBalance = walletSnap.exists ? roundMoney(walletSnap.data().pointsBalance || 0) : 0;
         } else {
           const exactDistanceKm = Number(
             bookingDataTx.distance?.total ??
@@ -7603,11 +7605,11 @@ router.post('/bookings/:id/confirm-payment', [
             fareBreakdown = fareCalculationService.calculateFare(0.5);
           }
 
-          commissionAmount = Number(fareBreakdown.commission || 0);
+          commissionAmount = roundMoney(fareBreakdown.commission || 0);
 
           const walletSnap = await transaction.get(walletRef);
           const walletData = walletSnap.exists ? walletSnap.data() : null;
-          const currentPointsBalance = Number(walletData?.pointsBalance || 0);
+          const currentPointsBalance = roundMoney(walletData?.pointsBalance || 0);
 
           if (!walletSnap.exists) {
             transaction.set(walletRef, {
@@ -7642,10 +7644,10 @@ router.post('/bookings/:id/confirm-payment', [
             commissionDeducted = false;
             newPointsBalance = currentPointsBalance;
           } else {
-            const newBalance = currentPointsBalance - commissionAmount;
+            const newBalance = roundMoney(currentPointsBalance - commissionAmount);
             transaction.update(walletRef, {
               pointsBalance: newBalance,
-              totalPointsSpent: Number(walletData?.totalPointsSpent || 0) + commissionAmount,
+              totalPointsSpent: roundMoney(Number(walletData?.totalPointsSpent || 0) + commissionAmount),
               lastUpdated: new Date()
             });
 

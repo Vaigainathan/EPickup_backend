@@ -1,5 +1,6 @@
 const { getFirestore } = require('firebase-admin/firestore');
 const { v4: uuidv4 } = require('uuid');
+const { roundMoney } = require('../utils/money');
 
 const STAGING_PROJECT = 'epickup-app-staging';
 
@@ -47,8 +48,8 @@ class PointsService {
       // Create new points wallet
       const walletData = {
         driverId,
-        pointsBalance: initialPoints,
-        totalPointsEarned: initialPoints,
+        pointsBalance: roundMoney(initialPoints),
+        totalPointsEarned: roundMoney(initialPoints),
         totalPointsSpent: 0,
         status: 'active',
         requiresTopUp: initialPoints === 0, // Requires top-up if no initial points
@@ -115,9 +116,9 @@ class PointsService {
       const canWork = walletData.status !== 'suspended';
       
       // ✅ FIX: Convert all numeric fields to ensure they're numbers (not strings)
-      const pointsBalance = Number(walletData.pointsBalance || 0);
-      const totalPointsEarned = Number(walletData.totalPointsEarned || 0);
-      const totalPointsSpent = Number(walletData.totalPointsSpent || 0);
+      const pointsBalance = roundMoney(walletData.pointsBalance || 0);
+      const totalPointsEarned = roundMoney(walletData.totalPointsEarned || 0);
+      const totalPointsSpent = roundMoney(walletData.totalPointsSpent || 0);
       
       const result = {
         success: true,
@@ -172,7 +173,7 @@ class PointsService {
       
       // ✅ FIX: Ensure numeric conversion to prevent string concatenation
       // 1:1 conversion rate (1 rupee = 1 point)
-      const pointsToAdd = Number(realMoneyAmount);
+      const pointsToAdd = roundMoney(realMoneyAmount);
       
       // Get current wallet
       const walletDoc = await this.db.collection('driverPointsWallets').doc(driverId).get();
@@ -189,11 +190,11 @@ class PointsService {
       }
       
       // ✅ FIX: Convert balance to number (might be stored as string in Firestore)
-      const currentBalance = Number(currentWallet?.pointsBalance || 0);
-      const currentTotalEarned = Number(currentWallet?.totalPointsEarned || 0);
+      const currentBalance = roundMoney(currentWallet?.pointsBalance || 0);
+      const currentTotalEarned = roundMoney(currentWallet?.totalPointsEarned || 0);
       
-      const newPointsBalance = currentBalance + pointsToAdd;
-      const newTotalEarned = currentTotalEarned + pointsToAdd;
+      const newPointsBalance = roundMoney(currentBalance + pointsToAdd);
+      const newTotalEarned = roundMoney(currentTotalEarned + pointsToAdd);
       
       console.log(`✅ [WALLET_SERVICE] Balance calculation: ${currentBalance} + ${pointsToAdd} = ${newPointsBalance}`);
 
@@ -342,7 +343,8 @@ class PointsService {
     const batch = this.db.batch();
     
     try {
-      console.info(`[WALLET_SERVICE] Deducting points for driver: ${driverId}, amount: ${pointsAmount} points`);
+      const pointsAmountRounded = roundMoney(pointsAmount);
+      console.info(`[WALLET_SERVICE] Deducting points for driver: ${driverId}, amount: ${pointsAmountRounded} points`);
       
       // Get current wallet
       const walletDoc = await this.db.collection('driverPointsWallets').doc(driverId).get();
@@ -355,20 +357,20 @@ class PointsService {
       }
 
       const currentWallet = walletDoc.data();
-      const currentBalance = currentWallet.pointsBalance;
+      const currentBalance = roundMoney(currentWallet.pointsBalance || 0);
 
       // Check if sufficient balance
-      if (currentBalance < pointsAmount) {
+      if (currentBalance < pointsAmountRounded) {
         return {
           success: false,
           error: 'Insufficient points balance',
           currentBalance,
-          requiredAmount: pointsAmount
+          requiredAmount: pointsAmountRounded
         };
       }
 
-      const newBalance = currentBalance - pointsAmount;
-      const newTotalSpent = (currentWallet.totalPointsSpent || 0) + pointsAmount;
+      const newBalance = roundMoney(currentBalance - pointsAmountRounded);
+      const newTotalSpent = roundMoney((currentWallet.totalPointsSpent || 0) + pointsAmountRounded);
 
       // Update points wallet
       const walletRef = this.db.collection('driverPointsWallets').doc(driverId);
@@ -390,7 +392,7 @@ class PointsService {
         id: transactionId,
         driverId,
         type: 'debit',
-        pointsAmount: pointsAmount,
+        pointsAmount: pointsAmountRounded,
         previousBalance: currentBalance,
         newBalance: newBalance,
         tripId,
@@ -420,7 +422,7 @@ class PointsService {
         console.warn('⚠️ [WALLET_SERVICE] Failed to invalidate cache after points deduction:', cacheError.message);
       }
 
-      console.info(`[WALLET_SERVICE] Points deducted successfully: ${pointsAmount} points`);
+      console.info(`[WALLET_SERVICE] Points deducted successfully: ${pointsAmountRounded} points`);
 
       // Emit real-time wallet update event
       try {
@@ -430,7 +432,7 @@ class PointsService {
           transactions: [{
             id: transactionId,
             type: 'debit',
-            amount: -pointsAmount,
+            amount: -pointsAmountRounded,
             previousBalance: currentBalance,
             newBalance: newBalance,
             status: 'completed',
@@ -449,7 +451,7 @@ class PointsService {
         success: true,
         message: 'Points deducted successfully',
         data: {
-          pointsDeducted: pointsAmount,
+          pointsDeducted: pointsAmountRounded,
           newBalance: newBalance,
           transactionId
         }
@@ -614,9 +616,9 @@ class PointsService {
         const distance = data.distanceKm || tripDetails.distance || 0;
         
         // ✅ FIX: Convert numeric values to ensure they're numbers (not strings)
-        const pointsAmount = Number(data.pointsAmount || 0);
-        const previousBalance = Number(data.previousBalance || 0);
-        const newBalance = Number(data.newBalance || 0);
+        const pointsAmount = roundMoney(data.pointsAmount || 0);
+        const previousBalance = roundMoney(data.previousBalance || 0);
+        const newBalance = roundMoney(data.newBalance || 0);
         
         // Generate description based on transaction type (money format only)
         let description = '';
@@ -697,7 +699,7 @@ class PointsService {
   async setSupportTestPointsBalance(driverId, targetBalance, details = {}) {
     assertStagingProjectForSupportWallet();
 
-    const target = Number(targetBalance);
+    const target = roundMoney(targetBalance);
     if (!Number.isFinite(target) || target < 0) {
       return {
         success: false,
@@ -719,7 +721,7 @@ class PointsService {
     }
 
     const currentWallet = walletDoc.data() || {};
-    const currentBalance = Number(currentWallet.pointsBalance || 0);
+    const currentBalance = roundMoney(currentWallet.pointsBalance || 0);
     if (currentBalance === target) {
       return {
         success: true,
@@ -731,7 +733,7 @@ class PointsService {
       };
     }
 
-    const delta = target - currentBalance;
+    const delta = roundMoney(target - currentBalance);
     const batch = this.db.batch();
     const walletRef = this.db.collection('driverPointsWallets').doc(driverId);
     const walletUpdates = {
@@ -740,9 +742,9 @@ class PointsService {
       lastUpdated: new Date()
     };
     if (delta > 0) {
-      walletUpdates.totalPointsEarned = Number(currentWallet.totalPointsEarned || 0) + delta;
+      walletUpdates.totalPointsEarned = roundMoney(Number(currentWallet.totalPointsEarned || 0) + delta);
     } else {
-      walletUpdates.totalPointsSpent = Number(currentWallet.totalPointsSpent || 0) + Math.abs(delta);
+      walletUpdates.totalPointsSpent = roundMoney(Number(currentWallet.totalPointsSpent || 0) + Math.abs(delta));
     }
     batch.update(walletRef, walletUpdates);
 
@@ -752,7 +754,7 @@ class PointsService {
       id: transactionId,
       driverId,
       type: delta > 0 ? 'credit' : 'debit',
-      pointsAmount: Math.abs(delta),
+      pointsAmount: roundMoney(Math.abs(delta)),
       previousBalance: currentBalance,
       newBalance: target,
       paymentMethod: 'support_test_topup',

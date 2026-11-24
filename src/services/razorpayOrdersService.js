@@ -1,6 +1,7 @@
 const crypto = require('crypto');
 const Razorpay = require('razorpay');
 const { getFirestore, Timestamp } = require('firebase-admin/firestore');
+const { roundMoney } = require('../utils/money');
 
 /**
  * RazorpayOrdersService - Native Checkout SDK for Android
@@ -351,12 +352,12 @@ class RazorpayOrdersService {
 
         if (currentWalletDoc.exists) {
           const walletData = currentWalletDoc.data();
-          currentBalance = walletData.pointsBalance || 0;
-          currentTotalEarned = walletData.totalPointsEarned || 0;
+          currentBalance = roundMoney(walletData.pointsBalance || 0);
+          currentTotalEarned = roundMoney(walletData.totalPointsEarned || 0);
         }
 
-        const newBalance = currentBalance + pointsAwarded;
-        const newTotalEarned = currentTotalEarned + pointsAwarded;
+        const newBalance = roundMoney(currentBalance + pointsAwarded);
+        const newTotalEarned = roundMoney(currentTotalEarned + pointsAwarded);
 
         // Step 2: Update driverTopUps transaction status
         transaction.update(topupRef, {

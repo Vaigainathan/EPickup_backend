@@ -2,6 +2,7 @@ const crypto = require('crypto');
 const Razorpay = require('razorpay');
 const { v4: uuidv4 } = require('uuid');
 const { getFirestore } = require('./firebase');
+const { roundMoney } = require('../utils/money');
 
 class RazorpayService {
   constructor() {
@@ -234,7 +235,7 @@ class RazorpayService {
         razorpayPaymentId: meta.razorpayPaymentId || null,
         razorpayPaymentLinkId: meta.razorpayPaymentLinkId || topup.razorpayPaymentLinkId || null
       };
-      const pointsToAdd = realMoneyAmount;
+      const pointsToAdd = roundMoney(realMoneyAmount);
 
       const walletRef = this.db.collection('driverPointsWallets').doc(driverId);
       const walletSnap = await transaction.get(walletRef);
@@ -243,12 +244,12 @@ class RazorpayService {
       let currentTotalEarned = 0;
       if (walletSnap.exists) {
         const walletData = walletSnap.data();
-        currentBalance = Number(walletData.pointsBalance || 0);
-        currentTotalEarned = Number(walletData.totalPointsEarned || 0);
+        currentBalance = roundMoney(walletData.pointsBalance || 0);
+        currentTotalEarned = roundMoney(walletData.totalPointsEarned || 0);
       }
 
-      const newPointsBalance = currentBalance + pointsToAdd;
-      const newTotalEarned = currentTotalEarned + pointsToAdd;
+      const newPointsBalance = roundMoney(currentBalance + pointsToAdd);
+      const newTotalEarned = roundMoney(currentTotalEarned + pointsToAdd);
       const pointsTransactionId = uuidv4();
       const revenueId = uuidv4();
       const completedAt = new Date();

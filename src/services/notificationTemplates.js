@@ -8,6 +8,8 @@ const {
   digitsDisplayId
 } = require('./marketplace/marketplacePush');
 
+const NOTIFICATION_TIME_ZONE = 'Asia/Kolkata';
+
 function finalizeNotificationCopy(text) {
   if (!text || typeof text !== 'string' || !/\{\{\w+\}\}/.test(text)) {
     return text;
@@ -40,18 +42,18 @@ const formatNotificationVariableValue = (variableName, value) => {
     const date = value.toDate();
     if (date instanceof Date && !isNaN(date.getTime())) {
       if (isDate && !isTime && !isEta) {
-        return date.toLocaleString('en-IN', { hour: '2-digit', minute: '2-digit' });
+        return date.toLocaleString('en-IN', { hour: '2-digit', minute: '2-digit', timeZone: NOTIFICATION_TIME_ZONE });
       }
-      return date.toLocaleTimeString('en-IN', { hour: 'numeric', minute: '2-digit' });
+      return date.toLocaleTimeString('en-IN', { hour: 'numeric', minute: '2-digit', timeZone: NOTIFICATION_TIME_ZONE });
     }
   }
 
   // Date object
   if (value instanceof Date && !isNaN(value.getTime())) {
     if (isDate && !isTime && !isEta) {
-      return value.toLocaleString('en-IN', { hour: '2-digit', minute: '2-digit' });
+      return value.toLocaleString('en-IN', { hour: '2-digit', minute: '2-digit', timeZone: NOTIFICATION_TIME_ZONE });
     }
-    return value.toLocaleTimeString('en-IN', { hour: 'numeric', minute: '2-digit' });
+    return value.toLocaleTimeString('en-IN', { hour: 'numeric', minute: '2-digit', timeZone: NOTIFICATION_TIME_ZONE });
   }
 
   // ISO string
@@ -59,9 +61,9 @@ const formatNotificationVariableValue = (variableName, value) => {
     const parsed = new Date(value);
     if (!isNaN(parsed.getTime())) {
       if (isDate && !isTime && !isEta) {
-        return parsed.toLocaleString('en-IN', { hour: '2-digit', minute: '2-digit' });
+        return parsed.toLocaleString('en-IN', { hour: '2-digit', minute: '2-digit', timeZone: NOTIFICATION_TIME_ZONE });
       }
-      return parsed.toLocaleTimeString('en-IN', { hour: 'numeric', minute: '2-digit' });
+      return parsed.toLocaleTimeString('en-IN', { hour: 'numeric', minute: '2-digit', timeZone: NOTIFICATION_TIME_ZONE });
     }
     return value;
   }
@@ -605,20 +607,20 @@ class NotificationBuilder {
     if (typeof value?.toDate === 'function') {
       const date = value.toDate();
       if (date instanceof Date && !isNaN(date.getTime())) {
-        return date.toLocaleTimeString('en-IN', { hour: 'numeric', minute: '2-digit' });
+        return date.toLocaleTimeString('en-IN', { hour: 'numeric', minute: '2-digit', timeZone: NOTIFICATION_TIME_ZONE });
       }
     }
 
     // Date object
     if (value instanceof Date && !isNaN(value.getTime())) {
-      return value.toLocaleTimeString('en-IN', { hour: 'numeric', minute: '2-digit' });
+      return value.toLocaleTimeString('en-IN', { hour: 'numeric', minute: '2-digit', timeZone: NOTIFICATION_TIME_ZONE });
     }
 
     // ISO string
     if (typeof value === 'string') {
       const parsed = new Date(value);
       if (!isNaN(parsed.getTime())) {
-        return parsed.toLocaleTimeString('en-IN', { hour: 'numeric', minute: '2-digit' });
+        return parsed.toLocaleTimeString('en-IN', { hour: 'numeric', minute: '2-digit', timeZone: NOTIFICATION_TIME_ZONE });
       }
       return value; // Already human-readable (e.g., "15 mins")
     }

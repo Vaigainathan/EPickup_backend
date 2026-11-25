@@ -12,16 +12,22 @@ function tokenSuffix(token) {
   return token.slice(-6);
 }
 
-function registerExpoTickets(results, tokens, context = {}) {
+function registerExpoTickets(results, tokens, contextOrContexts = {}) {
   if (!Array.isArray(results) || !Array.isArray(tokens)) {
     return;
   }
-  const userId = context.userId || '';
-  const notificationType = context.notificationType || 'unknown';
+  const perTokenContexts = Array.isArray(contextOrContexts)
+    ? contextOrContexts
+    : tokens.map(() => (
+      contextOrContexts && typeof contextOrContexts === 'object' ? contextOrContexts : {}
+    ));
   results.forEach((result, index) => {
     if (!result || result.status !== 'ok' || !result.id) {
       return;
     }
+    const context = perTokenContexts[index] || {};
+    const userId = context.userId || '';
+    const notificationType = context.notificationType || 'unknown';
     pendingTickets.set(result.id, {
       userId,
       notificationType,
@@ -144,10 +150,15 @@ function resetReceiptQueueForTests() {
   scheduled = false;
 }
 
+function getPendingTicketsForTests() {
+  return new Map(pendingTickets);
+}
+
 module.exports = {
   RECEIPT_DELAY_MS,
   registerExpoTickets,
   scheduleReceiptFetch,
   processPendingReceipts,
-  resetReceiptQueueForTests
+  resetReceiptQueueForTests,
+  getPendingTicketsForTests
 };

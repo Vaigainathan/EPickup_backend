@@ -226,9 +226,17 @@ class ExpoPushService {
         throw new Error('No valid Expo push tokens provided');
       }
 
+      const {
+        pushContexts: pushContextsOption,
+        pushContext: pushContextOption,
+        dataOnly: dataOnlyOption,
+        marketplace: marketplaceOption,
+        ...messageOptionExtras
+      } = options;
+
       const cleanedNotificationData = notification.data ? this.removeUndefinedValues(notification.data) : {};
 
-      const marketplace = options.marketplace
+      const marketplace = marketplaceOption
         || notification.marketplace
         || isMarketplacePushData(cleanedNotificationData);
 
@@ -257,10 +265,10 @@ class ExpoPushService {
       // Create notification messages
       // If options.dataOnly is true, produce a data-only message (no title/body/sound)
       const messages = validTokens.map(token => {
-        if (options.dataOnly) {
+        if (dataOnlyOption) {
           return {
             to: token,
-            priority: options.priority || 'high',
+            priority: messageOptionExtras.priority || 'high',
             data: notificationData,
             // minimal platform hints
             android: {
@@ -274,20 +282,20 @@ class ExpoPushService {
 
         return {
           to: token,
-          sound: options.sound || 'default',
+          sound: messageOptionExtras.sound || 'default',
           title: notification.title,
           body: notification.body,
-          priority: options.priority || 'high', // ✅ CRITICAL: High priority for urgent notifications
-          badge: options.badge,
+          priority: messageOptionExtras.priority || 'high', // ✅ CRITICAL: High priority for urgent notifications
+          badge: messageOptionExtras.badge,
           data: notificationData,
           // ✅ CRITICAL: Android-specific settings for sound and vibration
           android: {
             priority: 'high',
-            sound: options.sound || 'default',
+            sound: messageOptionExtras.sound || 'default',
             vibrate: [0, 500, 200, 500], // ✅ Long vibration pattern: 0ms delay, 500ms vibrate, 200ms pause, 500ms vibrate
-            channelId: options.channelId || NEW_ORDER_CHANNEL_ID, // ✅ FIXED: Use consistent channel ID from constants
+            channelId: messageOptionExtras.channelId || NEW_ORDER_CHANNEL_ID, // ✅ FIXED: Use consistent channel ID from constants
             notification: {
-              sound: options.sound || 'default',
+              sound: messageOptionExtras.sound || 'default',
               vibrate: [0, 500, 200, 500],
               priority: 'high',
               defaultSound: true,
@@ -296,23 +304,37 @@ class ExpoPushService {
           },
           // ✅ CRITICAL: iOS-specific settings for sound and vibration
           ios: {
-            sound: options.sound || 'default',
-            badge: options.badge,
+            sound: messageOptionExtras.sound || 'default',
+            badge: messageOptionExtras.badge,
             priority: 'high'
           },
-          ...options
+          ...messageOptionExtras
         };
       });
 
       // Send notifications in chunks (Expo recommends max 100 per request)
-      const chunks = this.chunkArray(messages, 100);
+      const EXPO_CHUNK_SIZE = 100;
+      const chunks = this.chunkArray(messages, EXPO_CHUNK_SIZE);
       const results = [];
 
-      for (const chunk of chunks) {
+      for (let chunkIndex = 0; chunkIndex < chunks.length; chunkIndex += 1) {
+        const chunk = chunks[chunkIndex];
         const chunkResults = await this.expo.sendPushNotificationsAsync(chunk);
         results.push(...chunkResults);
         const { registerExpoTickets } = require('./expoPushReceiptQueue');
-        registerExpoTickets(chunkResults, chunk.map((message) => message.to), options.pushContext || {});
+        const globalStart = chunkIndex * EXPO_CHUNK_SIZE;
+        const chunkContexts = chunk.map((_, indexInChunk) => {
+          const globalIndex = globalStart + indexInChunk;
+          if (Array.isArray(pushContextsOption) && pushContextsOption[globalIndex]) {
+            return pushContextsOption[globalIndex];
+          }
+          return pushContextOption || {};
+        });
+        registerExpoTickets(
+          chunkResults,
+          chunk.map((message) => message.to),
+          chunkContexts
+        );
       }
 
       // Process results
@@ -322,8 +344,8 @@ class ExpoPushService {
       // ✅ NEW: High-signal debug logging when there are failures so we know WHY Expo rejected pushes
       if (failureCount > 0) {
         const failed = results.filter(result => result.status === 'error');
-        const pushContexts = Array.isArray(options.pushContexts) ? options.pushContexts : null;
-        const defaultContext = options.pushContext || {};
+        const pushContexts = Array.isArray(pushContextsOption) ? pushContextsOption : null;
+        const defaultContext = pushContextOption || {};
         results.forEach((ticket, index) => {
           if (ticket.status !== 'error') {
             return;

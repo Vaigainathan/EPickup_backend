@@ -1,3 +1,14 @@
+jest.mock('../src/services/firebase', () => ({
+  getFirestore: jest.fn()
+}));
+
+jest.mock('../src/services/locationService', () => ({
+  calculateHaversineDistance: jest.fn(() => 5000),
+  estimateDuration: jest.fn(() => 600)
+}));
+
+jest.mock('axios');
+
 const {
   CustomerMarketplaceService,
   LEGACY_CARD_FIELDS,
@@ -19,15 +30,6 @@ const weekdayOpeningHours = {
   saturday: { closed: false, open: '09:00', close: '21:00' },
   sunday: { closed: false, open: '09:00', close: '21:00' }
 };
-
-jest.mock('../src/services/firebase', () => ({
-  getFirestore: jest.fn()
-}));
-
-jest.mock('../src/services/locationService', () => ({
-  calculateHaversineDistance: jest.fn(() => 5000),
-  estimateDuration: jest.fn(() => 600)
-}));
 
 jest.mock('../src/services/shopCatalogueService', () => ({
   resolvePhotoUrl: jest.fn(async (filePath, fallbackUrl) => {
@@ -743,7 +745,27 @@ describe('customerMarketplaceService browse without customer origin', () => {
     spy.mockRestore();
   });
 
-  test('valid origin keeps distance and ETA from travel', async () => {
+  test('listCategories with origin returns null ETAs', async () => {
+    const spy = jest.spyOn(service, 'collectEligibleShopRows');
+    spy.mockResolvedValue({
+      rows: [
+        makeBrowseRow({
+          id: 'shop-a',
+          shopType: 'Grocery & Supermarket',
+          etaMinutes: null,
+          distanceKm: 1
+        })
+      ],
+      settings: rankingSettings
+    });
+    const result = await service.listCategories({ lat: 12.9, lng: 77.6 });
+    const grocery = result.categories.find((row) => row.category === 'Grocery & Supermarket');
+    expect(grocery.etaMinMinutes).toBeNull();
+    expect(grocery.etaMaxMinutes).toBeNull();
+    spy.mockRestore();
+  });
+
+  test('valid origin keeps haversine distance and null ETA', async () => {
     const { getFirestore } = require('../src/services/firebase');
     const verifiedShop = {
       id: 'shop-verified',
@@ -767,6 +789,92 @@ describe('customerMarketplaceService browse without customer origin', () => {
     const localService = new CustomerMarketplaceService();
     const shops = await localService.loadEligibleShops({ lat: 12.9, lng: 77.6 });
     expect(shops[0].distanceKm).toBe(5);
-    expect(shops[0].etaMinutes).toBe(10);
+    expect(shops[0].etaMinutes).toBeNull();
+    expect(shops[0]).not.toHaveProperty('distanceApprox');
+  });
+});
+
+describe('customerMarketplaceService road distance flag', () => {
+  const axios = require('axios');
+  const roadDistanceService = require('../src/services/marketplaceRoadDistanceService');
+  const { getFirestore } = require('../src/services/firebase');
+
+  const verifiedShop = {
+    id: 'shop-verified',
+    data: {
+      address: '1 Main St',
+      location: { latitude: 12.9, longitude: 77.6 },
+      orderCount: 3,
+      bank: { upiNameVerification: { verifiedName: 'Verified Shop' } },
+      rating: { sum: 8, count: 2, average: 4 },
+      storefront: { tagline: 'Fresh daily' }
+    }
+  };
+
+  const users = [
+    makeUserDoc('shop-verified', {
+      userType: 'shop',
+      isActive: true,
+      shop: {
+        approvalStatus: 'approved',
+        shopName: 'Verified Mart',
+        shopType: 'Grocery & Supermarket',
+        isOpen: true
+      }
+    })
+  ];
+
+  const origin = { lat: 12.9, lng: 77.6 };
+  const originalEnv = process.env;
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    roadDistanceService.resetForTests();
+    process.env = { ...originalEnv, GOOGLE_MAPS_API_KEY: 'test-key' };
+    delete process.env.MARKETPLACE_ROAD_DISTANCE;
+    getFirestore.mockReturnValue(buildFirestoreMock({ users, shops: [verifiedShop], products: [] }));
+  });
+
+  afterEach(() => {
+    process.env = originalEnv;
+    delete process.env.MARKETPLACE_ROAD_DISTANCE;
+  });
+
+  test('flag on uses road distance and distanceApprox on cards', async () => {
+    process.env.MARKETPLACE_ROAD_DISTANCE = 'on';
+    axios.post.mockResolvedValue({
+      data: [
+        {
+          originIndex: 0,
+          destinationIndex: 0,
+          distanceMeters: 7200,
+          condition: 'ROUTE_EXISTS',
+          status: {}
+        }
+      ]
+    });
+    const localService = new CustomerMarketplaceService();
+    const shops = await localService.loadEligibleShops(origin);
+    expect(shops[0].distanceKm).toBe(7.2);
+    expect(shops[0].distanceApprox).toBe(false);
+    expect(shops[0].etaMinutes).toBeNull();
+  });
+
+  test('flag on uses haversine fallback when matrix request fails', async () => {
+    process.env.MARKETPLACE_ROAD_DISTANCE = 'on';
+    axios.post.mockRejectedValue(new Error('network'));
+    const localService = new CustomerMarketplaceService();
+    const shops = await localService.loadEligibleShops(origin);
+    expect(shops[0].distanceKm).toBe(6.5);
+    expect(shops[0].distanceApprox).toBe(true);
+    expect(shops[0].etaMinutes).toBeNull();
+  });
+
+  test('flag off keeps haversine distance without distanceApprox', async () => {
+    const localService = new CustomerMarketplaceService();
+    const shops = await localService.loadEligibleShops(origin);
+    expect(shops[0].distanceKm).toBe(5);
+    expect(shops[0]).not.toHaveProperty('distanceApprox');
+    expect(shops[0].etaMinutes).toBeNull();
   });
 });

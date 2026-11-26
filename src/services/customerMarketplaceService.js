@@ -27,6 +27,10 @@ const {
   MARKETPLACE_SHOP_TYPES,
   isMarketplaceShopType
 } = require('../constants/marketplaceShopTypes');
+const {
+  getDistances,
+  isMarketplaceRoadDistanceOn
+} = require('./marketplaceRoadDistanceService');
 
 const DEFAULT_LIMIT = 20;
 const MAX_LIMIT = 50;
@@ -343,11 +347,27 @@ class CustomerMarketplaceService {
     return getFirestore();
   }
 
-  travel(origin, location) {
+  haversineDistanceKm(origin, location) {
     const meters = locationService.calculateHaversineDistance(origin, location);
-    const etaMinutes = Math.round(locationService.estimateDuration(meters) / 60);
-    const distanceKm = Math.round((meters / 1000) * 10) / 10;
-    return { distanceKm, etaMinutes };
+    return Math.round((meters / 1000) * 10) / 10;
+  }
+
+  async enrichBrowseDistances(origin, rows) {
+    if (!origin || !rows.length) {
+      return;
+    }
+    if (!isMarketplaceRoadDistanceOn()) {
+      return;
+    }
+    const destinations = rows.map((row) => ({ id: row.id, location: row.location }));
+    const distances = await getDistances(origin, destinations);
+    for (const row of rows) {
+      const entry = distances.get(row.id);
+      if (entry) {
+        row.distanceKm = entry.distanceKm;
+        row.distanceApprox = entry.approx;
+      }
+    }
   }
 
   async loadMarketplaceSettings() {
@@ -418,11 +438,9 @@ class CustomerMarketplaceService {
       return null;
     }
     let distanceKm = null;
-    let etaMinutes = null;
-    if (origin) {
-      const travel = this.travel(origin, location);
-      distanceKm = travel.distanceKm;
-      etaMinutes = travel.etaMinutes;
+    const etaMinutes = null;
+    if (origin && !isMarketplaceRoadDistanceOn()) {
+      distanceKm = this.haversineDistanceKm(origin, location);
     }
     const orderCount = Number.isFinite(Number(profile.orderCount))
       ? Math.max(0, Math.floor(Number(profile.orderCount)))
@@ -498,6 +516,8 @@ class CustomerMarketplaceService {
       }
     }
 
+    await this.enrichBrowseDistances(origin, rows);
+
     const ranked = applyRankingMetrics(rows, settings, now, { globalShops: rows });
     const withBrowse = ranked.map((row) => this.attachBrowseFields(row, now));
     return { rows: withBrowse, settings };
@@ -559,7 +579,7 @@ class CustomerMarketplaceService {
 
     const { rating, isNew } = presentRatingDisplay(row.ratingCount, row.ratingAverage);
 
-    return {
+    const card = {
       id: row.id,
       shopName: row.shopName,
       shopType: row.shopType,
@@ -583,6 +603,10 @@ class CustomerMarketplaceService {
       fairRating: row.fairRating,
       relevanceScore: row.relevanceScore
     };
+    if (isMarketplaceRoadDistanceOn()) {
+      card.distanceApprox = row.distanceApprox === true;
+    }
+    return card;
   }
 
   async buildEligibleShopRows(origin, now) {
@@ -635,6 +659,7 @@ class CustomerMarketplaceService {
     if (!row) {
       throw httpError(404, 'SHOP_NOT_FOUND', 'Shop not found');
     }
+    await this.enrichBrowseDistances(origin, [row]);
     const [ranked] = applyRankingMetrics([row], settings, now, { globalShops: [row] });
     const withBrowse = this.attachBrowseFields(ranked, now);
     const [card] = await this.presentShopCardsForRows([withBrowse], settings, now);
@@ -656,21 +681,11 @@ class CustomerMarketplaceService {
             comingSoon: true
           };
         }
-        if (origin == null) {
-          return {
-            category,
-            shopCount: matches.length,
-            etaMinMinutes: null,
-            etaMaxMinutes: null,
-            comingSoon: false
-          };
-        }
-        const etas = matches.map((shop) => shop.etaMinutes);
         return {
           category,
           shopCount: matches.length,
-          etaMinMinutes: Math.min(...etas),
-          etaMaxMinutes: Math.max(...etas),
+          etaMinMinutes: null,
+          etaMaxMinutes: null,
           comingSoon: false
         };
       })

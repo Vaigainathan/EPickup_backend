@@ -264,6 +264,14 @@ function productHasPhoto(data) {
     || (typeof url === 'string' && url.trim() !== '');
 }
 
+// Must stay in sync with shopCatalogueService.productSoldOut (soldOut === true).
+function customerProductIsAvailable(data) {
+  if (!data || typeof data !== 'object') {
+    return false;
+  }
+  return data.isActive !== false && data.soldOut !== true;
+}
+
 function pickEarliestProductPhoto(docs) {
   let best = null;
   let bestMs = Infinity;
@@ -429,6 +437,28 @@ class CustomerMarketplaceService {
     return { productPhotoByShop, taglineByShop };
   }
 
+  async loadShopIdsWithCustomerAvailableProducts(shopIds) {
+    const eligible = new Set();
+    const uniqueIds = [...new Set((shopIds || []).filter(Boolean))];
+    if (uniqueIds.length === 0) {
+      return eligible;
+    }
+    const db = this.getDb();
+    for (const ids of chunk(uniqueIds, SHOP_ID_IN_LIMIT)) {
+      if (ids.length === 0) {
+        continue;
+      }
+      const snapshot = await db.collection('products').where('shopId', 'in', ids).get();
+      snapshot.docs.forEach((doc) => {
+        const data = doc.data() || {};
+        if (data.shopId && customerProductIsAvailable(data)) {
+          eligible.add(data.shopId);
+        }
+      });
+    }
+    return eligible;
+  }
+
   buildBrowseRow(shopId, identity, profile, origin) {
     if (!hasVerifiedUpiName(profile)) {
       return null;
@@ -516,9 +546,14 @@ class CustomerMarketplaceService {
       }
     }
 
-    await this.enrichBrowseDistances(origin, rows);
+    const shopIdsWithProducts = await this.loadShopIdsWithCustomerAvailableProducts(
+      rows.map((row) => row.id)
+    );
+    const stockedRows = rows.filter((row) => shopIdsWithProducts.has(row.id));
 
-    const ranked = applyRankingMetrics(rows, settings, now, { globalShops: rows });
+    await this.enrichBrowseDistances(origin, stockedRows);
+
+    const ranked = applyRankingMetrics(stockedRows, settings, now, { globalShops: stockedRows });
     const withBrowse = ranked.map((row) => this.attachBrowseFields(row, now));
     return { rows: withBrowse, settings };
   }
@@ -646,12 +681,20 @@ class CustomerMarketplaceService {
     if (!record) {
       throw httpError(404, 'SHOP_NOT_FOUND', 'Shop not found');
     }
+    const withProducts = await this.loadShopIdsWithCustomerAvailableProducts([shopId]);
+    if (!withProducts.has(shopId)) {
+      throw httpError(404, 'SHOP_NOT_FOUND', 'Shop not found');
+    }
     return record;
   }
 
   async getShopOrThrow(shopId, origin, now = new Date()) {
     const record = await this.loadShopRecord(shopId);
     if (!record) {
+      throw httpError(404, 'SHOP_NOT_FOUND', 'Shop not found');
+    }
+    const withProducts = await this.loadShopIdsWithCustomerAvailableProducts([shopId]);
+    if (!withProducts.has(shopId)) {
       throw httpError(404, 'SHOP_NOT_FOUND', 'Shop not found');
     }
     const settings = await this.loadMarketplaceSettings();
@@ -862,3 +905,4 @@ module.exports.hasVerifiedUpiName = hasVerifiedUpiName;
 module.exports.stripInternalCardFields = stripInternalCardFields;
 module.exports.presentShopStatusFields = presentShopStatusFields;
 module.exports.presentSearchProductShop = presentSearchProductShop;
+module.exports.customerProductIsAvailable = customerProductIsAvailable;

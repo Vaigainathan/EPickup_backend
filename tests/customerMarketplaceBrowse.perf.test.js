@@ -109,20 +109,19 @@ function buildFirestoreMock({ users, shops, products = [], categories = [], sett
       }
       if (name === 'products') {
         return {
-          where(field, op, values) {
-            if (field === 'shopId' && op === '==') {
-              return {
-                get: async () => ({
-                  docs: products
-                    .filter((p) => p.data.shopId === values)
-                    .map((p) => ({ id: p.id, data: () => p.data }))
-                })
-              };
-            }
+          where(field, op, value) {
             return {
               get: async () => ({
                 docs: products
-                  .filter((p) => values.includes(p.data.shopId))
+                  .filter((p) => {
+                    if (field === 'shopId' && op === 'in') {
+                      return value.includes(p.data.shopId);
+                    }
+                    if (field === 'shopId' && op === '==') {
+                      return p.data.shopId === value;
+                    }
+                    return false;
+                  })
                   .map((p) => ({ id: p.id, data: () => p.data }))
               })
             };
@@ -233,8 +232,13 @@ describe('customerMarketplaceService browse perf', () => {
       verifiedUser('shop-b', { shopName: 'Beta Mart' }),
       verifiedUser('shop-c', { shopName: 'Gamma Mart' })
     ];
+    const products = [
+      { id: 'prod-a', data: { shopId: 'shop-a', name: 'Item A', isActive: true, soldOut: false, photoFilePath: 'shops/shop-a/a.jpg' } },
+      { id: 'prod-b', data: { shopId: 'shop-b', name: 'Beta Item', isActive: true, soldOut: false, photoFilePath: 'shops/shop-b/b.jpg' } },
+      { id: 'prod-c', data: { shopId: 'shop-c', name: 'Item C', isActive: true, soldOut: false, photoFilePath: 'shops/shop-c/c.jpg' } }
+    ];
     const { getFirestore } = require('../src/services/firebase');
-    getFirestore.mockReturnValue(buildFirestoreMock({ users, shops }));
+    getFirestore.mockReturnValue(buildFirestoreMock({ users, shops, products }));
     service = new CustomerMarketplaceService();
   });
 

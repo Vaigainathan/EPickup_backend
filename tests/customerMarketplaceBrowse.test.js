@@ -127,11 +127,19 @@ function buildFirestoreMock({ users, shops, products = [], categories = [], sett
       }
       if (name === 'products') {
         return {
-          where(field, op, values) {
+          where(field, op, value) {
             return {
               get: async () => ({
                 docs: products
-                  .filter((p) => values.includes(p.data.shopId))
+                  .filter((p) => {
+                    if (field === 'shopId' && op === 'in') {
+                      return value.includes(p.data.shopId);
+                    }
+                    if (field === 'shopId' && op === '==') {
+                      return p.data.shopId === value;
+                    }
+                    return false;
+                  })
                   .map((p) => ({ id: p.id, data: () => p.data }))
               })
             };
@@ -228,11 +236,11 @@ describe('customerMarketplaceService browse', () => {
       products: [
         {
           id: 'prod-hidden',
-          data: { shopId: 'shop-unverified', name: 'Secret Item', isActive: true }
+          data: { shopId: 'shop-unverified', name: 'Secret Item', isActive: true, soldOut: false }
         },
         {
           id: 'prod-visible',
-          data: { shopId: 'shop-verified', name: 'Rice', isActive: true }
+          data: { shopId: 'shop-verified', name: 'Rice', isActive: true, soldOut: false, photoUrl: 'rice.jpg' }
         }
       ]
     }));
@@ -473,11 +481,11 @@ describe('customerMarketplaceService browse', () => {
       products: [
         {
           id: 'prod-hidden',
-          data: { shopId: 'shop-unverified', name: 'Secret Item', isActive: true }
+          data: { shopId: 'shop-unverified', name: 'Secret Item', isActive: true, soldOut: false }
         },
         {
           id: 'prod-visible',
-          data: { shopId: 'shop-verified', name: 'Rice', isActive: true }
+          data: { shopId: 'shop-verified', name: 'Rice', isActive: true, soldOut: false, photoUrl: 'rice.jpg' }
         }
       ]
     }));
@@ -706,11 +714,26 @@ describe('customerMarketplaceService browse without customer origin', () => {
     });
     jest.spyOn(service, 'loadMarketplaceSettings').mockResolvedValue(rankingSettings);
     jest.spyOn(service, 'getDb').mockReturnValue({
-      collection: () => ({
-        where: () => ({
-          get: async () => ({ docs: [] })
-        })
-      }),
+      collection(name) {
+        if (name === 'products') {
+          return {
+            where(field, op, value) {
+              return {
+                get: async () => ({
+                  docs: (field === 'shopId' && (op === 'in' ? value.includes('shop-verified') : value === 'shop-verified'))
+                    ? [{ id: 'prod-verified', data: () => ({ shopId: 'shop-verified', isActive: true, soldOut: false, name: 'Rice', photoUrl: 'rice.jpg' }) }]
+                    : []
+                })
+              };
+            }
+          };
+        }
+        return {
+          where: () => ({
+            get: async () => ({ docs: [] })
+          })
+        };
+      },
       getAll: async () => []
     });
     const result = await service.getShop('shop-verified', {});
@@ -785,7 +808,16 @@ describe('customerMarketplaceService browse without customer origin', () => {
         shop: { approvalStatus: 'approved', shopName: 'Verified Mart', shopType: 'Grocery & Supermarket', isOpen: true }
       })
     ];
-    getFirestore.mockReturnValue(buildFirestoreMock({ users, shops: [verifiedShop], products: [] }));
+    getFirestore.mockReturnValue(buildFirestoreMock({
+      users,
+      shops: [verifiedShop],
+      products: [
+        {
+          id: 'prod-verified',
+          data: { shopId: 'shop-verified', name: 'Rice', isActive: true, soldOut: false, photoUrl: 'rice.jpg' }
+        }
+      ]
+    }));
     const localService = new CustomerMarketplaceService();
     const shops = await localService.loadEligibleShops({ lat: 12.9, lng: 77.6 });
     expect(shops[0].distanceKm).toBe(5);
@@ -832,7 +864,16 @@ describe('customerMarketplaceService road distance flag', () => {
     roadDistanceService.resetForTests();
     process.env = { ...originalEnv, GOOGLE_MAPS_API_KEY: 'test-key' };
     delete process.env.MARKETPLACE_ROAD_DISTANCE;
-    getFirestore.mockReturnValue(buildFirestoreMock({ users, shops: [verifiedShop], products: [] }));
+    getFirestore.mockReturnValue(buildFirestoreMock({
+      users,
+      shops: [verifiedShop],
+      products: [
+        {
+          id: 'prod-verified',
+          data: { shopId: 'shop-verified', name: 'Rice', isActive: true, soldOut: false, photoUrl: 'rice.jpg' }
+        }
+      ]
+    }));
   });
 
   afterEach(() => {
@@ -876,5 +917,115 @@ describe('customerMarketplaceService road distance flag', () => {
     expect(shops[0].distanceKm).toBe(5);
     expect(shops[0]).not.toHaveProperty('distanceApprox');
     expect(shops[0].etaMinutes).toBeNull();
+  });
+});
+
+describe('customerMarketplaceService browse hides shops without available products', () => {
+  const shopProfile = {
+    address: '1 Main St',
+    location: { latitude: 12.9, longitude: 77.6 },
+    orderCount: 1,
+    bank: { upiNameVerification: { verifiedName: 'Verified Shop' } },
+    rating: { sum: 4, count: 1, average: 4 },
+    storefront: {}
+  };
+
+  const productAvailabilityUsers = [
+    makeUserDoc('shop-empty', {
+      userType: 'shop',
+      isActive: true,
+      shop: { approvalStatus: 'approved', shopName: 'Empty Mart', shopType: 'Grocery & Supermarket', isOpen: true }
+    }),
+    makeUserDoc('shop-inactive-only', {
+      userType: 'shop',
+      isActive: true,
+      shop: { approvalStatus: 'approved', shopName: 'Inactive Mart', shopType: 'Grocery & Supermarket', isOpen: true }
+    }),
+    makeUserDoc('shop-soldout-only', {
+      userType: 'shop',
+      isActive: true,
+      shop: { approvalStatus: 'approved', shopName: 'Sold Out Mart', shopType: 'Grocery & Supermarket', isOpen: true }
+    }),
+    makeUserDoc('shop-stocked', {
+      userType: 'shop',
+      isActive: true,
+      shop: { approvalStatus: 'approved', shopName: 'Stocked Mart', shopType: 'Grocery & Supermarket', isOpen: true }
+    })
+  ];
+
+  const productAvailabilityShops = [
+    { id: 'shop-empty', data: { ...shopProfile } },
+    { id: 'shop-inactive-only', data: { ...shopProfile } },
+    { id: 'shop-soldout-only', data: { ...shopProfile } },
+    { id: 'shop-stocked', data: { ...shopProfile } }
+  ];
+
+  const productAvailabilityProducts = [
+    {
+      id: 'prod-inactive',
+      data: { shopId: 'shop-inactive-only', name: 'Hidden Rice', isActive: false, price: 10, photoUrl: 'x' }
+    },
+    {
+      id: 'prod-soldout',
+      data: { shopId: 'shop-soldout-only', name: 'Sold Rice', isActive: true, soldOut: true, price: 10, photoUrl: 'x' }
+    },
+    {
+      id: 'prod-stocked',
+      data: { shopId: 'shop-stocked', name: 'Fresh Rice', isActive: true, soldOut: false, price: 10, photoUrl: 'x' }
+    }
+  ];
+
+  let service;
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    const { getFirestore } = require('../src/services/firebase');
+    getFirestore.mockReturnValue(buildFirestoreMock({
+      users: productAvailabilityUsers,
+      shops: productAvailabilityShops,
+      products: productAvailabilityProducts
+    }));
+    service = new CustomerMarketplaceService();
+  });
+
+  test('hides shops with zero products', async () => {
+    const shops = await service.loadEligibleShops({ lat: 12.9, lng: 77.6 });
+    expect(shops.map((row) => row.id)).toEqual(['shop-stocked']);
+    expect(shops.find((row) => row.id === 'shop-empty')).toBeUndefined();
+  });
+
+  test('hides shops with only inactive or sold out products', async () => {
+    const shops = await service.loadEligibleShops({ lat: 12.9, lng: 77.6 });
+    expect(shops.find((row) => row.id === 'shop-inactive-only')).toBeUndefined();
+    expect(shops.find((row) => row.id === 'shop-soldout-only')).toBeUndefined();
+  });
+
+  test('shows shop with at least one available product', async () => {
+    const shops = await service.loadEligibleShops({ lat: 12.9, lng: 77.6 });
+    const stocked = shops.find((row) => row.id === 'shop-stocked');
+    expect(stocked).toBeDefined();
+    expect(stocked.shopName).toBe('Stocked Mart');
+  });
+
+  test('category counts exclude shops without available products', async () => {
+    const result = await service.listCategories({ lat: 12.9, lng: 77.6 });
+    const grocery = result.categories.find((row) => row.category === 'Grocery & Supermarket');
+    expect(grocery.shopCount).toBe(1);
+    expect(grocery.comingSoon).toBe(false);
+  });
+
+  test('search does not return products from hidden shops', async () => {
+    const result = await service.search({ lat: 12.9, lng: 77.6, q: 'rice' });
+    // shop hits match on shop NAME only; no shop is named "rice"
+    expect(result.shops).toEqual([]);
+    expect(result.products.map((row) => row.id)).toEqual(['prod-stocked']);
+    expect(result.products.some((row) => row.shopId === 'shop-inactive-only')).toBe(false);
+  });
+
+  test('getShop returns not found for shop without available products', async () => {
+    await expect(service.getShop('shop-empty', {})).rejects.toMatchObject({
+      status: 404,
+      code: 'SHOP_NOT_FOUND'
+    });
   });
 });

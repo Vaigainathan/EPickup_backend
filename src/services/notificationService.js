@@ -953,18 +953,11 @@ class NotificationService {
       const userDoc = await this.db.collection('users').doc(userId).get();
       const userType = userDoc.exists ? userDoc.data().userType : null;
 
-      let shopRingDowngrade = false;
-      if (userType === 'shop' && type === 'INCOMING_PAYMENT') {
-        const { shouldDowngradeShopIncomingRing } = require('./shopRingBurstCooldown');
-        shopRingDowngrade = await shouldDowngradeShopIncomingRing(this.db, userId);
-      }
-
       const { resolvePushDeliveryOptions } = require('../constants/pushChannels');
       const delivery = resolvePushDeliveryOptions({
         userType,
         category,
-        templateKey: type,
-        shopRingDowngrade
+        templateKey: type
       });
 
       const options = {
@@ -981,11 +974,6 @@ class NotificationService {
         notification.bookingId = variables.bookingId;
       }
       const result = await this.sendToUser(userId, notification, options);
-
-      if (userType === 'shop' && type === 'INCOMING_PAYMENT' && !shopRingDowngrade && result.success) {
-        const { markShopRingSent } = require('./shopRingBurstCooldown');
-        markShopRingSent(userId);
-      }
 
       return result;
     } catch (error) {

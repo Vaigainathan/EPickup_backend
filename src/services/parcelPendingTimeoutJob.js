@@ -155,6 +155,26 @@ class ParcelPendingTimeoutJob {
         });
       }
 
+      if (
+        !data.driverId
+        && Array.isArray(result.notifiedDrivers)
+        && result.notifiedDrivers.length > 0
+      ) {
+        const { notifyOfferedDriversBookingCancelled } = require('./notifyOfferedDriversBookingCancelled');
+        void notifyOfferedDriversBookingCancelled(
+          doc.id,
+          result.notifiedDrivers,
+          CANCEL_REASON,
+          JOB_ACTOR,
+          { db, skipDriverId: data.driverId || null }
+        ).catch((offerNotifyError) => {
+          console.error(
+            '⚠️ [PARCEL_PENDING_TIMEOUT] Offered driver cancel notify failed:',
+            offerNotifyError?.message
+          );
+        });
+      }
+
       actions.push({ id: doc.id, kind: 'pending_timeout', changed: true, notified: notify });
     }
 

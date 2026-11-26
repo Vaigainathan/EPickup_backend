@@ -45,6 +45,11 @@ jest.mock('../src/services/marketplace/marketplaceLinkedBookingCancel', () => ({
   notifyAssignedDriverBookingCancelled: jest.fn(async () => {})
 }));
 
+const mockNotifyOfferedDriversBookingCancelled = jest.fn(async () => {});
+jest.mock('../src/services/notifyOfferedDriversBookingCancelled', () => ({
+  notifyOfferedDriversBookingCancelled: (...args) => mockNotifyOfferedDriversBookingCancelled(...args)
+}));
+
 const mockGetFirestore = jest.fn();
 
 jest.mock('firebase-admin/firestore', () => ({
@@ -129,6 +134,7 @@ describe('PUT /api/customer/bookings/:bookingId/cancel strict transaction', () =
   let app;
 
   beforeEach(() => {
+    mockNotifyOfferedDriversBookingCancelled.mockClear();
     setTestUid(customerId);
     bookingStore = {
       customerId,
@@ -167,8 +173,47 @@ describe('PUT /api/customer/bookings/:bookingId/cancel strict transaction', () =
       customerId,
       status: 'pending',
       driverId: null,
-      sourceType: 'parcel'
+      sourceType: 'parcel',
+      notifiedDrivers: ['driver-offered-1', 'driver-offered-2']
     };
+
+    const res = await request(app)
+      .put(`/api/customer/bookings/${bookingId}/cancel`)
+      .send({ reason: 'changed mind' });
+
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
+    await new Promise((r) => setImmediate(r));
+    expect(mockNotifyOfferedDriversBookingCancelled).toHaveBeenCalledWith(
+      bookingId,
+      ['driver-offered-1', 'driver-offered-2'],
+      'changed mind',
+      customerId,
+      expect.objectContaining({ skipDriverId: null })
+    );
+  });
+
+  test('with driver assigned: does not notify offered drivers', async () => {
+    bookingStore.notifiedDrivers = ['driver-offered-1'];
+
+    const res = await request(app)
+      .put(`/api/customer/bookings/${bookingId}/cancel`)
+      .send({ reason: 'changed mind' });
+
+    expect(res.status).toBe(200);
+    await new Promise((r) => setImmediate(r));
+    expect(mockNotifyOfferedDriversBookingCancelled).not.toHaveBeenCalled();
+  });
+
+  test('offered driver notify failure does not fail cancel', async () => {
+    bookingStore = {
+      customerId,
+      status: 'pending',
+      driverId: null,
+      sourceType: 'parcel',
+      notifiedDrivers: ['driver-offered-1']
+    };
+    mockNotifyOfferedDriversBookingCancelled.mockRejectedValueOnce(new Error('notify failed'));
 
     const res = await request(app)
       .put(`/api/customer/bookings/${bookingId}/cancel`)

@@ -179,10 +179,16 @@ class ActiveBookingService {
           );
         }
 
+        const notifiedDrivers = Array.isArray(bookingData.notifiedDrivers)
+          ? [...new Set(bookingData.notifiedDrivers)]
+          : [];
+
         return {
           success: true,
           bookingId: bookingDoc.id,
-          previousStatus: bookingData.status
+          previousStatus: bookingData.status,
+          driverId: bookingData.driverId || null,
+          notifiedDrivers
         };
       });
 
@@ -192,6 +198,23 @@ class ActiveBookingService {
           bookingId: result.bookingId,
           db
         });
+
+        if (!result.driverId && result.notifiedDrivers?.length > 0) {
+          const { notifyOfferedDriversBookingCancelled } = require('./notifyOfferedDriversBookingCancelled');
+          void notifyOfferedDriversBookingCancelled(
+            result.bookingId,
+            result.notifiedDrivers,
+            reason,
+            customerId,
+            { db, skipDriverId: result.driverId }
+          ).catch((offerNotifyError) => {
+            console.error(
+              '⚠️ [ActiveBookingService] Offered driver cancel notify failed:',
+              offerNotifyError?.message
+            );
+          });
+        }
+
         console.log(`✅ [ActiveBookingService] Cancelled active booking for customer ${customerId}`);
       }
       return result;

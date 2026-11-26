@@ -1232,6 +1232,22 @@ router.put('/bookings/:bookingId/cancel', authenticateToken, async (req, res) =>
       console.error('❌ [CANCEL] Error emitting cancellation event via WebSocket:', wsError);
       // Continue - booking is cancelled in DB even if WebSocket fails
     }
+
+    const offeredDriverIds = Array.isArray(bookingData.notifiedDrivers)
+      ? bookingData.notifiedDrivers
+      : [];
+    if (!driverId && offeredDriverIds.length > 0) {
+      const { notifyOfferedDriversBookingCancelled } = require('../services/notifyOfferedDriversBookingCancelled');
+      void notifyOfferedDriversBookingCancelled(
+        bookingId,
+        offeredDriverIds,
+        reason,
+        userId,
+        { db, skipDriverId: driverId }
+      ).catch((offerNotifyError) => {
+        console.error('⚠️ [CANCEL] Offered driver cancel notify failed:', offerNotifyError?.message);
+      });
+    }
     
     console.log(`✅ Cancelled booking ${bookingId} for customer: ${userId}`);
     

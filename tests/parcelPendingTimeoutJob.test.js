@@ -8,6 +8,11 @@ jest.mock('../src/services/parcel/parcelBookingCancelledNotify', () => ({
   notifyParcelBookingCancelled: jest.fn(async () => {})
 }));
 
+const mockNotifyOfferedDriversBookingCancelled = jest.fn(async () => {});
+jest.mock('../src/services/notifyOfferedDriversBookingCancelled', () => ({
+  notifyOfferedDriversBookingCancelled: (...args) => mockNotifyOfferedDriversBookingCancelled(...args)
+}));
+
 const { getFirestore } = require('../src/services/firebase');
 const { notifyParcelBookingCancelled } = require('../src/services/parcel/parcelBookingCancelledNotify');
 
@@ -106,6 +111,8 @@ describe('parcelPendingTimeoutJob', () => {
       status: 'pending',
       sourceType: 'parcel',
       customerId: 'cust-1',
+      driverId: null,
+      notifiedDrivers: ['driver-offered-1'],
       createdAt: ts(nowMs - 11 * 60 * 1000),
     });
 
@@ -118,6 +125,14 @@ describe('parcelPendingTimeoutJob', () => {
         reason: 'no_driver_timeout',
         notifyCustomerPush: true
       })
+    );
+    await new Promise((r) => setImmediate(r));
+    expect(mockNotifyOfferedDriversBookingCancelled).toHaveBeenCalledWith(
+      'old-parcel',
+      ['driver-offered-1'],
+      'no_driver_timeout',
+      expect.any(String),
+      expect.objectContaining({ skipDriverId: null })
     );
   });
 

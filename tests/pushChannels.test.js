@@ -20,29 +20,41 @@ describe('pushChannels', () => {
     expect(opts.sound).toBe('new_order.wav');
   });
 
-  test('shop INCOMING_PAYMENT ring uses shop_orders unless downgraded', () => {
+  test('shop INCOMING_PAYMENT always uses shop_orders_v2 ring', () => {
     const ring = resolvePushDeliveryOptions({
       userType: 'shop',
       category: 'MARKETPLACE',
-      templateKey: SHOP_RING_TEMPLATE,
-      shopRingDowngrade: false
+      templateKey: SHOP_RING_TEMPLATE
     });
-    expect(ring.channelId).toBe('shop_orders');
-
-    const quiet = resolvePushDeliveryOptions({
-      userType: 'shop',
-      category: 'MARKETPLACE',
-      templateKey: SHOP_RING_TEMPLATE,
-      shopRingDowngrade: true
-    });
-    expect(quiet.channelId).toBe('shop_updates');
+    expect(ring.channelId).toBe('shop_orders_v2');
+    expect(ring.sound).toBe('shop_new_order_v2.wav');
   });
 
-  test('shop payment templates use shop_payments', () => {
+  test('shop UTR_SUBMITTED uses shop_orders_v2 ring', () => {
     const opts = resolvePushDeliveryOptions({
       userType: 'shop',
       category: 'MARKETPLACE',
       templateKey: 'UTR_SUBMITTED'
+    });
+    expect(opts.channelId).toBe('shop_orders_v2');
+    expect(opts.sound).toBe('shop_new_order_v2.wav');
+  });
+
+  test('shop PAYMENT_REMINDER uses shop_reminders_v2', () => {
+    const opts = resolvePushDeliveryOptions({
+      userType: 'shop',
+      category: 'MARKETPLACE',
+      templateKey: 'PAYMENT_REMINDER'
+    });
+    expect(opts.channelId).toBe('shop_reminders_v2');
+    expect(opts.sound).toBe('shop_reminder_v2.wav');
+  });
+
+  test('shop payment review templates use shop_payments', () => {
+    const opts = resolvePushDeliveryOptions({
+      userType: 'shop',
+      category: 'MARKETPLACE',
+      templateKey: 'PAYMENT_REVIEW_SHOP'
     });
     expect(opts.channelId).toBe('shop_payments');
   });

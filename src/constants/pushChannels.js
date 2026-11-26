@@ -8,9 +8,9 @@ const DRIVER_OFFER_TEMPLATES = new Set([
 
 const SHOP_RING_TEMPLATE = 'INCOMING_PAYMENT';
 
+const SHOP_ORDER_RING_TEMPLATES = new Set(['INCOMING_PAYMENT', 'UTR_SUBMITTED']);
+
 const SHOP_PAYMENT_TEMPLATES = new Set([
-  'UTR_SUBMITTED',
-  'PAYMENT_REMINDER',
   'PAYMENT_REVIEW_SHOP',
   'PAYMENT_UNDER_REVIEW'
 ]);
@@ -23,8 +23,7 @@ function resolvePushDeliveryOptions({
   userType,
   category,
   templateKey,
-  isDriverOffer = false,
-  shopRingDowngrade = false
+  isDriverOffer = false
 }) {
   const key = templateKey || '';
   const base = {
@@ -48,11 +47,18 @@ function resolvePushDeliveryOptions({
   }
 
   if (userType === 'shop') {
-    if (key === SHOP_RING_TEMPLATE && !shopRingDowngrade) {
+    if (SHOP_ORDER_RING_TEMPLATES.has(key)) {
       return {
         ...base,
-        channelId: 'shop_orders',
-        sound: 'default'
+        channelId: 'shop_orders_v2',
+        sound: 'shop_new_order_v2.wav'
+      };
+    }
+    if (key === 'PAYMENT_REMINDER') {
+      return {
+        ...base,
+        channelId: 'shop_reminders_v2',
+        sound: 'shop_reminder_v2.wav'
       };
     }
     if (SHOP_PAYMENT_TEMPLATES.has(key)) {
@@ -83,6 +89,7 @@ function resolvePushDeliveryOptions({
 module.exports = {
   DRIVER_OFFER_TEMPLATES,
   SHOP_RING_TEMPLATE,
+  SHOP_ORDER_RING_TEMPLATES,
   SHOP_PAYMENT_TEMPLATES,
   resolvePushDeliveryOptions
 };

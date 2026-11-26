@@ -64,6 +64,8 @@ jest.mock('../src/services/shopCatalogueService', () => ({
     weight: data.weight ?? null,
     photoUrl: null,
     stock: data.stock ?? 0,
+    isActive: data.isActive !== false,
+    soldOut: data.soldOut === true,
     hasVariants: false,
     variants: []
   })),
@@ -950,6 +952,11 @@ describe('customerMarketplaceService browse hides shops without available produc
       userType: 'shop',
       isActive: true,
       shop: { approvalStatus: 'approved', shopName: 'Stocked Mart', shopType: 'Grocery & Supermarket', isOpen: true }
+    }),
+    makeUserDoc('shop-mixed', {
+      userType: 'shop',
+      isActive: true,
+      shop: { approvalStatus: 'approved', shopName: 'Mixed Mart', shopType: 'Grocery & Supermarket', isOpen: true }
     })
   ];
 
@@ -957,7 +964,8 @@ describe('customerMarketplaceService browse hides shops without available produc
     { id: 'shop-empty', data: { ...shopProfile } },
     { id: 'shop-inactive-only', data: { ...shopProfile } },
     { id: 'shop-soldout-only', data: { ...shopProfile } },
-    { id: 'shop-stocked', data: { ...shopProfile } }
+    { id: 'shop-stocked', data: { ...shopProfile } },
+    { id: 'shop-mixed', data: { ...shopProfile } }
   ];
 
   const productAvailabilityProducts = [
@@ -972,6 +980,14 @@ describe('customerMarketplaceService browse hides shops without available produc
     {
       id: 'prod-stocked',
       data: { shopId: 'shop-stocked', name: 'Fresh Rice', isActive: true, soldOut: false, price: 10, photoUrl: 'x' }
+    },
+    {
+      id: 'prod-mixed-soldout',
+      data: { shopId: 'shop-mixed', name: 'Mixed Sold Rice', isActive: true, soldOut: true, price: 10, photoUrl: 'x' }
+    },
+    {
+      id: 'prod-mixed-available',
+      data: { shopId: 'shop-mixed', name: 'Mixed Fresh Rice', isActive: true, soldOut: false, price: 10, photoUrl: 'x' }
     }
   ];
 
@@ -990,14 +1006,23 @@ describe('customerMarketplaceService browse hides shops without available produc
 
   test('hides shops with zero products', async () => {
     const shops = await service.loadEligibleShops({ lat: 12.9, lng: 77.6 });
-    expect(shops.map((row) => row.id)).toEqual(['shop-stocked']);
+    expect(shops.map((row) => row.id).sort()).toEqual(
+      ['shop-mixed', 'shop-soldout-only', 'shop-stocked'].sort()
+    );
     expect(shops.find((row) => row.id === 'shop-empty')).toBeUndefined();
   });
 
-  test('hides shops with only inactive or sold out products', async () => {
+  test('hides shops with only inactive products', async () => {
     const shops = await service.loadEligibleShops({ lat: 12.9, lng: 77.6 });
     expect(shops.find((row) => row.id === 'shop-inactive-only')).toBeUndefined();
-    expect(shops.find((row) => row.id === 'shop-soldout-only')).toBeUndefined();
+  });
+
+  test('lists shops with only sold out products as closed', async () => {
+    const shops = await service.loadEligibleShops({ lat: 12.9, lng: 77.6 });
+    const soldOutOnly = shops.find((row) => row.id === 'shop-soldout-only');
+    expect(soldOutOnly).toBeDefined();
+    expect(soldOutOnly.isOpenNow).toBe(false);
+    expect(soldOutOnly.opensAt).toBeNull();
   });
 
   test('shows shop with at least one available product', async () => {
@@ -1010,7 +1035,7 @@ describe('customerMarketplaceService browse hides shops without available produc
   test('category counts exclude shops without available products', async () => {
     const result = await service.listCategories({ lat: 12.9, lng: 77.6 });
     const grocery = result.categories.find((row) => row.category === 'Grocery & Supermarket');
-    expect(grocery.shopCount).toBe(1);
+    expect(grocery.shopCount).toBe(3);
     expect(grocery.comingSoon).toBe(false);
   });
 
@@ -1018,8 +1043,66 @@ describe('customerMarketplaceService browse hides shops without available produc
     const result = await service.search({ lat: 12.9, lng: 77.6, q: 'rice' });
     // shop hits match on shop NAME only; no shop is named "rice"
     expect(result.shops).toEqual([]);
-    expect(result.products.map((row) => row.id)).toEqual(['prod-stocked']);
+    expect(result.products.map((row) => row.id).sort()).toEqual(['prod-mixed-available', 'prod-mixed-soldout', 'prod-soldout', 'prod-stocked'].sort());
     expect(result.products.some((row) => row.shopId === 'shop-inactive-only')).toBe(false);
+  });
+
+  test('mixed shop with one sold out and one available product stays open', async () => {
+    const shops = await service.loadEligibleShops({ lat: 12.9, lng: 77.6 });
+    const mixed = shops.find((row) => row.id === 'shop-mixed');
+    expect(mixed).toBeDefined();
+    expect(mixed.isOpenNow).toBe(true);
+    expect(mixed.opensAt).toBeNull();
+  });
+
+  test('sold-out-only shop products list opens and returns sold out items', async () => {
+    const result = await service.listProducts('shop-soldout-only', {});
+    expect(result.products.map((row) => row.id)).toEqual(['prod-soldout']);
+    expect(result.products[0].soldOut).toBe(true);
+  });
+
+  test('all-sold-out shop already closed by hours keeps its own opensAt', async () => {
+    const { getFirestore } = require('../src/services/firebase');
+    getFirestore.mockReturnValue(buildFirestoreMock({
+      users: productAvailabilityUsers,
+      shops: productAvailabilityShops.map((snap) => (snap.id === 'shop-soldout-only'
+        ? {
+          ...snap,
+          data: {
+            ...snap.data,
+            storefront: { ...snap.data.storefront, openingHours: weekdayOpeningHours }
+          }
+        }
+        : snap)),
+      products: productAvailabilityProducts
+    }));
+    const hoursService = new CustomerMarketplaceService();
+    jest.useFakeTimers();
+    jest.setSystemTime(new Date('2026-06-15T07:00:00+05:30'));
+    const shops = await hoursService.loadEligibleShops({ lat: 12.9, lng: 77.6 });
+    jest.useRealTimers();
+    const soldOutOnly = shops.find((row) => row.id === 'shop-soldout-only');
+    expect(soldOutOnly).toBeDefined();
+    expect(soldOutOnly.isOpenNow).toBe(false);
+    expect(soldOutOnly.opensAt).toBe('2026-06-15T09:00:00+05:30');
+  });
+
+  test('listShops openNow=true excludes sold-out-only shops', async () => {
+    const result = await service.listShops({ lat: 12.9, lng: 77.6, openNow: 'true', limit: 50 });
+    expect(result.shops.map((row) => row.id)).toContain('shop-stocked');
+    expect(result.shops.map((row) => row.id)).toContain('shop-mixed');
+    expect(result.shops.find((row) => row.id === 'shop-soldout-only')).toBeUndefined();
+  });
+
+  test('sold-out-only shop does not rank above open stocked shop in relevance', async () => {
+    const result = await service.listShops({
+      lat: 12.9,
+      lng: 77.6,
+      sort: 'relevance',
+      limit: 50
+    });
+    const ids = result.shops.map((row) => row.id);
+    expect(ids.indexOf('shop-stocked')).toBeLessThan(ids.indexOf('shop-soldout-only'));
   });
 
   test('getShop returns not found for shop without available products', async () => {
